@@ -67,6 +67,7 @@ async def translate(ctx):
     if ctx.message.reference is None:
         await ctx.send("Reply to a message to translate.")
         return
+
     try:
         replied_msg = await ctx.channel.fetch_message(ctx.message.reference.message_id)
         text_to_translate = replied_msg.content
@@ -74,26 +75,33 @@ async def translate(ctx):
         await ctx.send("Couldn't get the replied message.")
         return
 
-    detect_resp = requests.post("https://libretranslate.de/detect", data={"q": text_to_translate})
-    if detect_resp.status_code != 200:
-        await ctx.send("Couldn't detect the language.")
-        return
+    try:
+        detect_resp = requests.post("https://libretranslate.de/detect", data={"q": text_to_translate})
+        detected_lang = detect_resp.json()[0].get("language", None)
 
-    detected_lang = detect_resp.json()[0]['language']
-    if detected_lang == 'en':
-        await ctx.send("That’s already in English.")
-        return
+        if not detected_lang:
+            await ctx.send("Couldn't detect the language.")
+            return
 
-    trans_resp = requests.post("https://libretranslate.de/translate", data={
-        "q": text_to_translate,
-        "source": detected_lang,
-        "target": "en"
-    })
-    if trans_resp.status_code == 200:
-        translated_text = trans_resp.json()['translatedText']
+        if detected_lang == "en":
+            await ctx.send("That’s already in English.")
+            return
+            
+        trans_resp = requests.post("https://libretranslate.de/translate", data={
+            "q": text_to_translate,
+            "source": detected_lang,
+            "target": "en"
+        })
+
+        translated_text = trans_resp.json().get("translatedText", None)
+        if not translated_text:
+            await ctx.send("Translation failed.")
+            return
+
         await ctx.send(f"**Translated:** {translated_text}")
-    else:
-        await ctx.send("Translation failed.")
+
+    except Exception as e:
+        await ctx.send(f"Error: {str(e)}")
 
 @bot.command()
 @is_owner()
@@ -324,5 +332,4 @@ async def on_member_join(member):
             pass
 
 if __name__ == "__main__":
-    keep_alive()
     bot.run(os.getenv("DISCORD_TOKEN"))
