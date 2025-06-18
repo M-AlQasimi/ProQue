@@ -47,7 +47,8 @@ async def keep_alive_task():
 @bot.event
 async def on_ready():
     print(f'ProQue is online as {bot.user}')
-    keep_alive_task.start()
+    if not keep_alive_task.is_running():
+        keep_alive_task.start()
 
 @bot.command()
 @is_owner()
