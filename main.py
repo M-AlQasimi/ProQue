@@ -73,24 +73,23 @@ async def translate(ctx):
         await ctx.send("Couldn't get the replied message.")
         return
 
-    detect_url = "https://api.mymemory.translated.net/get"
-    detect_params = {'q': text_to_translate, 'langpair': 'en|en'}
-    detect_response = requests.get(detect_url, params=detect_params)
-    
-    if detect_response.status_code != 200:
-        await ctx.send("Couldn't detect language.")
+    detect_resp = requests.post("https://libretranslate.de/detect", data={"q": text_to_translate})
+    if detect_resp.status_code != 200:
+        await ctx.send("Couldn't detect the language.")
         return
 
-    detected_lang = detect_response.json().get("responseData", {}).get("matchContext", {}).get("sourceLang", "")
-    if not detected_lang or detected_lang == "en":
-        await ctx.send("Already in English or couldn't detect the language.")
+    detected_lang = detect_resp.json()[0]['language']
+    if detected_lang == 'en':
+        await ctx.send("That’s already in English.")
         return
 
-    translate_params = {'q': text_to_translate, 'langpair': f'{detected_lang}|en'}
-    translate_response = requests.get(detect_url, params=translate_params)
-
-    if translate_response.status_code == 200:
-        translated_text = translate_response.json()['responseData']['translatedText']
+    trans_resp = requests.post("https://libretranslate.de/translate", data={
+        "q": text_to_translate,
+        "source": detected_lang,
+        "target": "en"
+    })
+    if trans_resp.status_code == 200:
+        translated_text = trans_resp.json()['translatedText']
         await ctx.send(f"**Translated:** {translated_text}")
     else:
         await ctx.send("Translation failed.")
