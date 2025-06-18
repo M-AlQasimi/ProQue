@@ -70,18 +70,27 @@ async def translate(ctx):
         replied_msg = await ctx.channel.fetch_message(ctx.message.reference.message_id)
         text_to_translate = replied_msg.content
     except:
-        await ctx.send("Could not get the replied message.")
+        await ctx.send("Couldn't get the replied message.")
         return
+
+    detect_url = "https://api.mymemory.translated.net/get"
+    detect_params = {'q': text_to_translate, 'langpair': 'en|en'}
+    detect_response = requests.get(detect_url, params=detect_params)
     
-    url = "https://api.mymemory.translated.net/get"
-    params = {
-        'q': text_to_translate,
-        'langpair': 'auto|en'
-    }
-    response = requests.get(url, params=params)
-    if response.status_code == 200:
-        data = response.json()
-        translated_text = data['responseData']['translatedText']
+    if detect_response.status_code != 200:
+        await ctx.send("Couldn't detect language.")
+        return
+
+    detected_lang = detect_response.json().get("responseData", {}).get("matchContext", {}).get("sourceLang", "")
+    if not detected_lang or detected_lang == "en":
+        await ctx.send("Already in English or couldn't detect the language.")
+        return
+
+    translate_params = {'q': text_to_translate, 'langpair': f'{detected_lang}|en'}
+    translate_response = requests.get(detect_url, params=translate_params)
+
+    if translate_response.status_code == 200:
+        translated_text = translate_response.json()['responseData']['translatedText']
         await ctx.send(f"**Translated:** {translated_text}")
     else:
         await ctx.send("Translation failed.")
