@@ -7,6 +7,7 @@ import re
 import random
 import datetime
 import os
+import requests
 
 intents = discord.Intents.default()
 intents.messages = True
@@ -58,6 +59,32 @@ async def q(ctx):
 @is_owner()
 async def test(ctx):
     await ctx.send("I'm alive heh")
+
+@bot.command()
+@is_owner()
+async def translate(ctx):
+    if ctx.message.reference is None:
+        await ctx.send("Reply to a message to translate.")
+        return
+    try:
+        replied_msg = await ctx.channel.fetch_message(ctx.message.reference.message_id)
+        text_to_translate = replied_msg.content
+    except:
+        await ctx.send("Could not get the replied message.")
+        return
+    
+    url = "https://api.mymemory.translated.net/get"
+    params = {
+        'q': text_to_translate,
+        'langpair': 'auto|en'
+    }
+    response = requests.get(url, params=params)
+    if response.status_code == 200:
+        data = response.json()
+        translated_text = data['responseData']['translatedText']
+        await ctx.send(f"**Translated:** {translated_text}")
+    else:
+        await ctx.send("Translation failed.")
 
 @bot.command()
 @is_owner()
