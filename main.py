@@ -46,14 +46,16 @@ async def keep_alive_task():
 @bot.event
 async def on_ready():
     print(f'ProQue is online as {bot.user}')
-    keep_alive_task.start()
+    keep_alive()
+    if not keep_alive_task.is_running():
+        keep_alive_task.start()
 
 @bot.command()
 @is_owner()
 async def q(ctx):
     answer = random.choice(["Yes", "No"])
     await ctx.send(f"**{answer}**")
-    
+
 @bot.command()
 @is_owner()
 async def test(ctx):
@@ -69,7 +71,7 @@ async def setnick(ctx, member: discord.Member, *, nickname: str):
         await ctx.send("I don't have permission to change that user's nickname.")
     except Exception as e:
         await ctx.send(f"Error: {e}")
-        
+
 @bot.command()
 @is_owner()
 async def start(ctx, member: discord.Member):
@@ -286,7 +288,5 @@ async def on_member_join(member):
             await member.ban(reason="Auto-banned on join.")
         except:
             pass
-
-keep_alive()
 
 bot.run(os.getenv("DISCORD_TOKEN"))
