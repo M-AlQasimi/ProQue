@@ -7,7 +7,6 @@ import re
 import random
 import datetime
 import os
-import requests
 
 intents = discord.Intents.default()
 intents.messages = True
@@ -34,8 +33,7 @@ def home():
     return "I'm alive", 200
 
 def run():
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host='0.0.0.0', port=port)
+    app.run(host='0.0.0.0', port=8080)
 
 def keep_alive():
     t = Thread(target=run)
@@ -48,61 +46,18 @@ async def keep_alive_task():
 @bot.event
 async def on_ready():
     print(f'ProQue is online as {bot.user}')
-    if not keep_alive_task.is_running():
-        keep_alive_task.start()
+    keep_alive_task.start()
 
 @bot.command()
 @is_owner()
 async def q(ctx):
     answer = random.choice(["Yes", "No"])
     await ctx.send(f"**{answer}**")
-
+    
 @bot.command()
 @is_owner()
 async def test(ctx):
     await ctx.send("I'm alive heh")
-
-@bot.command()
-@is_owner()
-async def translate(ctx):
-    if ctx.message.reference is None:
-        await ctx.send("Reply to a message to translate.")
-        return
-
-    try:
-        replied_msg = await ctx.channel.fetch_message(ctx.message.reference.message_id)
-        text_to_translate = replied_msg.content
-    except:
-        await ctx.send("Couldn't get the replied message.")
-        return
-
-    try:
-        detect_resp = requests.post("https://libretranslate.de/detect", data={"q": text_to_translate})
-        detected_lang = detect_resp.json()[0].get("language", None)
-
-        if not detected_lang:
-            await ctx.send("Couldn't detect the language.")
-            return
-
-        if detected_lang == "en":
-            await ctx.send("That’s already in English.")
-            return
-
-        trans_resp = requests.post("https://libretranslate.de/translate", data={
-            "q": text_to_translate,
-            "source": detected_lang,
-            "target": "en"
-        })
-
-        translated_text = trans_resp.json().get("translatedText", None)
-        if not translated_text:
-            await ctx.send("Translation failed.")
-            return
-
-        await ctx.send(f"**Translated:** {translated_text}")
-
-    except Exception as e:
-        await ctx.send(f"Error: {str(e)}")
 
 @bot.command()
 @is_owner()
@@ -114,7 +69,7 @@ async def setnick(ctx, member: discord.Member, *, nickname: str):
         await ctx.send("I don't have permission to change that user's nickname.")
     except Exception as e:
         await ctx.send(f"Error: {e}")
-
+        
 @bot.command()
 @is_owner()
 async def start(ctx, member: discord.Member):
@@ -332,6 +287,6 @@ async def on_member_join(member):
         except:
             pass
 
-if __name__ == "__main__":
-    keep_alive()
-    bot.run(os.getenv("DISCORD_TOKEN"))
+keep_alive()
+
+bot.run(os.getenv("DISCORD_TOKEN"))
