@@ -314,6 +314,6 @@ async def on_member_join(member):
         except:
             pass
 
-keep_alive()
-
-bot.run(os.getenv("DISCORD_TOKEN"))
+if __name__ == "__main__":
+    keep_alive()
+    bot.run(os.getenv("DISCORD_TOKEN"))
