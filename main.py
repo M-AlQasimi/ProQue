@@ -56,7 +56,7 @@ async def on_ready():
 async def q(ctx):
     answer = random.choice(["Yes", "No"])
     await ctx.send(f"**{answer}**")
-    
+
 @bot.command()
 @is_owner()
 async def test(ctx):
@@ -87,7 +87,7 @@ async def translate(ctx):
         if detected_lang == "en":
             await ctx.send("That’s already in English.")
             return
-            
+
         trans_resp = requests.post("https://libretranslate.de/translate", data={
             "q": text_to_translate,
             "source": detected_lang,
@@ -114,7 +114,7 @@ async def setnick(ctx, member: discord.Member, *, nickname: str):
         await ctx.send("I don't have permission to change that user's nickname.")
     except Exception as e:
         await ctx.send(f"Error: {e}")
-        
+
 @bot.command()
 @is_owner()
 async def start(ctx, member: discord.Member):
@@ -333,4 +333,5 @@ async def on_member_join(member):
             pass
 
 if __name__ == "__main__":
+    keep_alive()
     bot.run(os.getenv("DISCORD_TOKEN"))
