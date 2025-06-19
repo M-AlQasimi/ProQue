@@ -271,7 +271,7 @@ async def aban(ctx, user: discord.Member = None, user_id: int = None):
 
 @bot.command()
 @is_owner()
-async def unaban(ctx, user: discord.Member = None, user_id: int = None):
+async def raban(ctx, user: discord.Member = None, user_id: int = None):
     if user:
         autoban_ids.discard(user.id)
         await ctx.send(f"{user.mention} has been removed from autoban list.")
