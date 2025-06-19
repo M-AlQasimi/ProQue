@@ -144,17 +144,19 @@ async def on_message(message):
 @bot.command()
 @is_owner()
 async def purge(ctx, amount: int, member: discord.Member = None):
+    await ctx.message.delete()
     if member is None:
-        await ctx.channel.purge(limit=amount + 1)
+        await ctx.channel.purge(limit=amount)
     else:
         def check(m):
             return m.author == member
-        deleted = await ctx.channel.purge(limit=1000, check=check)
-        await ctx.send(f"Deleted {min(len(deleted), amount)} messages from {member.display_name}.", delete_after=5)
-        try:
-            await ctx.message.delete()
-        except:
-            pass
+        deleted = []
+        async for message in ctx.channel.history(limit=1000):
+            if check(message):
+                deleted.append(message)
+                if len(deleted) == amount:
+                    break
+        await ctx.channel.delete_messages(deleted)
 
 @bot.command(name="lock")
 @is_owner()
@@ -231,14 +233,12 @@ async def giveaway(ctx, time: str, *, prize: str):
     msg = await ctx.send(embed=embed)
     await msg.add_reaction("🎉")
     end_time = datetime.datetime.utcnow() + datetime.timedelta(seconds=seconds)
-
     while seconds > 0:
         if seconds <= 60:
             embed.set_footer(text=f"Ends in {seconds}s")
             await msg.edit(embed=embed)
         await asyncio.sleep(1)
         seconds = int((end_time - datetime.datetime.utcnow()).total_seconds())
-
     new_msg = await ctx.channel.fetch_message(msg.id)
     users = [u async for u in new_msg.reactions[0].users() if not u.bot]
     if users:
@@ -259,23 +259,27 @@ async def picker(ctx, *, items):
 
 @bot.command()
 @is_owner()
-async def aban(ctx, user: discord.User = None, user_id: int = None):
-    target_id = user.id if user else user_id
-    if not target_id:
-        await ctx.send("Please provide a user mention or user ID.")
-        return
-    autoban_ids.add(target_id)
-    await ctx.send(f"User ID {target_id} will be autobanned if they join.")
+async def aban(ctx, user: discord.Member = None, user_id: int = None):
+    if user:
+        autoban_ids.add(user.id)
+        await ctx.send(f"{user.mention} will be autobanned if they join.")
+    elif user_id:
+        autoban_ids.add(user_id)
+        await ctx.send(f"User ID {user_id} will be autobanned if they join.")
+    else:
+        await ctx.send("Please mention a user or provide a user ID.")
 
 @bot.command()
 @is_owner()
-async def aunban(ctx, user: discord.User = None, user_id: int = None):
-    target_id = user.id if user else user_id
-    if not target_id:
-        await ctx.send("Please provide a user mention or user ID.")
-        return
-    autoban_ids.discard(target_id)
-    await ctx.send(f"User ID {target_id} has been removed from autoban list.")
+async def aunban(ctx, user: discord.Member = None, user_id: int = None):
+    if user:
+        autoban_ids.discard(user.id)
+        await ctx.send(f"{user.mention} has been removed from autoban list.")
+    elif user_id:
+        autoban_ids.discard(user_id)
+        await ctx.send(f"User ID {user_id} has been removed from autoban list.")
+    else:
+        await ctx.send("Please mention a user or provide a user ID.")
 
 @bot.command()
 @is_owner()
@@ -301,5 +305,4 @@ async def on_member_join(member):
             pass
 
 keep_alive()
-
 bot.run(os.getenv("DISCORD_TOKEN"))
