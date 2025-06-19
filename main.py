@@ -46,7 +46,6 @@ async def keep_alive_task():
 @bot.event
 async def on_ready():
     print(f'ProQue is online as {bot.user}')
-    keep_alive()
     if not keep_alive_task.is_running():
         keep_alive_task.start()
 
@@ -152,6 +151,10 @@ async def purge(ctx, amount: int, member: discord.Member = None):
             return m.author == member
         deleted = await ctx.channel.purge(limit=1000, check=check)
         await ctx.send(f"Deleted {min(len(deleted), amount)} messages from {member.display_name}.", delete_after=5)
+        try:
+            await ctx.message.delete()
+        except:
+            pass
 
 @bot.command(name="lock")
 @is_owner()
@@ -256,15 +259,23 @@ async def picker(ctx, *, items):
 
 @bot.command()
 @is_owner()
-async def aban(ctx, user_id: int):
-    autoban_ids.add(user_id)
-    await ctx.send(f"User ID {user_id} will be autobanned if they join.")
+async def aban(ctx, user: discord.User = None, user_id: int = None):
+    target_id = user.id if user else user_id
+    if not target_id:
+        await ctx.send("Please provide a user mention or user ID.")
+        return
+    autoban_ids.add(target_id)
+    await ctx.send(f"User ID {target_id} will be autobanned if they join.")
 
 @bot.command()
 @is_owner()
-async def aunban(ctx, user_id: int):
-    autoban_ids.discard(user_id)
-    await ctx.send(f"User ID {user_id} has been removed from autoban list.")
+async def aunban(ctx, user: discord.User = None, user_id: int = None):
+    target_id = user.id if user else user_id
+    if not target_id:
+        await ctx.send("Please provide a user mention or user ID.")
+        return
+    autoban_ids.discard(target_id)
+    await ctx.send(f"User ID {target_id} has been removed from autoban list.")
 
 @bot.command()
 @is_owner()
@@ -288,5 +299,7 @@ async def on_member_join(member):
             await member.ban(reason="Auto-banned on join.")
         except:
             pass
+
+keep_alive()
 
 bot.run(os.getenv("DISCORD_TOKEN"))
