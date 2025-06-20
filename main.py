@@ -105,6 +105,16 @@ async def userinfo(ctx, member: discord.Member = None):
     embed.add_field(name="ID", value=member.id, inline=True)
     embed.add_field(name="Joined Server", value=member.joined_at.strftime("%d %b %Y"), inline=False)
     embed.add_field(name="Created Account", value=member.created_at.strftime("%d %b %Y"), inline=False)
+
+    try:
+        user = await bot.fetch_user(member.id)
+        if user.bio:
+            embed.add_field(name="Bio", value=user.bio, inline=False)
+        if user.pronouns:
+            embed.add_field(name="Pronouns", value=user.pronouns, inline=True)
+    except:
+        pass
+
     await ctx.send(embed=embed)
 
 @bot.command()
