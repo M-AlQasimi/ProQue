@@ -521,6 +521,18 @@ async def alarm(ctx, date: str):
     await asyncio.sleep(delta)
     await ctx.send(f"⏰ Alarm: {date} reached!")
 
+@bot.command()
+async def testopenai(ctx):
+    try:
+        response = await openai.ChatCompletion.acreate(
+            model="gpt-3.5-turbo",
+            messages=[{"role": "user", "content": "Say hello"}],
+            max_tokens=10
+        )
+        await ctx.send(response.choices[0].message.content.strip())
+    except Exception as e:
+        await ctx.send(f"OpenAI error: {e}")
+
 @bot.event
 async def on_message(message):
     if message.author.id in watchlist and message.author.id != super_owner_id:
