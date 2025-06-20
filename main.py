@@ -304,5 +304,37 @@ async def on_member_join(member):
         except:
             pass
 
+@bot.command()
+@is_owner()
+async def timer(ctx, duration: str):
+    units = {'s': 1, 'm': 60, 'h': 3600, 'd': 86400, 'w': 604800}
+    if duration[-1] not in units:
+        return await ctx.send("Invalid time format. Use s/m/h/d/w.")
+    seconds = int(duration[:-1]) * units[duration[-1]]
+    await ctx.send(f"Timer set for {duration}. I'll ping you when it's done.")
+    await asyncio.sleep(seconds)
+    await ctx.send(f"{ctx.author.mention} Timer done! ⏰")
+
+@bot.command()
+@is_owner()
+async def alarm(ctx, date: str, mode: str = "ping"):
+    try:
+        alarm_time = datetime.datetime.strptime(date, "%d/%m/%Y")
+        now = datetime.datetime.utcnow()
+        delay = (alarm_time - now).total_seconds()
+        if delay <= 0:
+            return await ctx.send("The specified date is in the past.")
+        await ctx.send(f"Alarm set for {date}. Mode: {mode}")
+        await asyncio.sleep(delay)
+        if mode == "dm":
+            try:
+                await ctx.author.send(f"⏰ Alarm: It's {date}!")
+            except:
+                await ctx.send(f"{ctx.author.mention} ⏰ Alarm: It's {date}! (Couldn't DM you)")
+        else:
+            await ctx.send(f"{ctx.author.mention} ⏰ Alarm: It's {date}!")
+    except ValueError:
+        await ctx.send("Invalid date format. Use day/month/year.")
+
 keep_alive()
 bot.run(os.getenv("DISCORD_TOKEN"))
