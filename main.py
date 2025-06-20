@@ -7,7 +7,7 @@ import re
 import random
 import datetime
 import os
-import openai
+from openai import AsyncOpenAI
 
 intents = discord.Intents.default()
 intents.messages = True
@@ -27,7 +27,7 @@ deleted_snipes = {}
 
 async def ai_generate(prompt):
     try:
-        response = await openai.ChatCompletion.acreate(
+        response = await client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[{"role": "user", "content": prompt}],
             max_tokens=60,
@@ -35,10 +35,10 @@ async def ai_generate(prompt):
         )
         return response.choices[0].message.content.strip()
     except Exception as e:
-        print(f"OpenAI error: {e}")
+        print(f"OAI error: {e}")
         return "Error"
         
-openai.api_key = os.getenv("OPENAI_API_KEY")
+client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 app = Flask('')
 
@@ -524,14 +524,14 @@ async def alarm(ctx, date: str):
 @bot.command()
 async def testopenai(ctx):
     try:
-        response = await openai.ChatCompletion.acreate(
+        response = await client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[{"role": "user", "content": "Say hello"}],
             max_tokens=10
         )
         await ctx.send(response.choices[0].message.content.strip())
     except Exception as e:
-        await ctx.send(f"OAI error: {e}")
+        await ctx.send(f"OpenAI error: {e}")
 
 @bot.event
 async def on_message(message):
