@@ -7,6 +7,7 @@ import re
 import random
 import datetime
 import os
+import aiohttp
 
 intents = discord.Intents.default()
 intents.messages = True
@@ -20,6 +21,9 @@ super_owner_id = 885548126365171824
 owner_ids = {super_owner_id}
 watchlist = set()
 autoban_ids = set()
+
+last_deleted = {}
+last_edited = {}
 
 def is_owner():
     async def predicate(ctx):
@@ -335,6 +339,193 @@ async def alarm(ctx, date: str, mode: str = "ping"):
             await ctx.send(f"{ctx.author.mention} ⏰ Alarm: It's {date}!")
     except ValueError:
         await ctx.send("Invalid date format. Use day/month/year.")
+
+@bot.command()
+async def userinfo(ctx, member: discord.Member = None):
+    member = member or ctx.author
+    embed = discord.Embed(title=f"{member.display_name}'s Info", color=discord.Color.blue())
+    embed.set_thumbnail(url=member.avatar.url if member.avatar else member.default_avatar.url)
+    embed.add_field(name="ID", value=member.id, inline=True)
+    embed.add_field(name="Bot?", value=member.bot, inline=True)
+    embed.add_field(name="Top Role", value=member.top_role.mention, inline=True)
+    embed.add_field(name="Joined Server", value=member.joined_at.strftime("%Y-%m-%d %H:%M:%S"), inline=True)
+    embed.add_field(name="Account Created", value=member.created_at.strftime("%Y-%m-%d %H:%M:%S"), inline=True)
+    await ctx.send(embed=embed)
+
+@bot.command()
+async def avatar(ctx, member: discord.Member = None):
+    member = member or ctx.author
+    avatar_url = member.avatar.url if member.avatar else member.default_avatar.url
+    await ctx.send(f"{member.display_name}'s avatar:\n{avatar_url}")
+
+quotes = [
+    "Be yourself; everyone else is already taken.",
+    "Success is not final, failure is not fatal: It is the courage to continue that counts.",
+    "Do what you can with all you have, wherever you are.",
+    "What you do speaks so loudly that I cannot hear what you say.",
+]
+
+@bot.command()
+async def quote(ctx):
+    await ctx.send(random.choice(quotes))
+
+@bot.command()
+@is_owner()
+async def slowmode(ctx, seconds: int):
+    if seconds < 0 or seconds > 21600:
+        return await ctx.send("Slowmode must be between 0 and 21600 seconds (6 hours).")
+    await ctx.channel.edit(slowmode_delay=seconds)
+    await ctx.send(f"Set slowmode to {seconds} seconds.")
+
+games = {}
+
+@bot.command()
+async def hangman(ctx):
+    if ctx.channel.id in games:
+        return await ctx.send("Game already running in this channel!")
+    word_list = ["python", "discord", "hangman", "bot", "programming"]
+    word = random.choice(word_list)
+    hidden = ["_"] * len(word)
+    attempts = 6
+    games[ctx.channel.id] = {"word": word, "hidden": hidden, "attempts": attempts, "guessed": set()}
+    await ctx.send(f"Hangman started! Word: {' '.join(hidden)}\nGuess letters with `!guess <letter>`")
+
+@bot.command()
+async def guess(ctx, letter: str):
+    if ctx.channel.id not in games:
+        return await ctx.send("No game running in this channel.")
+    game = games[ctx.channel.id]
+    letter = letter.lower()
+    if letter in game["guessed"]:
+        return await ctx.send("You already guessed that letter.")
+    game["guessed"].add(letter)
+    if letter in game["word"]:
+        for i, c in enumerate(game["word"]):
+            if c == letter:
+                game["hidden"][i] = letter
+        if "_" not in game["hidden"]:
+            await ctx.send(f"You won! The word was {game['word']}.")
+            del games[ctx.channel.id]
+        else:
+            await ctx.send(f"Correct! {' '.join(game['hidden'])}")
+    else:
+        game["attempts"] -= 1
+        if game["attempts"] == 0:
+            await ctx.send(f"You lost! The word was {game['word']}.")
+            del games[ctx.channel.id]
+        else:
+            await ctx.send(f"Wrong! Attempts left: {game['attempts']}")
+
+ttt_games = {}
+
+@bot.command()
+async def ttt(ctx, opponent: discord.Member):
+    if ctx.channel.id in ttt_games:
+        return await ctx.send("A game is already running in this channel.")
+    if opponent.bot or opponent == ctx.author:
+        return await ctx.send("Choose a valid opponent.")
+    board = ["⬜"] * 9
+    turn = ctx.author
+    ttt_games[ctx.channel.id] = {"board": board, "turn": turn, "players": [ctx.author, opponent]}
+    await ctx.send(f"Tic Tac Toe started between {ctx.author.mention} and {opponent.mention}. {ctx.author.mention} goes first.\nUse `!place <1-9>` to play.\n{''.join(board)}")
+
+@bot.command()
+async def place(ctx, pos: int):
+    if ctx.channel.id not in ttt_games:
+        return await ctx.send("No Tic Tac Toe game running in this channel.")
+    game = ttt_games[ctx.channel.id]
+    if ctx.author != game["turn"]:
+        return await ctx.send("It's not your turn.")
+    if pos < 1 or pos > 9:
+        return await ctx.send("Position must be 1-9.")
+    pos -= 1
+    if game["board"][pos] != "⬜":
+        return await ctx.send("That spot is taken.")
+    symbol = "❌" if game["turn"] == game["players"][0] else "⭕"
+    game["board"][pos] = symbol
+    b = game["board"]
+    wins = [(0,1,2),(3,4,5),(6,7,8),(0,3,6),(1,4,7),(2,5,8),(0,4,8),(2,4,6)]
+    for a,b_,c in wins:
+        if b[a] == b[b_] == b[c] != "⬜":
+            await ctx.send(f"{ctx.author.mention} wins!\n{''.join(b)}")
+            del ttt_games[ctx.channel.id]
+            return
+    if "⬜" not in b:
+        await ctx.send(f"Game ended in a draw!\n{''.join(b)}")
+        del ttt_games[ctx.channel.id]
+        return
+    game["turn"] = game["players"][1] if game["turn"] == game["players"][0] else game["players"][0]
+    await ctx.send(f"Next turn: {game['turn'].mention}\n{''.join(game['board'])}")
+
+roasts = [
+    "You're as bright as a black hole, and twice as dense.",
+    "You bring everyone so much joy... when you leave the room.",
+    "You're like a cloud. When you disappear, it's a beautiful day.",
+]
+
+@bot.command()
+async def roast(ctx, member: discord.Member = None):
+    member = member or ctx.author
+    await ctx.send(f"{member.display_name}, {random.choice(roasts)}")
+
+@bot.command()
+async def define(ctx, *, word):
+    async with aiohttp.ClientSession() as session:
+        async with session.get(f"https://api.dictionaryapi.dev/api/v2/entries/en/{word}") as resp:
+            if resp.status != 200:
+                return await ctx.send(f"No definition found for `{word}`.")
+            data = await resp.json()
+            try:
+                meaning = data[0]['meanings'][0]['definitions'][0]['definition']
+                await ctx.send(f"**{word}**: {meaning}")
+            except (IndexError, KeyError):
+                await ctx.send(f"Could not parse definition for `{word}`.")
+
+truths = [
+    "What's your biggest fear?",
+    "Have you ever lied to your best friend?",
+    "What's a secret you have never told anyone?",
+]
+
+dares = [
+    "Do 10 pushups.",
+    "Sing a song loudly.",
+    "Dance for 30 seconds.",
+]
+
+@bot.command()
+async def truth(ctx):
+    await ctx.send(random.choice(truths))
+
+@bot.command()
+async def dare(ctx):
+    await ctx.send(random.choice(dares))
+
+@bot.event
+async def on_message_delete(message):
+    if not message.author.bot:
+        last_deleted[message.channel.id] = (message.content, message.author, message.created_at)
+
+@bot.command()
+async def dsnipe(ctx):
+    if ctx.channel.id not in last_deleted:
+        return await ctx.send("Nothing to snipe!")
+    content, author, time = last_deleted[ctx.channel.id]
+    ago = (datetime.datetime.utcnow() - time).seconds
+    await ctx.send(f"Deleted message by {author.display_name} {ago}s ago:\n{content}")
+
+@bot.event
+async def on_message_edit(before, after):
+    if not before.author.bot and before.content != after.content:
+        last_edited[before.channel.id] = (before.content, after.content, before.author, before.created_at)
+
+@bot.command()
+async def esnipe(ctx):
+    if ctx.channel.id not in last_edited:
+        return await ctx.send("Nothing to snipe!")
+    before_content, after_content, author, time = last_edited[ctx.channel.id]
+    ago = (datetime.datetime.utcnow() - time).seconds
+    await ctx.send(f"Edited message by {author.display_name} {ago}s ago:\nBefore: {before_content}\nAfter: {after_content}")
 
 keep_alive()
 bot.run(os.getenv("DISCORD_TOKEN"))
