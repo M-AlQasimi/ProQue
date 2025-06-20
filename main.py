@@ -97,6 +97,10 @@ async def esnipe(ctx):
     await ctx.send(f"Edited by {author.display_name}:\nBefore: {before}\nAfter: {after}")
 
 @bot.command()
+async def test(ctx):
+    await ctx.send("I'm alive heh")
+    
+@bot.command()
 async def userinfo(ctx, member: discord.Member = None):
     member = member or ctx.author
     embed = discord.Embed(title="User Info", color=0x3498db)
