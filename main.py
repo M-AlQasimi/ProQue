@@ -27,7 +27,7 @@ deleted_snipes = {}
 
 async def ai_generate(prompt):
     try:
-        response = await openai.ChatCompletion.acreate(
+        response = await openai.chat.completions.acreate(
             model="gpt-3.5-turbo",
             messages=[{"role": "user", "content": prompt}],
             max_tokens=60,
@@ -524,14 +524,14 @@ async def alarm(ctx, date: str):
 @bot.command()
 async def testopenai(ctx):
     try:
-        response = await openai.ChatCompletion.acreate(
+        response = await openai.chat.completions.acreate(
             model="gpt-3.5-turbo",
             messages=[{"role": "user", "content": "Say hello"}],
             max_tokens=10
         )
         await ctx.send(response.choices[0].message.content.strip())
     except Exception as e:
-        await ctx.send(f"OpenAI error: {e}")
+        await ctx.send(f"OAI error: {e}")
 
 @bot.event
 async def on_message(message):
