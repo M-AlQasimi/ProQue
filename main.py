@@ -27,7 +27,7 @@ deleted_snipes = {}
 
 async def ai_generate(prompt):
     try:
-        response = await openai.chat.completions.acreate(
+        response = await openai.ChatCompletion.acreate(
             model="gpt-3.5-turbo",
             messages=[{"role": "user", "content": prompt}],
             max_tokens=60,
@@ -524,7 +524,7 @@ async def alarm(ctx, date: str):
 @bot.command()
 async def testopenai(ctx):
     try:
-        response = await openai.chat.completions.acreate(
+        response = await openai.ChatCompletion.acreate(
             model="gpt-3.5-turbo",
             messages=[{"role": "user", "content": "Say hello"}],
             max_tokens=10
