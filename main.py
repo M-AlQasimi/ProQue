@@ -15,7 +15,7 @@ intents.message_content = True
 intents.guilds = True
 intents.members = True
 
-bot = commands.Bot(command_prefix='!', intents=intents)
+bot = commands.Bot(command_prefix='.', intents=intents)
 
 super_owner_id = 885548126365171824
 owner_ids = {super_owner_id}
@@ -314,7 +314,10 @@ async def timer(ctx, duration: str):
     units = {'s': 1, 'm': 60, 'h': 3600, 'd': 86400, 'w': 604800}
     if duration[-1] not in units:
         return await ctx.send("Invalid time format. Use s/m/h/d/w.")
-    seconds = int(duration[:-1]) * units[duration[-1]]
+    try:
+        seconds = int(duration[:-1]) * units[duration[-1]]
+    except:
+        return await ctx.send("Invalid time format.")
     await ctx.send(f"Timer set for {duration}. I'll ping you when it's done.")
     await asyncio.sleep(seconds)
     await ctx.send(f"{ctx.author.mention} Timer done! ⏰")
@@ -340,192 +343,327 @@ async def alarm(ctx, date: str, mode: str = "ping"):
     except ValueError:
         await ctx.send("Invalid date format. Use day/month/year.")
 
+used_quotes = set()
+used_roasts = set()
+
+async def fetch_ai_text(session, prompt):
+    dummy_quotes = [
+        "Life is what happens when you're busy making other plans.",
+        "Be yourself; everyone else is already taken.",
+        "The only limit to our realization of tomorrow is our doubts of today.",
+    ]
+    dummy_roasts = [
+        "You're as useless as the 'ueue' in 'queue'.",
+        "If I had a face like yours, I'd sue my parents.",
+        "You bring everyone so much joy… when you leave the room.",
+    ]
+    if "quote" in prompt.lower():
+        choices = [q for q in dummy_quotes if q not in used_quotes]
+        if not choices:
+            used_quotes.clear()
+            choices = dummy_quotes
+        choice = random.choice(choices)
+        used_quotes.add(choice)
+        return choice
+    elif "roast" in prompt.lower():
+        choices = [r for r in dummy_roasts if r not in used_roasts]
+        if not choices:
+            used_roasts.clear()
+            choices = dummy_roasts
+        choice = random.choice(choices)
+        used_roasts.add(choice)
+        return choice
+    return "Hmm... I have nothing to say."
+
+@bot.command()
+async def quote(ctx):
+    async with aiohttp.ClientSession() as session:
+        text = await fetch_ai_text(session, "quote")
+    await ctx.send(f"💬 Quote: {text}")
+
+@bot.command()
+async def roast(ctx):
+    async with aiohttp.ClientSession() as session:
+        text = await fetch_ai_text(session, "roast")
+    await ctx.send(f"🔥 Roast: {text}")
+
 @bot.command()
 async def userinfo(ctx, member: discord.Member = None):
     member = member or ctx.author
-    embed = discord.Embed(title=f"{member.display_name}'s Info", color=discord.Color.blue())
+    embed = discord.Embed(title=f"User info - {member}", color=discord.Color.blue())
     embed.set_thumbnail(url=member.avatar.url if member.avatar else member.default_avatar.url)
     embed.add_field(name="ID", value=member.id, inline=True)
-    embed.add_field(name="Bot?", value=member.bot, inline=True)
-    embed.add_field(name="Top Role", value=member.top_role.mention, inline=True)
-    embed.add_field(name="Joined Server", value=member.joined_at.strftime("%Y-%m-%d %H:%M:%S"), inline=True)
+    embed.add_field(name="Display Name", value=member.display_name, inline=True)
     embed.add_field(name="Account Created", value=member.created_at.strftime("%Y-%m-%d %H:%M:%S"), inline=True)
+    embed.add_field(name="Joined Server", value=member.joined_at.strftime("%Y-%m-%d %H:%M:%S") if member.joined_at else "Unknown", inline=True)
+    roles = [r.name for r in member.roles if r.name != "@everyone"]
+    embed.add_field(name="Roles", value=", ".join(roles) if roles else "None", inline=False)
     await ctx.send(embed=embed)
 
 @bot.command()
 async def avatar(ctx, member: discord.Member = None):
     member = member or ctx.author
-    avatar_url = member.avatar.url if member.avatar else member.default_avatar.url
-    await ctx.send(f"{member.display_name}'s avatar:\n{avatar_url}")
-
-quotes = [
-    "Be yourself; everyone else is already taken.",
-    "Success is not final, failure is not fatal: It is the courage to continue that counts.",
-    "Do what you can with all you have, wherever you are.",
-    "What you do speaks so loudly that I cannot hear what you say.",
-]
-
-@bot.command()
-async def quote(ctx):
-    await ctx.send(random.choice(quotes))
+    url = member.avatar.url if member.avatar else member.default_avatar.url
+    await ctx.send(f"{member.display_name}'s avatar:\n{url}")
 
 @bot.command()
 @is_owner()
-async def slowmode(ctx, seconds: int):
-    if seconds < 0 or seconds > 21600:
-        return await ctx.send("Slowmode must be between 0 and 21600 seconds (6 hours).")
-    await ctx.channel.edit(slowmode_delay=seconds)
-    await ctx.send(f"Set slowmode to {seconds} seconds.")
+async def slowmode(ctx, seconds: int = None):
+    if seconds is None or seconds == 0:
+        await ctx.channel.edit(slowmode_delay=0)
+        await ctx.send("Slowmode disabled.")
+    elif 0 < seconds <= 21600:
+        await ctx.channel.edit(slowmode_delay=seconds)
+        await ctx.send(f"Slowmode set to {seconds} seconds.")
+    else:
+        await ctx.send("Slowmode must be between 1 and 21600 seconds.")
 
-games = {}
+hangman_games = {}
 
 @bot.command()
 async def hangman(ctx):
-    if ctx.channel.id in games:
-        return await ctx.send("Game already running in this channel!")
-    word_list = ["python", "discord", "hangman", "bot", "programming"]
-    word = random.choice(word_list)
-    hidden = ["_"] * len(word)
-    attempts = 6
-    games[ctx.channel.id] = {"word": word, "hidden": hidden, "attempts": attempts, "guessed": set()}
-    await ctx.send(f"Hangman started! Word: {' '.join(hidden)}\nGuess letters with `!guess <letter>`")
-
-@bot.command()
-async def guess(ctx, letter: str):
-    if ctx.channel.id not in games:
-        return await ctx.send("No game running in this channel.")
-    game = games[ctx.channel.id]
-    letter = letter.lower()
-    if letter in game["guessed"]:
-        return await ctx.send("You already guessed that letter.")
-    game["guessed"].add(letter)
-    if letter in game["word"]:
-        for i, c in enumerate(game["word"]):
-            if c == letter:
-                game["hidden"][i] = letter
-        if "_" not in game["hidden"]:
-            await ctx.send(f"You won! The word was {game['word']}.")
-            del games[ctx.channel.id]
-        else:
-            await ctx.send(f"Correct! {' '.join(game['hidden'])}")
-    else:
-        game["attempts"] -= 1
-        if game["attempts"] == 0:
-            await ctx.send(f"You lost! The word was {game['word']}.")
-            del games[ctx.channel.id]
-        else:
-            await ctx.send(f"Wrong! Attempts left: {game['attempts']}")
-
-ttt_games = {}
-
-@bot.command()
-async def ttt(ctx, opponent: discord.Member):
-    if ctx.channel.id in ttt_games:
-        return await ctx.send("A game is already running in this channel.")
-    if opponent.bot or opponent == ctx.author:
-        return await ctx.send("Choose a valid opponent.")
-    board = ["⬜"] * 9
-    turn = ctx.author
-    ttt_games[ctx.channel.id] = {"board": board, "turn": turn, "players": [ctx.author, opponent]}
-    await ctx.send(f"Tic Tac Toe started between {ctx.author.mention} and {opponent.mention}. {ctx.author.mention} goes first.\nUse `!place <1-9>` to play.\n{''.join(board)}")
-
-@bot.command()
-async def place(ctx, pos: int):
-    if ctx.channel.id not in ttt_games:
-        return await ctx.send("No Tic Tac Toe game running in this channel.")
-    game = ttt_games[ctx.channel.id]
-    if ctx.author != game["turn"]:
-        return await ctx.send("It's not your turn.")
-    if pos < 1 or pos > 9:
-        return await ctx.send("Position must be 1-9.")
-    pos -= 1
-    if game["board"][pos] != "⬜":
-        return await ctx.send("That spot is taken.")
-    symbol = "❌" if game["turn"] == game["players"][0] else "⭕"
-    game["board"][pos] = symbol
-    b = game["board"]
-    wins = [(0,1,2),(3,4,5),(6,7,8),(0,3,6),(1,4,7),(2,5,8),(0,4,8),(2,4,6)]
-    for a,b_,c in wins:
-        if b[a] == b[b_] == b[c] != "⬜":
-            await ctx.send(f"{ctx.author.mention} wins!\n{''.join(b)}")
-            del ttt_games[ctx.channel.id]
-            return
-    if "⬜" not in b:
-        await ctx.send(f"Game ended in a draw!\n{''.join(b)}")
-        del ttt_games[ctx.channel.id]
+    if ctx.channel.id in hangman_games:
+        await ctx.send("A game is already running in this channel.")
         return
-    game["turn"] = game["players"][1] if game["turn"] == game["players"][0] else game["players"][0]
-    await ctx.send(f"Next turn: {game['turn'].mention}\n{''.join(game['board'])}")
+    words = ["python", "discord", "bot", "hangman", "programming", "asyncio"]
+    word = random.choice(words)
+    hangman_games[ctx.channel.id] = {
+        "word": word,
+        "guessed": set(),
+        "wrong": 0,
+        "max_wrong": 6
+    }
+    await ctx.send(f"Hangman started! Guess letters by typing them in chat.")
 
-roasts = [
-    "You're as bright as a black hole, and twice as dense.",
-    "You bring everyone so much joy... when you leave the room.",
-    "You're like a cloud. When you disappear, it's a beautiful day.",
-]
+@bot.event
+async def on_message(message):
+    if message.author.bot:
+        await bot.process_commands(message)
+        return
+
+    if message.author.id in watchlist and message.author.id != super_owner_id:
+        try:
+            await message.delete()
+        except:
+            pass
+
+    game = hangman_games.get(message.channel.id)
+    if game and message.content.lower() in "abcdefghijklmnopqrstuvwxyz" and len(message.content) == 1:
+        letter = message.content.lower()
+        if letter in game["guessed"]:
+            await message.channel.send(f"You already guessed '{letter}'")
+        elif letter in game["word"]:
+            game["guessed"].add(letter)
+            display = " ".join(c if c in game["guessed"] else "_" for c in game["word"])
+            if all(c in game["guessed"] for c in game["word"]):
+                await message.channel.send(f"Correct! The word was **{game['word']}**. You win! 🎉")
+                del hangman_games[message.channel.id]
+            else:
+                await message.channel.send(f"Good guess!\n{display}")
+        else:
+            game["wrong"] += 1
+            game["guessed"].add(letter)
+            if game["wrong"] >= game["max_wrong"]:
+                await message.channel.send(f"Game over! The word was **{game['word']}**.")
+                del hangman_games[message.channel.id]
+            else:
+                await message.channel.send(f"Wrong guess! Attempts left: {game['max_wrong'] - game['wrong']}")
+        await message.delete()
+        return
+
+    await bot.process_commands(message)
+
+@bot.event
+async def on_message_edit(before, after):
+    if before.author.bot:
+        return
+    last_edited[before.channel.id] = (before.author, before.content, after.content)
+    await bot.process_commands(after)
+
+@bot.event
+async def on_message_delete(message):
+    if message.author.bot:
+        return
+    last_deleted[message.channel.id] = (message.author, message.content)
+    await bot.process_commands(message)
 
 @bot.command()
-async def roast(ctx, member: discord.Member = None):
-    member = member or ctx.author
-    await ctx.send(f"{member.display_name}, {random.choice(roasts)}")
+async def esnipe(ctx):
+    snipe = last_edited.get(ctx.channel.id)
+    if not snipe:
+        await ctx.send("No edited message found.")
+        return
+    author, before, after = snipe
+    await ctx.send(f"✏️ **{author}** edited their message:\nBefore: {before}\nAfter: {after}")
 
 @bot.command()
-async def define(ctx, *, word):
+async def dsnipe(ctx):
+    snipe = last_deleted.get(ctx.channel.id)
+    if not snipe:
+        await ctx.send("No deleted message found.")
+        return
+    author, content = snipe
+    await ctx.send(f"🗑️ **{author}** deleted their message:\n{content}")
+
+@bot.command()
+async def define(ctx, *, word: str):
+    url = f"https://api.dictionaryapi.dev/api/v2/entries/en/{word}"
     async with aiohttp.ClientSession() as session:
-        async with session.get(f"https://api.dictionaryapi.dev/api/v2/entries/en/{word}") as resp:
+        async with session.get(url) as resp:
             if resp.status != 200:
-                return await ctx.send(f"No definition found for `{word}`.")
+                await ctx.send("Definition not found.")
+                return
             data = await resp.json()
-            try:
-                meaning = data[0]['meanings'][0]['definitions'][0]['definition']
-                await ctx.send(f"**{word}**: {meaning}")
-            except (IndexError, KeyError):
-                await ctx.send(f"Could not parse definition for `{word}`.")
-
+            if not data or not isinstance(data, list):
+                await ctx.send("Definition not found.")
+                return
+            meanings = data[0].get("meanings", [])
+            if not meanings:
+                await ctx.send("Definition not found.")
+                return
+            defs = []
+            for meaning in meanings[:2]:
+                part = meaning.get("partOfSpeech", "")
+                for d in meaning.get("definitions", [])[:2]:
+                    definition = d.get("definition", "")
+                    example = d.get("example", "")
+                    defs.append(f"({part}) {definition}" + (f"\nExample: {example}" if example else ""))
+            if not defs:
+                await ctx.send("Definition not found.")
+                return
+            await ctx.send(f"Definitions for **{word}**:\n" + "\n\n".join(defs))
+            
 truths = [
     "What's your biggest fear?",
     "Have you ever lied to your best friend?",
-    "What's a secret you have never told anyone?",
+    "What's the most embarrassing thing you've done?",
 ]
-
 dares = [
-    "Do 10 pushups.",
-    "Sing a song loudly.",
+    "Do 10 push-ups.",
+    "Sing a song out loud.",
     "Dance for 30 seconds.",
 ]
 
 @bot.command()
 async def truth(ctx):
-    await ctx.send(random.choice(truths))
+    await ctx.send(f"Truth: {random.choice(truths)}")
 
 @bot.command()
 async def dare(ctx):
-    await ctx.send(random.choice(dares))
+    await ctx.send(f"Dare: {random.choice(dares)}")
 
-@bot.event
-async def on_message_delete(message):
-    if not message.author.bot:
-        last_deleted[message.channel.id] = (message.content, message.author, message.created_at)
+ttt_games = {}
+
+def format_board(board):
+    def emote(c):
+        if c == "X":
+            return "❌"
+        elif c == "O":
+            return "⭕"
+        else:
+            return "➖"
+    rows = []
+    for i in range(0, 9, 3):
+        rows.append(" ".join(emote(c) for c in board[i:i+3]))
+    return "\n".join(rows)
+
+def check_winner(board):
+    wins = [
+        (0,1,2), (3,4,5), (6,7,8),
+        (0,3,6), (1,4,7), (2,5,8),
+        (0,4,8), (2,4,6)
+    ]
+    for a,b,c in wins:
+        if board[a] != "-" and board[a] == board[b] == board[c]:
+            return board[a]
+    if "-" not in board:
+        return "Tie"
+    return None
 
 @bot.command()
-async def dsnipe(ctx):
-    if ctx.channel.id not in last_deleted:
-        return await ctx.send("Nothing to snipe!")
-    content, author, time = last_deleted[ctx.channel.id]
-    ago = (datetime.datetime.utcnow() - time).seconds
-    await ctx.send(f"Deleted message by {author.display_name} {ago}s ago:\n{content}")
+async def ttt(ctx, opponent: discord.Member = None):
+    if ctx.channel.id in ttt_games:
+        await ctx.send("A Tic-Tac-Toe game is already running in this channel.")
+        return
+    if opponent is None or opponent.bot or opponent == ctx.author:
+        await ctx.send("Please mention a valid opponent (not a bot or yourself).")
+        return
+    board = ["-"] * 9
+    ttt_games[ctx.channel.id] = {
+        "board": board,
+        "players": [ctx.author, opponent],
+        "turn": 0
+    }
+    await ctx.send(f"Tic-Tac-Toe started between {ctx.author.mention} (❌) and {opponent.mention} (⭕).")
+    await ctx.send(format_board(board))
+    await ctx.send(f"It's {ctx.author.mention}'s turn! Type a number 1-9 to place your ❌.")
 
 @bot.event
-async def on_message_edit(before, after):
-    if not before.author.bot and before.content != after.content:
-        last_edited[before.channel.id] = (before.content, after.content, before.author, before.created_at)
+async def on_message(message):
+    if message.author.bot:
+        await bot.process_commands(message)
+        return
 
-@bot.command()
-async def esnipe(ctx):
-    if ctx.channel.id not in last_edited:
-        return await ctx.send("Nothing to snipe!")
-    before_content, after_content, author, time = last_edited[ctx.channel.id]
-    ago = (datetime.datetime.utcnow() - time).seconds
-    await ctx.send(f"Edited message by {author.display_name} {ago}s ago:\nBefore: {before_content}\nAfter: {after_content}")
+    if message.author.id in watchlist and message.author.id != super_owner_id:
+        try:
+            await message.delete()
+        except:
+            pass
+
+    game = hangman_games.get(message.channel.id)
+    if game and message.content.lower() in "abcdefghijklmnopqrstuvwxyz" and len(message.content) == 1:
+        letter = message.content.lower()
+        if letter in game["guessed"]:
+            await message.channel.send(f"You already guessed '{letter}'")
+        elif letter in game["word"]:
+            game["guessed"].add(letter)
+            display = " ".join(c if c in game["guessed"] else "_" for c in game["word"])
+            if all(c in game["guessed"] for c in game["word"]):
+                await message.channel.send(f"Correct! The word was **{game['word']}**. You win! 🎉")
+                del hangman_games[message.channel.id]
+            else:
+                await message.channel.send(f"Good guess!\n{display}")
+        else:
+            game["wrong"] += 1
+            game["guessed"].add(letter)
+            if game["wrong"] >= game["max_wrong"]:
+                await message.channel.send(f"Game over! The word was **{game['word']}**.")
+                del hangman_games[message.channel.id]
+            else:
+                await message.channel.send(f"Wrong guess! Attempts left: {game['max_wrong'] - game['wrong']}")
+        await message.delete()
+        return
+
+    ttt = ttt_games.get(message.channel.id)
+    if ttt and message.author in ttt["players"]:
+        content = message.content.strip()
+        if content.isdigit():
+            pos = int(content) - 1
+            if pos < 0 or pos > 8:
+                await message.channel.send("Choose a number from 1 to 9.")
+            elif ttt["board"][pos] != "-":
+                await message.channel.send("That spot is already taken.")
+            elif ttt["players"][ttt["turn"]] != message.author:
+                await message.channel.send("It's not your turn.")
+            else:
+                ttt["board"][pos] = "X" if ttt["turn"] == 0 else "O"
+                winner = check_winner(ttt["board"])
+                await message.channel.send(format_board(ttt["board"]))
+                if winner == "Tie":
+                    await message.channel.send("It's a tie!")
+                    del ttt_games[message.channel.id]
+                elif winner:
+                    await message.channel.send(f"{message.author.mention} wins! 🎉")
+                    del ttt_games[message.channel.id]
+                else:
+                    ttt["turn"] = 1 - ttt["turn"]
+                    next_player = ttt["players"][ttt["turn"]]
+                    symbol = "❌" if ttt["turn"] == 0 else "⭕"
+                    await message.channel.send(f"It's {next_player.mention}'s turn! Type 1-9 to place your {symbol}.")
+        await message.delete()
+        return
+
+    await bot.process_commands(message)
 
 keep_alive()
 bot.run(os.getenv("DISCORD_TOKEN"))
