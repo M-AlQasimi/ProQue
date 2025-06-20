@@ -25,6 +25,19 @@ autoban_ids = set()
 edited_snipes = {}
 deleted_snipes = {}
 
+async def ai_generate(prompt):
+    try:
+        response = await openai.ChatCompletion.acreate(
+            model="gpt-3.5-turbo",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=60,
+            temperature=0.8,
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        print(f"OpenAI error: {e}")
+        return "Error"
+        
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
 app = Flask('')
@@ -432,7 +445,7 @@ async def picker(ctx, *, options):
     if not opts:
         return await ctx.send("Please provide options separated by commas.")
     choice = random.choice(opts)
-    await ctx.send(f"I pick: **{choice}**")
+    await ctx.send(f"**{choice}**")
 
 @bot.command()
 @is_owner()
@@ -474,11 +487,11 @@ async def timer(ctx, time: str):
     if not match:
         return await ctx.send("Invalid time format. Use s/m/h/d.")
     amount, unit = int(match[1]), match[2]
-    unit_map = {'s':1,'m':60,'h':3600,'d':86400}
+    unit_map = {'s': 1, 'm': 60, 'h': 3600, 'd': 86400}
     seconds = amount * unit_map[unit]
-    await ctx.send(f"Timer started for {time}.")
+    await ctx.send(f"⏳ Timer started for {time}, {ctx.author.mention}. I'll ping you when it's done.")
     await asyncio.sleep(seconds)
-    await ctx.send(f"⏰ Timer ended: {time} is up!")
+    await ctx.send(f"⏰ {ctx.author.mention} Time's up! Your **{time}** timer is over.")
 
 @bot.command()
 async def alarm(ctx, date: str):
