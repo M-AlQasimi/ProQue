@@ -116,53 +116,104 @@ async def pfp(ctx, member: discord.Member = None):
     member = member or ctx.author
     await ctx.send(member.avatar.url)
 
+from discord.ui import Button, View
+
 ttt_games = {}
+
+class TicTacToeButton(Button):
+    def __init__(self, row, col):
+        super().__init__(style=discord.ButtonStyle.secondary, label='⬜', row=row)
+        self.row = row
+        self.col = col
+
+    async def callback(self, interaction: discord.Interaction):
+        game = ttt_games.get(interaction.channel.id)
+        if not game or interaction.user != game["players"][game["turn"]]:
+            return await interaction.response.send_message("Not your turn.", ephemeral=True)
+
+        board = game["board"]
+        if board[self.row][self.col] != '⬜':
+            return await interaction.response.send_message("That spot is taken.", ephemeral=True)
+
+        mark = '✖️' if game["turn"] == 0 else '🔘'
+        board[self.row][self.col] = mark
+        self.label = mark
+        self.disabled = True
+        await interaction.response.edit_message(view=game["view"])
+
+        if game["timeout_task"]:
+            game["timeout_task"].cancel()
+
+        winner = check_winner(board)
+        if winner:
+            await interaction.followup.send(f"🎉 {interaction.user.mention} wins!")
+            await disable_all_buttons(game["view"])
+            del ttt_games[interaction.channel.id]
+            return
+
+        if all(cell != '⬜' for row in board for cell in row):
+            await interaction.followup.send("It's a draw!")
+            await disable_all_buttons(game["view"])
+            del ttt_games[interaction.channel.id]
+            return
+
+        game["turn"] = 1 - game["turn"]
+        next_player = game["players"][game["turn"]]
+        await interaction.followup.send(f"{next_player.mention}, your turn! You have 30s.", ephemeral=False)
+        game["timeout_task"] = asyncio.create_task(turn_timeout(interaction.channel, next_player, game))
+
+
+class TicTacToeView(View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        for row in range(3):
+            for col in range(3):
+                self.add_item(TicTacToeButton(row, col))
+
+
+def check_winner(board):
+    for i in range(3):
+        if board[i][0] == board[i][1] == board[i][2] != '⬜':
+            return True
+        if board[0][i] == board[1][i] == board[2][i] != '⬜':
+            return True
+    if board[0][0] == board[1][1] == board[2][2] != '⬜':
+        return True
+    if board[0][2] == board[1][1] == board[2][0] != '⬜':
+        return True
+    return False
+
+async def disable_all_buttons(view):
+    for item in view.children:
+        item.disabled = True
 
 @bot.command()
 async def ttt(ctx, opponent: discord.Member):
     if ctx.channel.id in ttt_games:
-        return await ctx.send("A game is already in progress here.")
-    board = [":white_large_square:"] * 9
-    players = [ctx.author, opponent]
-    turn = 0
-    ttt_games[ctx.channel.id] = {
-        "board": board,
-        "players": players,
-        "turn": turn
-    }
-    def format_board():
-        return "\n".join(["".join(board[i:i+3]) for i in range(0, 9, 3)])
-    await ctx.send(f"Tic Tac Toe started!\n{players[0].mention} vs {players[1].mention}")
-    await ctx.send(format_board())
+        return await ctx.send("A game is already in progress in this channel.")
+    if opponent.bot or opponent == ctx.author:
+        return await ctx.send("Choose a real opponent.")
 
-@bot.command()
-async def place(ctx, pos: int):
-    game = ttt_games.get(ctx.channel.id)
-    if not game:
-        return await ctx.send("No active Tic Tac Toe game in this channel. Start one with .ttt @user.")
-    if ctx.author != game["players"][game["turn"]]:
-        return await ctx.send("It's not your turn.")
-    if not (1 <= pos <= 9):
-        return await ctx.send("Position must be between 1 and 9.")
-    board = game["board"]
-    pos -= 1
-    if board[pos] != ":white_large_square:":
-        return await ctx.send("That spot is already taken.")
-    board[pos] = ":regional_indicator_x:" if game["turn"] == 0 else ":o2:"
-    def format_board():
-        return "\n".join(["".join(board[i:i+3]) for i in range(0, 9, 3)])
-    await ctx.send(format_board())
-    win_positions = [(0,1,2),(3,4,5),(6,7,8),(0,3,6),(1,4,7),(2,5,8),(0,4,8),(2,4,6)]
-    for a,b,c in win_positions:
-        if board[a] == board[b] == board[c] and board[a] != ":white_large_square:":
-            await ctx.send(f"{game['players'][game['turn']].mention} wins!")
-            del ttt_games[ctx.channel.id]
-            return
-    if ":white_large_square:" not in board:
-        await ctx.send("It's a draw!")
-        del ttt_games[ctx.channel.id]
-        return
-    game["turn"] = 1 - game["turn"]
+    board = [['⬜'] * 3 for _ in range(3)]
+    view = TicTacToeView()
+    game = {
+        "players": [ctx.author, opponent],
+        "turn": 0,
+        "board": board,
+        "view": view,
+        "timeout_task": None
+    }
+    ttt_games[ctx.channel.id] = game
+
+    await ctx.send(f"Tic Tac Toe: {ctx.author.mention} vs {opponent.mention}", view=view)
+    await ctx.send(f"{ctx.author.mention}, it's your turn! You have 30s.")
+    game["timeout_task"] = asyncio.create_task(turn_timeout(ctx.channel, ctx.author, game))
+
+async def turn_timeout(channel, player, game):
+    await asyncio.sleep(30)
+    await channel.send(f"⏱️ {player.mention} took too long. Game over!")
+    await disable_all_buttons(game["view"])
+    del ttt_games[channel.id]
 
 @bot.command()
 async def q(ctx):
