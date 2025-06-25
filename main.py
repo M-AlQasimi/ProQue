@@ -412,7 +412,12 @@ async def alarm(ctx, date: str):
         alarm_time = datetime.datetime.strptime(date, "%d/%m/%Y")
     except ValueError:
         return await ctx.send("Invalid date format. Use DD/MM/YYYY.")
+    
     now = datetime.datetime.utcnow()
     if alarm_time <= now:
         return await ctx.send("Date must be in the future.")
-delta = (alarm_time - now).total_seconds()
+    
+    delta = (alarm_time - now).total_seconds()
+    await ctx.send(f"Alarm set for {date}.")
+    await asyncio.sleep(delta)
+    await ctx.send(f"⏰ Alarm: {date} reached!")
