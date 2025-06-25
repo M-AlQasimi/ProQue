@@ -91,8 +91,16 @@ async def userinfo(ctx, member: discord.Member = None):
     embed.set_thumbnail(url=member.avatar.url)
     embed.add_field(name="Username", value=str(member), inline=True)
     embed.add_field(name="ID", value=member.id, inline=True)
-    embed.add_field(name="Joined Server", value=member.joined_at.strftime("%d %b %Y"), inline=False)
-    embed.add_field(name="Created Account", value=member.created_at.strftime("%d %b %Y"), inline=False)
+    embed.add_field(
+        name="Joined Server",
+        value=member.joined_at.strftime("%d %b %Y • %H:%M UTC"),
+        inline=False
+    )
+    embed.add_field(
+        name="Created Account",
+        value=member.created_at.strftime("%d %b %Y • %H:%M UTC"),
+        inline=False
+    )
     try:
         user = await bot.fetch_user(member.id)
         if user.bio:
@@ -104,7 +112,7 @@ async def userinfo(ctx, member: discord.Member = None):
     await ctx.send(embed=embed)
 
 @bot.command()
-async def avatar(ctx, member: discord.Member = None):
+async def pfp(ctx, member: discord.Member = None):
     member = member or ctx.author
     await ctx.send(member.avatar.url)
 
