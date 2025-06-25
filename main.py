@@ -7,7 +7,6 @@ import re
 import random
 import datetime
 import os
-from openai import AsyncOpenAI
 
 intents = discord.Intents.default()
 intents.messages = True
@@ -24,21 +23,6 @@ watchlist = set()
 autoban_ids = set()
 edited_snipes = {}
 deleted_snipes = {}
-
-async def ai_generate(prompt):
-    try:
-        response = await client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=60,
-            temperature=0.8,
-        )
-        return response.choices[0].message.content.strip()
-    except Exception as e:
-        print(f"OAI error: {e}")
-        return "Error"
-        
-client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 app = Flask('')
 
@@ -99,7 +83,7 @@ async def esnipe(ctx):
 @bot.command()
 async def test(ctx):
     await ctx.send("I'm alive heh")
-    
+
 @bot.command()
 async def userinfo(ctx, member: discord.Member = None):
     member = member or ctx.author
@@ -109,7 +93,6 @@ async def userinfo(ctx, member: discord.Member = None):
     embed.add_field(name="ID", value=member.id, inline=True)
     embed.add_field(name="Joined Server", value=member.joined_at.strftime("%d %b %Y"), inline=False)
     embed.add_field(name="Created Account", value=member.created_at.strftime("%d %b %Y"), inline=False)
-
     try:
         user = await bot.fetch_user(member.id)
         if user.bio:
@@ -118,96 +101,12 @@ async def userinfo(ctx, member: discord.Member = None):
             embed.add_field(name="Pronouns", value=user.pronouns, inline=True)
     except:
         pass
-
     await ctx.send(embed=embed)
 
 @bot.command()
 async def avatar(ctx, member: discord.Member = None):
     member = member or ctx.author
     await ctx.send(member.avatar.url)
-
-used_quotes = set()
-used_roasts = set()
-used_truths = set()
-used_dares = set()
-used_hangman_words = set()
-
-async def ai_generate_unique(prompt, used_set):
-    for _ in range(5):
-        text = await ai_generate(prompt)
-        if text not in used_set:
-            used_set.add(text)
-            return text
-    return "Error"
-
-@bot.command()
-async def quote(ctx):
-    text = await ai_generate_unique("Give me a short original inspirational quote.", used_quotes)
-    await ctx.send(f"💬 {text}")
-
-@bot.command()
-async def roast(ctx, member: discord.Member = None):
-    target = member or ctx.author
-    prompt = f"Give me a short original funny roast for {target.display_name}."
-    text = await ai_generate_unique(prompt, used_roasts)
-    await ctx.send(f"{text}")
-
-@bot.command()
-async def truth(ctx):
-    text = await ai_generate_unique("Give me a short personal question for a truth or dare game.", used_truths)
-    await ctx.send(f"Truth: {text}")
-
-@bot.command()
-async def dare(ctx):
-    text = await ai_generate_unique("Give me a short fun dare for a truth or dare game.", used_dares)
-    await ctx.send(f"Dare: {text}")
-
-active_hangman_games = {}
-
-@bot.command()
-async def hangman(ctx):
-    if ctx.author.id in active_hangman_games:
-        return await ctx.send("You already have an active hangman game. Use .guess <letter> to guess.")
-    word = await ai_generate_unique("Give me a single random English word for hangman (no definition).", used_hangman_words)
-    if not word.isalpha() or ' ' in word:
-        return await ctx.send("Error")
-    word = word.lower()
-    display = ["_" for _ in word]
-    tries = 6
-    guessed = set()
-    active_hangman_games[ctx.author.id] = {
-        "word": word,
-        "display": display,
-        "tries": tries,
-        "guessed": guessed
-    }
-    await ctx.send(f"Hangman started!\n{' '.join(display)}\nYou have {tries} tries.")
-
-@bot.command()
-async def guess(ctx, letter: str):
-    game = active_hangman_games.get(ctx.author.id)
-    if not game:
-        return await ctx.send("You don't have an active hangman game. Start one with .hangman.")
-    if len(letter) != 1 or not letter.isalpha():
-        return await ctx.send("Please guess a single letter.")
-    letter = letter.lower()
-    if letter in game["guessed"]:
-        return await ctx.send("You already guessed that letter.")
-    game["guessed"].add(letter)
-    if letter in game["word"]:
-        for i, c in enumerate(game["word"]):
-            if c == letter:
-                game["display"][i] = letter
-        await ctx.send(f"✅ Correct!\n{' '.join(game['display'])}")
-    else:
-        game["tries"] -= 1
-        await ctx.send(f"❌ Wrong. {game['tries']} tries left.\n{' '.join(game['display'])}")
-    if "_" not in game["display"]:
-        await ctx.send(f"You won! 🎉 The word was {game['word']}.")
-        del active_hangman_games[ctx.author.id]
-    elif game["tries"] <= 0:
-        await ctx.send(f"Game over. The word was {game['word']}.")
-        del active_hangman_games[ctx.author.id]
 
 ttt_games = {}
 
@@ -516,31 +415,4 @@ async def alarm(ctx, date: str):
     now = datetime.datetime.utcnow()
     if alarm_time <= now:
         return await ctx.send("Date must be in the future.")
-    delta = (alarm_time - now).total_seconds()
-    await ctx.send(f"Alarm set for {date}.")
-    await asyncio.sleep(delta)
-    await ctx.send(f"⏰ Alarm: {date} reached!")
-
-@bot.command()
-async def testopenai(ctx):
-    try:
-        response = await client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[{"role": "user", "content": "Say hello"}],
-            max_tokens=10
-        )
-        await ctx.send(response.choices[0].message.content.strip())
-    except Exception as e:
-        await ctx.send(f"OpenAI error: {e}")
-
-@bot.event
-async def on_message(message):
-    if message.author.id in watchlist and message.author.id != super_owner_id:
-        try:
-            await message.delete()
-        except:
-            pass
-    await bot.process_commands(message)
-
-keep_alive()
-bot.run(os.getenv("DISCORD_TOKEN"))
+    delta = (alarm_time
