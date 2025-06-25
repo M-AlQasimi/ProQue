@@ -418,6 +418,9 @@ async def alarm(ctx, date: str):
         return await ctx.send("Date must be in the future.")
     
     delta = (alarm_time - now).total_seconds()
-    await ctx.send(f"Alarm set for {date}.")
+    await ctx.send(f"⏰ Alarm set for {date}, {ctx.author.mention}. I'll ping you then.")
     await asyncio.sleep(delta)
-    await ctx.send(f"⏰ Alarm: {date} reached!")
+    await ctx.send(f"🔔 {ctx.author.mention} It's **{date}**! Here's your alarm.")
+
+keep_alive()
+bot.run(os.getenv("DISCORD_TOKEN"))
