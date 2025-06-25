@@ -118,6 +118,8 @@ async def pfp(ctx, member: discord.Member = None):
 
 from discord.ui import Button, View
 
+ttt_games = {}
+
 class TicTacToeButton(Button):
     def __init__(self, row, col):
         super().__init__(style=discord.ButtonStyle.secondary, label='⬜', row=row)
