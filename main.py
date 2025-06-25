@@ -118,8 +118,6 @@ async def pfp(ctx, member: discord.Member = None):
 
 from discord.ui import Button, View
 
-ttt_games = {}
-
 class TicTacToeButton(Button):
     def __init__(self, row, col):
         super().__init__(style=discord.ButtonStyle.secondary, label='⬜', row=row)
@@ -139,6 +137,7 @@ class TicTacToeButton(Button):
         board[self.row][self.col] = mark
         self.label = mark
         self.disabled = True
+
         await interaction.response.edit_message(view=game["view"])
 
         if game["timeout_task"]:
@@ -146,22 +145,19 @@ class TicTacToeButton(Button):
 
         winner = check_winner(board)
         if winner:
-            await interaction.followup.send(f"🎉 {interaction.user.mention} wins!")
+            await game["msg"].edit(content=f"🎉 {interaction.user.mention} wins!", view=game["view"])
             await disable_all_buttons(game["view"])
             del ttt_games[interaction.channel.id]
             return
 
         if all(cell != '⬜' for row in board for cell in row):
-            await interaction.followup.send("It's a draw!")
+            await game["msg"].edit(content="It's a draw!", view=game["view"])
             await disable_all_buttons(game["view"])
             del ttt_games[interaction.channel.id]
             return
 
         game["turn"] = 1 - game["turn"]
-        next_player = game["players"][game["turn"]]
-        await interaction.followup.send(f"{next_player.mention}, your turn! You have 30s.", ephemeral=False)
-        game["timeout_task"] = asyncio.create_task(turn_timeout(interaction.channel, next_player, game))
-
+        await update_turn(game, interaction.channel)
 
 class TicTacToeView(View):
     def __init__(self):
@@ -196,24 +192,35 @@ async def ttt(ctx, opponent: discord.Member):
 
     board = [['⬜'] * 3 for _ in range(3)]
     view = TicTacToeView()
+    msg = await ctx.send("Starting game...", view=view)
     game = {
         "players": [ctx.author, opponent],
         "turn": 0,
         "board": board,
         "view": view,
+        "msg": msg,
         "timeout_task": None
     }
     ttt_games[ctx.channel.id] = game
 
-    await ctx.send(f"Tic Tac Toe: {ctx.author.mention} vs {opponent.mention}", view=view)
-    await ctx.send(f"{ctx.author.mention}, it's your turn! You have 30s.")
-    game["timeout_task"] = asyncio.create_task(turn_timeout(ctx.channel, ctx.author, game))
+    await update_turn(game, ctx.channel)
 
-async def turn_timeout(channel, player, game):
-    await asyncio.sleep(30)
-    await channel.send(f"⏱️ {player.mention} took too long. Game over!")
-    await disable_all_buttons(game["view"])
-    del ttt_games[channel.id]
+async def update_turn(game, channel):
+    current = game["players"][game["turn"]]
+    time_left = 30
+
+    async def countdown():
+        nonlocal time_left
+        while time_left > 0:
+            await game["msg"].edit(content=f"{current.mention}, it's your turn! ({time_left}s)", view=game["view"])
+            await asyncio.sleep(1)
+            time_left -= 1
+
+        await game["msg"].edit(content=f"⏱️ {current.mention} took too long. Game over!", view=game["view"])
+        await disable_all_buttons(game["view"])
+        del ttt_games[channel.id]
+
+    game["timeout_task"] = asyncio.create_task(countdown())
 
 @bot.command()
 async def q(ctx):
