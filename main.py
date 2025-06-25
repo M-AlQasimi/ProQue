@@ -415,4 +415,4 @@ async def alarm(ctx, date: str):
     now = datetime.datetime.utcnow()
     if alarm_time <= now:
         return await ctx.send("Date must be in the future.")
-    delta = (alarm_time
+delta = (alarm_time - now).total_seconds()
