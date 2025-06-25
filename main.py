@@ -59,6 +59,8 @@ async def on_message_delete(message):
 
 @bot.event
 async def on_message_edit(before, after):
+    if before.author.bot:
+        return
     if before.content and after.content != before.content:
         edited_snipes[before.channel.id] = (before.content, after.content, before.author)
 
