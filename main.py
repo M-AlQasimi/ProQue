@@ -58,6 +58,12 @@ async def on_message_delete(message):
         deleted_snipes[message.channel.id] = (message.content, message.author)
 
 @bot.event
+async def on_command_error(ctx, error):
+    if isinstance(error, commands.CommandNotFound):
+        return
+    raise error
+
+@bot.event
 async def on_message_edit(before, after):
     if before.author.bot:
         return
