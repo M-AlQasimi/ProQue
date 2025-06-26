@@ -279,15 +279,13 @@ async def setnick(ctx, member: discord.Member, *, nickname: str):
 @is_owner()
 async def start(ctx, member: discord.Member):
     if member.id == super_owner_id:
-        return await ctx.send("Cannot watch super owner.")
+        return
     watchlist.add(member.id)
-    await ctx.send(f"Started watching {member.mention}.")
 
 @bot.command()
 @is_owner()
 async def end(ctx, member: discord.Member):
     watchlist.discard(member.id)
-    await ctx.send(f"Stopped watching {member.mention}.")
 
 @bot.command()
 @is_owner()
