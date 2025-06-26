@@ -121,7 +121,6 @@ async def pfp(ctx, member: discord.Member = None):
 from discord.ui import Button, View
 
 ttt_games = {}
-
 class TicTacToeButton(Button):
     def __init__(self, row, col):
         super().__init__(style=discord.ButtonStyle.secondary, label='⬜', row=row)
@@ -170,7 +169,6 @@ class TicTacToeView(View):
             for col in range(3):
                 self.add_item(TicTacToeButton(row, col))
 
-
 def check_winner(board):
     for i in range(3):
         if board[i][0] == board[i][1] == board[i][2] != '⬜':
@@ -186,6 +184,34 @@ def check_winner(board):
 async def disable_all_buttons(view):
     for item in view.children:
         item.disabled = True
+        
+class AcceptView(View):
+    def __init__(self, ctx, opponent):
+        super().__init__(timeout=30) 
+        self.ctx = ctx
+        self.opponent = opponent
+        self.accepted = False
+        self.declined = False
+
+    @button(label="Accept", style=discord.ButtonStyle.success)
+    async def accept(self, interaction: discord.Interaction, button: Button):
+        if interaction.user != self.opponent:
+            return await interaction.response.send_message("You're not the challenged player.", ephemeral=True)
+        self.accepted = True
+        self.stop()
+        await interaction.response.edit_message(content="✅ Challenge accepted!", view=None)
+
+    @button(label="Decline", style=discord.ButtonStyle.danger)
+    async def decline(self, interaction: discord.Interaction, button: Button):
+        if interaction.user != self.opponent:
+            return await interaction.response.send_message("You're not the challenged player.", ephemeral=True)
+        self.declined = True
+        self.stop()
+        await interaction.response.edit_message(content="❌ Challenge declined.", view=None)
+
+    async def on_timeout(self):
+        if not self.accepted and not self.declined:
+            await self.ctx.send(f"{self.opponent.mention} didn't respond in time. Game canceled.")
 
 @bot.command()
 async def ttt(ctx, opponent: discord.Member):
@@ -194,14 +220,21 @@ async def ttt(ctx, opponent: discord.Member):
     if opponent.bot or opponent == ctx.author:
         return await ctx.send("Choose a real opponent.")
 
+    view = AcceptView(ctx, opponent)
+    await ctx.send(f"{opponent.mention}, {ctx.author.mention} challenged you to a game of **Tic Tac Toe**.\nClick below to accept or decline:", view=view)
+    await view.wait()
+
+    if not view.accepted:
+        return  
+
     board = [['⬜'] * 3 for _ in range(3)]
-    view = TicTacToeView()
-    msg = await ctx.send("Starting game...", view=view)
+    game_view = TicTacToeView()
+    msg = await ctx.send("🎮 Game started!", view=game_view)
     game = {
         "players": [ctx.author, opponent],
         "turn": 0,
         "board": board,
-        "view": view,
+        "view": game_view,
         "msg": msg,
         "timeout_task": None
     }
