@@ -2,6 +2,7 @@ import discord
 from discord.ext import commands, tasks
 from flask import Flask
 from threading import Thread
+from datetime import timezone
 import asyncio
 import re
 import random
@@ -23,6 +24,7 @@ watchlist = set()
 autoban_ids = set()
 edited_snipes = {}
 deleted_snipes = {}
+removed_reactions = {}
 
 app = Flask('')
 
@@ -53,40 +55,110 @@ def is_owner():
     return commands.check(predicate)
 
 @bot.event
-async def on_message_delete(message):
-    if message.content:
-        deleted_snipes[message.channel.id] = (message.content, message.author)
-
-@bot.event
 async def on_command_error(ctx, error):
     if isinstance(error, commands.CommandNotFound):
         return
-    raise error
+    elif isinstance(error, commands.MissingPermissions):
+        await ctx.send("You don’t have permission to do that.")
+    elif isinstance(error, commands.MissingRequiredArgument):
+        await ctx.send("Missing required argument.")
+    elif isinstance(error, commands.BadArgument):
+        await ctx.send("Invalid input. Check your arguments.")
+    else:
+        await ctx.send("An unexpected error occurred.")
+        raise error
+
+@bot.event
+async def on_message_delete(message):
+    if not message.content and not message.attachments:
+        return
+    content = message.content
+    if message.attachments:
+        content += "\n" + "\n".join([att.url for att in message.attachments])
+    deleted_snipes.setdefault(message.channel.id, []).insert(0, (content, message.author, message.created_at))
+    deleted_snipes[message.channel.id] = deleted_snipes[message.channel.id][:10]
 
 @bot.event
 async def on_message_edit(before, after):
     if before.author.bot:
         return
     if before.content and after.content != before.content:
-        edited_snipes[before.channel.id] = (before.content, after.content, before.author)
+        edited_snipes.setdefault(before.channel.id, []).insert(0, (before.content, after.content, before.author, datetime.datetime.utcnow().replace(tzinfo=timezone.utc)))
+        edited_snipes[before.channel.id] = edited_snipes[before.channel.id][:10]
+
+@bot.event
+async def on_reaction_remove(reaction, user):
+    if user.bot:
+        return
+    msg = reaction.message
+    entry = (user, reaction.emoji, msg, datetime.datetime.utcnow().replace(tzinfo=timezone.utc))
+    removed_reactions.setdefault(msg.channel.id, []).insert(0, entry)
+    removed_reactions[msg.channel.id] = removed_reactions[msg.channel.id][:10]
+        
+@bot.command()
+@is_owner()
+async def dsnipe(ctx, index: str = "1"):
+    try:
+        if index.startswith("-"):
+            count = int(index[1:])
+            messages = deleted_snipes.get(ctx.channel.id, [])
+            if not messages or count < 1:
+                return await ctx.send("Nothing to snipe.")
+            selected = messages[:count]
+            response = ""
+            for i, (content, author, timestamp) in enumerate(selected, 1):
+                time_str = timestamp.strftime("%d %b %Y • %H:%M UTC")
+                response += f"#{i} - Deleted by {author.display_name} at {time_str}:\n{content}\n\n"
+            await ctx.send(response[:2000])
+        else:
+            n = int(index) - 1
+            messages = deleted_snipes.get(ctx.channel.id, [])
+            if not messages or n >= len(messages) or n < 0:
+                return await ctx.send("Nothing to snipe.")
+            content, author, timestamp = messages[n]
+            time_str = timestamp.strftime("%d %b %Y • %H:%M UTC")
+            await ctx.send(f"Deleted by {author.display_name} at {time_str}:\n{content}")
+    except:
+        await ctx.send("Invalid index. Use a number like `.dsnipe 3` or `.dsnipe -3`.")
 
 @bot.command()
 @is_owner()
-async def dsnipe(ctx):
-    data = deleted_snipes.get(ctx.channel.id)
-    if not data:
-        return await ctx.send("Nothing to snipe.")
-    content, author = data
-    await ctx.send(f"Deleted by {author.display_name}: {content}")
+async def esnipe(ctx, index: int = 1):
+    try:
+        n = index - 1
+        messages = edited_snipes.get(ctx.channel.id, [])
+        if not messages or n >= len(messages) or n < 0:
+            return await ctx.send("Nothing to snipe.")
+        before, after, author, timestamp = messages[n]
+        time_str = timestamp.strftime("%d %b %Y • %H:%M UTC")
+        await ctx.send(f"Edited by {author.display_name} at {time_str}:\nBefore: {before}\nAfter: {after}")
+    except:
+        await ctx.send("Invalid index. Use a number like `.esnipe 2`.")
 
 @bot.command()
-@is_owner()
-async def esnipe(ctx):
-    data = edited_snipes.get(ctx.channel.id)
-    if not data:
-        return await ctx.send("Nothing to snipe.")
-    before, after, author = data
-    await ctx.send(f"Edited by {author.display_name}:\nBefore: {before}\nAfter: {after}")
+async def rsnipe(ctx, index: str = "1"):
+    try:
+        if index.startswith("-"):
+            count = int(index[1:])
+            logs = removed_reactions.get(ctx.channel.id, [])
+            if not logs or count < 1:
+                return await ctx.send("Nothing to snipe.")
+            selected = logs[:count]
+            response = ""
+            for i, (user, emoji, msg, timestamp) in enumerate(selected, 1):
+                time_str = timestamp.strftime("%d %b %Y • %H:%M UTC")
+                response += f"#{i} - {user.display_name} removed {emoji} from [this message]({msg.jump_url}) at {time_str}.\n\n"
+            await ctx.send(response[:2000])
+        else:
+            n = int(index) - 1
+            logs = removed_reactions.get(ctx.channel.id, [])
+            if not logs or n >= len(logs) or n < 0:
+                return await ctx.send("Nothing to snipe.")
+            user, emoji, msg, timestamp = logs[n]
+            time_str = timestamp.strftime("%d %b %Y • %H:%M UTC")
+            await ctx.send(f"{user.display_name} removed {emoji} from [this message]({msg.jump_url}) at {time_str}.")
+    except:
+        await ctx.send("Invalid index. Use a number like `.rsnipe 2` or `.rsnipe -3`.")
 
 @bot.command()
 async def test(ctx):
