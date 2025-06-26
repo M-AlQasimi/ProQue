@@ -193,7 +193,7 @@ class AcceptView(View):
         self.accepted = False
         self.declined = False
 
-    @button(label="Accept", style=discord.ButtonStyle.success)
+    @discord.ui.button(label="Accept", style=discord.ButtonStyle.success)
     async def accept(self, interaction: discord.Interaction, button: Button):
         if interaction.user != self.opponent:
             return await interaction.response.send_message("You're not the challenged player.", ephemeral=True)
@@ -201,7 +201,7 @@ class AcceptView(View):
         self.stop()
         await interaction.response.edit_message(content="✅ Challenge accepted!", view=None)
 
-    @button(label="Decline", style=discord.ButtonStyle.danger)
+    @discord.ui.button(label="Decline", style=discord.ButtonStyle.danger)
     async def decline(self, interaction: discord.Interaction, button: Button):
         if interaction.user != self.opponent:
             return await interaction.response.send_message("You're not the challenged player.", ephemeral=True)
