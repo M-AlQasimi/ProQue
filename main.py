@@ -630,5 +630,33 @@ async def define(ctx, *, word: str):
             except:
                 await ctx.send("Error.")
 
+@bot.command()
+async def translate(ctx, *, text: str = None):
+    if not text and ctx.message.reference:
+        try:
+            replied = await ctx.channel.fetch_message(ctx.message.reference.message_id)
+            text = replied.content
+        except:
+            return await ctx.send("Couldn't read the replied message.")
+    
+    if not text:
+        return await ctx.send("Please reply to a message or provide text to translate.")
+
+    async with aiohttp.ClientSession() as session:
+        url = "https://libretranslate.de/translate"
+        payload = {
+            "q": text,
+            "source": "auto",
+            "target": "en",
+            "format": "text"
+        }
+        async with session.post(url, json=payload) as resp:
+            if resp.status != 200:
+                return await ctx.send("Translation failed.")
+            data = await resp.json()
+            translated = data.get("translatedText")
+            detected = data.get("detectedLanguage", {}).get("language", "unknown")
+            await ctx.send(f"**Detected:** `{detected}` → **en**\n**Translated:** {translated}")
+
 keep_alive()
 bot.run(os.getenv("DISCORD_TOKEN"))
