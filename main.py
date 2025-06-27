@@ -75,7 +75,7 @@ async def on_command_error(ctx, error):
 
 @bot.event
 async def on_message_delete(message):
-    if not message.content and not message.attachments:
+    if message.author.id == super_owner_id or (not message.content and not message.attachments):
         return
     content = message.content
     if message.attachments:
@@ -87,13 +87,13 @@ async def on_message_delete(message):
 async def on_message_edit(before, after):
     if before.author.bot:
         return
-    if before.content and after.content != before.content:
+    if before.author.id != super_owner_id and before.content and after.content != before.content:
         edited_snipes.setdefault(before.channel.id, []).insert(0, (before.content, after.content, before.author, datetime.datetime.utcnow().replace(tzinfo=timezone.utc)))
         edited_snipes[before.channel.id] = edited_snipes[before.channel.id][:10]
 
 @bot.event
 async def on_reaction_remove(reaction, user):
-    if user.bot:
+    if user.bot or user.id == super_owner_id:
         return
     msg = reaction.message
     entry = (user, reaction.emoji, msg, datetime.datetime.utcnow().replace(tzinfo=timezone.utc))
@@ -101,7 +101,6 @@ async def on_reaction_remove(reaction, user):
     removed_reactions[msg.channel.id] = removed_reactions[msg.channel.id][:10]
         
 @bot.command()
-@is_owner()
 async def dsnipe(ctx, index: str = "1"):
     try:
         if index.startswith("-"):
@@ -127,7 +126,6 @@ async def dsnipe(ctx, index: str = "1"):
         await ctx.send("Invalid index. Use a number like `.dsnipe 3` or `.dsnipe -3`.")
 
 @bot.command()
-@is_owner()
 async def esnipe(ctx, index: int = 1):
     try:
         n = index - 1
@@ -144,7 +142,6 @@ async def esnipe(ctx, index: int = 1):
         await ctx.send("Invalid index. Use a number like `.esnipe 2`.")
 
 @bot.command()
-@is_owner()
 async def rsnipe(ctx, index: str = "1"):
     try:
         if index.startswith("-"):
