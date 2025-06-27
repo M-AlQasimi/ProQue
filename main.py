@@ -8,6 +8,7 @@ import re
 import random
 import datetime
 import os
+import aiohttp
 
 intents = discord.Intents.default()
 intents.messages = True
@@ -121,7 +122,7 @@ async def dsnipe(ctx, index: str = "1"):
                 return await ctx.send("Nothing to snipe.")
             content, author, timestamp = messages[n]
             time_str = timestamp.strftime("%d %b %Y • %H:%M UTC")
-            await ctx.send(f"Deleted by {author.display_name} at {time_str}:\n{content}")
+            await ctx.send(f"Deleted by {author.mention} at {time_str}:\n{content}", allowed_mentions=discord.AllowedMentions.none())
     except:
         await ctx.send("Invalid index. Use a number like `.dsnipe 3` or `.dsnipe -3`.")
 
@@ -135,7 +136,10 @@ async def esnipe(ctx, index: int = 1):
             return await ctx.send("Nothing to snipe.")
         before, after, author, timestamp = messages[n]
         time_str = timestamp.strftime("%d %b %Y • %H:%M UTC")
-        await ctx.send(f"Edited by {author.display_name} at {time_str}:\nBefore: {before}\nAfter: {after}")
+        await ctx.send(
+    f"Edited by {author.mention} at {time_str}:\n**Before:** {before}\n**After:** {after}",
+    allowed_mentions=discord.AllowedMentions.none()
+)
     except:
         await ctx.send("Invalid index. Use a number like `.esnipe 2`.")
 
@@ -282,7 +286,7 @@ class AcceptView(View):
             return await interaction.response.send_message("You're not the challenged player.", ephemeral=True)
         self.accepted = True
         self.stop()
-        await interaction.response.edit_message(content="✅ Challenge accepted!", view=None)
+        await interaction.response.edit_message(content="✔️ Challenge accepted!", view=None)
 
     @discord.ui.button(label="Decline", style=discord.ButtonStyle.danger)
     async def decline(self, interaction: discord.Interaction, button: Button):
@@ -290,7 +294,7 @@ class AcceptView(View):
             return await interaction.response.send_message("You're not the challenged player.", ephemeral=True)
         self.declined = True
         self.stop()
-        await interaction.response.edit_message(content="❌ Challenge declined.", view=None)
+        await interaction.response.edit_message(content="✖️ Challenge declined.", view=None)
 
     async def on_timeout(self):
         if not self.accepted and not self.declined:
@@ -312,7 +316,7 @@ async def ttt(ctx, opponent: discord.Member):
 
     board = [['⬜'] * 3 for _ in range(3)]
     game_view = TicTacToeView()
-    msg = await ctx.send("🎮 Game started!", view=game_view)
+    msg = await ctx.send("Game started!", view=game_view)
     game = {
         "players": [ctx.author, opponent],
         "turn": 0,
@@ -368,6 +372,8 @@ async def start(ctx, member: discord.Member):
 @bot.command()
 @is_owner()
 async def end(ctx, member: discord.Member):
+    if member.id in owner_ids and ctx.author.id != super_owner_id:
+        return await ctx.send("Only Que can stop watching owners.")
     watchlist.discard(member.id)
 
 @bot.command()
@@ -503,9 +509,9 @@ async def speak(ctx, *, msg):
 
 @bot.command()
 async def poll(ctx, *, question):
-    msg = await ctx.send(f"**{question}**\nYes ✅ | No ❌")
-    await msg.add_reaction("✅")
-    await msg.add_reaction("❌")
+    msg = await ctx.send(f"**{question}**\nYes ✔️ | No ✖️")
+    await msg.add_reaction("✔️")
+    await msg.add_reaction("✖️")
 
 @bot.command()
 @is_owner()
@@ -605,6 +611,27 @@ async def alarm(ctx, date: str):
     await ctx.send(f"⏰ Alarm set for {date}, {ctx.author.mention}. I'll ping you then.")
     await asyncio.sleep(delta)
     await ctx.send(f"🔔 {ctx.author.mention} It's **{date}**! Here's your alarm.")
+
+@bot.command()
+async def define(ctx, *, word: str):
+    async with aiohttp.ClientSession() as session:
+        url = f"https://api.dictionaryapi.dev/api/v2/entries/en/{word}"
+        async with session.get(url) as resp:
+            if resp.status != 200:
+                return await ctx.send("Couldn't find that word.")
+            data = await resp.json()
+            try:
+                definitions = []
+                for meaning in data[0]["meanings"]:
+                    part_of_speech = meaning["partOfSpeech"]
+                    for d in meaning["definitions"]:
+                        definition = d["definition"]
+                        definitions.append(f"**({part_of_speech})** {definition}")
+                unique_defs = list(dict.fromkeys(definitions))  # <-- fixed indent
+                response = f"📖 **Definition of `{word}`:**\n" + "\n".join(unique_defs[:3])
+                await ctx.send(response)
+            except:
+                await ctx.send("Error.")
 
 keep_alive()
 bot.run(os.getenv("DISCORD_TOKEN"))
