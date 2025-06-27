@@ -58,6 +58,8 @@ def is_owner():
 async def on_command_error(ctx, error):
     if isinstance(error, commands.CommandNotFound):
         return
+    elif isinstance(error, commands.CheckFailure):
+        await ctx.send("You can't use that heh")
     elif isinstance(error, commands.MissingPermissions):
         await ctx.send("You don’t have permission to do that.")
     elif isinstance(error, commands.MissingRequiredArgument):
@@ -65,8 +67,10 @@ async def on_command_error(ctx, error):
     elif isinstance(error, commands.BadArgument):
         await ctx.send("Invalid input. Check your arguments.")
     else:
-        await ctx.send("An unexpected error occurred.")
-        raise error
+        if ctx.author.id in owner_ids:
+            await ctx.send("Error.")
+        else:
+            await ctx.send("You can't use that heh")
 
 @bot.event
 async def on_message_delete(message):
@@ -136,6 +140,7 @@ async def esnipe(ctx, index: int = 1):
         await ctx.send("Invalid index. Use a number like `.esnipe 2`.")
 
 @bot.command()
+@is_owner()
 async def rsnipe(ctx, index: str = "1"):
     try:
         if index.startswith("-"):
