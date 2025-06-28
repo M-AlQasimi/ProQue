@@ -642,23 +642,28 @@ async def translate(ctx, *, text: str = None):
     if not text:
         return await ctx.send("Please reply to a message or provide text to translate.")
 
-    async with aiohttp.ClientSession() as session:
-        url = "https://libretranslate.de/translate"
-        payload = {
-            "q": text,
-            "source": "auto",
-            "target": "en",
-            "format": "text"
-        }
-        headers = {
-            "Content-Type": "application/json"
-        }
-        async with session.post(url, json=payload, headers=headers) as resp:
-            if resp.status != 200:
-                return await ctx.send("Translation failed.")
-            data = await resp.json()
-            translated = data.get("translatedText")
-            await ctx.send(f"**Translated:** {translated}")
+    try:
+        async with aiohttp.ClientSession() as session:
+            url = "https://libretranslate.de/translate"
+            payload = {
+                "q": text,
+                "source": "auto",
+                "target": "en",
+                "format": "text"
+            }
+            headers = {
+                "Content-Type": "application/json"
+            }
+            async with session.post(url, json=payload, headers=headers) as resp:
+                if resp.status != 200:
+                    return await ctx.send(f"Translation failed. Status: {resp.status}")
+                data = await resp.json()
+                translated = data.get("translatedText")
+                if not translated:
+                    return await ctx.send(f"API response error: `{data}`")
+                await ctx.send(f"**Translated:** {translated}")
+    except Exception as e:
+        await ctx.send(f"Error: `{e}`")
 
 keep_alive()
 bot.run(os.getenv("DISCORD_TOKEN"))
