@@ -624,7 +624,7 @@ async def define(ctx, *, word: str):
                     for d in meaning["definitions"]:
                         definition = d["definition"]
                         definitions.append(f"**({part_of_speech})** {definition}")
-                unique_defs = list(dict.fromkeys(definitions))
+                unique_defs = list(dict.fromkeys(definitions))  # <-- fixed indent
                 response = f"📖 **Definition of `{word}`:**\n" + "\n".join(unique_defs[:3])
                 await ctx.send(response)
             except:
