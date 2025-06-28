@@ -638,25 +638,10 @@ async def translate(ctx, *, text: str = None):
             text = replied.content
         except:
             return await ctx.send("Couldn't read the replied message.")
-    
     if not text:
         return await ctx.send("Please reply to a message or provide text to translate.")
 
-    try:
-        async with aiohttp.ClientSession() as session:
-            params = {
-                "q": text,
-                "langpair": "auto|en"
-            }
-            async with session.get("https://api.mymemory.translated.net/get", params=params) as resp:
-                if resp.status != 200:
-                    return await ctx.send(f"Translation failed. Status: {resp.status}")
-                data = await resp.json()
-                translated = data["responseData"]["translatedText"]
-                detected_lang = data.get("responseData", {}).get("match", "unknown")
-                await ctx.send(f"**Translated to English:** {translated}")
-    except Exception as e:
-        await ctx.send(f"Error: `{e}`")
+    await ctx.send("Unavailable.")
 
 keep_alive()
 bot.run(os.getenv("DISCORD_TOKEN"))
