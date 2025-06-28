@@ -630,5 +630,10 @@ async def define(ctx, *, word: str):
             except:
                 await ctx.send("Error.")
 
+@bot.command()
+async def summon(ctx, *, message: str = "h-hi"):
+    await ctx.message.delete()
+    await ctx.send(f"@everyone {message}")
+
 keep_alive()
 bot.run(os.getenv("DISCORD_TOKEN"))
