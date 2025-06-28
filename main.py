@@ -650,13 +650,15 @@ async def translate(ctx, *, text: str = None):
             "target": "en",
             "format": "text"
         }
-        async with session.post(url, json=payload) as resp:
+        headers = {
+            "Content-Type": "application/json"
+        }
+        async with session.post(url, json=payload, headers=headers) as resp:
             if resp.status != 200:
                 return await ctx.send("Translation failed.")
             data = await resp.json()
             translated = data.get("translatedText")
-            detected = data.get("detectedLanguage", {}).get("language", "unknown")
-            await ctx.send(f"**Detected:** `{detected}` → **en**\n**Translated:** {translated}")
+            await ctx.send(f"**Translated:** {translated}")
 
 keep_alive()
 bot.run(os.getenv("DISCORD_TOKEN"))
