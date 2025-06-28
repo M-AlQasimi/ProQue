@@ -524,9 +524,9 @@ async def unban(ctx, *, user: str):
     except Exception as e:
         await ctx.send("Failed to unban user.")
 
-@bot.command()
+@bot.command(name="listbans")
 @is_owner()
-async def bans(ctx):
+async def listbans(ctx):
     try:
         bans = await ctx.guild.bans()
         if not bans:
@@ -535,8 +535,8 @@ async def bans(ctx):
         lines = []
         for ban in bans:
             user = ban.user
-            lines.append(f"**{user}** (ID: {user.id})")
-        
+            lines.append(f"**{user.name}#{user.discriminator}** (ID: {user.id})")
+
         msg = "\n".join(lines)
         if len(msg) > 2000:
             await ctx.send(f"Too many banned users to show ({len(bans)} total).")
@@ -545,7 +545,7 @@ async def bans(ctx):
     except discord.Forbidden:
         await ctx.send("I don’t have permission to view bans.")
     except Exception as e:
-        await ctx.send("Something went wrong while fetching the ban list.")
+        await ctx.send(f"Error: {type(e).__name__} - {e}")
 
 @bot.command()
 @is_owner()
