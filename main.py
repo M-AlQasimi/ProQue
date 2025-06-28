@@ -134,20 +134,31 @@ async def dsnipe(ctx, index: str = "1"):
         await ctx.send("Invalid index. Use a number like `.dsnipe 3` or `.dsnipe -3`.")
 
 @bot.command()
-async def esnipe(ctx, index: int = 1):
+async def esnipe(ctx, index: str = "1"):
     try:
-        n = index - 1
         messages = edited_snipes.get(ctx.channel.id, [])
-        if not messages or n >= len(messages) or n < 0:
-            return await ctx.send("Nothing to snipe.")
-        before, after, author, timestamp = messages[n]
-        time_str = timestamp.strftime("%d %b %Y • %H:%M UTC")
-        await ctx.send(
-    f"Edited by {author.mention} at {time_str}:\n**Before:** {before}\n**After:** {after}",
-    allowed_mentions=discord.AllowedMentions.none()
-)
+        if index.startswith("-"):
+            count = int(index[1:])
+            if not messages or count < 1:
+                return await ctx.send("Nothing to snipe.")
+            selected = messages[:count]
+            response = ""
+            for i, (before, after, author, timestamp) in enumerate(selected, 1):
+                time_str = timestamp.strftime("%d %b %Y • %H:%M UTC")
+                response += f"#{i} - Edited by {author.display_name} at {time_str}:\n**Before:** {before}\n**After:** {after}\n\n"
+            await ctx.send(response[:2000])
+        else:
+            n = int(index) - 1
+            if not messages or n >= len(messages) or n < 0:
+                return await ctx.send("Nothing to snipe.")
+            before, after, author, timestamp = messages[n]
+            time_str = timestamp.strftime("%d %b %Y • %H:%M UTC")
+            await ctx.send(
+                f"Edited by {author.mention} at {time_str}:\n**Before:** {before}\n**After:** {after}",
+                allowed_mentions=discord.AllowedMentions.none()
+            )
     except:
-        await ctx.send("Invalid index. Use a number like `.esnipe 2`.")
+        await ctx.send("Invalid index. Use a number like `.esnipe 2` or `.esnipe -3`.")
 
 @bot.command()
 async def rsnipe(ctx, index: str = "1"):
@@ -484,9 +495,48 @@ async def mute(ctx, member: discord.Member, duration: str):
 
 @bot.command()
 @is_owner()
-async def ban(ctx, member: discord.Member, *, reason=None):
-    await member.ban(reason=reason)
-    await ctx.send(f"**{member.display_name}** has been banned.")
+async def ban(ctx, user: discord.User, *, reason=None):
+    await ctx.guild.ban(user, reason=reason)
+    await ctx.send(f"**{user.display_name if hasattr(user, 'display_name') else user.name}** has been banned.")
+
+@bot.command()
+@is_owner()
+async def unban(ctx, *, user: str):
+    try:
+        name, id_or_discriminator = None, None
+
+        if user.isdigit():
+            user_obj = await bot.fetch_user(int(user))
+        elif "#" in user:
+            name, discriminator = user.split("#")
+            bans = await ctx.guild.bans()
+            user_obj = next((ban.user for ban in bans if ban.user.name == name and ban.user.discriminator == discriminator), None)
+        else:
+            await ctx.send("Please mention the user or provide their ID.")
+            return
+
+        if not user_obj:
+            await ctx.send("User not found in ban list.")
+            return
+
+        await ctx.guild.unban(user_obj)
+        await ctx.send(f"**{user_obj}** has been unbanned.")
+    except Exception as e:
+        await ctx.send("Failed to unban user.")
+
+@bot.command()
+async def listbans(ctx):
+    bans = await ctx.guild.bans()
+    if not bans:
+        return await ctx.send("No banned users in this server.")
+    
+    ban_list = [f"**{ban.user}** (ID: {ban.user.id})" for ban in bans]
+    msg = "\n".join(ban_list)
+    
+    if len(msg) > 2000:
+        await ctx.send("Too many banned users to display.")
+    else:
+        await ctx.send(f"**Banned Users:**\n{msg}")
 
 @bot.command()
 @is_owner()
