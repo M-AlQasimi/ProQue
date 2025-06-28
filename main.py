@@ -549,15 +549,33 @@ async def picker(ctx, *, options):
 
 @bot.command()
 @is_owner()
-async def aban(ctx, member: discord.Member):
-    autoban_ids.add(member.id)
-    await ctx.send(f"{member.display_name} will be autobanned on join.")
+async def aban(ctx, target):
+    try:
+        user = await commands.UserConverter().convert(ctx, target)
+        autoban_ids.add(user.id)
+        await ctx.send(f"{user.display_name} added to the autoban list.")
+    except:
+        try:
+            user_id = int(target)
+            autoban_ids.add(user_id)
+            await ctx.send(f"User ID `{user_id}` added to the autoban list.")
+        except:
+            await ctx.send("Invalid user or ID.")
 
 @bot.command()
 @is_owner()
-async def raban(ctx, member: discord.Member):
-    autoban_ids.discard(member.id)
-    await ctx.send(f"{member.display_name} removed from autoban list.")
+async def raban(ctx, target):
+    try:
+        user = await commands.UserConverter().convert(ctx, target)
+        autoban_ids.discard(user.id)
+        await ctx.send(f"{user.display_name} removed from autoban list.")
+    except:
+        try:
+            user_id = int(target)
+            autoban_ids.discard(user_id)
+            await ctx.send(f"User ID `{user_id}` removed from autoban list.")
+        except:
+            await ctx.send("Invalid user or ID.")
 
 @bot.command()
 @is_owner()
