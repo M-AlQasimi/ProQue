@@ -624,13 +624,14 @@ async def define(ctx, *, word: str):
                     for d in meaning["definitions"]:
                         definition = d["definition"]
                         definitions.append(f"**({part_of_speech})** {definition}")
-                unique_defs = list(dict.fromkeys(definitions))  # <-- fixed indent
+                unique_defs = list(dict.fromkeys(definitions))
                 response = f"📖 **Definition of `{word}`:**\n" + "\n".join(unique_defs[:3])
                 await ctx.send(response)
             except:
                 await ctx.send("Error.")
 
 @bot.command()
+@is_owner()
 async def summon(ctx, *, message: str = "h-hi"):
     await ctx.message.delete()
     await ctx.send(f"@everyone {message}")
