@@ -24,6 +24,7 @@ owner_ids = {super_owner_id}
 watchlist = set()
 autoban_ids = set()
 blacklisted_users = set()
+sleeping_users = set()
 edited_snipes = {}
 deleted_snipes = {}
 removed_reactions = {}
@@ -41,6 +42,11 @@ def keep_alive():
     t = Thread(target=run)
     t.start()
 
+def is_owner():
+    async def predicate(ctx):
+        return ctx.author.id in owner_ids
+    return commands.check(predicate)
+
 @tasks.loop(minutes=4)
 async def keep_alive_task():
     print("Heartbeat")
@@ -50,11 +56,6 @@ async def on_ready():
     print(f'ProQue is online as {bot.user}')
     if not keep_alive_task.is_running():
         keep_alive_task.start()
-
-def is_owner():
-    async def predicate(ctx):
-        return ctx.author.id in owner_ids
-    return commands.check(predicate)
 
 @bot.event
 async def on_command_error(ctx, error):
@@ -120,7 +121,7 @@ async def dsnipe(ctx, index: str = "1"):
             response = ""
             for i, (content, author, timestamp) in enumerate(selected, 1):
                 time_str = timestamp.strftime("%d %b %Y • %H:%M UTC")
-                response += f"#{i} - Deleted by {author.display_name} at {time_str}:\n{content}\n\n"
+                response += f"#{i} - Deleted by {author.name} at {time_str}:\n{content}\n\n"
             await ctx.send(response[:2000])
         else:
             n = int(index) - 1
@@ -145,7 +146,7 @@ async def esnipe(ctx, index: str = "1"):
             response = ""
             for i, (before, after, author, timestamp) in enumerate(selected, 1):
                 time_str = timestamp.strftime("%d %b %Y • %H:%M UTC")
-                response += f"#{i} - Edited by {author.display_name} at {time_str}:\n**Before:** {before}\n**After:** {after}\n\n"
+                response += f"#{i} - Edited by {author.name} at {time_str}:\n**Before:** {before}\n**After:** {after}\n\n"
             await ctx.send(response[:2000])
         else:
             n = int(index) - 1
@@ -172,7 +173,7 @@ async def rsnipe(ctx, index: str = "1"):
             response = ""
             for i, (user, emoji, msg, timestamp) in enumerate(selected, 1):
                 time_str = timestamp.strftime("%d %b %Y • %H:%M UTC")
-                response += f"#{i} - {user.display_name} removed {emoji} from [this message]({msg.jump_url}) at {time_str}.\n\n"
+                response += f"#{i} - {user.name} removed {emoji} from [this message]({msg.jump_url}) at {time_str}.\n\n"
             await ctx.send(response[:2000])
         else:
             n = int(index) - 1
@@ -181,7 +182,7 @@ async def rsnipe(ctx, index: str = "1"):
                 return await ctx.send("Nothing to snipe.")
             user, emoji, msg, timestamp = logs[n]
             time_str = timestamp.strftime("%d %b %Y • %H:%M UTC")
-            await ctx.send(f"{user.display_name} removed {emoji} from [this message]({msg.jump_url}) at {time_str}.")
+            await ctx.send(f"{user.name} removed {emoji} from [this message]({msg.jump_url}) at {time_str}.")
     except:
         await ctx.send("Invalid index. Use a number like `.rsnipe 2` or `.rsnipe -3`.")
 
@@ -430,7 +431,7 @@ async def listowners(ctx):
     for oid in owner_ids:
         member = ctx.guild.get_member(oid)
         if member:
-            names.append(f"{member.display_name} ({member.name})")
+            names.append(f"{member.name} ({member.name})")
     await ctx.send("Owners:\n" + ("\n".join(names) if names else "No owners found."))
 
 @bot.command()
@@ -440,16 +441,33 @@ async def listtargets(ctx):
     for uid in watchlist:
         member = ctx.guild.get_member(uid)
         if member:
-            names.append(f"**{member.display_name}** ({member.name})")
+            names.append(f"**{member.name}** ({member.name})")
     await ctx.send("Targets:\n" + ("\n".join(names) if names else "No targets being watched."))
 
 @bot.event
 async def on_message(message):
+    if message.author.bot:
+        return
+
+    if message.author.id in sleeping_users:
+        sleeping_users.discard(message.author.id)
+        await message.channel.send(f"Welcome back, {message.author.name}.")
+
+    for uid in sleeping_users:
+        if (
+            any(user.id == uid for user in message.mentions) or
+            (message.reference and message.reference.resolved and message.reference.resolved.author.id == uid)
+        ):
+            user = await bot.fetch_user(uid)
+            await message.channel.send(f"<@{user.id}> is sleeping. 💤", allowed_mentions=discord.AllowedMentions.none())
+            break
+
     if message.author.id in watchlist and message.author.id != super_owner_id:
         try:
             await message.delete()
         except:
             pass
+
     await bot.process_commands(message)
 
 @bot.command()
@@ -491,13 +509,13 @@ async def mute(ctx, member: discord.Member, duration: str):
     time_units = {'s': 1, 'm': 60, 'h': 3600, 'd': 86400}
     seconds = int(duration[:-1]) * time_units.get(duration[-1], 0)
     await member.timeout(discord.utils.utcnow() + datetime.timedelta(seconds=seconds))
-    await ctx.send(f"**{member.display_name}** has been muted for {duration}.")
+    await ctx.send(f"**{member.name}** has been muted for {duration}.")
 
 @bot.command()
 @is_owner()
 async def ban(ctx, user: discord.User, *, reason=None):
     await ctx.guild.ban(user, reason=reason)
-    await ctx.send(f"**{user.display_name if hasattr(user, 'display_name') else user.name}** has been banned.")
+    await ctx.send(f"**{user.name}** has been banned.")
 
 @bot.command()
 @is_owner()
@@ -550,19 +568,19 @@ async def listbans(ctx):
 @is_owner()
 async def kick(ctx, member: discord.Member, *, reason=None):
     await member.kick(reason=reason)
-    await ctx.send(f"**{member.display_name}** has been kicked.")
+    await ctx.send(f"**{member.name}** has been kicked.")
 
 @bot.command()
 @is_owner()
 async def addrole(ctx, member: discord.Member, role: discord.Role):
     await member.add_roles(role)
-    await ctx.send(f"Added {role.name} to **{member.display_name}**.")
+    await ctx.send(f"Added {role.name} to **{member.name}**.")
 
 @bot.command()
 @is_owner()
 async def removerole(ctx, member: discord.Member, role: discord.Role):
     await member.remove_roles(role)
-    await ctx.send(f"Removed {role.name} from **{member.display_name}**.")
+    await ctx.send(f"Removed {role.name} from **{member.name}**.")
 
 @bot.command()
 @is_owner()
@@ -619,7 +637,7 @@ async def aban(ctx, target):
     try:
         user = await commands.UserConverter().convert(ctx, target)
         autoban_ids.add(user.id)
-        await ctx.send(f"**{user.display_name}** added to the autoban list.")
+        await ctx.send(f"**{user.name}** added to the autoban list.")
     except:
         try:
             user_id = int(target)
@@ -634,7 +652,7 @@ async def raban(ctx, target):
     try:
         user = await commands.UserConverter().convert(ctx, target)
         autoban_ids.discard(user.id)
-        await ctx.send(f"**{user.display_name}** removed from autoban list.")
+        await ctx.send(f"**{user.name}** removed from autoban list.")
     except:
         try:
             user_id = int(target)
@@ -652,7 +670,7 @@ async def abanlist(ctx):
     for uid in autoban_ids:
         member = ctx.guild.get_member(uid)
         if member:
-            results.append(f"**{member.display_name}** ({uid})")
+            results.append(f"**{member.name}** ({uid})")
         else:
             results.append(f"User ID: {uid}")
     await ctx.send("Autoban List:\n" + "\n".join(results))
@@ -724,24 +742,30 @@ async def summon(ctx, *, message: str = "h-hi"):
 @is_owner()
 async def block(ctx, member: discord.Member):
     blacklisted_users.add(member.id)
-    await ctx.send(f"✖️ **{member.display_name}** is now blocked from using commands.")
+    await ctx.send(f"✖️ **{member.name}** is now blocked from using commands.")
 
 @bot.command()
 @is_owner()
 async def unblock(ctx, member: discord.Member):
     blacklisted_users.discard(member.id)
-    await ctx.send(f"✔️ **{member.display_name}** is now unblocked.")
+    await ctx.send(f"✔️ **{member.name}** is now unblocked.")
 
 @bot.command()
 @is_owner()
-async def blocked(ctx):
+async def listblocked(ctx):
     if not blacklisted_users:
         return await ctx.send("No one is blocked.")
     users = []
     for uid in blacklisted_users:
         user = ctx.guild.get_member(uid)
-        users.append(f"**{user.display_name}**" if user else f"User ID: `{uid}`")
+        users.append(f"**{user.name}**" if user else f"User ID: `{uid}`")
     await ctx.send("Blocked users:\n" + "\n".join(users))
+
+@bot.command()
+@is_owner()
+async def sleep(ctx):
+    sleeping_users.add(ctx.author.id)
+    await ctx.send("You’re now in sleep mode. 💤")
 
 keep_alive()
 bot.run(os.getenv("DISCORD_TOKEN"))
