@@ -525,10 +525,9 @@ async def unban(ctx, *, user: str):
         await ctx.send("Failed to unban user.")
 
 @bot.command(name="listbans")
-@is_owner()
 async def listbans(ctx):
     try:
-        bans = await ctx.guild.bans()
+        bans = [ban async for ban in ctx.guild.bans()]
         if not bans:
             return await ctx.send("No banned users in this server.")
 
