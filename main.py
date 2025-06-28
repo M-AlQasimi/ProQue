@@ -61,7 +61,10 @@ async def on_command_error(ctx, error):
     if isinstance(error, commands.CommandNotFound):
         return
     elif isinstance(error, commands.CheckFailure):
-        await ctx.send("You can't use that heh")
+        if ctx.author.id in blacklisted_users:
+            await ctx.send("LMAO you're blocked you can't use ts 😭✌🏻")
+        else:
+            await ctx.send("You can't use that heh")
     elif isinstance(error, commands.MissingPermissions):
         await ctx.send("You don’t have permission to do that.")
     elif isinstance(error, commands.MissingRequiredArgument):
