@@ -644,7 +644,7 @@ async def translate(ctx, *, text: str = None):
 
     try:
         async with aiohttp.ClientSession() as session:
-            url = "https://translate.argosopentech.com/translate"
+            url = "https://libretranslate.com/translate"
             payload = {
                 "q": text,
                 "source": "auto",
@@ -660,8 +660,6 @@ async def translate(ctx, *, text: str = None):
                 data = await resp.json()
                 translated = data.get("translatedText")
                 detected = data.get("detectedLanguage", {}).get("language", "unknown")
-                if not translated:
-                    return await ctx.send(f"API response error: `{data}`")
                 await ctx.send(f"**Detected:** `{detected}` → **en**\n**Translated:** {translated}")
     except Exception as e:
         await ctx.send(f"Error: `{e}`")
