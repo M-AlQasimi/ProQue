@@ -644,23 +644,20 @@ async def translate(ctx, *, text: str = None):
 
     try:
         async with aiohttp.ClientSession() as session:
-            url = "https://libretranslate.com/translate"
+            url = "https://translate.argosopentech.com/translate"
             payload = {
                 "q": text,
                 "source": "auto",
                 "target": "en",
                 "format": "text"
             }
-            headers = {
-                "Content-Type": "application/json"
-            }
+            headers = {"Content-Type": "application/json"}
             async with session.post(url, json=payload, headers=headers) as resp:
                 if resp.status != 200:
                     return await ctx.send(f"Translation failed. Status: {resp.status}")
                 data = await resp.json()
                 translated = data.get("translatedText")
-                detected = data.get("detectedLanguage", {}).get("language", "unknown")
-                await ctx.send(f"**Detected:** `{detected}` → **en**\n**Translated:** {translated}")
+                await ctx.send(f"**Translated to English:** {translated}")
     except Exception as e:
         await ctx.send(f"Error: `{e}`")
 
