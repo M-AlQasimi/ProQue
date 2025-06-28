@@ -361,14 +361,14 @@ async def setnick(ctx, member: discord.Member, *, nickname: str):
 
 @bot.command()
 @is_owner()
-async def start(ctx, member: discord.Member):
+async def shut(ctx, member: discord.Member):
     if member.id == super_owner_id:
         return
     watchlist.add(member.id)
 
 @bot.command()
 @is_owner()
-async def end(ctx, member: discord.Member):
+async def unshut(ctx, member: discord.Member):
     if member.id in owner_ids and ctx.author.id != super_owner_id:
         return await ctx.send("Only Que can stop watching owners.")
     watchlist.discard(member.id)
@@ -422,7 +422,7 @@ async def listtargets(ctx):
         member = ctx.guild.get_member(uid)
         if member:
             names.append(f"{member.display_name} ({member.name})")
-    await ctx.send("Watched Users:\n" + ("\n".join(names) if names else "No targets being watched."))
+    await ctx.send("Targets:\n" + ("\n".join(names) if names else "No targets being watched."))
 
 @bot.event
 async def on_message(message):
