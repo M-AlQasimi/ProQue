@@ -421,7 +421,7 @@ async def listtargets(ctx):
     for uid in watchlist:
         member = ctx.guild.get_member(uid)
         if member:
-            names.append(f"{member.display_name} ({member.name})")
+            names.append(f"**{member.display_name}** ({member.name})")
     await ctx.send("Targets:\n" + ("\n".join(names) if names else "No targets being watched."))
 
 @bot.event
@@ -472,31 +472,31 @@ async def mute(ctx, member: discord.Member, duration: str):
     time_units = {'s': 1, 'm': 60, 'h': 3600, 'd': 86400}
     seconds = int(duration[:-1]) * time_units.get(duration[-1], 0)
     await member.timeout(discord.utils.utcnow() + datetime.timedelta(seconds=seconds))
-    await ctx.send(f"{member.display_name} has been muted for {duration}.")
+    await ctx.send(f"**{member.display_name}** has been muted for {duration}.")
 
 @bot.command()
 @is_owner()
 async def ban(ctx, member: discord.Member, *, reason=None):
     await member.ban(reason=reason)
-    await ctx.send(f"{member.display_name} has been banned.")
+    await ctx.send(f"**{member.display_name}** has been banned.")
 
 @bot.command()
 @is_owner()
 async def kick(ctx, member: discord.Member, *, reason=None):
     await member.kick(reason=reason)
-    await ctx.send(f"{member.display_name} has been kicked.")
+    await ctx.send(f"**{member.display_name}** has been kicked.")
 
 @bot.command()
 @is_owner()
 async def addrole(ctx, member: discord.Member, role: discord.Role):
     await member.add_roles(role)
-    await ctx.send(f"Added {role.name} to {member.display_name}.")
+    await ctx.send(f"Added {role.name} to **{member.display_name}**.")
 
 @bot.command()
 @is_owner()
 async def removerole(ctx, member: discord.Member, role: discord.Role):
     await member.remove_roles(role)
-    await ctx.send(f"Removed {role.name} from {member.display_name}.")
+    await ctx.send(f"Removed {role.name} from **{member.display_name}**.")
 
 @bot.command()
 @is_owner()
@@ -553,7 +553,7 @@ async def aban(ctx, target):
     try:
         user = await commands.UserConverter().convert(ctx, target)
         autoban_ids.add(user.id)
-        await ctx.send(f"{user.display_name} added to the autoban list.")
+        await ctx.send(f"**{user.display_name}** added to the autoban list.")
     except:
         try:
             user_id = int(target)
@@ -568,7 +568,7 @@ async def raban(ctx, target):
     try:
         user = await commands.UserConverter().convert(ctx, target)
         autoban_ids.discard(user.id)
-        await ctx.send(f"{user.display_name} removed from autoban list.")
+        await ctx.send(f"**{user.display_name}** removed from autoban list.")
     except:
         try:
             user_id = int(target)
@@ -586,7 +586,7 @@ async def abanlist(ctx):
     for uid in autoban_ids:
         member = ctx.guild.get_member(uid)
         if member:
-            results.append(f"{member.display_name} ({uid})")
+            results.append(f"**{member.display_name}** ({uid})")
         else:
             results.append(f"User ID: {uid}")
     await ctx.send("Autoban List:\n" + "\n".join(results))
