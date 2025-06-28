@@ -23,6 +23,7 @@ owner_ids = {super_owner_id}
 
 watchlist = set()
 autoban_ids = set()
+blacklisted_users = set()
 edited_snipes = {}
 deleted_snipes = {}
 removed_reactions = {}
@@ -99,6 +100,10 @@ async def on_reaction_remove(reaction, user):
     entry = (user, reaction.emoji, msg, datetime.datetime.utcnow().replace(tzinfo=timezone.utc))
     removed_reactions.setdefault(msg.channel.id, []).insert(0, entry)
     removed_reactions[msg.channel.id] = removed_reactions[msg.channel.id][:10]
+
+@bot.check
+async def block_blacklisted(ctx):
+    return ctx.author.id not in blacklisted_users
         
 @bot.command()
 async def dsnipe(ctx, index: str = "1"):
@@ -653,6 +658,29 @@ async def define(ctx, *, word: str):
 async def summon(ctx, *, message: str = "h-hi"):
     await ctx.message.delete()
     await ctx.send(f"@everyone {message}")
+
+@bot.command()
+@is_owner()
+async def block(ctx, member: discord.Member):
+    blacklisted_users.add(member.id)
+    await ctx.send(f"✖️ **{member.display_name}** is now blocked from using commands.")
+
+@bot.command()
+@is_owner()
+async def unblock(ctx, member: discord.Member):
+    blacklisted_users.discard(member.id)
+    await ctx.send(f"✔️ **{member.display_name}** is now unblocked.")
+
+@bot.command()
+@is_owner()
+async def blocked(ctx):
+    if not blacklisted_users:
+        return await ctx.send("No one is blocked.")
+    users = []
+    for uid in blacklisted_users:
+        user = ctx.guild.get_member(uid)
+        users.append(f"**{user.display_name}**" if user else f"User ID: `{uid}`")
+    await ctx.send("Blocked users:\n" + "\n".join(users))
 
 keep_alive()
 bot.run(os.getenv("DISCORD_TOKEN"))
