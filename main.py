@@ -624,24 +624,11 @@ async def define(ctx, *, word: str):
                     for d in meaning["definitions"]:
                         definition = d["definition"]
                         definitions.append(f"**({part_of_speech})** {definition}")
-                unique_defs = list(dict.fromkeys(definitions))  # <-- fixed indent
+                unique_defs = list(dict.fromkeys(definitions))
                 response = f"📖 **Definition of `{word}`:**\n" + "\n".join(unique_defs[:3])
                 await ctx.send(response)
             except:
                 await ctx.send("Error.")
-
-@bot.command()
-async def translate(ctx, *, text: str = None):
-    if not text and ctx.message.reference:
-        try:
-            replied = await ctx.channel.fetch_message(ctx.message.reference.message_id)
-            text = replied.content
-        except:
-            return await ctx.send("Couldn't read the replied message.")
-    if not text:
-        return await ctx.send("Please reply to a message or provide text to translate.")
-
-    await ctx.send("Unavailable.")
 
 keep_alive()
 bot.run(os.getenv("DISCORD_TOKEN"))
