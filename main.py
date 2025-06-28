@@ -545,7 +545,7 @@ async def bans(ctx):
     except discord.Forbidden:
         await ctx.send("I don’t have permission to view bans.")
     except Exception as e:
-        await ctx.send("Something went wrong while fetching the ban list.")'
+        await ctx.send("Something went wrong while fetching the ban list.")
 
 @bot.command()
 @is_owner()
