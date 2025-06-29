@@ -333,12 +333,14 @@ async def steal(ctx):
 @bot.command()
 async def rolesinfo(ctx):
     try:
-        roles = ctx.guild.roles[1:]  # Exclude @everyone
+        roles = ctx.guild.roles[1:]
         if not roles:
             return await ctx.send("No roles found.")
 
+        powerful_roles = []
         bot_roles = []
-        custom_roles = []
+        no_power_roles = []
+        other_roles = []
 
         for role in roles:
             perms = role.permissions
@@ -357,16 +359,35 @@ async def rolesinfo(ctx):
 
             perm_text = ", ".join(perms_list) if perms_list else "No powerful perms"
 
-            if any(member.bot for member in role.members):
+            if perms_list:
+                powerful_roles.append(f"`{role.name}` - {perm_text}")
+            elif any(member.bot for member in role.members):
                 bot_roles.append(f"`{role.name}` - {perm_text}")
+            elif not perms_list and not role.members:
+                other_roles.append(f"`{role.name}` - {perm_text}")
             else:
-                custom_roles.append(f"`{role.name}` - {perm_text}")
+                no_power_roles.append(f"`{role.name}` - {perm_text}")
 
-        lines = bot_roles
-        if custom_roles:
-            lines.append("`——— ⬇ costum roles ⬇ ———` - No powerful perms")
-            lines += custom_roles
-            lines.append("`——— ⬆ costum roles ⬆ ———` - No powerful perms")
+        lines = []
+
+        if powerful_roles:
+            lines.append("**🔒 Roles with Power:**")
+            lines.extend(powerful_roles)
+
+        if bot_roles:
+            lines.append("**🤖 Bot Roles:**")
+            lines.extend(bot_roles)
+
+        if no_power_roles:
+            lines.append("**➖ Custom Roles (No Power):**")
+            lines.extend(no_power_roles)
+
+        if other_roles:
+            lines.append("**📦 Other Roles:**")
+            lines.extend(other_roles)
+
+        if not lines:
+            return await ctx.send("No roles to show.")
 
         chunk = ""
         for line in lines:
@@ -374,7 +395,6 @@ async def rolesinfo(ctx):
                 await ctx.send(chunk)
                 chunk = ""
             chunk += line + "\n"
-
         if chunk:
             await ctx.send(chunk)
 
