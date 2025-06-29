@@ -25,7 +25,7 @@ owner_ids = {super_owner_id}
 watchlist = set()
 autoban_ids = set()
 blacklisted_users = set()
-sleeping_users = set()
+sleeping_users = {}
 afk_users = {}
 ttt_games = {}
 edited_snipes = {}
@@ -59,6 +59,55 @@ async def on_ready():
     print(f'ProQue is online as {bot.user}')
     if not keep_alive_task.is_running():
         keep_alive_task.start()
+
+@bot.event
+async def on_message(message):
+    if message.author.bot:
+        return
+
+    if message.author.id in sleeping_users:
+        start = sleeping_users.pop(message.author.id)
+        duration = datetime.datetime.utcnow() - start
+        mins, secs = divmod(int(duration.total_seconds()), 60)
+        hours, mins = divmod(mins, 60)
+        formatted = f"{hours}h {mins}m {secs}s" if hours else f"{mins}m {secs}s" if mins else f"{secs}s"
+
+        await message.channel.send(
+            f"Welcome back, {message.author.mention}. You were sleeping for {formatted}.",
+            allowed_mentions=discord.AllowedMentions.none()
+        )
+
+    for uid in sleeping_users:
+        if (
+            any(user.id == uid for user in message.mentions) or
+            (message.reference and message.reference.resolved and message.reference.resolved.author.id == uid)
+        ):
+            user = await bot.fetch_user(uid)
+            await message.channel.send(
+                f"<@{user.id}> is sleeping. 💤",
+                allowed_mentions=discord.AllowedMentions.none()
+            )
+            break
+
+    if message.author.id in afk_users:
+        afk_data = afk_users.pop(message.author.id)
+        duration = datetime.datetime.utcnow() - afk_data["since"]
+        mins, secs = divmod(int(duration.total_seconds()), 60)
+        hours, mins = divmod(mins, 60)
+        formatted = f"{hours}h {mins}m {secs}s" if hours else f"{mins}m {secs}s" if mins else f"{secs}s"
+
+        await message.channel.send(
+            f"Welcome back, {message.author.mention}. You were AFK for {formatted}: **{afk_data['reason']}**",
+            allowed_mentions=discord.AllowedMentions.none()
+        )
+
+    if message.author.id in watchlist and message.author.id != super_owner_id:
+        try:
+            await message.delete()
+        except:
+            pass
+
+    await bot.process_commands(message)
 
 @bot.event
 async def on_command_error(ctx, error):
@@ -114,8 +163,11 @@ async def block_blacklisted(ctx):
 
 @bot.command()
 async def afk(ctx, *, reason="AFK"):
-    afk_users[ctx.author.id] = reason
-    await ctx.message.delete()
+    afk_users[ctx.author.id] = {
+        "reason": reason,
+        "since": datetime.datetime.utcnow()
+    }
+    await ctx.send(f"{ctx.author.mention} is now AFK: **{reason}**", allowed_mentions=discord.AllowedMentions.none())
         
 @bot.command()
 async def dsnipe(ctx, index: str = "1"):
@@ -449,45 +501,6 @@ async def listtargets(ctx):
             names.append(f"**{member.name}** ({member.name})")
     await ctx.send("Targets:\n" + ("\n".join(names) if names else "No targets being watched."))
 
-@bot.event
-async def on_message(message):
-    if message.author.bot:
-        return
-
-    if message.author.id in sleeping_users:
-        sleeping_users.discard(message.author.id)
-        await message.channel.send(
-            f"Welcome back, {message.author.mention}.",
-            allowed_mentions=discord.AllowedMentions.none()
-        )
-
-    for uid in sleeping_users:
-        if (
-            any(user.id == uid for user in message.mentions) or
-            (message.reference and message.reference.resolved and message.reference.resolved.author.id == uid)
-        ):
-            user = await bot.fetch_user(uid)
-            await message.channel.send(
-                f"<@{user.id}> is sleeping. 💤",
-                allowed_mentions=discord.AllowedMentions.none()
-            )
-            break
-
-    if message.author.id in afk_users:
-        reason = afk_users.pop(message.author.id)
-        await message.channel.send(
-            f"Welcome back, {message.author.mention}. You were AFK: **{reason}**",
-            allowed_mentions=discord.AllowedMentions.none()
-        )
-
-    if message.author.id in watchlist and message.author.id != super_owner_id:
-        try:
-            await message.delete()
-        except:
-            pass
-
-    await bot.process_commands(message)
-
 @bot.command()
 @is_owner()
 async def purge(ctx, amount: int, member: discord.Member = None):
@@ -780,9 +793,9 @@ async def listblocked(ctx):
     await ctx.send("Blocked users:\n" + "\n".join(users))
 
 @bot.command()
-@is_owner()
 async def sleep(ctx):
     sleeping_users.add(ctx.author.id)
+    sleeping_users[ctx.author.id] = datetime.datetime.utcnow()
     await ctx.send("You’re now in sleep mode. 💤 Good night!")
 
 keep_alive()
