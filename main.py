@@ -437,6 +437,24 @@ async def rolesinfo(ctx):
 
 @bot.command()
 @is_owner()
+async def roleinfo(ctx, role: discord.Role):
+    members = [member.mention for member in role.members]
+    is_admin = role.permissions.administrator
+
+    if is_admin:
+        perms_text = "**Admin Permissions: ✔️**"
+    else:
+        perms = [name.replace('_', ' ').title() for name, value in role.permissions if value]
+        perms_text = "**Permissions:**\n" + ", ".join(perms) if perms else "No special permissions."
+
+    member_list = ", ".join(members) if members else "No members have this role."
+    embed = discord.Embed(title=f"Role Info: {role.name}", color=role.color)
+    embed.add_field(name="Members", value=member_list, inline=False)
+    embed.add_field(name="Permissions", value=perms_text, inline=False)
+    await ctx.send(embed=embed)
+
+@bot.command()
+@is_owner()
 @is_mod_block()
 async def deleterole(ctx, *roles: discord.Role):
     if not roles:
