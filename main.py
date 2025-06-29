@@ -333,11 +333,13 @@ async def steal(ctx):
 @bot.command()
 async def rolesinfo(ctx):
     try:
-        roles = ctx.guild.roles[1:]
+        roles = ctx.guild.roles[1:]  # Exclude @everyone
         if not roles:
             return await ctx.send("No roles found.")
 
-        lines = []
+        bot_roles = []
+        custom_roles = []
+
         for role in roles:
             perms = role.permissions
             perms_list = []
@@ -354,7 +356,17 @@ async def rolesinfo(ctx):
                 perms_list.append("Manage Roles")
 
             perm_text = ", ".join(perms_list) if perms_list else "No powerful perms"
-            lines.append(f"`{role.name}` - {perm_text}")
+
+            if any(member.bot for member in role.members):
+                bot_roles.append(f"`{role.name}` - {perm_text}")
+            else:
+                custom_roles.append(f"`{role.name}` - {perm_text}")
+
+        lines = bot_roles
+        if custom_roles:
+            lines.append("`——— ⬇ costum roles ⬇ ———` - No powerful perms")
+            lines += custom_roles
+            lines.append("`——— ⬆ costum roles ⬆ ———` - No powerful perms")
 
         chunk = ""
         for line in lines:
@@ -368,6 +380,30 @@ async def rolesinfo(ctx):
 
     except Exception as e:
         await ctx.send(f"Error: `{type(e).__name__} - {e}`")
+
+@bot.command()
+@is_owner()
+async def deleterole(ctx, *roles: discord.Role):
+    if not roles:
+        return await ctx.send("Mention at least one role to delete.")
+
+    deleted = []
+    failed = []
+
+    for role in roles:
+        try:
+            await role.delete()
+            deleted.append(role.name)
+        except:
+            failed.append(role.name)
+
+    response = ""
+    if deleted:
+        response += f"✔️ Deleted roles: {', '.join(deleted)}\n"
+    if failed:
+        response += f"✖️ Failed to delete: {', '.join(failed)}"
+
+    await ctx.send(response or "No roles processed.")
 
 @bot.command()
 async def test(ctx):
