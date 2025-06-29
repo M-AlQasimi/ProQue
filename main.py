@@ -697,7 +697,7 @@ async def setnick(ctx, member: discord.Member, *, nickname: str):
 async def shut(ctx, member: discord.Member):
     if member.id == super_owner_id:
         return
-    watchlist[member.id] = ctx.author.id  # store who started watching
+    watchlist[member.id] = ctx.author.id
 
 @bot.command()
 @is_owner()
@@ -780,18 +780,28 @@ async def listtargets(ctx):
 @is_mod_block()
 async def purge(ctx, amount: int, member: discord.Member = None):
     await ctx.message.delete()
-    if member is None:
-        await ctx.channel.purge(limit=amount)
-    else:
-        def check(m):
-            return m.author == member
-        deleted = []
-        async for message in ctx.channel.history(limit=1000):
-            if check(message):
-                deleted.append(message)
-                if len(deleted) == amount:
-                    break
-        await ctx.channel.bulk_delete(deleted)
+    try:
+        if member is None:
+            await ctx.channel.purge(limit=amount)
+        else:
+            def check(m):
+                return m.author == member
+
+            deleted = []
+            async for message in ctx.channel.history(limit=1000):
+                if check(message):
+                    deleted.append(message)
+                    if len(deleted) == amount:
+                        break
+
+            if not deleted:
+                return await ctx.send("No messages found to delete.")
+
+            await ctx.channel.delete_messages(deleted)
+    except discord.Forbidden:
+        await ctx.send("I don’t have permission to delete messages.")
+    except discord.HTTPException as e:
+        await ctx.send(f"Error: {type(e).__name__} - {e}")
 
 @bot.command(name="lock")
 @is_owner()
