@@ -181,8 +181,8 @@ async def dsnipe(ctx, index: str = "1"):
             response = ""
             for i, (content, author, timestamp) in enumerate(selected, 1):
                 time_str = timestamp.strftime("%d %b %Y • %H:%M UTC")
-                response += f"#{i} - Deleted by {author.name} at {time_str}:\n{content}\n\n"
-            await ctx.send(response[:2000])
+                response += f"#{i} - Deleted by <@{author.id}> at {time_str}:\n{content}\n\n"
+            await ctx.send(response[:2000], allowed_mentions=discord.AllowedMentions.none())
         else:
             n = int(index) - 1
             messages = deleted_snipes.get(ctx.channel.id, [])
@@ -190,7 +190,10 @@ async def dsnipe(ctx, index: str = "1"):
                 return await ctx.send("Nothing to snipe.")
             content, author, timestamp = messages[n]
             time_str = timestamp.strftime("%d %b %Y • %H:%M UTC")
-            await ctx.send(f"Deleted by {author.mention} at {time_str}:\n{content}", allowed_mentions=discord.AllowedMentions.none())
+            await ctx.send(
+                f"Deleted by <@{author.id}> at {time_str}:\n{content}",
+                allowed_mentions=discord.AllowedMentions.none()
+            )
     except:
         await ctx.send("Invalid index. Use a number like `.dsnipe 3` or `.dsnipe -3`.")
 
@@ -206,8 +209,8 @@ async def esnipe(ctx, index: str = "1"):
             response = ""
             for i, (before, after, author, timestamp) in enumerate(selected, 1):
                 time_str = timestamp.strftime("%d %b %Y • %H:%M UTC")
-                response += f"#{i} - Edited by {author.name} at {time_str}:\n**Before:** {before}\n**After:** {after}\n\n"
-            await ctx.send(response[:2000])
+                response += f"#{i} - Edited by <@{author.id}> at {time_str}:\n**Before:** {before}\n**After:** {after}\n\n"
+            await ctx.send(response[:2000], allowed_mentions=discord.AllowedMentions.none())
         else:
             n = int(index) - 1
             if not messages or n >= len(messages) or n < 0:
@@ -215,7 +218,7 @@ async def esnipe(ctx, index: str = "1"):
             before, after, author, timestamp = messages[n]
             time_str = timestamp.strftime("%d %b %Y • %H:%M UTC")
             await ctx.send(
-                f"Edited by {author.mention} at {time_str}:\n**Before:** {before}\n**After:** {after}",
+                f"Edited by <@{author.id}> at {time_str}:\n**Before:** {before}\n**After:** {after}",
                 allowed_mentions=discord.AllowedMentions.none()
             )
     except:
@@ -224,25 +227,27 @@ async def esnipe(ctx, index: str = "1"):
 @bot.command()
 async def rsnipe(ctx, index: str = "1"):
     try:
+        logs = removed_reactions.get(ctx.channel.id, [])
         if index.startswith("-"):
             count = int(index[1:])
-            logs = removed_reactions.get(ctx.channel.id, [])
             if not logs or count < 1:
                 return await ctx.send("Nothing to snipe.")
             selected = logs[:count]
             response = ""
             for i, (user, emoji, msg, timestamp) in enumerate(selected, 1):
                 time_str = timestamp.strftime("%d %b %Y • %H:%M UTC")
-                response += f"#{i} - {user.name} removed {emoji} from [this message]({msg.jump_url}) at {time_str}.\n\n"
-            await ctx.send(response[:2000])
+                response += f"#{i} - <@{user.id}> removed {emoji} from [this message]({msg.jump_url}) at {time_str}.\n\n"
+            await ctx.send(response[:2000], allowed_mentions=discord.AllowedMentions.none())
         else:
             n = int(index) - 1
-            logs = removed_reactions.get(ctx.channel.id, [])
             if not logs or n >= len(logs) or n < 0:
                 return await ctx.send("Nothing to snipe.")
             user, emoji, msg, timestamp = logs[n]
             time_str = timestamp.strftime("%d %b %Y • %H:%M UTC")
-            await ctx.send(f"{user.name} removed {emoji} from [this message]({msg.jump_url}) at {time_str}.")
+            await ctx.send(
+                f"<@{user.id}> removed {emoji} from [this message]({msg.jump_url}) at {time_str}.",
+                allowed_mentions=discord.AllowedMentions.none()
+            )
     except:
         await ctx.send("Invalid index. Use a number like `.rsnipe 2` or `.rsnipe -3`.")
 
@@ -309,7 +314,11 @@ class TicTacToeButton(Button):
 
         winner = check_winner(board)
         if winner:
-            await game["msg"].edit(content=f"🎉 {interaction.user.mention} wins!", view=game["view"])
+            await game["msg"].edit(
+                content=f"🎉 <@{interaction.user.id}> wins!",
+                view=game["view"],
+                allowed_mentions=discord.AllowedMentions.none()
+            )
             await disable_all_buttons(game["view"])
             del ttt_games[interaction.channel.id]
             return
@@ -345,7 +354,7 @@ def check_winner(board):
 async def disable_all_buttons(view):
     for item in view.children:
         item.disabled = True
-        
+
 class AcceptView(View):
     def __init__(self, ctx, opponent):
         super().__init__(timeout=30) 
@@ -372,7 +381,10 @@ class AcceptView(View):
 
     async def on_timeout(self):
         if not self.accepted and not self.declined:
-            await self.ctx.send(f"{self.opponent.mention} didn't respond in time. Game canceled.")
+            await self.ctx.send(
+                f"<@{self.opponent.id}> didn't respond in time. Game canceled.",
+                allowed_mentions=discord.AllowedMentions.none()
+            )
 
 @bot.command()
 async def ttt(ctx, opponent: discord.Member):
@@ -382,8 +394,12 @@ async def ttt(ctx, opponent: discord.Member):
         return await ctx.send("Choose a real opponent.")
 
     view = AcceptView(ctx, opponent)
-    await ctx.send(f"{opponent.mention}, {ctx.author.mention} challenged you to a game of **Tic Tac Toe**.\nClick below to accept or decline:", view=view)
-    await view.wait()
+await ctx.send(
+    f"<@{opponent.id}>, <@{ctx.author.id}> challenged you to a game of **Tic Tac Toe**.\nClick below to accept or decline:",
+    view=view,
+    allowed_mentions=discord.AllowedMentions.none()
+)
+await view.wait()
 
     if not view.accepted:
         return  
@@ -408,17 +424,25 @@ async def update_turn(game, channel):
     time_left = 30
 
     async def countdown():
-        nonlocal time_left
-        while time_left > 0:
-            await game["msg"].edit(content=f"{current.mention}, it's your turn! ({time_left}s)", view=game["view"])
-            await asyncio.sleep(1)
-            time_left -= 1
+    nonlocal time_left
+    while time_left > 0:
+        await game["msg"].edit(
+            content=f"<@{current.id}>, it's your turn! ({time_left}s)",
+            view=game["view"],
+            allowed_mentions=discord.AllowedMentions.none()
+        )
+        await asyncio.sleep(1)
+        time_left -= 1
 
-        await game["msg"].edit(content=f"⏱️ {current.mention} took too long. Game over!", view=game["view"])
-        await disable_all_buttons(game["view"])
-        del ttt_games[channel.id]
+    await game["msg"].edit(
+        content=f"⏱️ <@{current.id}> took too long. Game over!",
+        view=game["view"],
+        allowed_mentions=discord.AllowedMentions.none()
+    )
+    await disable_all_buttons(game["view"])
+    del ttt_games[channel.id]
 
-    game["timeout_task"] = asyncio.create_task(countdown())
+game["timeout_task"] = asyncio.create_task(countdown())
 
 @bot.command()
 async def q(ctx):
@@ -430,7 +454,10 @@ async def q(ctx):
 async def setnick(ctx, member: discord.Member, *, nickname: str):
     try:
         await member.edit(nick=nickname)
-        await ctx.send(f"Changed {member.mention}'s nickname to **{nickname}**.")
+        await ctx.send(
+            f"Changed <@{member.id}>'s nickname to **{nickname}**.",
+            allowed_mentions=discord.AllowedMentions.none()
+        )
     except discord.Forbidden:
         await ctx.send("I don't have permission to change that user's nickname.")
     except Exception as e:
@@ -447,7 +474,7 @@ async def shut(ctx, member: discord.Member):
 @is_owner()
 async def unshut(ctx, member: discord.Member):
     if member.id in owner_ids and ctx.author.id != super_owner_id:
-        return await ctx.send("Only Que can stop watching owners.")
+        return await ctx.send("Only 𝚀𝚞𝚎 can stop watching owners.")
     watchlist.discard(member.id)
 
 @bot.command()
@@ -460,26 +487,32 @@ async def clearwatchlist(ctx):
 @is_owner()
 async def addowner(ctx, member: discord.Member):
     if ctx.author.id != super_owner_id:
-        return await ctx.send("Only super owner can add owners.")
+        return await ctx.send("Only 𝚀𝚞𝚎 can add owners.")
     owner_ids.add(member.id)
-    await ctx.send(f"Added {member.mention} as owner.")
+    await ctx.send(
+        f"Added <@{member.id}> as owner.",
+        allowed_mentions=discord.AllowedMentions.none()
+    )
 
 @bot.command()
 @is_owner()
 async def removeowner(ctx, member: discord.Member):
     if ctx.author.id != super_owner_id or member.id == super_owner_id:
-        return await ctx.send("Only super owner can remove owners except super owner.")
+        return await ctx.send("Only 𝚀𝚞𝚎 can remove owners.")
     owner_ids.discard(member.id)
-    await ctx.send(f"Removed {member.mention} from owners.")
+    await ctx.send(
+        f"Removed <@{member.id}> from owners.",
+        allowed_mentions=discord.AllowedMentions.none()
+    )
 
 @bot.command()
 @is_owner()
 async def clearowners(ctx):
     if ctx.author.id != super_owner_id:
-        return await ctx.send("Only super owner can clear owners.")
+        return await ctx.send("Only 𝚀𝚞𝚎 can clear owners.")
     owner_ids.clear()
     owner_ids.add(super_owner_id)
-    await ctx.send("Cleared all owners except super owner.")
+    await ctx.send("Cleared all owners.")
 
 @bot.command()
 @is_owner()
@@ -488,8 +521,9 @@ async def listowners(ctx):
     for oid in owner_ids:
         member = ctx.guild.get_member(oid)
         if member:
-            names.append(f"{member.name} ({member.name})")
-    await ctx.send("Owners:\n" + ("\n".join(names) if names else "No owners found."))
+            names.append(f"<@{member.id}> ({member.name})")
+    await ctx.send("Owners:\n" + ("\n".join(names) if names else "No owners found."),
+                   allowed_mentions=discord.AllowedMentions.none())
 
 @bot.command()
 @is_owner()
@@ -498,8 +532,11 @@ async def listtargets(ctx):
     for uid in watchlist:
         member = ctx.guild.get_member(uid)
         if member:
-            names.append(f"**{member.name}** ({member.name})")
-    await ctx.send("Targets:\n" + ("\n".join(names) if names else "No targets being watched."))
+            names.append(f"<@{member.id}> (**{member.name}**)")
+    await ctx.send(
+        "Targets:\n" + ("\n".join(names) if names else "No targets being watched."),
+        allowed_mentions=discord.AllowedMentions.none()
+    )
 
 @bot.command()
 @is_owner()
