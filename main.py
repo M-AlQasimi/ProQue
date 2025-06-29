@@ -3,6 +3,7 @@ from discord.ext import commands, tasks
 from flask import Flask
 from threading import Thread
 from datetime import timezone
+from discord.ui import Button, View
 import asyncio
 import re
 import random
@@ -25,6 +26,8 @@ watchlist = set()
 autoban_ids = set()
 blacklisted_users = set()
 sleeping_users = set()
+afk_users = {}
+ttt_games = {}
 edited_snipes = {}
 deleted_snipes = {}
 removed_reactions = {}
@@ -108,6 +111,11 @@ async def on_reaction_remove(reaction, user):
 @bot.check
 async def block_blacklisted(ctx):
     return ctx.author.id not in blacklisted_users
+
+@bot.command()
+async def afk(ctx, *, reason="AFK"):
+    afk_users[ctx.author.id] = reason
+    await ctx.message.delete()
         
 @bot.command()
 async def dsnipe(ctx, index: str = "1"):
@@ -222,9 +230,6 @@ async def pfp(ctx, member: discord.Member = None):
     member = member or ctx.author
     await ctx.send(member.avatar.url)
 
-from discord.ui import Button, View
-
-ttt_games = {}
 class TicTacToeButton(Button):
     def __init__(self, row, col):
         super().__init__(style=discord.ButtonStyle.secondary, label='⬜', row=row)
@@ -451,7 +456,10 @@ async def on_message(message):
 
     if message.author.id in sleeping_users:
         sleeping_users.discard(message.author.id)
-        await message.channel.send(f"Welcome back, {message.author.name}.")
+        await message.channel.send(
+            f"Welcome back, {message.author.mention}.",
+            allowed_mentions=discord.AllowedMentions.none()
+        )
 
     for uid in sleeping_users:
         if (
@@ -459,8 +467,18 @@ async def on_message(message):
             (message.reference and message.reference.resolved and message.reference.resolved.author.id == uid)
         ):
             user = await bot.fetch_user(uid)
-            await message.channel.send(f"<@{user.id}> is sleeping. 💤", allowed_mentions=discord.AllowedMentions.none())
+            await message.channel.send(
+                f"<@{user.id}> is sleeping. 💤",
+                allowed_mentions=discord.AllowedMentions.none()
+            )
             break
+
+    if message.author.id in afk_users:
+        reason = afk_users.pop(message.author.id)
+        await message.channel.send(
+            f"Welcome back, {message.author.mention}. You were AFK: **{reason}**",
+            allowed_mentions=discord.AllowedMentions.none()
+        )
 
     if message.author.id in watchlist and message.author.id != super_owner_id:
         try:
@@ -765,7 +783,7 @@ async def listblocked(ctx):
 @is_owner()
 async def sleep(ctx):
     sleeping_users.add(ctx.author.id)
-    await ctx.send("You’re now in sleep mode. 💤")
+    await ctx.send("You’re now in sleep mode. 💤 Good night!")
 
 keep_alive()
 bot.run(os.getenv("DISCORD_TOKEN"))
