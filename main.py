@@ -128,6 +128,7 @@ async def on_command_error(ctx, error):
     elif isinstance(error, commands.BadArgument):
         await ctx.send("Invalid input. Check your arguments.")
     else:
+        print(f"Unexpected error in {ctx.command}: {type(error).__name__} - {error}")  # Add this
         if ctx.author.id in owner_ids:
             await ctx.send("Error.")
         else:
