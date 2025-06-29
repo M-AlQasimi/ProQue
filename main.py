@@ -4,6 +4,9 @@ from flask import Flask
 from threading import Thread
 from datetime import timezone
 from discord.ui import Button, View
+from io import BytesIO
+from discord import File, Emoji, StickerItem
+from discord.ui import View, button, Button
 import asyncio
 import re
 import random
@@ -250,6 +253,81 @@ async def rsnipe(ctx, index: str = "1"):
             )
     except:
         await ctx.send("Invalid index. Use a number like `.rsnipe 2` or `.rsnipe -3`.")
+
+@bot.command()
+@commands.has_permissions(manage_emojis=True)
+async def steal(ctx):
+    if not ctx.message.reference:
+        return await ctx.send("Reply to a message containing a sticker or custom emoji.")
+
+    ref = await ctx.channel.fetch_message(ctx.message.reference.message_id)
+    item_url = None
+    item_name = "stolen"
+    is_emoji = False
+
+    emoji_match = re.search(r"<(a)?:\w+:(\d+)>", ref.content)
+    if emoji_match:
+        emoji_id = emoji_match.group(2)
+        is_emoji = True
+        item_url = f"https://cdn.discordapp.com/emojis/{emoji_id}.{'gif' if emoji_match.group(1) else 'png'}"
+        item_name = re.search(r":(\w+):", ref.content).group(1)
+
+    elif ref.stickers:
+        sticker = ref.stickers[0]
+        item_url = sticker.url
+        item_name = sticker.name
+
+    else:
+        return await ctx.send("No emoji or sticker found in the replied message.")
+
+    class StealView(View):
+        def __init__(self):
+            super().__init__(timeout=15)
+            self.response_sent = False
+
+        @button(label="Add as Emoji", style=discord.ButtonStyle.primary)
+        async def add_emoji(self, interaction: discord.Interaction, button: Button):
+            if self.response_sent:
+                return
+            self.response_sent = True
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(item_url) as resp:
+                        if resp.status != 200:
+                            return await interaction.response.send_message("Failed to fetch image.", ephemeral=True)
+                        img_bytes = await resp.read()
+                        await ctx.guild.create_custom_emoji(name=item_name[:32], image=img_bytes)
+                        await interaction.response.send_message("✔️ Emoji added!")
+            except discord.Forbidden:
+                await interaction.response.send_message("I don't have permission to add emojis.", ephemeral=True)
+            except Exception as e:
+                await interaction.response.send_message(f"Failed: {e}", ephemeral=True)
+
+        @button(label="Add as Sticker", style=discord.ButtonStyle.success)
+        async def add_sticker(self, interaction: discord.Interaction, button: Button):
+            if self.response_sent:
+                return
+            self.response_sent = True
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(item_url) as resp:
+                        if resp.status != 200:
+                            return await interaction.response.send_message("Failed to fetch sticker.", ephemeral=True)
+                        img_bytes = await resp.read()
+                        image_file = File(BytesIO(img_bytes), filename="sticker.png")
+                        await ctx.guild.create_sticker(
+                            name=item_name[:30],
+                            description="stolen sticker",
+                            emoji="👍",
+                            file=image_file
+                        )
+                        await interaction.response.send_message("✔️ Sticker added!")
+            except discord.Forbidden:
+                await interaction.response.send_message("I don't have permission to add stickers.", ephemeral=True)
+            except Exception as e:
+                await interaction.response.send_message(f"Failed: {e}", ephemeral=True)
+
+    await ctx.send("Choose how you want to save this:", view=StealView())
 
 @bot.command()
 async def test(ctx):
