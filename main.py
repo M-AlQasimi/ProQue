@@ -330,38 +330,36 @@ async def steal(ctx):
 
     await ctx.send("Choose how you want to save this:", view=StealView())
 
-@bot.command(name="rolesinfo")
+@bot.command()
 async def rolesinfo(ctx):
-    embed = discord.Embed(title="Server Roles Info", color=0x2ecc71)
-    roles = sorted(ctx.guild.roles, key=lambda r: r.position, reverse=True)
+    try:
+        roles = ctx.guild.roles[1:]  # Skip @everyone
+        if not roles:
+            return await ctx.send("No roles found.")
 
-    for role in roles:
-        perms = role.permissions
-        if role.is_default():
-            continue
+        lines = []
+        for role in roles:
+            perms = role.permissions
+            perms_list = []
 
-        flags = []
-        if perms.administrator:
-            flags.append("Admin 🛡️")
-        if perms.manage_guild:
-            flags.append("Manage Server 🧩")
-        if perms.manage_roles:
-            flags.append("Manage Roles 🛠️")
-        if perms.ban_members:
-            flags.append("Ban Members 🔨")
-        if perms.kick_members:
-            flags.append("Kick Members 👢")
-        if perms.mention_everyone:
-            flags.append("Mention Everyone 📢")
+            if perms.administrator:
+                perms_list.append("Administrator")
+            if perms.manage_guild:
+                perms_list.append("Manage Server")
+            if perms.kick_members:
+                perms_list.append("Kick")
+            if perms.ban_members:
+                perms_list.append("Ban")
+            if perms.manage_roles:
+                perms_list.append("Manage Roles")
 
-        flags = flags if flags else ["No major perms ✖️"]
-        embed.add_field(
-            name=f"{role.name}",
-            value=", ".join(flags),
-            inline=False
-        )
+            perm_text = ", ".join(perms_list) if perms_list else "No powerful perms"
+            lines.append(f"`{role.name}` - {perm_text}")
 
-    await ctx.send(embed=embed)
+        response = "\n".join(lines)
+        await ctx.send(f"**Roles & Permissions:**\n{response[:2000]}")
+    except Exception as e:
+        await ctx.send(f"Error: `{type(e).__name__} - {e}`")
 
 @bot.command()
 async def test(ctx):
