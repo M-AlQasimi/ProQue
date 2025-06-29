@@ -333,7 +333,7 @@ async def steal(ctx):
 @bot.command()
 async def rolesinfo(ctx):
     try:
-        roles = ctx.guild.roles[1:]  # Skip @everyone
+        roles = ctx.guild.roles[1:]
         if not roles:
             return await ctx.send("No roles found.")
 
@@ -356,8 +356,16 @@ async def rolesinfo(ctx):
             perm_text = ", ".join(perms_list) if perms_list else "No powerful perms"
             lines.append(f"`{role.name}` - {perm_text}")
 
-        response = "\n".join(lines)
-        await ctx.send(f"**Roles & Permissions:**\n{response[:2000]}")
+        chunk = ""
+        for line in lines:
+            if len(chunk) + len(line) + 1 > 2000:
+                await ctx.send(chunk)
+                chunk = ""
+            chunk += line + "\n"
+
+        if chunk:
+            await ctx.send(chunk)
+
     except Exception as e:
         await ctx.send(f"Error: `{type(e).__name__} - {e}`")
 
