@@ -28,6 +28,8 @@ owner_ids = {super_owner_id}
 watchlist = set()
 autoban_ids = set()
 blacklisted_users = set()
+mods = set()
+watchlist = {}
 sleeping_users = {}
 afk_users = {}
 ttt_games = {}
@@ -165,6 +167,37 @@ async def on_reaction_remove(reaction, user):
 async def block_blacklisted(ctx):
     return ctx.author.id not in blacklisted_users
 
+def is_mod_block():
+    async def predicate(ctx):
+        if ctx.author.id == super_owner_id or ctx.author.id in owner_ids:
+            return True
+        if ctx.author.id in mods:
+            return False
+        return True
+    return commands.check(predicate)
+
+@bot.command()
+@is_owner()
+@is_mod_block()
+async def addmod(ctx, member: discord.Member):
+    mods.add(member.id)
+    await ctx.send(f"Added <@{member.id}> as a mod.", allowed_mentions=discord.AllowedMentions.none())
+
+@bot.command()
+@is_owner()
+@is_mod_block()
+async def removemod(ctx, member: discord.Member):
+    mods.discard(member.id)
+    await ctx.send(f"Removed <@{member.id}> from mods.", allowed_mentions=discord.AllowedMentions.none())
+
+@bot.command()
+@is_owner()
+async def listmods(ctx):
+    if not mods:
+        return await ctx.send("No mods found.")
+    mod_mentions = [f"<@{uid}>" for uid in mods]
+    await ctx.send("Mods:\n" + "\n".join(mod_mentions), allowed_mentions=discord.AllowedMentions.none())
+    
 @bot.command()
 async def afk(ctx, *, reason="AFK"):
     afk_users[ctx.author.id] = {
@@ -331,6 +364,7 @@ async def steal(ctx):
     await ctx.send("Choose how you want to save this:", view=StealView())
 
 @bot.command()
+@is_owner()
 async def rolesinfo(ctx):
     try:
         roles = ctx.guild.roles[1:]
@@ -375,7 +409,7 @@ async def rolesinfo(ctx):
             lines.extend(powerful_roles)
 
         if bot_roles:
-            lines.append("**🤖 Bot Roles:**")
+            lines.append("**🤖 Bot Roles (No Power):**")
             lines.extend(bot_roles)
 
         if no_power_roles:
@@ -403,6 +437,7 @@ async def rolesinfo(ctx):
 
 @bot.command()
 @is_owner()
+@is_mod_block()
 async def deleterole(ctx, *roles: discord.Role):
     if not roles:
         return await ctx.send("Mention at least one role to delete.")
@@ -426,6 +461,7 @@ async def deleterole(ctx, *roles: discord.Role):
     await ctx.send(response or "No roles processed.")
 
 @bot.command()
+@is_owner()
 async def test(ctx):
     await ctx.send("I'm alive heh")
 
@@ -639,26 +675,33 @@ async def setnick(ctx, member: discord.Member, *, nickname: str):
 
 @bot.command()
 @is_owner()
+@is_mod_block()
 async def shut(ctx, member: discord.Member):
     if member.id == super_owner_id:
         return
-    watchlist.add(member.id)
+    watchlist[member.id] = ctx.author.id  # store who started watching
 
 @bot.command()
 @is_owner()
+@is_mod_block()
 async def unshut(ctx, member: discord.Member):
-    if member.id in owner_ids and ctx.author.id != super_owner_id:
-        return await ctx.send("Only 𝚀𝚞𝚎 can stop watching owners.")
-    watchlist.discard(member.id)
+    if member.id in owner_ids:
+        if watchlist.get(member.id) == super_owner_id and ctx.author.id != super_owner_id:
+            return await ctx.send("Only 𝚀𝚞𝚎 can stop watching that owner.")
+    watchlist.pop(member.id, None)
 
 @bot.command()
 @is_owner()
+@is_mod_block()
 async def clearwatchlist(ctx):
+    if ctx.author.id != super_owner_id:
+        return await ctx.send("Only 𝚀𝚞𝚎 can clear the watchlist.")
     watchlist.clear()
     await ctx.send("Watchlist cleared.")
 
 @bot.command()
 @is_owner()
+@is_mod_block()
 async def addowner(ctx, member: discord.Member):
     if ctx.author.id != super_owner_id:
         return await ctx.send("Only 𝚀𝚞𝚎 can add owners.")
@@ -670,6 +713,7 @@ async def addowner(ctx, member: discord.Member):
 
 @bot.command()
 @is_owner()
+@is_mod_block()
 async def removeowner(ctx, member: discord.Member):
     if ctx.author.id != super_owner_id or member.id == super_owner_id:
         return await ctx.send("Only 𝚀𝚞𝚎 can remove owners.")
@@ -681,6 +725,7 @@ async def removeowner(ctx, member: discord.Member):
 
 @bot.command()
 @is_owner()
+@is_mod_block()
 async def clearowners(ctx):
     if ctx.author.id != super_owner_id:
         return await ctx.send("Only 𝚀𝚞𝚎 can clear owners.")
@@ -714,6 +759,7 @@ async def listtargets(ctx):
 
 @bot.command()
 @is_owner()
+@is_mod_block()
 async def purge(ctx, amount: int, member: discord.Member = None):
     await ctx.message.delete()
     if member is None:
@@ -760,6 +806,7 @@ async def mute(ctx, member: discord.Member, duration: str):
 
 @bot.command()
 @is_owner()
+@is_mod_block()
 async def ban(ctx, user: discord.User, *, reason=None):
     await ctx.guild.ban(user, reason=reason)
     await ctx.send(
@@ -769,6 +816,7 @@ async def ban(ctx, user: discord.User, *, reason=None):
 
 @bot.command()
 @is_owner()
+@is_mod_block()
 async def unban(ctx, *, user: str):
     try:
         user_obj = None
@@ -794,6 +842,7 @@ async def unban(ctx, *, user: str):
         await ctx.send("Failed to unban user.")
 
 @bot.command(name="listbans")
+@is_owner()
 async def listbans(ctx):
     try:
         bans = await ctx.guild.bans()
@@ -835,6 +884,7 @@ async def removerole(ctx, member: discord.Member, role: discord.Role):
 
 @bot.command()
 @is_owner()
+@is_mod_block()
 async def speak(ctx, *, msg):
     await ctx.message.delete()
     await ctx.send(msg)
@@ -887,6 +937,7 @@ async def picker(ctx, *, options):
 
 @bot.command()
 @is_owner()
+@is_mod_block()
 async def aban(ctx, target):
     try:
         user = await commands.UserConverter().convert(ctx, target)
@@ -902,6 +953,7 @@ async def aban(ctx, target):
 
 @bot.command()
 @is_owner()
+@is_mod_block()
 async def raban(ctx, target):
     try:
         user = await commands.UserConverter().convert(ctx, target)
@@ -991,12 +1043,14 @@ async def define(ctx, *, word: str):
 
 @bot.command()
 @is_owner()
+@is_mod_block()
 async def summon(ctx, *, message: str = "h-hi"):
     await ctx.message.delete()
     await ctx.send(f"@everyone {message}")
 
 @bot.command()
 @is_owner()
+@is_mod_block()
 async def block(ctx, member: discord.Member):
     blacklisted_users.add(member.id)
     await ctx.send(
@@ -1006,6 +1060,7 @@ async def block(ctx, member: discord.Member):
 
 @bot.command()
 @is_owner()
+@is_mod_block()
 async def unblock(ctx, member: discord.Member):
     blacklisted_users.discard(member.id)
     await ctx.send(
@@ -1015,7 +1070,7 @@ async def unblock(ctx, member: discord.Member):
 
 @bot.command()
 @is_owner()
-async def listblocked(ctx):
+async def listblocks(ctx):
     if not blacklisted_users:
         return await ctx.send("No one is blocked.")
     users = []
