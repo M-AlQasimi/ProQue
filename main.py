@@ -329,6 +329,39 @@ async def steal(ctx):
 
     await ctx.send("Choose how you want to save this:", view=StealView())
 
+@bot.command(name="rolesinfo")
+async def rolesinfo(ctx):
+    embed = discord.Embed(title="Server Roles Info", color=0x2ecc71)
+    roles = sorted(ctx.guild.roles, key=lambda r: r.position, reverse=True)
+
+    for role in roles:
+        perms = role.permissions
+        if role.is_default():
+            continue
+
+        flags = []
+        if perms.administrator:
+            flags.append("Admin 🛡️")
+        if perms.manage_guild:
+            flags.append("Manage Server 🧩")
+        if perms.manage_roles:
+            flags.append("Manage Roles 🛠️")
+        if perms.ban_members:
+            flags.append("Ban Members 🔨")
+        if perms.kick_members:
+            flags.append("Kick Members 👢")
+        if perms.mention_everyone:
+            flags.append("Mention Everyone 📢")
+
+        flags = flags if flags else ["No major perms ✖️"]
+        embed.add_field(
+            name=f"{role.name}",
+            value=", ".join(flags),
+            inline=False
+        )
+
+    await ctx.send(embed=embed)
+
 @bot.command()
 async def test(ctx):
     await ctx.send("I'm alive heh")
