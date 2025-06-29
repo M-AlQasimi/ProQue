@@ -424,25 +424,25 @@ async def update_turn(game, channel):
     time_left = 30
 
     async def countdown():
-    nonlocal time_left
-    while time_left > 0:
+        nonlocal time_left
+        while time_left > 0:
+            await game["msg"].edit(
+                content=f"<@{current.id}>, it's your turn! ({time_left}s)",
+                view=game["view"],
+                allowed_mentions=discord.AllowedMentions.none()
+            )
+            await asyncio.sleep(1)
+            time_left -= 1
+
         await game["msg"].edit(
-            content=f"<@{current.id}>, it's your turn! ({time_left}s)",
+            content=f"⏱️ <@{current.id}> took too long. Game over!",
             view=game["view"],
             allowed_mentions=discord.AllowedMentions.none()
         )
-        await asyncio.sleep(1)
-        time_left -= 1
+        await disable_all_buttons(game["view"])
+        del ttt_games[channel.id]
 
-    await game["msg"].edit(
-        content=f"⏱️ <@{current.id}> took too long. Game over!",
-        view=game["view"],
-        allowed_mentions=discord.AllowedMentions.none()
-    )
-    await disable_all_buttons(game["view"])
-    del ttt_games[channel.id]
-
-game["timeout_task"] = asyncio.create_task(countdown())
+    game["timeout_task"] = asyncio.create_task(countdown())
 
 @bot.command()
 async def q(ctx):
@@ -553,7 +553,7 @@ async def purge(ctx, amount: int, member: discord.Member = None):
                 deleted.append(message)
                 if len(deleted) == amount:
                     break
-        await ctx.channel.delete_messages(deleted)
+        await ctx.channel.bulk_delete(deleted)
 
 @bot.command(name="lock")
 @is_owner()
@@ -576,20 +576,28 @@ async def unlock(ctx):
 async def mute(ctx, member: discord.Member, duration: str):
     time_units = {'s': 1, 'm': 60, 'h': 3600, 'd': 86400}
     seconds = int(duration[:-1]) * time_units.get(duration[-1], 0)
+    if seconds <= 0:
+        return await ctx.send("Invalid duration.")
     await member.timeout(discord.utils.utcnow() + datetime.timedelta(seconds=seconds))
-    await ctx.send(f"**{member.name}** has been muted for {duration}.")
+    await ctx.send(
+        f"{member.mention} has been muted for {duration}.",
+        allowed_mentions=discord.AllowedMentions.none()
+    )
 
 @bot.command()
 @is_owner()
 async def ban(ctx, user: discord.User, *, reason=None):
     await ctx.guild.ban(user, reason=reason)
-    await ctx.send(f"**{user.name}** has been banned.")
+    await ctx.send(
+        f"{user.mention} has been banned.",
+        allowed_mentions=discord.AllowedMentions.none()
+    )
 
 @bot.command()
 @is_owner()
 async def unban(ctx, *, user: str):
     try:
-        name, id_or_discriminator = None, None
+        user_obj = None
 
         if user.isdigit():
             user_obj = await bot.fetch_user(int(user))
@@ -598,35 +606,36 @@ async def unban(ctx, *, user: str):
             bans = await ctx.guild.bans()
             user_obj = next((ban.user for ban in bans if ban.user.name == name and ban.user.discriminator == discriminator), None)
         else:
-            await ctx.send("Please mention the user or provide their ID.")
-            return
+            return await ctx.send("Please provide a username or their user ID.")
 
         if not user_obj:
-            await ctx.send("User not found in ban list.")
-            return
+            return await ctx.send("User not found in ban list.")
 
         await ctx.guild.unban(user_obj)
-        await ctx.send(f"**{user_obj}** has been unbanned.")
-    except Exception as e:
+        await ctx.send(
+            f"{user_obj.mention} has been unbanned.",
+            allowed_mentions=discord.AllowedMentions.none()
+        )
+    except Exception:
         await ctx.send("Failed to unban user.")
 
 @bot.command(name="listbans")
 async def listbans(ctx):
     try:
-        bans = [ban async for ban in ctx.guild.bans()]
+        bans = await ctx.guild.bans()
         if not bans:
             return await ctx.send("No banned users in this server.")
 
         lines = []
         for ban in bans:
             user = ban.user
-            lines.append(f"**{user.name}#{user.discriminator}** (ID: {user.id})")
+            lines.append(f"<@{user.id}> **{user.name}#{user.discriminator}** (ID: {user.id})")
 
         msg = "\n".join(lines)
         if len(msg) > 2000:
             await ctx.send(f"Too many banned users to show ({len(bans)} total).")
         else:
-            await ctx.send(f"**Banned Users:**\n{msg}")
+            await ctx.send(f"**Banned Users:**\n{msg}", allowed_mentions=discord.AllowedMentions.none())
     except discord.Forbidden:
         await ctx.send("I don’t have permission to view bans.")
     except Exception as e:
@@ -636,19 +645,19 @@ async def listbans(ctx):
 @is_owner()
 async def kick(ctx, member: discord.Member, *, reason=None):
     await member.kick(reason=reason)
-    await ctx.send(f"**{member.name}** has been kicked.")
+    await ctx.send(f"<@{member.id}> has been kicked.", allowed_mentions=discord.AllowedMentions.none())
 
 @bot.command()
 @is_owner()
 async def addrole(ctx, member: discord.Member, role: discord.Role):
     await member.add_roles(role)
-    await ctx.send(f"Added {role.name} to **{member.name}**.")
+    await ctx.send(f"Added **{role.name}** to <@{member.id}>.", allowed_mentions=discord.AllowedMentions.none())
 
 @bot.command()
 @is_owner()
 async def removerole(ctx, member: discord.Member, role: discord.Role):
     await member.remove_roles(role)
-    await ctx.send(f"Removed {role.name} from **{member.name}**.")
+    await ctx.send(f"Removed **{role.name}** from <@{member.id}>.", allowed_mentions=discord.AllowedMentions.none())
 
 @bot.command()
 @is_owner()
@@ -686,7 +695,10 @@ async def giveaway(ctx, time: str, *, prize: str):
     users = [u async for u in new_msg.reactions[0].users() if not u.bot]
     if users:
         winner = random.choice(users)
-        await ctx.send(f"Congratulations {winner.mention} 🎉! You won **{prize}**!")
+        await ctx.send(
+            f"Congratulations {winner.mention} 🎉! You won **{prize}**!",
+            allowed_mentions=discord.AllowedMentions.none()
+        )
     else:
         await ctx.send("No one entered the giveaway.")
     await msg.clear_reactions()
@@ -720,7 +732,10 @@ async def raban(ctx, target):
     try:
         user = await commands.UserConverter().convert(ctx, target)
         autoban_ids.discard(user.id)
-        await ctx.send(f"**{user.name}** removed from autoban list.")
+        await ctx.send(
+            f"<@{user.id}> (**{user.name}**) removed from autoban list.",
+            allowed_mentions=discord.AllowedMentions.none()
+        )
     except:
         try:
             user_id = int(target)
@@ -738,16 +753,16 @@ async def abanlist(ctx):
     for uid in autoban_ids:
         member = ctx.guild.get_member(uid)
         if member:
-            results.append(f"**{member.name}** ({uid})")
+            results.append(f"<@{uid}> (**{member.name}**)")
         else:
             results.append(f"User ID: {uid}")
-    await ctx.send("Autoban List:\n" + "\n".join(results))
+    await ctx.send("Autoban List:\n" + "\n".join(results), allowed_mentions=discord.AllowedMentions.none())
 
 @bot.event
 async def on_member_join(member):
     if member.id in autoban_ids:
         try:
-            await member.ban(reason="Autobanned by bot")
+            await member.ban(reason="Autoban")
         except:
             pass
 
@@ -810,13 +825,19 @@ async def summon(ctx, *, message: str = "h-hi"):
 @is_owner()
 async def block(ctx, member: discord.Member):
     blacklisted_users.add(member.id)
-    await ctx.send(f"✖️ **{member.name}** is now blocked from using commands.")
+    await ctx.send(
+        f"✖️ <@{member.id}> (**{member.name}**) is now blocked from using commands.",
+        allowed_mentions=discord.AllowedMentions.none()
+    )
 
 @bot.command()
 @is_owner()
 async def unblock(ctx, member: discord.Member):
     blacklisted_users.discard(member.id)
-    await ctx.send(f"✔️ **{member.name}** is now unblocked.")
+    await ctx.send(
+        f"✔️ <@{member.id}> (**{member.name}**) is now unblocked.",
+        allowed_mentions=discord.AllowedMentions.none()
+    )
 
 @bot.command()
 @is_owner()
@@ -826,12 +847,17 @@ async def listblocked(ctx):
     users = []
     for uid in blacklisted_users:
         user = ctx.guild.get_member(uid)
-        users.append(f"**{user.name}**" if user else f"User ID: `{uid}`")
-    await ctx.send("Blocked users:\n" + "\n".join(users))
+        if user:
+            users.append(f"<@{user.id}> (**{user.name}**)")
+        else:
+            users.append(f"User ID: `{uid}`")
+    await ctx.send(
+        "Blocked users:\n" + "\n".join(users),
+        allowed_mentions=discord.AllowedMentions.none()
+    )
 
 @bot.command()
 async def sleep(ctx):
-    sleeping_users.add(ctx.author.id)
     sleeping_users[ctx.author.id] = datetime.datetime.utcnow()
     await ctx.send("You’re now in sleep mode. 💤 Good night!")
 
