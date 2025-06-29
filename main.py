@@ -394,15 +394,15 @@ async def ttt(ctx, opponent: discord.Member):
         return await ctx.send("Choose a real opponent.")
 
     view = AcceptView(ctx, opponent)
-await ctx.send(
-    f"<@{opponent.id}>, <@{ctx.author.id}> challenged you to a game of **Tic Tac Toe**.\nClick below to accept or decline:",
-    view=view,
-    allowed_mentions=discord.AllowedMentions.none()
-)
-await view.wait()
+    await ctx.send(
+        f"<@{opponent.id}>, <@{ctx.author.id}> challenged you to a game of **Tic Tac Toe**.\nClick below to accept or decline:",
+        view=view,
+        allowed_mentions=discord.AllowedMentions.none()
+    )
+    await view.wait()
 
     if not view.accepted:
-        return  
+        return
 
     board = [['⬜'] * 3 for _ in range(3)]
     game_view = TicTacToeView()
