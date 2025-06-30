@@ -749,6 +749,12 @@ async def test(ctx):
     await ctx.send("I'm alive heh")
 
 @bot.command()
+async def testlog(ctx):
+    embed = discord.Embed(title="✔️ Test Log", description="This is a test log.", color=discord.Color.green())
+    await send_log(embed)
+    print("DEBUG: testlog command used")
+
+@bot.command()
 async def userinfo(ctx, member: discord.Member = None):
     member = member or ctx.author
     embed = discord.Embed(title="User Info", color=0x3498db)
