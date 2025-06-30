@@ -6,7 +6,6 @@ from datetime import timezone
 from discord.ui import Button, View
 from io import BytesIO
 from discord import File, Emoji, StickerItem
-from discord.ui import View, button, Button
 import asyncio
 import re
 import random
@@ -22,6 +21,7 @@ intents.members = True
 
 bot = commands.Bot(command_prefix='.', intents=intents)
 
+log_channel_id = 1389186178271547502
 super_owner_id = 885548126365171824  
 owner_ids = {super_owner_id}
 
@@ -29,7 +29,6 @@ watchlist = set()
 autoban_ids = set()
 blacklisted_users = set()
 mods = set()
-watchlist = {}
 sleeping_users = {}
 afk_users = {}
 ttt_games = {}
@@ -42,6 +41,11 @@ app = Flask('')
 @app.route('/')
 def home():
     return "I'm alive", 200
+
+async def send_log(embed):
+    channel = bot.get_channel(log_channel_id)
+    if channel:
+        await channel.send(embed=embed)
 
 def run():
     app.run(host='0.0.0.0', port=8080)
@@ -64,6 +68,126 @@ async def on_ready():
     print(f'ProQue is online as {bot.user}')
     if not keep_alive_task.is_running():
         keep_alive_task.start()
+
+@bot.event
+async def on_member_join(member):
+    embed = discord.Embed(
+        title="Member Joined",
+        color=discord.Color.green()
+    )
+    embed.add_field(name="User", value=f"{member} ({member.id})", inline=False)
+    now = int(datetime.datetime.utcnow().timestamp())
+    embed.set_footer(text=f"Time: <t:{now}>")
+    await send_log(embed)
+
+@bot.event
+async def on_member_ban(guild, user):
+    async for entry in guild.audit_logs(limit=1, action=discord.AuditLogAction.ban):
+        if entry.target.id == user.id:
+            embed = discord.Embed(
+                title="🔨 Member Banned",
+                color=discord.Color.red()
+            )
+            embed.add_field(name="User", value=f"{user} ({user.id})", inline=False)
+            embed.add_field(name="Banned by", value=f"{entry.user} ({entry.user.id})", inline=False)
+            embed.add_field(name="Reason", value=entry.reason or "No reason provided", inline=False)
+            now = int(datetime.datetime.utcnow().timestamp())
+            embed.set_footer(text=f"Time: <t:{now}>")
+            await send_log(embed)
+            return
+
+@bot.event
+async def on_member_unban(guild, user):
+    async for entry in guild.audit_logs(limit=1, action=discord.AuditLogAction.unban):
+        if entry.target.id == user.id:
+            embed = discord.Embed(
+                title="Member Unbanned",
+                color=discord.Color.green()
+            )
+            embed.add_field(name="User", value=f"{user} ({user.id})", inline=False)
+            embed.add_field(name="Unbanned by", value=f"{entry.user} ({entry.user.id})", inline=False)
+            embed.add_field(name="Reason", value=entry.reason or "No reason provided", inline=False)
+            now = int(datetime.datetime.utcnow().timestamp())
+            embed.set_footer(text=f"Time: <t:{now}>")
+            await send_log(embed)
+            return
+
+@bot.event
+async def on_guild_channel_create(channel):
+    embed = discord.Embed(
+        title="📥 Channel Created",
+        color=discord.Color.green()
+    )
+    embed.add_field(name="Channel", value=channel.mention, inline=False)
+    now = int(datetime.datetime.utcnow().timestamp())
+    embed.set_footer(text=f"Time: <t:{now}>")
+    await send_log(embed)
+
+@bot.event
+async def on_guild_channel_delete(channel):
+    embed = discord.Embed(
+        title="🗑️ Channel Deleted",
+        color=discord.Color.red()
+    )
+    embed.add_field(name="Channel", value=channel.name, inline=False)
+    now = int(datetime.datetime.utcnow().timestamp())
+    embed.set_footer(text=f"Time: <t:{now}>")
+    await send_log(embed)
+
+@bot.event
+async def on_guild_role_create(role):
+    embed = discord.Embed(
+        title="🆕 Role Created",
+        color=discord.Color.green()
+    )
+    embed.add_field(name="Role", value=role.name, inline=False)
+    now = int(datetime.datetime.utcnow().timestamp())
+    embed.set_footer(text=f"Time: <t:{now}>")
+    await send_log(embed)
+
+@bot.event
+async def on_guild_role_delete(role):
+    embed = discord.Embed(
+        title="✖️ Role Deleted",
+        color=discord.Color.red()
+    )
+    embed.add_field(name="Role", value=role.name, inline=False)
+    now = int(datetime.datetime.utcnow().timestamp())
+    embed.set_footer(text=f"Time: <t:{now}>")
+    await send_log(embed)
+
+@bot.event
+async def on_guild_update(before, after):
+    embed = None
+
+    if before.name != after.name:
+        embed = discord.Embed(
+            title="📝 Server Name Changed",
+            description=f"**Before:** {before.name}\n**After:** {after.name}",
+            color=discord.Color.orange()
+        )
+
+    elif before.icon != after.icon:
+        embed = discord.Embed(
+            title="🖼️ Server Icon Changed",
+            color=discord.Color.orange()
+        )
+        if before.icon:
+            embed.set_thumbnail(url=before.icon.url)
+        if after.icon:
+            embed.set_image(url=after.icon.url)
+
+    elif before.verification_level != after.verification_level:
+        embed = discord.Embed(
+            title="🔒 Verification Level Changed",
+            description=f"**Before:** {before.verification_level.name}\n**After:** {after.verification_level.name}",
+            color=discord.Color.orange()
+        )
+
+    if embed:
+        now = int(datetime.datetime.utcnow().timestamp())
+        embed.set_footer(text=f"Time: <t:{now}>")
+        await send_log(embed)
 
 @bot.event
 async def on_message(message):
@@ -163,6 +287,145 @@ async def on_reaction_remove(reaction, user):
     removed_reactions.setdefault(msg.channel.id, []).insert(0, entry)
     removed_reactions[msg.channel.id] = removed_reactions[msg.channel.id][:10]
 
+@bot.event
+async def on_member_update(before, after):
+    embed = None
+
+    if before.nick != after.nick:
+        embed = discord.Embed(
+            title="📝 Nickname Changed",
+            color=discord.Color.blue()
+        )
+        embed.add_field(name="User", value=f"{before} ({before.id})", inline=False)
+        embed.add_field(name="Before", value=before.nick or before.name, inline=True)
+        embed.add_field(name="After", value=after.nick or after.name, inline=True)
+        now = int(datetime.datetime.utcnow().timestamp())
+        embed.set_footer(text=f"Time: <t:{now}>")
+
+    before_roles = set(before.roles)
+    after_roles = set(after.roles)
+
+    added = after_roles - before_roles
+    removed = before_roles - after_roles
+
+    if added or removed:
+        embed = discord.Embed(
+            title="🎭 Roles Updated",
+            color=discord.Color.teal()
+        )
+        embed.add_field(name="User", value=f"{after} ({after.id})", inline=False)
+        if added:
+            embed.add_field(name="Added", value=", ".join(role.name for role in added), inline=True)
+        if removed:
+            embed.add_field(name="Removed", value=", ".join(role.name for role in removed), inline=True)
+        now = int(datetime.datetime.utcnow().timestamp())
+        embed.set_footer(text=f"Time: <t:{now}>")
+
+    before_timeout = before.communication_disabled_until
+    after_timeout = after.communication_disabled_until
+
+    if before_timeout != after_timeout:
+        if after_timeout is not None:
+            embed = discord.Embed(
+                title="⏳ Member Timed Out",
+                color=discord.Color.orange()
+            )
+            embed.add_field(name="User", value=f"{after} ({after.id})", inline=False)
+            embed.add_field(name="Timeout Until", value=f"<t:{int(after_timeout.timestamp())}:F>", inline=False)
+            now = int(datetime.datetime.utcnow().timestamp())
+            embed.set_footer(text=f"Time: <t:{now}>")
+        else:
+            embed = discord.Embed(
+                title="✔️ Timeout Removed",
+                color=discord.Color.green()
+            )
+            embed.add_field(name="User", value=f"{after} ({after.id})", inline=False)
+            now = int(datetime.datetime.utcnow().timestamp())
+            embed.set_footer(text=f"Time: <t:{now}>")
+
+    if embed:
+        await send_log(embed)
+
+@bot.event
+async def on_user_update(before, after):
+    if before.name != after.name:
+        embed = discord.Embed(title="📝 Username Changed", color=discord.Color.blue())
+        embed.add_field(name="User", value=f"{after.mention} ({after.id})", inline=False)
+        embed.add_field(name="Before", value=before.name, inline=True)
+        embed.add_field(name="After", value=after.name, inline=True)
+        now = int(datetime.datetime.utcnow().timestamp())
+        embed.set_footer(text=f"Time: <t:{now}>")
+        await send_log(embed)
+
+    if before.discriminator != after.discriminator:
+        embed = discord.Embed(title="🔢 Discriminator Changed", color=discord.Color.purple())
+        embed.add_field(name="User", value=f"{after.mention} ({after.id})", inline=False)
+        embed.add_field(name="Before", value=before.discriminator, inline=True)
+        embed.add_field(name="After", value=after.discriminator, inline=True)
+        now = int(datetime.datetime.utcnow().timestamp())
+        embed.set_footer(text=f"Time: <t:{now}>")
+        await send_log(embed)
+
+    if before.avatar != after.avatar:
+        embed = discord.Embed(title="🖼️ Avatar Changed", color=discord.Color.gold())
+        embed.add_field(name="User", value=f"{after.mention} ({after.id})", inline=False)
+        embed.set_thumbnail(url=before.avatar.url if before.avatar else discord.Embed.Empty)
+        embed.set_image(url=after.avatar.url if after.avatar else discord.Embed.Empty)
+        now = int(datetime.datetime.utcnow().timestamp())
+        embed.set_footer(text=f"Time: <t:{now}>")
+        await send_log(embed)
+
+@bot.event
+async def on_member_remove(member):
+    guild = member.guild
+    async for entry in guild.audit_logs(limit=1, action=discord.AuditLogAction.kick):
+        if entry.target.id == member.id:
+            embed = discord.Embed(
+                title="🔨 Member Kicked",
+                color=discord.Color.red(),
+                timestamp=datetime.datetime.utcnow()
+            )
+            embed.add_field(name="User", value=f"{member} ({member.id})", inline=False)
+            embed.add_field(name="Kicked by", value=f"{entry.user} ({entry.user.id})", inline=False)
+            embed.add_field(name="Reason", value=entry.reason or "No reason provided", inline=False)
+            await send_log(embed)
+            return
+
+    embed = discord.Embed(
+        title="✖️ Member Left",
+        color=discord.Color.orange(),
+        timestamp=datetime.datetime.utcnow()
+    )
+    embed.add_field(name="User", value=f"{member} ({member.id})", inline=False)
+    await send_log(embed)
+        
+@bot.event
+async def on_voice_state_update(member, before, after):
+    changes = []
+    if not before.channel and after.channel:
+        changes.append(f"🔊 **Joined voice:** {after.channel.mention}")
+    elif before.channel and not after.channel:
+        changes.append(f"📤 **Left voice:** {before.channel.name}")
+    elif before.channel != after.channel:
+        changes.append(f"➡️ **Moved voice:** {before.channel.name} → {after.channel.name}")
+
+    if before.self_mute != after.self_mute:
+        changes.append(f"{'🔇 Muted' if after.self_mute else '🔊 Unmuted'}")
+
+    if before.self_deaf != after.self_deaf:
+        changes.append(f"{'🙉 Deafened' if after.self_deaf else '👂 Undeafened'}")
+
+    if changes:
+        embed = discord.Embed(
+            title="🎙️ Voice State Changed",
+            description="\n".join(changes),
+            color=discord.Color.blurple()
+        )
+        embed.set_author(name=f"{member} ({member.id})", icon_url=member.display_avatar.url)
+        now = int(datetime.datetime.utcnow().timestamp())
+        embed.set_footer(text=f"Time: <t:{now}>")
+        await send_log(embed)
+
 @bot.check
 async def block_blacklisted(ctx):
     return ctx.author.id not in blacklisted_users
@@ -217,8 +480,8 @@ async def dsnipe(ctx, index: str = "1"):
             selected = messages[:count]
             response = ""
             for i, (content, author, timestamp) in enumerate(selected, 1):
-                time_str = timestamp.strftime("%d %b %Y • %H:%M UTC")
-                response += f"#{i} - Deleted by <@{author.id}> at {time_str}:\n{content}\n\n"
+                unix_time = int(timestamp.replace(tzinfo=datetime.timezone.utc).timestamp())
+                response += f"#{i} - Deleted by <@{author.id}> at <t:{unix_time}:f>:\n{content}\n\n"
             await ctx.send(response[:2000], allowed_mentions=discord.AllowedMentions.none())
         else:
             n = int(index) - 1
@@ -226,9 +489,9 @@ async def dsnipe(ctx, index: str = "1"):
             if not messages or n >= len(messages) or n < 0:
                 return await ctx.send("Nothing to snipe.")
             content, author, timestamp = messages[n]
-            time_str = timestamp.strftime("%d %b %Y • %H:%M UTC")
+            unix_time = int(timestamp.replace(tzinfo=datetime.timezone.utc).timestamp())
             await ctx.send(
-                f"Deleted by <@{author.id}> at {time_str}:\n{content}",
+                f"Deleted by <@{author.id}> at <t:{unix_time}:f>:\n{content}",
                 allowed_mentions=discord.AllowedMentions.none()
             )
     except:
@@ -245,17 +508,20 @@ async def esnipe(ctx, index: str = "1"):
             selected = messages[:count]
             response = ""
             for i, (before, after, author, timestamp) in enumerate(selected, 1):
-                time_str = timestamp.strftime("%d %b %Y • %H:%M UTC")
-                response += f"#{i} - Edited by <@{author.id}> at {time_str}:\n**Before:** {before}\n**After:** {after}\n\n"
+                unix_time = int(timestamp.replace(tzinfo=datetime.timezone.utc).timestamp())
+                response += (
+                    f"#{i} - Edited by <@{author.id}> at <t:{unix_time}:f>:\n"
+                    f"**Before:** {before}\n**After:** {after}\n\n"
+                )
             await ctx.send(response[:2000], allowed_mentions=discord.AllowedMentions.none())
         else:
             n = int(index) - 1
             if not messages or n >= len(messages) or n < 0:
                 return await ctx.send("Nothing to snipe.")
             before, after, author, timestamp = messages[n]
-            time_str = timestamp.strftime("%d %b %Y • %H:%M UTC")
+            unix_time = int(timestamp.replace(tzinfo=datetime.timezone.utc).timestamp())
             await ctx.send(
-                f"Edited by <@{author.id}> at {time_str}:\n**Before:** {before}\n**After:** {after}",
+                f"Edited by <@{author.id}> at <t:{unix_time}:f>:\n**Before:** {before}\n**After:** {after}",
                 allowed_mentions=discord.AllowedMentions.none()
             )
     except:
@@ -272,17 +538,19 @@ async def rsnipe(ctx, index: str = "1"):
             selected = logs[:count]
             response = ""
             for i, (user, emoji, msg, timestamp) in enumerate(selected, 1):
-                time_str = timestamp.strftime("%d %b %Y • %H:%M UTC")
-                response += f"#{i} - <@{user.id}> removed {emoji} from [this message]({msg.jump_url}) at {time_str}.\n\n"
+                unix_time = int(timestamp.replace(tzinfo=datetime.timezone.utc).timestamp())
+                response += (
+                    f"#{i} - <@{user.id}> removed {emoji} from [this message]({msg.jump_url}) at <t:{unix_time}:f>.\n\n"
+                )
             await ctx.send(response[:2000], allowed_mentions=discord.AllowedMentions.none())
         else:
             n = int(index) - 1
             if not logs or n >= len(logs) or n < 0:
                 return await ctx.send("Nothing to snipe.")
             user, emoji, msg, timestamp = logs[n]
-            time_str = timestamp.strftime("%d %b %Y • %H:%M UTC")
+            unix_time = int(timestamp.replace(tzinfo=datetime.timezone.utc).timestamp())
             await ctx.send(
-                f"<@{user.id}> removed {emoji} from [this message]({msg.jump_url}) at {time_str}.",
+                f"<@{user.id}> removed {emoji} from [this message]({msg.jump_url}) at <t:{unix_time}:f>.",
                 allowed_mentions=discord.AllowedMentions.none()
             )
     except:
