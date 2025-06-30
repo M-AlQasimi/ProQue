@@ -15,6 +15,7 @@ import aiohttp
 
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix='.', intents=intents)
+print(f"Bot is starting with intents: {bot.intents}")
 
 log_channel_id = 1389186178271547502
 super_owner_id = 885548126365171824  
