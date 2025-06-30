@@ -322,8 +322,8 @@ async def on_member_update(before, after):
         now = int(datetime.datetime.utcnow().timestamp())
         embed.set_footer(text=f"Time: <t:{now}>")
 
-    before_timeout = before.communication_disabled_until
-    after_timeout = after.communication_disabled_until
+    before_timeout = getattr(before, "communication_disabled_until", None)
+    after_timeout = getattr(after, "communication_disabled_until", None)
 
     if before_timeout != after_timeout:
         if after_timeout is not None:
