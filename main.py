@@ -13,12 +13,7 @@ import datetime
 import os
 import aiohttp
 
-intents = discord.Intents.default()
-intents.messages = True
-intents.message_content = True
-intents.guilds = True
-intents.members = True
-
+intents = discord.Intents.all()
 bot = commands.Bot(command_prefix='.', intents=intents)
 
 log_channel_id = 1389186178271547502
