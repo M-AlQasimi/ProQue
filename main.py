@@ -75,7 +75,7 @@ async def on_member_join(member):
     )
     embed.add_field(name="User", value=f"{member} ({member.id})", inline=False)
     now = int(datetime.datetime.utcnow().timestamp())
-    embed.set_footer(text=f"Time: <t:{now}>")
+    embed.add_field(name="Time", value=f"<t:{now}:f>", inline=False)
     print("Sending log:", embed.title)
     try:
         await send_log(embed)
@@ -94,7 +94,7 @@ async def on_member_ban(guild, user):
             embed.add_field(name="Banned by", value=f"{entry.user} ({entry.user.id})", inline=False)
             embed.add_field(name="Reason", value=entry.reason or "No reason provided", inline=False)
             now = int(datetime.datetime.utcnow().timestamp())
-            embed.set_footer(text=f"Time: <t:{now}>")
+            embed.add_field(name="Time", value=f"<t:{now}:f>", inline=False)
             print("Sending log:", embed.title)
             try:
                 await send_log(embed)
@@ -114,7 +114,7 @@ async def on_member_unban(guild, user):
             embed.add_field(name="Unbanned by", value=f"{entry.user} ({entry.user.id})", inline=False)
             embed.add_field(name="Reason", value=entry.reason or "No reason provided", inline=False)
             now = int(datetime.datetime.utcnow().timestamp())
-            embed.set_footer(text=f"Time: <t:{now}>")
+            embed.add_field(name="Time", value=f"<t:{now}:f>", inline=False)
             print("Sending log:", embed.title)
             try:
                 await send_log(embed)
@@ -138,7 +138,7 @@ async def on_guild_channel_create(channel):
     )
     embed.add_field(name="Channel", value=channel.mention, inline=False)
     now = int(datetime.datetime.utcnow().timestamp())
-    embed.set_footer(text=f"Time: <t:{now}>")
+    embed.add_field(name="Time", value=f"<t:{now}:f>", inline=False)
     print("Sending log:", embed.title)
     try:
         await send_log(embed)
@@ -153,7 +153,7 @@ async def on_guild_channel_delete(channel):
     )
     embed.add_field(name="Channel", value=channel.name, inline=False)
     now = int(datetime.datetime.utcnow().timestamp())
-    embed.set_footer(text=f"Time: <t:{now}>")
+    embed.add_field(name="Time", value=f"<t:{now}:f>", inline=False)
     print("Sending log:", embed.title)
     try:
         await send_log(embed)
@@ -168,7 +168,7 @@ async def on_guild_role_create(role):
     )
     embed.add_field(name="Role", value=role.name, inline=False)
     now = int(datetime.datetime.utcnow().timestamp())
-    embed.set_footer(text=f"Time: <t:{now}>")
+    embed.add_field(name="Time", value=f"<t:{now}:f>", inline=False)
     print("Sending log:", embed.title)
     try:
         await send_log(embed)
@@ -183,7 +183,7 @@ async def on_guild_role_delete(role):
     )
     embed.add_field(name="Role", value=role.name, inline=False)
     now = int(datetime.datetime.utcnow().timestamp())
-    embed.set_footer(text=f"Time: <t:{now}>")
+    embed.add_field(name="Time", value=f"<t:{now}:f>", inline=False)
     print("Sending log:", embed.title)
     try:
         await send_log(embed)
@@ -200,7 +200,7 @@ async def on_guild_role_update(before, after):
     embed.add_field(name="Before", value=before.name, inline=True)
     embed.add_field(name="After", value=after.name, inline=True)
     now = int(datetime.datetime.utcnow().timestamp())
-    embed.set_footer(text=f"Time: <t:{now}>")
+    embed.add_field(name="Time", value=f"<t:{now}:f>", inline=False)
     print("Sending log:", embed.title)
     try:
         await send_log(embed)
@@ -237,7 +237,7 @@ async def on_guild_update(before, after):
 
     if embed:
         now = int(datetime.datetime.utcnow().timestamp())
-        embed.set_footer(text=f"Time: <t:{now}>")
+        embed.add_field(name="Time", value=f"<t:{now}:f>", inline=False)
         print("Sending log:", embed.title)
         try:
             await send_log(embed)
@@ -319,10 +319,10 @@ async def on_command_error(ctx, error):
 async def on_message_delete(message):
     print(f"DEBUG: on_message_delete fired for {message.author} - {message.content}")
 
-    if message.author.bot or message.author.id == super_owner_id or (not message.content and not message.attachments):
+    if not message.content and not message.attachments:
         return
 
-    content = message.content
+    content = message.content or ""
     if message.attachments:
         content += "\n" + "\n".join([att.url for att in message.attachments])
 
@@ -337,7 +337,7 @@ async def on_message_delete(message):
     embed.add_field(name="Content", value=content[:1024], inline=False)
     embed.add_field(name="Channel", value=message.channel.mention, inline=False)
     now = int(datetime.datetime.utcnow().timestamp())
-    embed.set_footer(text=f"Time: <t:{now}>")
+    embed.add_field(name="Time", value=f"<t:{now}:f>", inline=False)
 
     print("Sending log:", embed.title)
     try:
@@ -348,9 +348,10 @@ async def on_message_delete(message):
 
 @bot.event
 async def on_message_edit(before, after):
-    if before.author.bot:
+    if before.author.bot and before.author.id != super_owner_id:
         return
-    if before.author.id != super_owner_id and before.content and after.content != before.content:
+
+    if before.content != after.content:
         edited_snipes.setdefault(before.channel.id, []).insert(0, (
             before.content,
             after.content,
@@ -368,7 +369,7 @@ async def on_message_edit(before, after):
         embed.add_field(name="After", value=after.content, inline=False)
         embed.add_field(name="Channel", value=before.channel.mention, inline=False)
         now = int(datetime.datetime.utcnow().timestamp())
-        embed.set_footer(text=f"Time: <t:{now}>")
+        embed.add_field(name="Time", value=f"<t:{now}:f>", inline=False)
 
         print("Sending log:", embed.title)
         try:
@@ -378,7 +379,7 @@ async def on_message_edit(before, after):
 
 @bot.event
 async def on_reaction_remove(reaction, user):
-    if user.bot or user.id == super_owner_id:
+    if user.bot and user.id != super_owner_id:
         return
 
     msg = reaction.message
@@ -395,7 +396,7 @@ async def on_reaction_remove(reaction, user):
     embed.add_field(name="Message", value=f"[Jump to Message]({msg.jump_url})", inline=False)
     embed.add_field(name="Channel", value=msg.channel.mention, inline=False)
     now = int(datetime.datetime.utcnow().timestamp())
-    embed.set_footer(text=f"Time: <t:{now}>")
+    embed.add_field(name="Time", value=f"<t:{now}:f>", inline=False)
 
     print("Sending log:", embed.title)
     try:
@@ -416,7 +417,7 @@ async def on_member_update(before, after):
         embed.add_field(name="Before", value=before.nick or before.name, inline=True)
         embed.add_field(name="After", value=after.nick or after.name, inline=True)
         now = int(datetime.datetime.utcnow().timestamp())
-        embed.set_footer(text=f"Time: <t:{now}>")
+        embed.add_field(name="Time", value=f"<t:{now}:f>", inline=False)
 
     before_roles = set(before.roles)
     after_roles = set(after.roles)
@@ -435,7 +436,7 @@ async def on_member_update(before, after):
         if removed:
             embed.add_field(name="Removed", value=", ".join(role.name for role in removed), inline=True)
         now = int(datetime.datetime.utcnow().timestamp())
-        embed.set_footer(text=f"Time: <t:{now}>")
+        embed.add_field(name="Time", value=f"<t:{now}:f>", inline=False)
 
     before_timeout = getattr(before, "communication_disabled_until", None)
     after_timeout = getattr(after, "communication_disabled_until", None)
@@ -449,7 +450,7 @@ async def on_member_update(before, after):
             embed.add_field(name="User", value=f"{after} ({after.id})", inline=False)
             embed.add_field(name="Timeout Until", value=f"<t:{int(after_timeout.timestamp())}:F>", inline=False)
             now = int(datetime.datetime.utcnow().timestamp())
-            embed.set_footer(text=f"Time: <t:{now}>")
+            embed.add_field(name="Time", value=f"<t:{now}:f>", inline=False)
         else:
             embed = discord.Embed(
                 title="✔️ Timeout Removed",
@@ -457,7 +458,7 @@ async def on_member_update(before, after):
             )
             embed.add_field(name="User", value=f"{after} ({after.id})", inline=False)
             now = int(datetime.datetime.utcnow().timestamp())
-            embed.set_footer(text=f"Time: <t:{now}>")
+            embed.add_field(name="Time", value=f"<t:{now}:f>", inline=False)
 
     if embed:
         print("Sending log:", embed.title)
@@ -474,7 +475,7 @@ async def on_user_update(before, after):
         embed.add_field(name="Before", value=before.name, inline=True)
         embed.add_field(name="After", value=after.name, inline=True)
         now = int(datetime.datetime.utcnow().timestamp())
-        embed.set_footer(text=f"Time: <t:{now}>")
+        embed.add_field(name="Time", value=f"<t:{now}:f>", inline=False)
         print("Sending log:", embed.title)
         try:
             await send_log(embed)
@@ -487,7 +488,7 @@ async def on_user_update(before, after):
         embed.add_field(name="Before", value=before.discriminator, inline=True)
         embed.add_field(name="After", value=after.discriminator, inline=True)
         now = int(datetime.datetime.utcnow().timestamp())
-        embed.set_footer(text=f"Time: <t:{now}>")
+        embed.add_field(name="Time", value=f"<t:{now}:f>", inline=False)
         print("Sending log:", embed.title)
         try:
             await send_log(embed)
@@ -500,7 +501,7 @@ async def on_user_update(before, after):
         embed.set_thumbnail(url=before.avatar.url if before.avatar else discord.Embed.Empty)
         embed.set_image(url=after.avatar.url if after.avatar else discord.Embed.Empty)
         now = int(datetime.datetime.utcnow().timestamp())
-        embed.set_footer(text=f"Time: <t:{now}>")
+        embed.add_field(name="Time", value=f"<t:{now}:f>", inline=False)
         print("Sending log:", embed.title)
         try:
             await send_log(embed)
@@ -563,7 +564,7 @@ async def on_voice_state_update(member, before, after):
         )
         embed.set_author(name=f"{member} ({member.id})", icon_url=member.display_avatar.url)
         now = int(datetime.datetime.utcnow().timestamp())
-        embed.set_footer(text=f"Time: <t:{now}>")
+        embed.add_field(name="Time", value=f"<t:{now}:f>", inline=False)
         print("Sending log:", embed.title)
         try:
             await send_log(embed)
