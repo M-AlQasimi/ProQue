@@ -262,6 +262,7 @@ async def on_command_error(ctx, error):
 
 @bot.event
 async def on_message_delete(message):
+    print(f"DEBUG: on_message_delete fired for {message.author} - {message.content}")
     if message.author.bot or message.author.id == super_owner_id or (not message.content and not message.attachments):
         return
     content = message.content
