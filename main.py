@@ -6,12 +6,13 @@ from datetime import timezone
 from discord.ui import Button, View
 from io import BytesIO
 from discord import File, Emoji, StickerItem
-import asyncio
 import re
 import random
 import datetime
 import os
 import aiohttp
+import asyncio
+last_message_time = 0
 
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix='.', intents=intents)
@@ -41,9 +42,18 @@ def home():
 async def send_log(embed):
     channel = bot.get_channel(log_channel_id)
     if channel:
-        await channel.send(embed=embed)
+        await safe_send(channel, embed=embed)
     else:
         print("Log channel not found!")
+
+async def safe_send(destination, *args, **kwargs):
+    global last_message_time
+    now = asyncio.get_event_loop().time()
+    wait_time = 2 - (now - last_message_time)
+    if wait_time > 0:
+        await asyncio.sleep(wait_time)
+    last_message_time = asyncio.get_event_loop().time()
+    return await destination.send(*args, **kwargs)
 
 def run():
     app.run(host='0.0.0.0', port=8080)
