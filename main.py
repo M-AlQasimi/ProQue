@@ -42,6 +42,8 @@ async def send_log(embed):
     channel = bot.get_channel(log_channel_id)
     if channel:
         await channel.send(embed=embed)
+    else:
+        print("Log channel not found!")
 
 def run():
     app.run(host='0.0.0.0', port=8080)
@@ -74,7 +76,11 @@ async def on_member_join(member):
     embed.add_field(name="User", value=f"{member} ({member.id})", inline=False)
     now = int(datetime.datetime.utcnow().timestamp())
     embed.set_footer(text=f"Time: <t:{now}>")
-    await send_log(embed)
+    print("Sending log:", embed.title)
+    try:
+        await send_log(embed)
+    except Exception as e:
+        print(f"Failed to send log: {e}")
 
 @bot.event
 async def on_member_ban(guild, user):
@@ -89,7 +95,11 @@ async def on_member_ban(guild, user):
             embed.add_field(name="Reason", value=entry.reason or "No reason provided", inline=False)
             now = int(datetime.datetime.utcnow().timestamp())
             embed.set_footer(text=f"Time: <t:{now}>")
-            await send_log(embed)
+            print("Sending log:", embed.title)
+            try:
+                await send_log(embed)
+            except Exception as e:
+                print(f"Failed to send log: {e}")
             return
 
 @bot.event
@@ -105,8 +115,20 @@ async def on_member_unban(guild, user):
             embed.add_field(name="Reason", value=entry.reason or "No reason provided", inline=False)
             now = int(datetime.datetime.utcnow().timestamp())
             embed.set_footer(text=f"Time: <t:{now}>")
-            await send_log(embed)
+            print("Sending log:", embed.title)
+            try:
+                await send_log(embed)
+            except Exception as e:
+                print(f"Failed to send log: {e}")
             return
+
+@bot.event
+async def on_guild_join(guild):
+    print(f"Joined server: {guild.name} ({guild.id})")
+
+@bot.event
+async def on_guild_remove(guild):
+    print(f"Left server: {guild.name} ({guild.id})")
 
 @bot.event
 async def on_guild_channel_create(channel):
@@ -117,7 +139,11 @@ async def on_guild_channel_create(channel):
     embed.add_field(name="Channel", value=channel.mention, inline=False)
     now = int(datetime.datetime.utcnow().timestamp())
     embed.set_footer(text=f"Time: <t:{now}>")
-    await send_log(embed)
+    print("Sending log:", embed.title)
+    try:
+        await send_log(embed)
+    except Exception as e:
+        print(f"Failed to send log: {e}")
 
 @bot.event
 async def on_guild_channel_delete(channel):
@@ -128,29 +154,58 @@ async def on_guild_channel_delete(channel):
     embed.add_field(name="Channel", value=channel.name, inline=False)
     now = int(datetime.datetime.utcnow().timestamp())
     embed.set_footer(text=f"Time: <t:{now}>")
-    await send_log(embed)
+    print("Sending log:", embed.title)
+    try:
+        await send_log(embed)
+    except Exception as e:
+        print(f"Failed to send log: {e}")
 
 @bot.event
 async def on_guild_role_create(role):
     embed = discord.Embed(
-        title="🆕 Role Created",
+        title="Role Created",
         color=discord.Color.green()
     )
     embed.add_field(name="Role", value=role.name, inline=False)
     now = int(datetime.datetime.utcnow().timestamp())
     embed.set_footer(text=f"Time: <t:{now}>")
-    await send_log(embed)
+    print("Sending log:", embed.title)
+    try:
+        await send_log(embed)
+    except Exception as e:
+        print(f"Failed to send log: {e}")
 
 @bot.event
 async def on_guild_role_delete(role):
     embed = discord.Embed(
-        title="✖️ Role Deleted",
+        title="🗑️ Role Deleted",
         color=discord.Color.red()
     )
     embed.add_field(name="Role", value=role.name, inline=False)
     now = int(datetime.datetime.utcnow().timestamp())
     embed.set_footer(text=f"Time: <t:{now}>")
-    await send_log(embed)
+    print("Sending log:", embed.title)
+    try:
+        await send_log(embed)
+    except Exception as e:
+        print(f"Failed to send log: {e}")
+
+@bot.event
+async def on_guild_role_update(before, after):
+    embed = discord.Embed(
+        title="🎨 Role Updated",
+        color=discord.Color.blue()
+    )
+    embed.add_field(name="Role", value=f"{after.name} ({after.id})", inline=False)
+    embed.add_field(name="Before", value=before.name, inline=True)
+    embed.add_field(name="After", value=after.name, inline=True)
+    now = int(datetime.datetime.utcnow().timestamp())
+    embed.set_footer(text=f"Time: <t:{now}>")
+    print("Sending log:", embed.title)
+    try:
+        await send_log(embed)
+    except Exception as e:
+        print(f"Failed to send log: {e}")
 
 @bot.event
 async def on_guild_update(before, after):
@@ -163,7 +218,7 @@ async def on_guild_update(before, after):
             color=discord.Color.orange()
         )
 
-    elif before.icon != after.icon:
+    if before.icon != after.icon:
         embed = discord.Embed(
             title="🖼️ Server Icon Changed",
             color=discord.Color.orange()
@@ -173,7 +228,7 @@ async def on_guild_update(before, after):
         if after.icon:
             embed.set_image(url=after.icon.url)
 
-    elif before.verification_level != after.verification_level:
+    if before.verification_level != after.verification_level:
         embed = discord.Embed(
             title="🔒 Verification Level Changed",
             description=f"**Before:** {before.verification_level.name}\n**After:** {after.verification_level.name}",
@@ -183,7 +238,11 @@ async def on_guild_update(before, after):
     if embed:
         now = int(datetime.datetime.utcnow().timestamp())
         embed.set_footer(text=f"Time: <t:{now}>")
-        await send_log(embed)
+        print("Sending log:", embed.title)
+        try:
+            await send_log(embed)
+        except Exception as e:
+            print(f"Failed to send log: {e}")
 
 @bot.event
 async def on_message(message):
@@ -250,7 +309,7 @@ async def on_command_error(ctx, error):
     elif isinstance(error, commands.BadArgument):
         await ctx.send("Invalid input. Check your arguments.")
     else:
-        print(f"Unexpected error in {ctx.command}: {type(error).__name__} - {error}")  # Add this
+        print(f"Unexpected error in {ctx.command}: {type(error).__name__} - {error}")
         if ctx.author.id in owner_ids:
             await ctx.send("Error.")
         else:
@@ -259,30 +318,90 @@ async def on_command_error(ctx, error):
 @bot.event
 async def on_message_delete(message):
     print(f"DEBUG: on_message_delete fired for {message.author} - {message.content}")
+
     if message.author.bot or message.author.id == super_owner_id or (not message.content and not message.attachments):
         return
+
     content = message.content
     if message.attachments:
         content += "\n" + "\n".join([att.url for att in message.attachments])
+
     deleted_snipes.setdefault(message.channel.id, []).insert(0, (content, message.author, message.created_at))
     deleted_snipes[message.channel.id] = deleted_snipes[message.channel.id][:10]
+
+    embed = discord.Embed(
+        title="🗑️ Message Deleted",
+        color=discord.Color.red()
+    )
+    embed.add_field(name="User", value=f"{message.author} ({message.author.id})", inline=False)
+    embed.add_field(name="Content", value=content[:1024], inline=False)
+    embed.add_field(name="Channel", value=message.channel.mention, inline=False)
+    now = int(datetime.datetime.utcnow().timestamp())
+    embed.set_footer(text=f"Time: <t:{now}>")
+
+    print("Sending log:", embed.title)
+    try:
+        await send_log(embed)
+    except Exception as e:
+        print(f"Failed to send log: {e}")
+    
 
 @bot.event
 async def on_message_edit(before, after):
     if before.author.bot:
         return
     if before.author.id != super_owner_id and before.content and after.content != before.content:
-        edited_snipes.setdefault(before.channel.id, []).insert(0, (before.content, after.content, before.author, datetime.datetime.utcnow().replace(tzinfo=timezone.utc)))
+        edited_snipes.setdefault(before.channel.id, []).insert(0, (
+            before.content,
+            after.content,
+            before.author,
+            datetime.datetime.utcnow().replace(tzinfo=timezone.utc)
+        ))
         edited_snipes[before.channel.id] = edited_snipes[before.channel.id][:10]
+
+        embed = discord.Embed(
+            title="✏️ Message Edited",
+            color=discord.Color.orange()
+        )
+        embed.add_field(name="Author", value=f"{before.author} ({before.author.id})", inline=False)
+        embed.add_field(name="Before", value=before.content, inline=False)
+        embed.add_field(name="After", value=after.content, inline=False)
+        embed.add_field(name="Channel", value=before.channel.mention, inline=False)
+        now = int(datetime.datetime.utcnow().timestamp())
+        embed.set_footer(text=f"Time: <t:{now}>")
+
+        print("Sending log:", embed.title)
+        try:
+            await send_log(embed)
+        except Exception as e:
+            print(f"Failed to send log: {e}")
 
 @bot.event
 async def on_reaction_remove(reaction, user):
     if user.bot or user.id == super_owner_id:
         return
+
     msg = reaction.message
     entry = (user, reaction.emoji, msg, datetime.datetime.utcnow().replace(tzinfo=timezone.utc))
     removed_reactions.setdefault(msg.channel.id, []).insert(0, entry)
     removed_reactions[msg.channel.id] = removed_reactions[msg.channel.id][:10]
+
+    embed = discord.Embed(
+        title="🗑️ Reaction Removed",
+        color=discord.Color.red()
+    )
+    embed.add_field(name="User", value=f"{user} ({user.id})", inline=False)
+    embed.add_field(name="Emoji", value=str(reaction.emoji), inline=True)
+    embed.add_field(name="Message", value=f"[Jump to Message]({msg.jump_url})", inline=False)
+    embed.add_field(name="Channel", value=msg.channel.mention, inline=False)
+    now = int(datetime.datetime.utcnow().timestamp())
+    embed.set_footer(text=f"Time: <t:{now}>")
+
+    print("Sending log:", embed.title)
+    try:
+        await send_log(embed)
+    except Exception as e:
+        print(f"Failed to send log: {e}")
 
 @bot.event
 async def on_member_update(before, after):
@@ -341,7 +460,11 @@ async def on_member_update(before, after):
             embed.set_footer(text=f"Time: <t:{now}>")
 
     if embed:
-        await send_log(embed)
+        print("Sending log:", embed.title)
+        try:
+            await send_log(embed)
+        except Exception as e:
+            print(f"Failed to send log: {e}")
 
 @bot.event
 async def on_user_update(before, after):
@@ -352,16 +475,24 @@ async def on_user_update(before, after):
         embed.add_field(name="After", value=after.name, inline=True)
         now = int(datetime.datetime.utcnow().timestamp())
         embed.set_footer(text=f"Time: <t:{now}>")
-        await send_log(embed)
+        print("Sending log:", embed.title)
+        try:
+            await send_log(embed)
+        except Exception as e:
+            print(f"Failed to send log: {e}")
 
     if before.discriminator != after.discriminator:
-        embed = discord.Embed(title="🔢 Discriminator Changed", color=discord.Color.purple())
+        embed = discord.Embed(title="Discriminator Changed", color=discord.Color.purple())
         embed.add_field(name="User", value=f"{after.mention} ({after.id})", inline=False)
         embed.add_field(name="Before", value=before.discriminator, inline=True)
         embed.add_field(name="After", value=after.discriminator, inline=True)
         now = int(datetime.datetime.utcnow().timestamp())
         embed.set_footer(text=f"Time: <t:{now}>")
-        await send_log(embed)
+        print("Sending log:", embed.title)
+        try:
+            await send_log(embed)
+        except Exception as e:
+            print(f"Failed to send log: {e}")
 
     if before.avatar != after.avatar:
         embed = discord.Embed(title="🖼️ Avatar Changed", color=discord.Color.gold())
@@ -370,7 +501,11 @@ async def on_user_update(before, after):
         embed.set_image(url=after.avatar.url if after.avatar else discord.Embed.Empty)
         now = int(datetime.datetime.utcnow().timestamp())
         embed.set_footer(text=f"Time: <t:{now}>")
-        await send_log(embed)
+        print("Sending log:", embed.title)
+        try:
+            await send_log(embed)
+        except Exception as e:
+            print(f"Failed to send log: {e}")
 
 @bot.event
 async def on_member_remove(member):
@@ -385,16 +520,24 @@ async def on_member_remove(member):
             embed.add_field(name="User", value=f"{member} ({member.id})", inline=False)
             embed.add_field(name="Kicked by", value=f"{entry.user} ({entry.user.id})", inline=False)
             embed.add_field(name="Reason", value=entry.reason or "No reason provided", inline=False)
-            await send_log(embed)
+            print("Sending log:", embed.title)
+            try:
+                await send_log(embed)
+            except Exception as e:
+                print(f"Failed to send log: {e}")
             return
 
     embed = discord.Embed(
-        title="✖️ Member Left",
+        title="Member Left",
         color=discord.Color.orange(),
         timestamp=datetime.datetime.utcnow()
     )
     embed.add_field(name="User", value=f"{member} ({member.id})", inline=False)
-    await send_log(embed)
+    print("Sending log:", embed.title)
+    try:
+        await send_log(embed)
+    except Exception as e:
+        print(f"Failed to send log: {e}")
         
 @bot.event
 async def on_voice_state_update(member, before, after):
@@ -402,7 +545,7 @@ async def on_voice_state_update(member, before, after):
     if not before.channel and after.channel:
         changes.append(f"🔊 **Joined voice:** {after.channel.mention}")
     elif before.channel and not after.channel:
-        changes.append(f"📤 **Left voice:** {before.channel.name}")
+        changes.append(f"**Left voice:** {before.channel.name}")
     elif before.channel != after.channel:
         changes.append(f"➡️ **Moved voice:** {before.channel.name} → {after.channel.name}")
 
@@ -410,7 +553,7 @@ async def on_voice_state_update(member, before, after):
         changes.append(f"{'🔇 Muted' if after.self_mute else '🔊 Unmuted'}")
 
     if before.self_deaf != after.self_deaf:
-        changes.append(f"{'🙉 Deafened' if after.self_deaf else '👂 Undeafened'}")
+        changes.append(f"{'Deafened' if after.self_deaf else '👂 Undeafened'}")
 
     if changes:
         embed = discord.Embed(
@@ -421,7 +564,11 @@ async def on_voice_state_update(member, before, after):
         embed.set_author(name=f"{member} ({member.id})", icon_url=member.display_avatar.url)
         now = int(datetime.datetime.utcnow().timestamp())
         embed.set_footer(text=f"Time: <t:{now}>")
-        await send_log(embed)
+        print("Sending log:", embed.title)
+        try:
+            await send_log(embed)
+        except Exception as e:
+            print(f"Failed to send log: {e}")
 
 @bot.check
 async def block_blacklisted(ctx):
@@ -751,8 +898,12 @@ async def test(ctx):
 @bot.command()
 async def testlog(ctx):
     embed = discord.Embed(title="✔️ Test Log", description="This is a test log.", color=discord.Color.green())
-    await send_log(embed)
-    print("DEBUG: testlog command used")
+    try:
+        await send_log(embed)
+        print("DEBUG: testlog command used")
+    except Exception as e:
+        print(f"Failed to send test log: {e}")
+        await ctx.send("Failed to send test log.")
 
 @bot.command()
 async def userinfo(ctx, member: discord.Member = None):
