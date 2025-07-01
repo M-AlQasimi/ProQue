@@ -22,10 +22,10 @@ log_channel_id = 1389186178271547502
 super_owner_id = 885548126365171824  
 owner_ids = {super_owner_id}
 
-watchlist = set()
 autoban_ids = set()
 blacklisted_users = set()
 mods = set()
+watchlist = {}
 sleeping_users = {}
 afk_users = {}
 ttt_games = {}
@@ -1120,7 +1120,7 @@ async def shut(ctx, member: discord.Member):
     if member.id == super_owner_id:
         return
     watchlist[member.id] = ctx.author.id
-    await ctx.send(f"{member} has been silenced.")
+    await ctx.send(f"{member} has been silenced.", allowed_mentions=discord.AllowedMentions.none())
 
 @bot.command()
 @is_owner()
