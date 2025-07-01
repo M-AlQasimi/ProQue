@@ -333,7 +333,13 @@ async def on_message_delete(message):
 
     content = message.content or ""
     if message.attachments:
-        content += "\n" + "\n".join([att.url for att in message.attachments])
+        if message.attachments:
+    attachment = message.attachments[0]
+    if attachment.content_type and attachment.content_type.startswith("image"):
+        embed.set_image(url=attachment.url)
+    elif attachment.content_type and attachment.content_type.startswith("video"):
+        embed.add_field(name="Video", value=attachment.url, inline=False)
+    content += "\n" + "\n".join([att.url for att in message.attachments])
 
     deleted_snipes.setdefault(message.channel.id, []).insert(0, (content, message.author, message.created_at))
     deleted_snipes[message.channel.id] = deleted_snipes[message.channel.id][:10]
