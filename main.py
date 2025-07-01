@@ -332,6 +332,7 @@ async def on_message_delete(message):
         return
 
     content = message.content or ""
+
     embed = discord.Embed(
         title="🗑️ Message Deleted",
         color=discord.Color.red()
@@ -342,6 +343,7 @@ async def on_message_delete(message):
 
     if message.attachments:
         first = message.attachments[0]
+
         if first.content_type:
             if first.content_type.startswith("image"):
                 embed.set_image(url=first.url)
@@ -353,6 +355,10 @@ async def on_message_delete(message):
                 embed.add_field(name="Attachment", value=first.url, inline=False)
         else:
             embed.add_field(name="Attachment", value=first.url, inline=False)
+
+        if len(message.attachments) > 1:
+            other_urls = [att.url for att in message.attachments[1:]]
+            embed.add_field(name="Other Attachments", value="\n".join(other_urls), inline=False)
 
         content += "\n" + "\n".join([att.url for att in message.attachments])
 
