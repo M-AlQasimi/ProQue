@@ -570,7 +570,7 @@ def is_mod_block():
         if ctx.author.id == super_owner_id or ctx.author.id in owner_ids:
             return True
         if ctx.author.id in mods:
-            return False
+            raise commands.CheckFailure("You can't use this as a mod heh.")
         return True
     return commands.check(predicate)
 
