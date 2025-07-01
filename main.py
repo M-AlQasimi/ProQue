@@ -298,29 +298,21 @@ async def on_message(message):
 async def on_command_error(ctx, error):
     if isinstance(error, commands.CommandNotFound):
         return
-
     elif isinstance(error, commands.CheckFailure):
         if ctx.author.id in blacklisted_users:
             await ctx.send("LMAO you're blocked you can't use ts 😭✌🏻")
         else:
             await ctx.send("You can't use that heh")
-
     elif isinstance(error, commands.MissingPermissions):
         await ctx.send("You don’t have permission to do that.")
-
     elif isinstance(error, commands.MissingRequiredArgument):
         await ctx.send("Missing required argument.")
-
     elif isinstance(error, commands.BadArgument):
         await ctx.send("Invalid input. Check your arguments.")
-
     else:
-        print(f"Unexpected error in command '{ctx.command}': {type(error).__name__} - {error}")
-        import traceback
-        traceback.print_exception(type(error), error, error.__traceback__)
-
+        print(f"Unexpected error in {ctx.command}: {type(error).__name__} - {error}")
         if ctx.author.id in owner_ids:
-            await ctx.send(f"Error: `{type(error).__name__}` - `{error}`")
+            await ctx.send("Error.")
         else:
             await ctx.send("You can't use that heh")
 
@@ -1120,7 +1112,7 @@ async def shut(ctx, member: discord.Member):
     if member.id == super_owner_id:
         return
     watchlist[member.id] = ctx.author.id
-    await ctx.send(f"{member} has been silenced.", allowed_mentions=discord.AllowedMentions.none())
+    await ctx.send(f"<@{member.id}> has been silenced.", allowed_mentions=discord.AllowedMentions.none())
 
 @bot.command()
 @is_owner()
