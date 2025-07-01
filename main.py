@@ -230,7 +230,7 @@ async def on_guild_update(before, after):
 
     if before.icon != after.icon:
         embed = discord.Embed(
-            title="🖼️ Server Icon Changed",
+            title="Server Icon Changed",
             color=discord.Color.orange()
         )
         if before.icon:
@@ -332,26 +332,34 @@ async def on_message_delete(message):
         return
 
     content = message.content or ""
-    if message.attachments:
-        if message.attachments:
-    attachment = message.attachments[0]
-    if attachment.content_type and attachment.content_type.startswith("image"):
-        embed.set_image(url=attachment.url)
-    elif attachment.content_type and attachment.content_type.startswith("video"):
-        embed.add_field(name="Video", value=attachment.url, inline=False)
-    content += "\n" + "\n".join([att.url for att in message.attachments])
-
-    deleted_snipes.setdefault(message.channel.id, []).insert(0, (content, message.author, message.created_at))
-    deleted_snipes[message.channel.id] = deleted_snipes[message.channel.id][:10]
-
     embed = discord.Embed(
         title="🗑️ Message Deleted",
         color=discord.Color.red()
     )
     embed.add_field(name="User", value=f"{message.author} ({message.author.id})", inline=False)
-    embed.add_field(name="Content", value=content[:1024], inline=False)
     embed.add_field(name="Channel", value=message.channel.mention, inline=False)
     embed.timestamp = datetime.datetime.utcnow()
+
+    if message.attachments:
+        first = message.attachments[0]
+        if first.content_type:
+            if first.content_type.startswith("image"):
+                embed.set_image(url=first.url)
+            elif first.content_type.startswith("video"):
+                embed.add_field(name="Video", value=first.url, inline=False)
+            elif first.content_type.startswith("audio"):
+                embed.add_field(name="Audio", value=first.url, inline=False)
+            else:
+                embed.add_field(name="Attachment", value=first.url, inline=False)
+        else:
+            embed.add_field(name="Attachment", value=first.url, inline=False)
+
+        content += "\n" + "\n".join([att.url for att in message.attachments])
+
+    embed.add_field(name="Content", value=content[:1024], inline=False)
+
+    deleted_snipes.setdefault(message.channel.id, []).insert(0, (content, message.author, message.created_at))
+    deleted_snipes[message.channel.id] = deleted_snipes[message.channel.id][:10]
 
     print("Sending log:", embed.title)
     try:
@@ -525,7 +533,7 @@ async def on_user_update(before, after):
             print(f"Failed to send log: {e}")
 
     if before.avatar != after.avatar:
-        embed = discord.Embed(title="🖼️ Avatar Changed", color=discord.Color.gold())
+        embed = discord.Embed(title="Avatar Changed", color=discord.Color.gold())
         embed.add_field(name="User", value=f"{after.mention} ({after.id})", inline=False)
         embed.set_thumbnail(url=before.avatar.url if before.avatar else discord.Embed.Empty)
         embed.set_image(url=after.avatar.url if after.avatar else discord.Embed.Empty)
