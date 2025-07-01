@@ -43,14 +43,14 @@ def home():
 async def send_log(embed):
     channel = bot.get_channel(log_channel_id)
     if channel:
-        await safe_send(channel, embed=embed)
+        await safe_send(channel, embed=embed, allowed_mentions=discord.AllowedMentions.none())
     else:
         print("Log channel not found.")
 
 async def send_rlog(embed):
     channel = bot.get_channel(rlog_channel_id)
     if channel:
-        await channel.send(embed=embed)
+        await safe_send(channel, embed=embed, allowed_mentions=discord.AllowedMentions.none())
     else:
         print("Reaction log channel not found.")
 
@@ -91,7 +91,7 @@ async def on_member_join(member):
         title="Member Joined",
         color=discord.Color.green()
     )
-    embed.add_field(name="User", value=f"{member} ({member.id})", inline=False)
+    embed.add_field(name="User", value=f"<@{member.id}>", inline=False)
     embed.timestamp = datetime.datetime.utcnow()
     print("Sending log:", embed.title)
     try:
@@ -107,8 +107,8 @@ async def on_member_ban(guild, user):
                 title="🔨 Member Banned",
                 color=discord.Color.red()
             )
-            embed.add_field(name="User", value=f"{user} ({user.id})", inline=False)
-            embed.add_field(name="Banned by", value=f"{entry.user} ({entry.user.id})", inline=False)
+            embed.add_field(name="User", value=f"<@{user.id}>", inline=False)
+            embed.add_field(name="Banned by", value=f"<@{entry.user.id}>", inline=False)
             embed.add_field(name="Reason", value=entry.reason or "No reason provided", inline=False)
             embed.timestamp = datetime.datetime.utcnow()
             print("Sending log:", embed.title)
@@ -126,8 +126,8 @@ async def on_member_unban(guild, user):
                 title="Member Unbanned",
                 color=discord.Color.green()
             )
-            embed.add_field(name="User", value=f"{user} ({user.id})", inline=False)
-            embed.add_field(name="Unbanned by", value=f"{entry.user} ({entry.user.id})", inline=False)
+            embed.add_field(name="User", value=f"<@{user.id}>", inline=False)
+            embed.add_field(name="Unbanned by", value=f"<@{entry.user.id}>", inline=False)
             embed.add_field(name="Reason", value=entry.reason or "No reason provided", inline=False)
             embed.timestamp = datetime.datetime.utcnow()
             print("Sending log:", embed.title)
@@ -230,7 +230,7 @@ async def on_guild_update(before, after):
 
     if before.icon != after.icon:
         embed = discord.Embed(
-            title="🖼️ Server Icon Changed",
+            title="Server Icon Changed",
             color=discord.Color.orange()
         )
         if before.icon:
@@ -398,7 +398,7 @@ async def on_reaction_remove(reaction, user):
         title="🗑️ Reaction Removed",
         color=discord.Color.red()
     )
-    embed.add_field(name="User", value=f"{user} ({user.id})", inline=False)
+    embed.add_field(name="User", value=f"<@{user.id}>", inline=False)
     embed.add_field(name="Emoji", value=str(reaction.emoji), inline=True)
     embed.add_field(name="Message", value=f"[Jump to Message]({msg.jump_url})", inline=False)
     embed.add_field(name="Channel", value=msg.channel.mention, inline=False)
@@ -421,7 +421,7 @@ async def on_reaction_add(reaction, user):
         title="➕ Reaction Added",
         color=discord.Color.green()
     )
-    embed.add_field(name="User", value=f"{user} ({user.id})", inline=False)
+    embed.add_field(name="User", value=f"<@{user.id}>", inline=False)
     embed.add_field(name="Emoji", value=str(reaction.emoji), inline=True)
     embed.add_field(name="Message", value=f"[Jump to Message]({msg.jump_url})", inline=False)
     embed.add_field(name="Channel", value=msg.channel.mention, inline=False)
@@ -442,7 +442,7 @@ async def on_member_update(before, after):
             title="📝 Nickname Changed",
             color=discord.Color.blue()
         )
-        embed.add_field(name="User", value=f"{before} ({before.id})", inline=False)
+        embed.add_field(name="User", value=f"<@{before.id}>", inline=False)
         embed.add_field(name="Before", value=before.nick or before.name, inline=True)
         embed.add_field(name="After", value=after.nick or after.name, inline=True)
         embed.timestamp = datetime.datetime.utcnow()
@@ -458,7 +458,7 @@ async def on_member_update(before, after):
             title="🎭 Roles Updated",
             color=discord.Color.teal()
         )
-        embed.add_field(name="User", value=f"{after} ({after.id})", inline=False)
+        embed.add_field(name="User", value=f"<@{after.id}>", inline=False)
         if added:
             embed.add_field(name="Added", value=", ".join(role.name for role in added), inline=True)
         if removed:
@@ -474,7 +474,7 @@ async def on_member_update(before, after):
                 title="⏳ Member Timed Out",
                 color=discord.Color.orange()
             )
-            embed.add_field(name="User", value=f"{after} ({after.id})", inline=False)
+            embed.add_field(name="User", value=f"<@{after.id}>", inline=False)
             embed.add_field(name="Timeout Until", value=f"<t:{int(after_timeout.timestamp())}:F>", inline=False)
             embed.timestamp = datetime.datetime.utcnow()
         else:
@@ -482,7 +482,7 @@ async def on_member_update(before, after):
                 title="✔️ Timeout Removed",
                 color=discord.Color.green()
             )
-            embed.add_field(name="User", value=f"{after} ({after.id})", inline=False)
+            embed.add_field(name="User", value=f"<@{after.id}>", inline=False)
             embed.timestamp = datetime.datetime.utcnow()
 
     if embed:
@@ -519,7 +519,7 @@ async def on_user_update(before, after):
             print(f"Failed to send log: {e}")
 
     if before.avatar != after.avatar:
-        embed = discord.Embed(title="🖼️ Avatar Changed", color=discord.Color.gold())
+        embed = discord.Embed(title="Avatar Changed", color=discord.Color.gold())
         embed.add_field(name="User", value=f"{after.mention} ({after.id})", inline=False)
         embed.set_thumbnail(url=before.avatar.url if before.avatar else discord.Embed.Empty)
         embed.set_image(url=after.avatar.url if after.avatar else discord.Embed.Empty)
@@ -540,8 +540,8 @@ async def on_member_remove(member):
                 color=discord.Color.red()
             )
             embed.timestamp = datetime.datetime.utcnow()
-            embed.add_field(name="User", value=f"{member} ({member.id})", inline=False)
-            embed.add_field(name="Kicked by", value=f"{entry.user} ({entry.user.id})", inline=False)
+            embed.add_field(name="User", value=f"<@{member.id}>", inline=False)
+            embed.add_field(name="Kicked by", value=f"<@{entry.user.id}>", inline=False)
             embed.add_field(name="Reason", value=entry.reason or "No reason provided", inline=False)
             print("Sending log:", embed.title)
             try:
@@ -555,7 +555,7 @@ async def on_member_remove(member):
         color=discord.Color.orange()
     )
     embed.timestamp = datetime.datetime.utcnow()
-    embed.add_field(name="User", value=f"{member} ({member.id})", inline=False)
+    embed.add_field(name="User", value=f"<@{member.id}>", inline=False)
     print("Sending log:", embed.title)
     try:
         await send_log(embed)
@@ -584,7 +584,7 @@ async def on_voice_state_update(member, before, after):
             description="\n".join(changes),
             color=discord.Color.blurple()
         )
-        embed.set_author(name=f"{member} ({member.id})", icon_url=member.display_avatar.url)
+        embed.set_author(name=f"<@{member.id}>", icon_url=member.display_avatar.url)
         embed.timestamp = datetime.datetime.utcnow()
         print("Sending log:", embed.title)
         try:
