@@ -19,6 +19,7 @@ bot = commands.Bot(command_prefix='.', intents=intents)
 print(f"Bot is starting with intents: {bot.intents}")
 
 log_channel_id = 1389186178271547502
+rlog_channel_id = 1389529621669613619
 super_owner_id = 885548126365171824  
 owner_ids = {super_owner_id}
 
@@ -44,7 +45,14 @@ async def send_log(embed):
     if channel:
         await safe_send(channel, embed=embed)
     else:
-        print("Log channel not found!")
+        print("Log channel not found.")
+
+async def send_rlog(embed):
+    channel = bot.get_channel(reaction_log_channel_id)
+    if channel:
+        await channel.send(embed=embed)
+    else:
+        print("Reaction log channel not found.")
 
 async def safe_send(destination, *args, **kwargs):
     global last_message_time
@@ -398,7 +406,30 @@ async def on_reaction_remove(reaction, user):
 
     print("Sending log:", embed.title)
     try:
-        await send_log(embed)
+        await send_rlog(embed)
+    except Exception as e:
+        print(f"Failed to send log: {e}")
+
+@bot.event
+async def on_reaction_add(reaction, user):
+    if user.bot and user.id != super_owner_id:
+        return
+
+    msg = reaction.message
+
+    embed = discord.Embed(
+        title="➕ Reaction Added",
+        color=discord.Color.green()
+    )
+    embed.add_field(name="User", value=f"{user} ({user.id})", inline=False)
+    embed.add_field(name="Emoji", value=str(reaction.emoji), inline=True)
+    embed.add_field(name="Message", value=f"[Jump to Message]({msg.jump_url})", inline=False)
+    embed.add_field(name="Channel", value=msg.channel.mention, inline=False)
+    embed.timestamp = datetime.datetime.utcnow()
+
+    print("Sending log:", embed.title)
+    try:
+        await send_rlog(embed)
     except Exception as e:
         print(f"Failed to send log: {e}")
 
