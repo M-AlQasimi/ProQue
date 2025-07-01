@@ -48,7 +48,7 @@ async def send_log(embed):
         print("Log channel not found.")
 
 async def send_rlog(embed):
-    channel = bot.get_channel(reaction_log_channel_id)
+    channel = bot.get_channel(rlog_channel_id)
     if channel:
         await channel.send(embed=embed)
     else:
