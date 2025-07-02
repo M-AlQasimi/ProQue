@@ -26,6 +26,7 @@ owner_ids = {super_owner_id}
 autoban_ids = set()
 blacklisted_users = set()
 mods = set()
+reaction_shut = set()
 watchlist = {}
 sleeping_users = {}
 afk_users = {}
@@ -78,6 +79,16 @@ def is_owner():
 @tasks.loop(minutes=4)
 async def keep_alive_task():
     print("Heartbeat")
+
+@bot.event
+async def on_reaction_add(reaction, user):
+    if user.bot:
+        return
+    if user.id in reaction_shut:
+        try:
+            await reaction.remove(user)
+        except Exception as e:
+            print(f"Failed to remove reaction from {user}: {e}")
 
 @bot.event
 async def on_ready():
@@ -1182,6 +1193,36 @@ async def clearwatchlist(ctx):
         return await ctx.send("Only 𝚀𝚞𝚎 can clear the watchlist.")
     watchlist.clear()
     await ctx.send("Watchlist cleared.")
+
+@bot.command()
+@is_owner()
+async def rshut(ctx, user: discord.User):
+    """Start removing reactions from a user."""
+    reaction_shut.add(user.id)
+    await ctx.send(f"<@{member.id}>'s reactions have been blocked.", allowed_mentions=discord.AllowedMentions.none())
+
+@bot.command()
+@is_owner()
+async def unrshut(ctx, user: discord.User):
+    """Stop removing reactions from a user."""
+    if user.id in reaction_shut:
+        reaction_shut.remove(user.id)
+        await ctx.send(f"<@{member.id}>'s reactions have been unblocked.", allowed_mentions=discord.AllowedMentions.none())
+    else:
+        await ctx.send(f"<@{member.id}>'s reactions were not blocked.", allowed_mentions=discord.AllowedMentions.none())
+
+@bot.command()
+@is_owner()
+async def listrshut(ctx):
+    """List all users currently being reaction-muted."""
+    if not reaction_shut:
+        await ctx.send("No users' reactions are currently blocked.")
+    else:
+        users = []
+        for uid in reaction_shut:
+            user = await bot.fetch_user(uid)
+            users.append(f"{user} ({uid})")
+        await ctx.send("Users with blocked reactions:\n" + "\n".join(users))
 
 @bot.command()
 @is_owner()
