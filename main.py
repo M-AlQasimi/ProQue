@@ -288,7 +288,21 @@ async def on_message(message):
         ):
             user = await bot.fetch_user(uid)
             await message.channel.send(
-                f"<@{user.id}> is sleeping. 💤",
+                f"{user.id} is sleeping. 💤",
+                allowed_mentions=discord.AllowedMentions.none()
+            )
+            break
+
+    for user in message.mentions:
+        if user.id in afk_users:
+            afk_data = afk_users[user.id]
+            duration = datetime.datetime.utcnow() - afk_data["since"]
+            mins, secs = divmod(int(duration.total_seconds()), 60)
+            hours, mins = divmod(mins, 60)
+            formatted = f"{hours}h {mins}m {secs}s" if hours else f"{mins}m {secs}s" if mins else f"{secs}s"
+
+            await message.channel.send(
+                f"{user.id} is AFK ({formatted}): **{afk_data['reason']}**",
                 allowed_mentions=discord.AllowedMentions.none()
             )
             break
@@ -747,7 +761,7 @@ async def rsnipe(ctx, index: str = "1"):
             user, emoji, msg, timestamp = logs[n]
             unix_time = int(timestamp.replace(tzinfo=datetime.timezone.utc).timestamp())
             await ctx.send(
-                f"<@{user.id}> removed {emoji} from [this message]({msg.jump_url}) at <t:{unix_time}:f>.",
+               f"{user.id} removed {emoji} from [this message]({msg.jump_url}) at <t:{unix_time}:f>.",
                 allowed_mentions=discord.AllowedMentions.none()
             )
     except:
@@ -1196,36 +1210,6 @@ async def clearwatchlist(ctx):
 
 @bot.command()
 @is_owner()
-async def rshut(ctx, user: discord.User):
-    """Start removing reactions from a user."""
-    reaction_shut.add(user.id)
-    await ctx.send(f"<@{member.id}>'s reactions have been blocked.", allowed_mentions=discord.AllowedMentions.none())
-
-@bot.command()
-@is_owner()
-async def unrshut(ctx, user: discord.User):
-    """Stop removing reactions from a user."""
-    if user.id in reaction_shut:
-        reaction_shut.remove(user.id)
-        await ctx.send(f"<@{member.id}>'s reactions have been unblocked.", allowed_mentions=discord.AllowedMentions.none())
-    else:
-        await ctx.send(f"<@{member.id}>'s reactions were not blocked.", allowed_mentions=discord.AllowedMentions.none())
-
-@bot.command()
-@is_owner()
-async def listrshut(ctx):
-    """List all users currently being reaction-muted."""
-    if not reaction_shut:
-        await ctx.send("No users' reactions are currently blocked.")
-    else:
-        users = []
-        for uid in reaction_shut:
-            user = await bot.fetch_user(uid)
-            users.append(f"{user} ({uid})")
-        await ctx.send("Users with blocked reactions:\n" + "\n".join(users))
-
-@bot.command()
-@is_owner()
 @is_mod_block()
 async def addowner(ctx, member: discord.Member):
     if ctx.author.id != super_owner_id:
@@ -1335,7 +1319,7 @@ async def mute(ctx, member: discord.Member, duration: str):
         return await ctx.send("Invalid duration.")
     await member.timeout(discord.utils.utcnow() + datetime.timedelta(seconds=seconds))
     await ctx.send(
-        f"{member.mention} has been muted for {duration}.",
+        f"{member.id} has been muted for {duration}.",
         allowed_mentions=discord.AllowedMentions.none()
     )
 
@@ -1345,7 +1329,7 @@ async def mute(ctx, member: discord.Member, duration: str):
 async def ban(ctx, user: discord.User, *, reason=None):
     await ctx.guild.ban(user, reason=reason)
     await ctx.send(
-        f"{user.mention} has been banned.",
+        f"{user.id} has been banned.",
         allowed_mentions=discord.AllowedMentions.none()
     )
 
@@ -1494,7 +1478,7 @@ async def raban(ctx, target):
         user = await commands.UserConverter().convert(ctx, target)
         autoban_ids.discard(user.id)
         await ctx.send(
-            f"<@{user.id}> (**{user.name}**) removed from autoban list.",
+           f"{user.id} (**{user.name}**) removed from autoban list.",
             allowed_mentions=discord.AllowedMentions.none()
         )
     except:
