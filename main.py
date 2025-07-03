@@ -288,7 +288,7 @@ async def on_message(message):
         ):
             user = await bot.fetch_user(uid)
             await message.channel.send(
-                f"{user.id} is sleeping. 💤",
+                f"<@{user.id}> is sleeping. 💤",
                 allowed_mentions=discord.AllowedMentions.none()
             )
             break
@@ -302,7 +302,7 @@ async def on_message(message):
             formatted = f"{hours}h {mins}m {secs}s" if hours else f"{mins}m {secs}s" if mins else f"{secs}s"
 
             await message.channel.send(
-                f"{user.id} is AFK ({formatted}): **{afk_data['reason']}**",
+                f"<@{user.id}> is AFK ({formatted}): **{afk_data['reason']}**",
                 allowed_mentions=discord.AllowedMentions.none()
             )
             break
@@ -761,7 +761,7 @@ async def rsnipe(ctx, index: str = "1"):
             user, emoji, msg, timestamp = logs[n]
             unix_time = int(timestamp.replace(tzinfo=datetime.timezone.utc).timestamp())
             await ctx.send(
-               f"{user.id} removed {emoji} from [this message]({msg.jump_url}) at <t:{unix_time}:f>.",
+               f"<@{user.id}> removed {emoji} from [this message]({msg.jump_url}) at <t:{unix_time}:f>.",
                 allowed_mentions=discord.AllowedMentions.none()
             )
     except:
@@ -1329,7 +1329,7 @@ async def mute(ctx, member: discord.Member, duration: str):
 async def ban(ctx, user: discord.User, *, reason=None):
     await ctx.guild.ban(user, reason=reason)
     await ctx.send(
-        f"{user.id} has been banned.",
+        f"<@{user.id}> has been banned.",
         allowed_mentions=discord.AllowedMentions.none()
     )
 
@@ -1478,7 +1478,7 @@ async def raban(ctx, target):
         user = await commands.UserConverter().convert(ctx, target)
         autoban_ids.discard(user.id)
         await ctx.send(
-           f"{user.id} (**{user.name}**) removed from autoban list.",
+           f"<@{user.id}> (**{user.name}**) removed from autoban list.",
             allowed_mentions=discord.AllowedMentions.none()
         )
     except:
