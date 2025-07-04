@@ -286,12 +286,19 @@ async def on_message(message):
             any(user.id == uid for user in message.mentions) or
             (message.reference and message.reference.resolved and message.reference.resolved.author.id == uid)
         ):
-            user = await bot.fetch_user(uid)
-            await message.channel.send(
-                f"<@{user.id}> is sleeping. 💤",
-                allowed_mentions=discord.AllowedMentions.none()
-            )
-            break
+            user = bot.get_user(uid)
+            if not user:
+                try:
+                    user = await bot.fetch_user(uid)
+                    await asyncio.sleep(1)
+                except:
+                    user = None
+            if user:
+                await message.channel.send(
+                    f"<@{user.id}> is sleeping. 💤",
+                    allowed_mentions=discord.AllowedMentions.none()
+                )
+                break
 
     for user in message.mentions:
         if user.id in afk_users:
