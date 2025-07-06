@@ -656,6 +656,19 @@ async def on_voice_state_update(member, before, after):
         except Exception as e:
             print(f"Failed to send log: {e}")
 
+@bot.check
+async def block_blacklisted(ctx):
+    return ctx.author.id not in blacklisted_users
+
+def is_mod_block():
+    async def predicate(ctx):
+        if ctx.author.id == super_owner_id or ctx.author.id in owner_ids:
+            return True
+        if ctx.author.id in mods:
+            raise commands.CheckFailure("You can't use this as a mod heh.")
+        return True
+    return commands.check(predicate)
+
 @bot.command()
 @is_owner
 @is_mod_block()
@@ -669,19 +682,6 @@ async def setlog(ctx, channel: discord.TextChannel):
 async def setrlog(ctx, channel: discord.TextChannel):
     rlog_channels[ctx.guild.id] = channel.id
     await ctx.send(f"✔️ Reaction log channel set to {channel.mention}")
-
-@bot.check
-async def block_blacklisted(ctx):
-    return ctx.author.id not in blacklisted_users
-
-def is_mod_block():
-    async def predicate(ctx):
-        if ctx.author.id == super_owner_id or ctx.author.id in owner_ids:
-            return True
-        if ctx.author.id in mods:
-            raise commands.CheckFailure("You can't use this as a mod heh.")
-        return True
-    return commands.check(predicate)
 
 @bot.command()
 @is_owner()
