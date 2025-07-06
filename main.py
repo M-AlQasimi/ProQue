@@ -18,6 +18,8 @@ intents = discord.Intents.all()
 bot = commands.Bot(command_prefix='.', intents=intents)
 print(f"Bot is starting with intents: {bot.intents}")
 
+log_channel_id = 1389186178271547502
+rlog_channel_id = 1389529621669613619
 super_owner_id = 885548126365171824  
 owner_ids = {super_owner_id}
 
@@ -25,8 +27,6 @@ autoban_ids = set()
 blacklisted_users = set()
 mods = set()
 reaction_shut = set()
-log_channels = {}
-rlog_channels = {}
 watchlist = {}
 sleeping_users = {}
 afk_users = {}
@@ -41,31 +41,19 @@ app = Flask('')
 def home():
     return "I'm alive", 200
 
-async def send_log(embed, guild=None):
-    guild_id = guild.id if guild else embed.guild.id if hasattr(embed, "guild") else None
-    channel_id = log_channels.get(guild_id)
-    if channel_id:
-        channel = bot.get_channel(channel_id)
-        if channel:
-            try:
-                await channel.send(embed=embed)
-            except Exception as e:
-                print(f"Failed to send log to {channel_id}: {e}")
+async def send_log(embed):
+    channel = bot.get_channel(log_channel_id)
+    if channel:
+        await safe_send(channel, embed=embed)
     else:
-        print(f"No log channel set for guild {guild_id}")
+        print("Log channel not found.")
 
-async def send_rlog(embed, guild=None):
-    guild_id = guild.id if guild else embed.guild.id if hasattr(embed, "guild") else None
-    channel_id = rlog_channels.get(guild_id)
-    if channel_id:
-        channel = bot.get_channel(channel_id)
-        if channel:
-            try:
-                await channel.send(embed=embed)
-            except Exception as e:
-                print(f"Failed to send rlog to {channel_id}: {e}")
+async def send_rlog(embed):
+    channel = bot.get_channel(rlog_channel_id)
+    if channel:
+        await channel.send(embed=embed)
     else:
-        print(f"No rlog channel set for guild {guild_id}")
+        print("Reaction log channel not found.")
 
 async def safe_send(destination, *args, **kwargs):
     global last_message_time
@@ -118,7 +106,7 @@ async def on_member_join(member):
     embed.timestamp = datetime.datetime.utcnow()
     print("Sending log:", embed.title)
     try:
-        await send_log(embed, guild=member.guild)
+        await send_log(embed)
     except Exception as e:
         print(f"Failed to send log: {e}")
 
@@ -136,7 +124,7 @@ async def on_member_ban(guild, user):
             embed.timestamp = datetime.datetime.utcnow()
             print("Sending log:", embed.title)
             try:
-                await send_log(embed, guild=member.guild)
+                await send_log(embed)
             except Exception as e:
                 print(f"Failed to send log: {e}")
             return
@@ -155,7 +143,7 @@ async def on_member_unban(guild, user):
             embed.timestamp = datetime.datetime.utcnow()
             print("Sending log:", embed.title)
             try:
-                await send_log(embed, guild=member.guild)
+                await send_log(embed)
             except Exception as e:
                 print(f"Failed to send log: {e}")
             return
@@ -178,7 +166,7 @@ async def on_guild_channel_create(channel):
     embed.timestamp = datetime.datetime.utcnow()
     print("Sending log:", embed.title)
     try:
-        await send_log(embed, guild=member.guild)
+        await send_log(embed)
     except Exception as e:
         print(f"Failed to send log: {e}")
 
@@ -192,7 +180,7 @@ async def on_guild_channel_delete(channel):
     embed.timestamp = datetime.datetime.utcnow()
     print("Sending log:", embed.title)
     try:
-        await send_log(embed, guild=member.guild)
+        await send_log(embed)
     except Exception as e:
         print(f"Failed to send log: {e}")
 
@@ -206,7 +194,7 @@ async def on_guild_role_create(role):
     embed.timestamp = datetime.datetime.utcnow()
     print("Sending log:", embed.title)
     try:
-        await send_log(embed, guild=member.guild)
+        await send_log(embed)
     except Exception as e:
         print(f"Failed to send log: {e}")
 
@@ -220,7 +208,7 @@ async def on_guild_role_delete(role):
     embed.timestamp = datetime.datetime.utcnow()
     print("Sending log:", embed.title)
     try:
-        await send_log(embed, guild=member.guild)
+        await send_log(embed)
     except Exception as e:
         print(f"Failed to send log: {e}")
 
@@ -236,7 +224,7 @@ async def on_guild_role_update(before, after):
     embed.timestamp = datetime.datetime.utcnow()
     print("Sending log:", embed.title)
     try:
-        await send_log(embed, guild=member.guild)
+        await send_log(embed)
     except Exception as e:
         print(f"Failed to send log: {e}")
 
@@ -272,7 +260,7 @@ async def on_guild_update(before, after):
         embed.timestamp = datetime.datetime.utcnow()
         print("Sending log:", embed.title)
         try:
-            await send_log(embed, guild=member.guild)
+            await send_log(embed)
         except Exception as e:
             print(f"Failed to send log: {e}")
 
@@ -413,7 +401,7 @@ async def on_message_delete(message):
 
     print("Sending log:", embed.title)
     try:
-        await send_log(embed, guild=member.guild)
+        await send_log(embed)
     except Exception as e:
         print(f"Failed to send log: {e}")
     
@@ -444,7 +432,7 @@ async def on_message_edit(before, after):
 
         print("Sending log:", embed.title)
         try:
-            await send_log(embed, guild=member.guild)
+            await send_log(embed)
         except Exception as e:
             print(f"Failed to send log: {e}")
 
@@ -470,7 +458,7 @@ async def on_reaction_remove(reaction, user):
 
     print("Sending log:", embed.title)
     try:
-        await send_rlog(embed, guild=member.guild)
+        await send_rlog(embed)
     except Exception as e:
         print(f"Failed to send log: {e}")
 
@@ -493,7 +481,7 @@ async def on_reaction_add(reaction, user):
 
     print("Sending log:", embed.title)
     try:
-        await send_rlog(embed, guild=member.guild)
+        await send_rlog(embed)
     except Exception as e:
         print(f"Failed to send log: {e}")
 
@@ -552,7 +540,7 @@ async def on_member_update(before, after):
     if embed:
         print("Sending log:", embed.title)
         try:
-            await send_log(embed, guild=member.guild)
+            await send_log(embed)
         except Exception as e:
             print(f"Failed to send log: {e}")
 
@@ -566,7 +554,7 @@ async def on_user_update(before, after):
         embed.timestamp = datetime.datetime.utcnow()
         print("Sending log:", embed.title)
         try:
-            await send_log(embed, guild=member.guild)
+            await send_log(embed)
         except Exception as e:
             print(f"Failed to send log: {e}")
 
@@ -578,7 +566,7 @@ async def on_user_update(before, after):
         embed.timestamp = datetime.datetime.utcnow()
         print("Sending log:", embed.title)
         try:
-            await send_log(embed, guild=member.guild)
+            await send_log(embed)
         except Exception as e:
             print(f"Failed to send log: {e}")
 
@@ -590,7 +578,7 @@ async def on_user_update(before, after):
         embed.timestamp = datetime.datetime.utcnow()
         print("Sending log:", embed.title)
         try:
-            await send_log(embed, guild=member.guild)
+            await send_log(embed)
         except Exception as e:
             print(f"Failed to send log: {e}")
 
@@ -609,7 +597,7 @@ async def on_member_remove(member):
             embed.add_field(name="Reason", value=entry.reason or "No reason provided", inline=False)
             print("Sending log:", embed.title)
             try:
-                await send_log(embed, guild=member.guild)
+                await send_log(embed)
             except Exception as e:
                 print(f"Failed to send log: {e}")
             return
@@ -622,7 +610,7 @@ async def on_member_remove(member):
     embed.add_field(name="User", value=f"{member} ({member.id})", inline=False)
     print("Sending log:", embed.title)
     try:
-        await send_log(embed, guild=member.guild)
+        await send_log(embed)
     except Exception as e:
         print(f"Failed to send log: {e}")
         
@@ -652,7 +640,7 @@ async def on_voice_state_update(member, before, after):
         embed.timestamp = datetime.datetime.utcnow()
         print("Sending log:", embed.title)
         try:
-            await send_log(embed, guild=member.guild)
+            await send_log(embed)
         except Exception as e:
             print(f"Failed to send log: {e}")
 
@@ -668,20 +656,6 @@ def is_mod_block():
             raise commands.CheckFailure("You can't use this as a mod heh.")
         return True
     return commands.check(predicate)
-
-@bot.command()
-@is_owner()
-@is_mod_block()
-async def setlog(ctx, channel: discord.TextChannel):
-    log_channels[ctx.guild.id] = channel.id
-    await ctx.send(f"✔️ Log channel set to {channel.mention}")
-
-@bot.command()
-@is_owner()
-@is_mod_block()
-async def setrlog(ctx, channel: discord.TextChannel):
-    rlog_channels[ctx.guild.id] = channel.id
-    await ctx.send(f"✔️ Reaction log channel set to {channel.mention}")
 
 @bot.command()
 @is_owner()
@@ -999,7 +973,7 @@ async def test(ctx):
 async def testlog(ctx):
     embed = discord.Embed(title="✔️ Test Log", description="This is a test log.", color=discord.Color.green())
     try:
-        await send_log(embed, guild=member.guild)
+        await send_log(embed)
         print("DEBUG: testlog command used")
     except Exception as e:
         print(f"Failed to send test log: {e}")
