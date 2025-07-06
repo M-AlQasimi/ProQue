@@ -670,14 +670,14 @@ def is_mod_block():
     return commands.check(predicate)
 
 @bot.command()
-@is_owner
+@is_owner()
 @is_mod_block()
 async def setlog(ctx, channel: discord.TextChannel):
     log_channels[ctx.guild.id] = channel.id
     await ctx.send(f"✔️ Log channel set to {channel.mention}")
 
 @bot.command()
-@is_owner
+@is_owner()
 @is_mod_block()
 async def setrlog(ctx, channel: discord.TextChannel):
     rlog_channels[ctx.guild.id] = channel.id
