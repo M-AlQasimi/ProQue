@@ -18,8 +18,15 @@ intents = discord.Intents.all()
 bot = commands.Bot(command_prefix='.', intents=intents)
 print(f"Bot is starting with intents: {bot.intents}")
 
-log_channel_id = 1389186178271547502
-rlog_channel_id = 1389529621669613619
+log_channel_ids = [
+    1389186178271547502,
+    1391335684505206824
+]
+rlog_channel_ids = [
+    1389529621669613619,
+    1391335686459756658
+]
+
 super_owner_id = 885548126365171824  
 owner_ids = {super_owner_id}
 
@@ -42,18 +49,26 @@ def home():
     return "I'm alive", 200
 
 async def send_log(embed):
-    channel = bot.get_channel(log_channel_id)
-    if channel:
-        await safe_send(channel, embed=embed)
-    else:
-        print("Log channel not found.")
+    for channel_id in log_channel_ids:
+        channel = bot.get_channel(channel_id)
+        if channel:
+            try:
+                await channel.send(embed=embed)
+            except Exception as e:
+                print(f"Failed to send log to {channel_id}: {e}")
+        else:
+            print(f"Log channel {channel_id} not found!")
 
 async def send_rlog(embed):
-    channel = bot.get_channel(rlog_channel_id)
-    if channel:
-        await channel.send(embed=embed)
-    else:
-        print("Reaction log channel not found.")
+    for channel_id in rlog_channel_ids:
+        channel = bot.get_channel(channel_id)
+        if channel:
+            try:
+                await channel.send(embed=embed)
+            except Exception as e:
+                print(f"Failed to send rlog to {channel_id}: {e}")
+        else:
+            print(f"RLog channel {channel_id} not found!")
 
 async def safe_send(destination, *args, **kwargs):
     global last_message_time
