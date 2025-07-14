@@ -1617,4 +1617,6 @@ async def sleep(ctx):
     await ctx.send("You’re now in sleep mode. 💤 Good night!")
 
 keep_alive()
+import time
+time.sleep(10)
 bot.run(os.getenv("DISCORD_TOKEN"))
