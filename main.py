@@ -27,6 +27,7 @@ autoban_ids = set()
 blacklisted_users = set()
 mods = set()
 reaction_shut = set()
+shutdown_channels = set()
 watchlist = {}
 sleeping_users = {}
 afk_users = {}
@@ -267,6 +268,13 @@ async def on_guild_update(before, after):
 @bot.event
 async def on_message(message):
     if message.author.bot:
+        return
+
+    if message.channel.id in down_channels and message.author.id not in owner_ids:
+        try:
+            await message.delete()
+        except:
+            pass
         return
 
     if message.author.id in sleeping_users:
@@ -1214,6 +1222,20 @@ async def clearwatchlist(ctx):
         return await ctx.send("Only 𝚀𝚞𝚎 can clear the watchlist.")
     watchlist.clear()
     await ctx.send("Watchlist cleared.")
+
+@bot.command()
+@is_owner()
+@is_mod_block()
+async def shutdown(ctx):
+    shutdown_channels.add(ctx.channel.id)
+    await ctx.send("✖This channel is now in shutdown mode. Only owners can speak.")
+
+@bot.command()
+@is_owner()
+@is_mod_block()
+async def reopen(ctx):
+    shutdown_channels.discard(ctx.channel.id)
+    await ctx.send("This channel has been reopened. All users may speak now.")
 
 @bot.command()
 @is_owner()
