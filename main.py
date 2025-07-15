@@ -18,8 +18,8 @@ intents = discord.Intents.all()
 bot = commands.Bot(command_prefix='.', intents=intents)
 print(f"Bot is starting with intents: {bot.intents}")
 
-log_channel_id = 1389186178271547502
-rlog_channel_id = 1389529621669613619
+log_channel_id = 1394805685207826622
+rlog_channel_id = 1394806602502115470
 super_owner_id = 885548126365171824  
 owner_ids = {super_owner_id}
 
