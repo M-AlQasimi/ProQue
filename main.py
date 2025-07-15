@@ -478,31 +478,65 @@ async def on_message_delete(message):
 
 @bot.event
 async def on_bulk_message_delete(messages):
-    for message in messages:
-        if message.author.bot:
-            continue
+    messages = [m for m in messages if not m.author.bot]
+    if not messages:
+        return
 
-        content = message.content or ""
+    messages.sort(key=lambda m: m.created_at)
+
+    log_entries = []
+    attachments = []
+
+    for i, msg in enumerate(messages, 1):
+        content = msg.content.strip() or "[No content]"
+        log_entries.append(f"**{i}.** {msg.author} ({msg.author.id}): {content}")
+        for j, att in enumerate(msg.attachments, 1):
+            attachments.append((f"Attachment {i}.{j}", att.url))
+
+    # Split log entries into chunks for separate embeds if too long
+    chunks = []
+    current = []
+    current_len = 0
+    for entry in log_entries:
+        if current_len + len(entry) > 3800:
+            chunks.append(current)
+            current = [entry]
+            current_len = len(entry)
+        else:
+            current.append(entry)
+            current_len += len(entry)
+    if current:
+        chunks.append(current)
+
+    # Send message content embeds
+    for i, chunk in enumerate(chunks, 1):
         embed = discord.Embed(
-            title="🧹 Bulk Message Deleted",
+            title=f"🧹 Bulk Messages Deleted (Part {i}/{len(chunks)})",
+            description="\n".join(chunk),
             color=discord.Color.red()
         )
-        embed.add_field(name="User", value=f"{message.author} ({message.author.id})", inline=False)
-        embed.add_field(name="Channel", value=message.channel.mention, inline=False)
-        embed.add_field(name="Content", value=content[:1024] or "[No content]", inline=False)
+        embed.add_field(name="Channel", value=messages[0].channel.mention, inline=False)
         embed.timestamp = datetime.datetime.now(timezone.utc)
-
-        if message.attachments:
-            first = message.attachments[0]
-            if first.content_type and first.content_type.startswith("image"):
-                embed.set_image(url=first.url)
-            else:
-                embed.add_field(name="Attachment", value=first.url, inline=False)
-
         try:
             await send_log(embed)
         except Exception as e:
-            print(f"Failed to send bulk delete log: {e}")
+            print(f"Failed to send log part {i}: {e}")
+
+    if attachments:
+        attach_chunks = [attachments[i:i+5] for i in range(0, len(attachments), 5)]
+        for i, group in enumerate(attach_chunks, 1):
+            embed = discord.Embed(
+                title=f"📎 Attachments from Purged Messages (Part {i}/{len(attach_chunks)})",
+                color=discord.Color.orange()
+            )
+            for name, url in group:
+                embed.add_field(name=name, value=url, inline=False)
+            embed.add_field(name="Channel", value=messages[0].channel.mention, inline=False)
+            embed.timestamp = datetime.datetime.now(timezone.utc)
+            try:
+                await send_log(embed)
+            except Exception as e:
+                print(f"Failed to send attachment log part {i}: {e}")
     
 
 @bot.event
