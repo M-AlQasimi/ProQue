@@ -18,7 +18,7 @@ intents = discord.Intents.all()
 bot = commands.Bot(command_prefix='.', intents=intents)
 print(f"Bot is starting with intents: {bot.intents}")
 
-log_channel_id = 1394805685207826622
+log_channel_id = 1394806479881769100
 rlog_channel_id = 1394806602502115470
 super_owner_id = 885548126365171824  
 owner_ids = {super_owner_id}
@@ -44,11 +44,13 @@ def home():
     return "I'm alive", 200
 
 async def send_log(embed):
-    channel = bot.get_channel(log_channel_id)
-    if channel:
-        await safe_send(channel, embed=embed)
-    else:
-        print("Log channel not found.")
+    try:
+        channel = bot.get_channel(log_channel_id)
+        if not channel:
+            channel = await bot.fetch_channel(log_channel_id)
+        await channel.send(embed=embed)
+    except Exception as e:
+        print(f"Failed to send log: {e}")
 
 async def send_rlog(embed):
     channel = bot.get_channel(rlog_channel_id)
