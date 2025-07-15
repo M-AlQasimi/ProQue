@@ -271,7 +271,7 @@ async def on_message(message):
     if message.author.bot:
         return
 
-    if message.channel.id in down_channels and message.author.id not in owner_ids:
+    if message.channel.id in shutdown_channels and message.author.id not in owner_ids:
         try:
             await message.delete()
         except:
