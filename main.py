@@ -31,6 +31,7 @@ shutdown_channels = set()
 watchlist = {}
 sleeping_users = {}
 afk_users = {}
+c4_games = {}
 ttt_games = {}
 edited_snipes = {}
 deleted_snipes = {}
@@ -1175,6 +1176,129 @@ async def update_turn(game, channel):
         del ttt_games[channel.id]
 
     game["timeout_task"] = asyncio.create_task(countdown())
+
+class Connect4Button(Button):
+    def __init__(self, col):
+        super().__init__(style=discord.ButtonStyle.secondary, label=str(col+1))
+        self.col = col
+
+    async def callback(self, interaction: discord.Interaction):
+        game = c4_games.get(interaction.channel.id)
+        if not game or interaction.user != game["players"][game["turn"]]:
+            return await interaction.response.send_message("Not your turn.", ephemeral=True)
+
+        board = game["board"]
+        for row in reversed(range(6)):
+            if board[row][self.col] == "⬛":
+                piece = "⚫" if game["turn"] == 0 else "⚪"
+                board[row][self.col] = piece
+                break
+        else:
+            return await interaction.response.send_message("Column full.", ephemeral=True)
+
+        render = "\n".join("".join(row) for row in board)
+        game["view"] = Connect4View()
+        if game["timeout_task"]:
+            game["timeout_task"].cancel()
+
+        if check_c4_winner(board, piece):
+            await interaction.message.edit(
+                content=f"{render}\n\n🎉 <@{interaction.user.id}> wins!",
+                view=game["view"]
+            )
+            del c4_games[interaction.channel.id]
+            return
+
+        if all(cell != "⬛" for row in board for cell in row):
+            await interaction.message.edit(content=f"{render}\n\nIt's a draw!", view=game["view"])
+            del c4_games[interaction.channel.id]
+            return
+
+        game["turn"] = 1 - game["turn"]
+        game["msg"] = interaction.message
+        game["board"] = board
+        await interaction.response.edit_message(content=f"{render}", view=game["view"])
+        await update_c4_turn(game, interaction.channel)
+
+class Connect4View(View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        for col in range(7):
+            self.add_item(Connect4Button(col))
+
+def check_c4_winner(board, piece):
+    # Horizontal, vertical, and diagonal checks
+    for r in range(6):
+        for c in range(4):
+            if all(board[r][c+i] == piece for i in range(4)):
+                return True
+    for r in range(3):
+        for c in range(7):
+            if all(board[r+i][c] == piece for i in range(4)):
+                return True
+    for r in range(3):
+        for c in range(4):
+            if all(board[r+i][c+i] == piece for i in range(4)):
+                return True
+    for r in range(3):
+        for c in range(3, 7):
+            if all(board[r+i][c-i] == piece for i in range(4)):
+                return True
+    return False
+
+async def update_c4_turn(game, channel):
+    current = game["players"][game["turn"]]
+    msg = game["msg"]
+    time_left = 30
+
+    async def countdown():
+        nonlocal time_left
+        while time_left > 0:
+            await msg.edit(content=f"{render_board(game['board'])}\n\n<@{current.id}>, it's your turn! ({time_left}s)", view=game["view"])
+            await asyncio.sleep(1)
+            time_left -= 1
+
+        await msg.edit(content=f"{render_board(game['board'])}\n\n⏱️ <@{current.id}> took too long. Game over!", view=game["view"])
+        del c4_games[channel.id]
+
+    game["timeout_task"] = asyncio.create_task(countdown())
+
+def render_board(board):
+    return "\n".join("".join(row) for row in board)
+
+@bot.command()
+async def c4(ctx, opponent: discord.Member):
+    if ctx.channel.id in c4_games:
+        return await ctx.send("A Connect 4 game is already in progress here.")
+    if opponent.bot or opponent == ctx.author:
+        return await ctx.send("Choose a real opponent.")
+
+    view = AcceptView(ctx, opponent)
+    await ctx.send(
+        f"<@{opponent.id}>, <@{ctx.author.id}> challenged you to a game of **Connect 4**.\nClick below to accept or decline:",
+        view=view,
+        allowed_mentions=discord.AllowedMentions.none()
+    )
+    await view.wait()
+
+    if not view.accepted:
+        return
+
+    board = [["⬛"] * 7 for _ in range(6)]
+    game_view = Connect4View()
+    render = "\n".join("".join(row) for row in board)
+    msg = await ctx.send(render, view=game_view)
+
+    game = {
+        "players": [ctx.author, opponent],
+        "turn": 0,
+        "board": board,
+        "view": game_view,
+        "msg": msg,
+        "timeout_task": None
+    }
+    c4_games[ctx.channel.id] = game
+    await update_c4_turn(game, ctx.channel)
 
 @bot.command()
 async def q(ctx):
