@@ -165,6 +165,12 @@ async def on_guild_channel_create(channel):
         color=discord.Color.green()
     )
     embed.add_field(name="Channel", value=channel.mention, inline=False)
+
+    async for entry in channel.guild.audit_logs(limit=1, action=discord.AuditLogAction.channel_create):
+        if entry.target.id == channel.id:
+            embed.add_field(name="By", value=f"{entry.user} ({entry.user.id})", inline=False)
+            break
+
     embed.timestamp = datetime.datetime.now(timezone.utc)
     print("Sending log:", embed.title)
     try:
@@ -179,6 +185,12 @@ async def on_guild_channel_delete(channel):
         color=discord.Color.red()
     )
     embed.add_field(name="Channel", value=channel.name, inline=False)
+
+    async for entry in channel.guild.audit_logs(limit=1, action=discord.AuditLogAction.channel_delete):
+        if entry.target.id == channel.id:
+            embed.add_field(name="By", value=f"{entry.user} ({entry.user.id})", inline=False)
+            break
+
     embed.timestamp = datetime.datetime.now(timezone.utc)
     print("Sending log:", embed.title)
     try:
@@ -193,6 +205,12 @@ async def on_guild_role_create(role):
         color=discord.Color.green()
     )
     embed.add_field(name="Role", value=role.name, inline=False)
+
+    async for entry in role.guild.audit_logs(limit=1, action=discord.AuditLogAction.role_create):
+        if entry.target.id == role.id:
+            embed.add_field(name="By", value=f"{entry.user} ({entry.user.id})", inline=False)
+            break
+
     embed.timestamp = datetime.datetime.now(timezone.utc)
     print("Sending log:", embed.title)
     try:
@@ -207,6 +225,12 @@ async def on_guild_role_delete(role):
         color=discord.Color.red()
     )
     embed.add_field(name="Role", value=role.name, inline=False)
+
+    async for entry in role.guild.audit_logs(limit=1, action=discord.AuditLogAction.role_delete):
+        if entry.target.id == role.id:
+            embed.add_field(name="By", value=f"{entry.user} ({entry.user.id})", inline=False)
+            break
+
     embed.timestamp = datetime.datetime.now(timezone.utc)
     print("Sending log:", embed.title)
     try:
@@ -221,8 +245,33 @@ async def on_guild_role_update(before, after):
         color=discord.Color.blue()
     )
     embed.add_field(name="Role", value=f"{after.name} ({after.id})", inline=False)
-    embed.add_field(name="Before", value=before.name, inline=True)
-    embed.add_field(name="After", value=after.name, inline=True)
+
+    changes = []
+
+    if before.name != after.name:
+        changes.append(f"**Name:** `{before.name}` → `{after.name}`")
+    if before.color != after.color:
+        changes.append(f"**Color:** `{before.color}` → `{after.color}`")
+    if before.permissions != after.permissions:
+        before_perms = set(p[0] for p in before.permissions if p[1])
+        after_perms = set(p[0] for p in after.permissions if p[1])
+        added = after_perms - before_perms
+        removed = before_perms - after_perms
+        if added:
+            changes.append(f"**Perms Added:** {', '.join(added)}")
+        if removed:
+            changes.append(f"**Perms Removed:** {', '.join(removed)}")
+
+    if not changes:
+        changes.append("No visible changes logged.")
+
+    embed.add_field(name="Changes", value="\n".join(changes), inline=False)
+
+    async for entry in after.guild.audit_logs(limit=1, action=discord.AuditLogAction.role_update):
+        if entry.target.id == after.id:
+            embed.add_field(name="By", value=f"{entry.user} ({entry.user.id})", inline=False)
+            break
+
     embed.timestamp = datetime.datetime.now(timezone.utc)
     print("Sending log:", embed.title)
     try:
@@ -232,6 +281,13 @@ async def on_guild_role_update(before, after):
 
 @bot.event
 async def on_guild_update(before, after):
+    guild = after.guild if hasattr(after, 'guild') else before
+    entry = None
+    async for log in guild.audit_logs(limit=5):
+        if log.target.id == guild.id:
+            entry = log
+            break
+
     embed = None
 
     if before.name != after.name:
@@ -241,9 +297,9 @@ async def on_guild_update(before, after):
             color=discord.Color.orange()
         )
 
-    if before.icon != after.icon:
+    elif before.icon != after.icon:
         embed = discord.Embed(
-            title="Server Icon Changed",
+            title="🖼️ Server Icon Changed",
             color=discord.Color.orange()
         )
         if before.icon:
@@ -251,14 +307,15 @@ async def on_guild_update(before, after):
         if after.icon:
             embed.set_image(url=after.icon.url)
 
-    if before.verification_level != after.verification_level:
+    elif before.verification_level != after.verification_level:
         embed = discord.Embed(
             title="🔒 Verification Level Changed",
             description=f"**Before:** {before.verification_level.name}\n**After:** {after.verification_level.name}",
             color=discord.Color.orange()
         )
 
-    if embed:
+    if embed and entry:
+        embed.add_field(name="By", value=f"{entry.user} ({entry.user.id})", inline=False)
         embed.timestamp = datetime.datetime.now(timezone.utc)
         print("Sending log:", embed.title)
         try:
@@ -367,24 +424,30 @@ async def on_command_error(ctx, error):
 
 @bot.event
 async def on_message_delete(message):
-    print(f"DEBUG: on_message_delete fired for {message.author} - {message.content}")
-
     if not message.content and not message.attachments:
         return
 
     content = message.content or ""
+    deleter = "Unknown"
+
+    # Try to find who deleted the message via audit logs
+    if message.guild:
+        async for entry in message.guild.audit_logs(limit=5, action=discord.AuditLogAction.message_delete):
+            if entry.target.id == message.author.id and (datetime.datetime.now(timezone.utc) - entry.created_at).total_seconds() < 5:
+                deleter = f"{entry.user} ({entry.user.id})"
+                break
 
     embed = discord.Embed(
         title="🗑️ Message Deleted",
         color=discord.Color.red()
     )
     embed.add_field(name="User", value=f"{message.author} ({message.author.id})", inline=False)
+    embed.add_field(name="Deleted by", value=deleter, inline=False)
     embed.add_field(name="Channel", value=message.channel.mention, inline=False)
     embed.timestamp = datetime.datetime.now(timezone.utc)
 
     if message.attachments:
         first = message.attachments[0]
-
         if first.content_type:
             if first.content_type.startswith("image"):
                 embed.set_image(url=first.url)
