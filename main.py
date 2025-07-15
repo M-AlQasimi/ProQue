@@ -1189,7 +1189,7 @@ class Connect4Button(Button):
 
         board = game["board"]
         for row in reversed(range(6)):
-            if board[row][self.col] == "🔳":
+            if board[row][self.col] == "🔲":
                 piece = "⚫" if game["turn"] == 0 else "⚪"
                 board[row][self.col] = piece
                 break
@@ -1209,7 +1209,7 @@ class Connect4Button(Button):
             del c4_games[interaction.channel.id]
             return
 
-        if all(cell != "🔳" for row in board for cell in row):
+        if all(cell != "🔲" for row in board for cell in row):
             await interaction.message.edit(content=f"{render}\n\nIt's a draw!", view=game["view"])
             del c4_games[interaction.channel.id]
             return
@@ -1283,7 +1283,7 @@ async def c4(ctx, opponent: discord.Member):
     if not view.accepted:
         return
 
-    board = [["🔳"] * 7 for _ in range(6)]
+    board = [["🔲"] * 7 for _ in range(6)]
     game_view = Connect4View()
     render = "\n".join("".join(row) for row in board)
     msg = await ctx.send(render, view=game_view)
