@@ -430,7 +430,6 @@ async def on_message_delete(message):
     content = message.content or ""
     deleter = "Unknown"
 
-    # Try to find who deleted the message via audit logs
     if message.guild:
         async for entry in message.guild.audit_logs(limit=5, action=discord.AuditLogAction.message_delete):
             if entry.target.id == message.author.id and (datetime.datetime.now(timezone.utc) - entry.created_at).total_seconds() < 5:
@@ -476,6 +475,34 @@ async def on_message_delete(message):
         await send_log(embed)
     except Exception as e:
         print(f"Failed to send log: {e}")
+
+@bot.event
+async def on_bulk_message_delete(messages):
+    for message in messages:
+        if message.author.bot:
+            continue
+
+        content = message.content or ""
+        embed = discord.Embed(
+            title="🧹 Bulk Message Deleted",
+            color=discord.Color.red()
+        )
+        embed.add_field(name="User", value=f"{message.author} ({message.author.id})", inline=False)
+        embed.add_field(name="Channel", value=message.channel.mention, inline=False)
+        embed.add_field(name="Content", value=content[:1024] or "[No content]", inline=False)
+        embed.timestamp = datetime.datetime.now(timezone.utc)
+
+        if message.attachments:
+            first = message.attachments[0]
+            if first.content_type and first.content_type.startswith("image"):
+                embed.set_image(url=first.url)
+            else:
+                embed.add_field(name="Attachment", value=first.url, inline=False)
+
+        try:
+            await send_log(embed)
+        except Exception as e:
+            print(f"Failed to send bulk delete log: {e}")
     
 
 @bot.event
