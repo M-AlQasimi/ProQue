@@ -28,6 +28,7 @@ blacklisted_users = set()
 mods = set()
 reaction_shut = set()
 shutdown_channels = set()
+disabled_commands = set()
 watchlist = {}
 sleeping_users = {}
 afk_users = {}
@@ -780,6 +781,13 @@ async def on_voice_state_update(member, before, after):
             print(f"Failed to send log: {e}")
 
 @bot.check
+async def globally_block_disabled(ctx):
+    if ctx.command and ctx.command.name in disabled_commands and ctx.author.id != super_owner_id:
+        await ctx.send(f"**{ctx.command.name}** is disabled.")
+        return False
+    return True
+
+@bot.check
 async def block_blacklisted(ctx):
     return ctx.author.id not in blacklisted_users
 
@@ -813,6 +821,70 @@ async def listmods(ctx):
         return await ctx.send("No mods found.")
     mod_mentions = [f"<@{uid}>" for uid in mods]
     await ctx.send("Mods:\n" + "\n".join(mod_mentions), allowed_mentions=discord.AllowedMentions.none())
+
+@bot.command()
+@is_owner()
+@is_mod_block()
+async def disable(ctx, cmd: str):
+    if ctx.author.id != super_owner_id:
+        return
+
+    command = bot.get_command(cmd)
+    if not command:
+        await ctx.send("Command not found.")
+        return
+
+    disabled_commands.add(command.name)
+    await ctx.send(f"Disabled **{command.name}**")
+    
+@bot.command()
+@is_owner()
+@is_mod_block()
+async def enable(ctx, cmd: str):
+    if ctx.author.id != super_owner_id:
+        return
+
+    command = bot.get_command(cmd)
+    if not command:
+        await ctx.send("Command not found.")
+        return
+
+    if command.name in disabled_commands:
+        disabled_commands.remove(command.name)
+        await ctx.send(f"Enabled **{command.name}**")
+    else:
+        await ctx.send(f"**{command.name}** is not disabled.")
+
+@bot.command()
+@is_owner()
+@is_mod_block()
+async def disableall(ctx):
+    if ctx.author.id != super_owner_id:
+        return
+
+    for command in bot.commands:
+        if command.name != "enableall":
+            disabled_commands.add(command.name)
+    await ctx.send("Disabled **all commands**")
+
+@bot.command()
+@is_owner()
+@is_mod_block()
+async def enableall(ctx):
+    if ctx.author.id != super_owner_id:
+        return
+
+    disabled_commands.clear()
+    await ctx.send("Enabled **all commands**")
+
+@bot.command()
+@is_owner()
+async def dclist(ctx):
+    if not disabled_commands:
+        await ctx.send("No commands are disabled.")
+    else:
+        formatted = "\n".join(f"**{name}**" for name in disabled_commands)
+        await ctx.send(f"Disabled Commands:\n{formatted}")
     
 @bot.command()
 async def afk(ctx, *, reason="AFK"):
