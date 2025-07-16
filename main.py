@@ -40,6 +40,10 @@ removed_reactions = {}
 
 app = Flask('')
 
+class CommandDisabledError(commands.CheckFailure):
+    def __init__(self, command_name):
+        self.command_name = command_name
+
 @app.route('/')
 def home():
     return "I'm alive", 200
@@ -407,17 +411,25 @@ async def on_message(message):
 async def on_command_error(ctx, error):
     if isinstance(error, commands.CommandNotFound):
         return
+
+    elif isinstance(error, CommandDisabledError):
+        await ctx.send(f"**{error.command_name}** is disabled.")
+
     elif isinstance(error, commands.CheckFailure):
         if ctx.author.id in blacklisted_users:
             await ctx.send("LMAO you're blocked you can't use ts 😭✌🏻")
         else:
             await ctx.send("You can't use that heh")
+
     elif isinstance(error, commands.MissingPermissions):
         await ctx.send("You don’t have permission to do that.")
+
     elif isinstance(error, commands.MissingRequiredArgument):
         await ctx.send("Missing required argument.")
+
     elif isinstance(error, commands.BadArgument):
         await ctx.send("Invalid input. Check your arguments.")
+
     else:
         print(f"Unexpected error in {ctx.command}: {type(error).__name__} - {error}")
         if ctx.author.id in owner_ids:
@@ -783,8 +795,7 @@ async def on_voice_state_update(member, before, after):
 @bot.check
 async def globally_block_disabled(ctx):
     if ctx.command and ctx.command.name in disabled_commands and ctx.author.id != super_owner_id:
-        await ctx.send(f"**{ctx.command.name}** is disabled.")
-        return False
+        raise CommandDisabledError(ctx.command.name)
     return True
 
 @bot.check
