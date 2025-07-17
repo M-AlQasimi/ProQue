@@ -1394,10 +1394,14 @@ class Connect4Button(Button):
     async def callback(self, interaction: discord.Interaction):
         try:
             game = c4_games.get(interaction.channel.id)
+            print("[DEBUG] Got game:", game)
+
             if not game or interaction.user != game["players"][game["turn"]]:
                 return await interaction.response.send_message("Not your turn.", ephemeral=True)
 
             board = game["board"]
+            print("[DEBUG] Board before move:", board)
+
             for row in reversed(range(6)):
                 if board[row][self.col] == " ":
                     piece = "⚫" if game["turn"] == 0 else "⚪"
@@ -1407,6 +1411,7 @@ class Connect4Button(Button):
                 return await interaction.response.send_message("Column full.", ephemeral=True)
 
             if game["timeout_task"]:
+                print("[DEBUG] Cancelling timeout")
                 game["timeout_task"].cancel()
 
             if check_c4_winner(board, piece):
@@ -1437,7 +1442,9 @@ class Connect4Button(Button):
             await update_c4_turn(game, interaction.channel)
 
         except Exception as e:
-            print("Error in callback:", e)
+            import traceback
+            print("[ERROR in Connect4 callback]")
+            traceback.print_exc()
             try:
                 await interaction.response.send_message("Error.", ephemeral=True)
             except:
