@@ -1388,68 +1388,47 @@ async def update_turn(game, channel):
 
 class Connect4Button(Button):
     def __init__(self, col):
-        super().__init__(style=discord.ButtonStyle.secondary, label=str(col + 1))
+        super().__init__(style=discord.ButtonStyle.secondary, label=str(col+1))
         self.col = col
 
     async def callback(self, interaction: discord.Interaction):
-        try:
-            game = c4_games.get(interaction.channel.id)
-            print("[DEBUG] Got game:", game)
+        game = c4_games.get(interaction.channel.id)
+        if not game or interaction.user != game["players"][game["turn"]]:
+            return await interaction.response.send_message("Not your turn.", ephemeral=True)
 
-            if not game or interaction.user != game["players"][game["turn"]]:
-                return await interaction.response.send_message("Not your turn.", ephemeral=True)
+        board = game["board"]
+        for row in reversed(range(6)):
+            if board[row][self.col] == " ":
+                piece = "⚫" if game["turn"] == 0 else "⚪"
+                board[row][self.col] = piece
+                break
+        else:
+            return await interaction.response.send_message("Column full.", ephemeral=True)
 
-            board = game["board"]
-            print("[DEBUG] Board before move:", board)
+        render = "\n".join("".join(row) for row in board)
+        game["view"] = Connect4View()
+        if game["timeout_task"]:
+            game["timeout_task"].cancel()
 
-            for row in reversed(range(6)):
-                if board[row][self.col] == " ":
-                    piece = "⚫" if game["turn"] == 0 else "⚪"
-                    board[row][self.col] = piece
-                    break
-            else:
-                return await interaction.response.send_message("Column full.", ephemeral=True)
+        if check_c4_winner(board, piece):
+            await interaction.message.edit(
+                content=f"{render}\n\n🎉 <@{interaction.user.id}> wins!",
+                view=game["view"]
+            )
+            del c4_games[interaction.channel.id]
+            return
 
-            if game["timeout_task"]:
-                print("[DEBUG] Cancelling timeout")
-                game["timeout_task"].cancel()
+        if all(cell != " " for row in board for cell in row):
+            await interaction.message.edit(content=f"{render}\n\nIt's a draw!", view=game["view"])
+            del c4_games[interaction.channel.id]
+            return
 
-            if check_c4_winner(board, piece):
-                render = render_board(board, game["turn"])
-                await interaction.message.edit(
-                    content=f"{render}\n\n🎉 <@{interaction.user.id}> wins!",
-                    view=Connect4View()
-                )
-                del c4_games[interaction.channel.id]
-                return
+        game["turn"] = 1 - game["turn"]
+        game["msg"] = interaction.message
+        game["board"] = board
+        await interaction.response.edit_message(content=f"{render}", view=game["view"])
+        await update_c4_turn(game, interaction.channel)
 
-            if all(cell != " " for row in board for cell in row):
-                render = render_board(board, game["turn"])
-                await interaction.message.edit(
-                    content=f"{render}\n\nIt's a draw!",
-                    view=Connect4View()
-                )
-                del c4_games[interaction.channel.id]
-                return
-
-            game["turn"] = 1 - game["turn"]
-            game["msg"] = interaction.message
-            game["board"] = board
-            game["view"] = Connect4View()
-
-            render = render_board(board, game["turn"])
-            await interaction.message.edit(content=render, view=game["view"])
-            await update_c4_turn(game, interaction.channel)
-
-        except Exception as e:
-            import traceback
-            print("[ERROR in Connect4 callback]")
-            traceback.print_exc()
-            try:
-                await interaction.response.send_message("Error.", ephemeral=True)
-            except:
-                pass
-                
 class Connect4View(View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -1478,27 +1457,17 @@ def check_c4_winner(board, piece):
 async def update_c4_turn(game, channel):
     current = game["players"][game["turn"]]
     msg = game["msg"]
-    board = game["board"]
     time_left = 30
 
     async def countdown():
         nonlocal time_left
-        try:
-            while time_left > 0:
-                await msg.edit(
-                    content=f"{render_board(board, game['turn'])}\n\n<@{current.id}>, it's your turn! ({time_left}s)",
-                    view=game["view"]
-                )
-                await asyncio.sleep(1)
-                time_left -= 1
+        while time_left > 0:
+            await msg.edit(content=f"{render_board(game['board'], game['turn'])}\n\n<@{current.id}>, it's your turn! ({time_left}s)", view=game["view"])
+            await asyncio.sleep(1)
+            time_left -= 1
 
-            await msg.edit(
-                content=f"{render_board(board, game['turn'])}\n\n⏱️ <@{current.id}> took too long. Game over!",
-                view=game["view"]
-            )
-            del c4_games[channel.id]
-        except Exception as e:
-            print("Error in countdown:", e)
+        await msg.edit(content=f"{render_board(game['board'], game['turn'])}\n\n⏱️ <@{current.id}> took too long. Game over!", view=game["view"])
+        del c4_games[channel.id]
 
     game["timeout_task"] = asyncio.create_task(countdown())
 
@@ -1508,7 +1477,10 @@ def render_board(board, turn):
     for row in board:
         rendered_row = ""
         for cell in row:
-            rendered_row += cell if cell in ("⚫", "⚪") else bg
+            if cell in ("⚫", "⚪"):
+                rendered_row += cell
+            else:
+                rendered_row += bg
         rendered_rows.append(rendered_row)
     return "\n".join(rendered_rows)
 
