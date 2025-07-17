@@ -13,7 +13,11 @@ import os
 import aiohttp
 import asyncio
 import logging
+import json
+import pytz
 last_message_time = 0
+
+bday_file = "birthdays.json"
 
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix='.', intents=intents)
@@ -21,8 +25,15 @@ print(f"Bot is starting with intents: {bot.intents}")
 
 log_channel_id = 1394806479881769100
 rlog_channel_id = 1394806602502115470
+bday_channel_id = 1364346683709718619
 super_owner_id = 885548126365171824  
 owner_ids = {super_owner_id}
+
+try:
+    with open(bday_file, "r") as f:
+        birthdays = json.load(f)
+except FileNotFoundError:
+    birthdays = {}
 
 autoban_ids = set()
 blacklisted_users = set()
@@ -105,6 +116,28 @@ async def on_ready():
     print(f'ProQue is online as {bot.user}')
     if not keep_alive_task.is_running():
         keep_alive_task.start()
+    bot.loop.create_task(birthday_check_loop())
+
+async def birthday_check_loop():
+    await bot.wait_until_ready()
+    already_sent = set()
+
+    while not bot.is_closed():
+        now_utc = datetime.datetime.utcnow().replace(tzinfo=datetime.timezone.utc)
+        for user_id, data in birthdays.items():
+            tz = pytz.timezone(data["timezone"])
+            local_now = now_utc.astimezone(tz)
+
+            if local_now.hour == 0 and local_now.minute == 0:
+                if (user_id, local_now.date()) not in already_sent:
+                    day, month = map(int, data["date"].split("/"))
+                    if local_now.day == day and local_now.month == month:
+                        channel = bot.get_channel(bday_channel_id)
+                        if channel:
+                            user = await bot.fetch_user(int(user_id))
+                            await channel.send(f"@everyone it's {user.mention}'s bday today (12am for them)! Happy birthday {user.mention} 🎉🎂")
+                            already_sent.add((user_id, local_now.date()))
+        await asyncio.sleep(60)
 
 @bot.event
 async def on_member_join(member):
@@ -1413,46 +1446,63 @@ async def update_turn(game, channel):
 
 class Connect4Button(Button):
     def __init__(self, col):
-        super().__init__(style=discord.ButtonStyle.secondary, label=str(col+1))
+        super().__init__(style=discord.ButtonStyle.secondary, label=str(col + 1))
         self.col = col
 
     async def callback(self, interaction: discord.Interaction):
-        game = c4_games.get(interaction.channel.id)
-        if not game or interaction.user != game["players"][game["turn"]]:
-            return await interaction.response.send_message("Not your turn.", ephemeral=True)
+        try:
+            game = c4_games.get(interaction.channel.id)
+            if not game or interaction.user != game["players"][game["turn"]]:
+                return await interaction.response.send_message("Not your turn.", ephemeral=True)
 
-        board = game["board"]
-        for row in reversed(range(6)):
-            if board[row][self.col] == " ":
-                piece = "⚫" if game["turn"] == 0 else "⚪"
-                board[row][self.col] = piece
-                break
-        else:
-            return await interaction.response.send_message("Column full.", ephemeral=True)
+            board = game["board"]
 
-        render = "\n".join("".join(row) for row in board)
-        game["view"] = Connect4View()
-        if game["timeout_task"]:
-            game["timeout_task"].cancel()
+            for row in reversed(range(6)):
+                if board[row][self.col] == " ":
+                    piece = "⚫" if game["turn"] == 0 else "⚪"
+                    board[row][self.col] = piece
+                    break
+            else:
+                return await interaction.response.send_message("Column full.", ephemeral=True)
 
-        if check_c4_winner(board, piece):
-            await interaction.message.edit(
-                content=f"{render}\n\n🎉 <@{interaction.user.id}> wins!",
-                view=game["view"]
-            )
-            del c4_games[interaction.channel.id]
-            return
+            if game["timeout_task"]:
+                game["timeout_task"].cancel()
 
-        if all(cell != " " for row in board for cell in row):
-            await interaction.message.edit(content=f"{render}\n\nIt's a draw!", view=game["view"])
-            del c4_games[interaction.channel.id]
-            return
+            if check_c4_winner(board, piece):
+                render = render_board(board, game["turn"])
+                await interaction.message.edit(
+                    content=f"{render}\n\n🎉 <@{interaction.user.id}> wins!",
+                    view=Connect4View()
+                )
+                del c4_games[interaction.channel.id]
+                return
 
-        game["turn"] = 1 - game["turn"]
-        game["msg"] = interaction.message
-        game["board"] = board
-        await interaction.response.edit_message(content=f"{render}", view=game["view"])
-        await update_c4_turn(game, interaction.channel)
+            if all(cell != " " for row in board for cell in row):
+                render = render_board(board, game["turn"])
+                await interaction.message.edit(
+                    content=f"{render}\n\nIt's a draw!",
+                    view=Connect4View()
+                )
+                del c4_games[interaction.channel.id]
+                return
+
+            game["turn"] = 1 - game["turn"]
+            game["msg"] = interaction.message
+            game["board"] = board
+            game["view"] = Connect4View()
+
+            render = render_board(board, game["turn"])
+            await interaction.message.edit(content=render, view=game["view"])
+            await update_c4_turn(game, interaction.channel)
+
+        except Exception as e:
+            import traceback
+            print("[ERROR in Connect4 callback]")
+            traceback.print_exc()
+            try:
+                await interaction.response.send_message("Error.", ephemeral=True)
+            except:
+                pass
 
 class Connect4View(View):
     def __init__(self):
@@ -1482,32 +1532,38 @@ def check_c4_winner(board, piece):
 async def update_c4_turn(game, channel):
     current = game["players"][game["turn"]]
     msg = game["msg"]
+    board = game["board"]
     time_left = 30
 
     async def countdown():
         nonlocal time_left
-        while time_left > 0:
-            await msg.edit(content=f"{render_board(game['board'], game['turn'])}\n\n<@{current.id}>, it's your turn! ({time_left}s)", view=game["view"])
-            await asyncio.sleep(1)
-            time_left -= 1
+        try:
+            while time_left > 0:
+                await msg.edit(
+                    content=f"{render_board(board, game['turn'])}\n\n<@{current.id}>, it's your turn! ({time_left}s)",
+                    view=game["view"]
+                )
+                await asyncio.sleep(1)
+                time_left -= 1
 
-        await msg.edit(content=f"{render_board(game['board'], game['turn'])}\n\n⏱️ <@{current.id}> took too long. Game over!", view=game["view"])
-        del c4_games[channel.id]
+            await msg.edit(
+                content=f"{render_board(board, game['turn'])}\n\n⏱️ <@{current.id}> took too long. Game over!",
+                view=game["view"]
+            )
+            del c4_games[channel.id]
+        except Exception as e:
+            print("Error in countdown:", e)
 
     game["timeout_task"] = asyncio.create_task(countdown())
 
 def render_board(board, turn):
     bg = "◻️" if turn == 0 else "◾"
-    rendered_rows = []
+    rendered = ""
     for row in board:
-        rendered_row = ""
         for cell in row:
-            if cell in ("⚫", "⚪"):
-                rendered_row += cell
-            else:
-                rendered_row += bg
-        rendered_rows.append(rendered_row)
-    return "\n".join(rendered_rows)
+            rendered += cell if cell in ("⚫", "⚪") else bg
+        rendered += "\n"
+    return rendered
 
 @bot.command()
 async def c4(ctx, opponent: discord.Member):
@@ -1528,8 +1584,8 @@ async def c4(ctx, opponent: discord.Member):
         return
 
     board = [[" "] * 7 for _ in range(6)]
-    game_view = Connect4View()
     render = render_board(board, 0)
+    game_view = Connect4View()
     msg = await ctx.send(render, view=game_view)
 
     game = {
@@ -2024,6 +2080,36 @@ async def listblocks(ctx):
 async def sleep(ctx):
     sleeping_users[ctx.author.id] = datetime.datetime.now(timezone.utc)
     await ctx.send("You’re now in sleep mode. 💤 Good night!")
+
+@bot.command()
+async def setbday(ctx, date, timezone):
+    """Set your birthday and timezone. Format: .setbday DD/MM Timezone"""
+    try:
+        datetime.datetime.strptime(date, "%d/%m")
+        if timezone not in pytz.all_timezones:
+            return await ctx.send("Invalid timezone. Use a valid timezone from pytz (e.g., Europe/London).")
+
+        user_id = str(ctx.author.id)
+        birthdays[user_id] = {"date": date, "timezone": timezone}
+        
+        with open(bday_file, "w") as f:
+            json.dump(birthdays, f, indent=2)
+
+        await ctx.send("✔️ Birthday saved!")
+    except ValueError:
+        await ctx.send("Invalid date format. Use DD/MM.")
+
+@bot.command()
+async def removebday(ctx):
+    """Remove your birthday from the system."""
+    user_id = str(ctx.author.id)
+    if user_id in birthdays:
+        del birthdays[user_id]
+        with open(bday_file, "w") as f:
+            json.dump(birthdays, f, indent=2)
+        await ctx.send("Birthday removed.")
+    else:
+        await ctx.send("You haven’t set a birthday.")
 
 keep_alive()
 bot.run(os.getenv("DISCORD_TOKEN"))
