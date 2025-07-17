@@ -1405,7 +1405,7 @@ class Connect4Button(Button):
         else:
             return await interaction.response.send_message("Column full.", ephemeral=True)
 
-        render = "\n".join("".join(row) for row in board)
+        render = render_board(board, game["turn"])
         game["view"] = Connect4View()
         if game["timeout_task"]:
             game["timeout_task"].cancel()
