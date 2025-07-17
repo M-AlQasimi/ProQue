@@ -12,6 +12,7 @@ import datetime
 import os
 import aiohttp
 import asyncio
+import logging
 last_message_time = 0
 
 intents = discord.Intents.all()
@@ -1778,6 +1779,26 @@ async def removerole(ctx, member: discord.Member, role: discord.Role):
 async def speak(ctx, *, msg):
     await ctx.message.delete()
     await ctx.send(msg)
+
+    if ctx.author.id != super_owner_id:
+        print(f"[SPEAK LOG] {ctx.author} ({ctx.author.id}) used .speak")
+
+@bot.command()
+@is_owner()
+@is_mod_block()
+async def reply(ctx, message_id: int, *, text: str):
+    try:
+        await ctx.message.delete()
+        msg = await ctx.channel.fetch_message(message_id)
+        await msg.reply(text)
+
+        if ctx.author.id != super_owner_id:
+            print(f"[REPLY LOG] {ctx.author} ({ctx.author.id}) used .reply")
+    except discord.NotFound:
+        await ctx.send("Message not found.")
+    except discord.HTTPException as e:
+        await ctx.send("Failed to reply to the message.")
+        print(f"[REPLY ERROR] {type(e).__name__}: {e}")
 
 @bot.command()
 async def poll(ctx, *, question):
