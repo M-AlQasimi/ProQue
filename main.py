@@ -123,7 +123,7 @@ async def birthday_check_loop():
     already_sent = set()
 
     while not bot.is_closed():
-        now_utc = datetime.datetime.utcnow().replace(tzinfo=datetime.timezone.utc)
+        now_utc = datetime.datetime.now(datetime.timezone.utc)
         for user_id, data in birthdays.items():
             tz = pytz.timezone(data["timezone"])
             local_now = now_utc.astimezone(tz)
