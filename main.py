@@ -486,6 +486,30 @@ async def on_message_delete(message):
     deleted_snipes.setdefault(message.channel.id, []).insert(0, (content, message.author, message.created_at))
     deleted_snipes[message.channel.id] = deleted_snipes[message.channel.id][:10]
 
+    if (message.mention_everyone or message.mentions) and not message.author.bot:
+        try:
+            mentions = []
+            if message.mention_everyone:
+                mentions.append("@everyone or @here")
+            if message.mentions:
+                mentions.extend(m.mention for m in message.mentions)
+
+            ghost_embed = discord.Embed(
+                title="⚠️ Ghost Ping Detected!",
+                description=f"**Author:** {message.author.mention} (`{message.author.id}`)\n"
+                            f"**Channel:** {message.channel.mention}\n"
+                            f"**Mentions:** {' '.join(mentions)}\n"
+                            f"**Message:** {message.content or '*[No content]*'}",
+                color=discord.Color.red()
+            )
+            ghost_embed.set_footer(text="Ghost Ping Log")
+            ghost_embed.timestamp = message.created_at
+
+            print("Sending log:", ghost_embed.title)
+            await send_log(ghost_embed)
+        except Exception as e:
+            print(f"[Ghost Ping Log Error] {e}")
+
     print("Sending log:", embed.title)
     try:
         await send_log(embed)
