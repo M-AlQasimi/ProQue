@@ -1651,7 +1651,7 @@ async def clearwatchlist(ctx):
 @is_mod_block()
 async def shutdown(ctx):
     shutdown_channels.add(ctx.channel.id)
-    await ctx.send("✖This channel is now in shutdown mode. Only owners can speak.")
+    await ctx.send("This channel is now in shutdown mode. Only owners can speak.")
 
 @bot.command()
 @is_owner()
