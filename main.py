@@ -693,7 +693,15 @@ async def on_reaction_add(reaction, user):
 
 @bot.event
 async def on_member_update(before, after):
+    await asyncio.sleep(1)  
     embed = None
+    action_by = None
+
+    guild = after.guild
+    async for entry in guild.audit_logs(limit=5):
+        if entry.target.id == after.id:
+            action_by = f"{entry.user} ({entry.user.id})"
+            break
 
     if before.nick != after.nick:
         embed = discord.Embed(
@@ -703,11 +711,12 @@ async def on_member_update(before, after):
         embed.add_field(name="User", value=f"{before} ({before.id})", inline=False)
         embed.add_field(name="Before", value=before.nick or before.name, inline=True)
         embed.add_field(name="After", value=after.nick or after.name, inline=True)
+        if action_by:
+            embed.add_field(name="Changed by", value=action_by, inline=False)
         embed.timestamp = datetime.datetime.now(timezone.utc)
 
     before_roles = set(before.roles)
     after_roles = set(after.roles)
-
     added = after_roles - before_roles
     removed = before_roles - after_roles
 
@@ -721,19 +730,23 @@ async def on_member_update(before, after):
             embed.add_field(name="Added", value=", ".join(role.name for role in added), inline=True)
         if removed:
             embed.add_field(name="Removed", value=", ".join(role.name for role in removed), inline=True)
+        if action_by:
+            embed.add_field(name="Updated by", value=action_by, inline=False)
         embed.timestamp = datetime.datetime.now(timezone.utc)
 
     before_timeout = getattr(before, "communication_disabled_until", None)
     after_timeout = getattr(after, "communication_disabled_until", None)
 
     if before_timeout != after_timeout:
-        if after_timeout is not None:
+        if after_timeout:
             embed = discord.Embed(
                 title="⏳ Member Timed Out",
                 color=discord.Color.orange()
             )
             embed.add_field(name="User", value=f"{after} ({after.id})", inline=False)
-            embed.add_field(name="Timeout Until", value=f"<t:{int(after_timeout.timestamp())}:F>", inline=False)
+            embed.add_field(name="Until", value=f"<t:{int(after_timeout.timestamp())}:F>", inline=False)
+            if action_by:
+                embed.add_field(name="By", value=action_by, inline=False)
             embed.timestamp = datetime.datetime.now(timezone.utc)
         else:
             embed = discord.Embed(
@@ -741,6 +754,8 @@ async def on_member_update(before, after):
                 color=discord.Color.green()
             )
             embed.add_field(name="User", value=f"{after} ({after.id})", inline=False)
+            if action_by:
+                embed.add_field(name="By", value=action_by, inline=False)
             embed.timestamp = datetime.datetime.now(timezone.utc)
 
     if embed:
