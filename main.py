@@ -622,7 +622,8 @@ async def on_message_edit(before, after):
             before.content,
             after.content,
             before.author,
-            datetime.datetime.now(timezone.utc).replace(tzinfo=timezone.utc)
+            before.jump_url,
+            datetime.datetime.now(datetime.timezone.utc)
         ))
         edited_snipes[before.channel.id] = edited_snipes[before.channel.id][:10]
 
@@ -633,8 +634,9 @@ async def on_message_edit(before, after):
         embed.add_field(name="Author", value=f"{before.author} ({before.author.id})", inline=False)
         embed.add_field(name="Before", value=before.content, inline=False)
         embed.add_field(name="After", value=after.content, inline=False)
+        embed.add_field(name="Message", value=f"[Jump to Message]({before.jump_url})", inline=False)
         embed.add_field(name="Channel", value=before.channel.mention, inline=False)
-        embed.timestamp = datetime.datetime.now(timezone.utc)
+        embed.timestamp = datetime.datetime.now(datetime.timezone.utc)
 
         print("Sending log:", embed.title)
         try:
@@ -1016,21 +1018,21 @@ async def esnipe(ctx, index: str = "1"):
                 return await ctx.send("Nothing to snipe.")
             selected = messages[:count]
             response = ""
-            for i, (before, after, author, timestamp) in enumerate(selected, 1):
-                unix_time = int(timestamp.replace(tzinfo=datetime.timezone.utc).timestamp())
+            for i, (before, after, author, link, timestamp) in enumerate(selected, 1):
+                unix_time = int(timestamp.timestamp())
                 response += (
                     f"#{i} - Edited by <@{author.id}> at <t:{unix_time}:f>:\n"
-                    f"**Before:** {before}\n**After:** {after}\n\n"
+                    f"**Before:** {before}\n**After:** {after}\n[Jump to message]({link})\n\n"
                 )
             await ctx.send(response[:2000], allowed_mentions=discord.AllowedMentions.none())
         else:
             n = int(index) - 1
             if not messages or n >= len(messages) or n < 0:
                 return await ctx.send("Nothing to snipe.")
-            before, after, author, timestamp = messages[n]
-            unix_time = int(timestamp.replace(tzinfo=datetime.timezone.utc).timestamp())
+            before, after, author, link, timestamp = messages[n]
+            unix_time = int(timestamp.timestamp())
             await ctx.send(
-                f"Edited by <@{author.id}> at <t:{unix_time}:f>:\n**Before:** {before}\n**After:** {after}",
+                f"Edited by <@{author.id}> at <t:{unix_time}:f>:\n**Before:** {before}\n**After:** {after}\n[Jump to message]({link})",
                 allowed_mentions=discord.AllowedMentions.none()
             )
     except:
