@@ -1782,15 +1782,25 @@ async def unlock(ctx):
 @bot.command()
 @is_owner()
 async def mute(ctx, member: discord.Member, duration: str):
+    import datetime
+
     time_units = {'s': 1, 'm': 60, 'h': 3600, 'd': 86400}
-    seconds = int(duration[:-1]) * time_units.get(duration[-1], 0)
-    if seconds <= 0:
-        return await ctx.send("Invalid duration.")
-    await member.timeout(discord.utils.utcnow() + datetime.timedelta(seconds=seconds))
-    await ctx.send(
-        f"{member.id} has been muted for {duration}.",
-        allowed_mentions=discord.AllowedMentions.none()
-    )
+    try:
+        seconds = int(duration[:-1]) * time_units.get(duration[-1], 0)
+        if seconds <= 0:
+            return await ctx.send("Invalid duration.")
+    except:
+        return await ctx.send("Invalid duration format. Use like `10m`, `1h`, etc.")
+
+    try:
+        until = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=seconds)
+        await member.timeout(until)
+        await ctx.send(
+            f"{member.mention} has been muted for {duration}.",
+            allowed_mentions=discord.AllowedMentions.none()
+        )
+    except Exception as e:
+        await ctx.send(f"Failed to mute: {e}")
 
 @bot.command()
 @is_owner()
