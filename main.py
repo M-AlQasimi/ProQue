@@ -768,6 +768,42 @@ async def on_member_update(before, after):
             print(f"Failed to send log: {e}")
 
 @bot.event
+async def on_audit_log_entry_create(entry):
+    if entry.action == discord.AuditLogAction.member_update:
+        target = entry.target
+        if not isinstance(target, discord.Member | discord.User):
+            return
+
+        after_timeout = getattr(target, "communication_disabled_until", None)
+
+        if after_timeout and after_timeout.timestamp() > datetime.datetime.now(timezone.utc).timestamp():
+            embed = discord.Embed(
+                title="⏳ Member Timed Out",
+                color=discord.Color.orange()
+            )
+            embed.add_field(name="User", value=f"{target} ({target.id})", inline=False)
+            embed.add_field(name="Until", value=f"<t:{int(after_timeout.timestamp())}:F>", inline=False)
+            embed.add_field(name="By", value=f"{entry.user} ({entry.user.id})", inline=False)
+            embed.timestamp = datetime.datetime.now(timezone.utc)
+            try:
+                await send_log(embed)
+            except Exception as e:
+                print(f"Failed to send timeout log: {e}")
+
+        elif after_timeout is None:
+            embed = discord.Embed(
+                title="✔️ Timeout Removed",
+                color=discord.Color.green()
+            )
+            embed.add_field(name="User", value=f"{target} ({target.id})", inline=False)
+            embed.add_field(name="By", value=f"{entry.user} ({entry.user.id})", inline=False)
+            embed.timestamp = datetime.datetime.now(timezone.utc)
+            try:
+                await send_log(embed)
+            except Exception as e:
+                print(f"Failed to send timeout removal log: {e}")
+
+@bot.event
 async def on_user_update(before, after):
     if before.name != after.name:
         embed = discord.Embed(title="📝 Username Changed", color=discord.Color.blue())
