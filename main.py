@@ -1804,6 +1804,20 @@ async def mute(ctx, member: discord.Member, duration: str):
 
 @bot.command()
 @is_owner()
+async def unmute(ctx, member: discord.Member):
+    try:
+        await member.timeout(None)
+        await ctx.send(
+            f"{member.id} has been unmuted.",
+            allowed_mentions=discord.AllowedMentions.none()
+        )
+    except discord.Forbidden:
+        await ctx.send("Missing permissions to unmute this member.")
+    except Exception as e:
+        await ctx.send(f"Failed to unmute: {e}")
+
+@bot.command()
+@is_owner()
 @is_mod_block()
 async def ban(ctx, user: discord.User, *, reason=None):
     await ctx.guild.ban(user, reason=reason)
