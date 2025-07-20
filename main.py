@@ -1550,12 +1550,12 @@ class Connect4Button(Button):
 
         except Exception as e:
             import traceback
-            print("[ERROR in Connect4 callback]")
-            traceback.print_exc()
+            traceback_str = traceback.format_exc()
+            print(f"[ERROR in Connect4 callback]\n{traceback_str}")
             try:
-                await interaction.response.send_message("Error.", ephemeral=True)
-            except:
-                pass
+                await interaction.response.send_message(f"Error:\n```{e}```", ephemeral=True)
+            except Exception as err:
+                print(f"Failed to send error: {err}")
 
 class Connect4View(View):
     def __init__(self):
