@@ -139,7 +139,7 @@ async def birthday_check_loop():
     already_sent = set()
 
     while not bot.is_closed():
-        now = datetime.datetime.utcnow()
+        now = datetime.datetime.now(datetime.timezone.utc)
         today_str = now.strftime("%d/%m")
 
         if now.hour == 0 and now.minute == 0:
