@@ -18,6 +18,23 @@ import pytz
 last_message_time = 0
 
 bday_file = "birthdays.json"
+MODS_FILE = "mods.json"
+OWNERS_FILE = "owners.json"
+
+
+def load_ids(filename):
+    if os.path.exists(filename):
+        with open(filename, "r") as f:
+            return set(json.load(f))
+    return set()
+
+def save_ids(filename, id_set):
+    with open(filename, "w") as f:
+        json.dump(list(id_set), f)
+
+mods = load_ids(MODS_FILE)
+owners = load_ids(OWNERS_FILE)
+targets = load_ids(TARGETS_FILE)
 
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix='.', intents=intents)
@@ -123,20 +140,18 @@ async def birthday_check_loop():
     already_sent = set()
 
     while not bot.is_closed():
-        now_utc = datetime.datetime.now(datetime.timezone.utc)
-        for user_id, data in birthdays.items():
-            tz = pytz.timezone(data["timezone"])
-            local_now = now_utc.astimezone(tz)
+        now = datetime.datetime.utcnow()
+        today_str = now.strftime("%d/%m")
 
-            if local_now.hour == 0 and local_now.minute == 0:
-                if (user_id, local_now.date()) not in already_sent:
-                    day, month = map(int, data["date"].split("/"))
-                    if local_now.day == day and local_now.month == month:
-                        channel = bot.get_channel(bday_channel_id)
-                        if channel:
-                            user = await bot.fetch_user(int(user_id))
-                            await channel.send(f"@everyone it's {user.mention}'s bday today (12am for them)! Happy birthday {user.mention} 🎉🎂")
-                            already_sent.add((user_id, local_now.date()))
+        if now.hour == 0 and now.minute == 0:
+            for user_id, data in birthdays.items():
+                if data["date"] == today_str and (user_id, now.date()) not in already_sent:
+                    channel = bot.get_channel(bday_channel_id)
+                    if channel:
+                        user = await bot.fetch_user(int(user_id))
+                        await channel.send(f"@everyone it's {user.mention}'s birthday today! 🎉🎂")
+                        already_sent.add((user_id, now.date()))
+
         await asyncio.sleep(60)
 
 @bot.event
@@ -913,31 +928,26 @@ async def globally_block_disabled(ctx):
 async def block_blacklisted(ctx):
     return ctx.author.id not in blacklisted_users
 
-def is_mod_block():
+def is_mod():
     async def predicate(ctx):
-        if ctx.author.id == super_owner_id or ctx.author.id in owner_ids:
-            return True
-        if ctx.author.id in mods:
-            raise commands.CheckFailure("You can't use this as a mod heh.")
-        return True
+        return ctx.author.id in mods
     return commands.check(predicate)
 
 @bot.command()
 @is_owner()
-@is_mod_block()
 async def addmod(ctx, member: discord.Member):
     mods.add(member.id)
-    await ctx.send(f"Added <@{member.id}> as a mod.", allowed_mentions=discord.AllowedMentions.none())
+    save_mods()
+    await ctx.send(f"Added <@{member.id}> as a mod.")
 
 @bot.command()
 @is_owner()
-@is_mod_block()
 async def removemod(ctx, member: discord.Member):
     mods.discard(member.id)
-    await ctx.send(f"Removed <@{member.id}> from mods.", allowed_mentions=discord.AllowedMentions.none())
+    save_mods()
+    await ctx.send(f"Removed <@{member.id}> from mods.")
 
 @bot.command()
-@is_owner()
 async def listmods(ctx):
     if not mods:
         return await ctx.send("No mods found.")
@@ -946,7 +956,7 @@ async def listmods(ctx):
 
 @bot.command()
 @is_owner()
-@is_mod_block()
+@is_mod()
 async def disable(ctx, cmd: str):
     if ctx.author.id != super_owner_id:
         return
@@ -961,7 +971,7 @@ async def disable(ctx, cmd: str):
     
 @bot.command()
 @is_owner()
-@is_mod_block()
+@is_mod()
 async def enable(ctx, cmd: str):
     if ctx.author.id != super_owner_id:
         return
@@ -979,7 +989,7 @@ async def enable(ctx, cmd: str):
 
 @bot.command()
 @is_owner()
-@is_mod_block()
+@is_mod()
 async def disableall(ctx):
     if ctx.author.id != super_owner_id:
         return
@@ -991,7 +1001,7 @@ async def disableall(ctx):
 
 @bot.command()
 @is_owner()
-@is_mod_block()
+@is_mod()
 async def enableall(ctx):
     if ctx.author.id != super_owner_id:
         return
@@ -1001,6 +1011,7 @@ async def enableall(ctx):
 
 @bot.command()
 @is_owner()
+@is_mod()
 async def dclist(ctx):
     if not disabled_commands:
         await ctx.send("No commands are disabled.")
@@ -1104,6 +1115,8 @@ async def rsnipe(ctx, index: str = "1"):
         await ctx.send("Invalid index. Use a number like `.rsnipe 2` or `.rsnipe -3`.")
 
 @bot.command()
+@is_owner()
+@is_mod()
 @commands.has_permissions(manage_emojis=True)
 async def steal(ctx):
     if not ctx.message.reference:
@@ -1180,6 +1193,7 @@ async def steal(ctx):
 
 @bot.command()
 @is_owner()
+@is_mod()
 async def rolesinfo(ctx):
     try:
         roles = ctx.guild.roles[1:]
@@ -1252,6 +1266,7 @@ async def rolesinfo(ctx):
 
 @bot.command()
 @is_owner()
+@is_mod()
 async def roleinfo(ctx, role: discord.Role):
     members = [member.mention for member in role.members]
     is_admin = role.permissions.administrator
@@ -1270,7 +1285,6 @@ async def roleinfo(ctx, role: discord.Role):
 
 @bot.command()
 @is_owner()
-@is_mod_block()
 async def deleterole(ctx, *roles: discord.Role):
     if not roles:
         return await ctx.send("Mention at least one role to delete.")
@@ -1295,12 +1309,13 @@ async def deleterole(ctx, *roles: discord.Role):
 
 @bot.command()
 @is_owner()
+@is_mod()
 async def test(ctx):
     await ctx.send("I'm alive heh")
 
 @bot.command()
 async def testlog(ctx):
-    embed = discord.Embed(title="✔️ Test Log", description="This is a test log.", color=discord.Color.green())
+    embed = discord.Embed(title="Test Log", description="This is a test log.", color=discord.Color.green())
     try:
         await send_log(embed)
         print("DEBUG: testlog command used")
@@ -1659,6 +1674,7 @@ async def q(ctx):
 
 @bot.command()
 @is_owner()
+@is_mod()
 async def setnick(ctx, member: discord.Member, *, nickname: str):
     try:
         await member.edit(nick=nickname)
@@ -1673,7 +1689,6 @@ async def setnick(ctx, member: discord.Member, *, nickname: str):
 
 @bot.command()
 @is_owner()
-@is_mod_block()
 async def shut(ctx, member: discord.Member):
     print(f"shut command used by {ctx.author} on {member}")
     if member.id == super_owner_id:
@@ -1683,7 +1698,6 @@ async def shut(ctx, member: discord.Member):
 
 @bot.command()
 @is_owner()
-@is_mod_block()
 async def unshut(ctx, member: discord.Member):
     if member.id in owner_ids:
         if watchlist.get(member.id) == super_owner_id and ctx.author.id != super_owner_id:
@@ -1692,7 +1706,6 @@ async def unshut(ctx, member: discord.Member):
 
 @bot.command()
 @is_owner()
-@is_mod_block()
 async def clearwatchlist(ctx):
     if ctx.author.id != super_owner_id:
         return await ctx.send("Only 𝚀𝚞𝚎 can clear the watchlist.")
@@ -1701,54 +1714,42 @@ async def clearwatchlist(ctx):
 
 @bot.command()
 @is_owner()
-@is_mod_block()
 async def shutdown(ctx):
     shutdown_channels.add(ctx.channel.id)
     await ctx.send("This channel is now in shutdown mode. Only owners can speak.")
 
 @bot.command()
 @is_owner()
-@is_mod_block()
 async def reopen(ctx):
     shutdown_channels.discard(ctx.channel.id)
     await ctx.send("This channel has been reopened. All users may speak now.")
 
 @bot.command()
-@is_owner()
-@is_mod_block()
 async def addowner(ctx, member: discord.Member):
     if ctx.author.id != super_owner_id:
-        return await ctx.send("Only 𝚀𝚞𝚎 can add owners.")
-    owner_ids.add(member.id)
-    await ctx.send(
-        f"Added <@{member.id}> as owner.",
-        allowed_mentions=discord.AllowedMentions.none()
-    )
+        return await ctx.send("Only 𝚀𝚞𝚎 can do that.")
+    owners.add(member.id)
+    save_ids(OWNERS_FILE, owners)
+    await ctx.send(f"Added <@{member.id}> as an owner.", allowed_mentions=discord.AllowedMentions.none())
 
 @bot.command()
-@is_owner()
-@is_mod_block()
 async def removeowner(ctx, member: discord.Member):
-    if ctx.author.id != super_owner_id or member.id == super_owner_id:
-        return await ctx.send("Only 𝚀𝚞𝚎 can remove owners.")
-    owner_ids.discard(member.id)
-    await ctx.send(
-        f"Removed <@{member.id}> from owners.",
-        allowed_mentions=discord.AllowedMentions.none()
-    )
+    if ctx.author.id != super_owner_id:
+        return await ctx.send("Only 𝚀𝚞𝚎 can do that.")
+    owners.discard(member.id)
+    save_ids(OWNERS_FILE, owners)
+    await ctx.send(f"Removed <@{member.id}> from owners.", allowed_mentions=discord.AllowedMentions.none())
 
 @bot.command()
-@is_owner()
-@is_mod_block()
 async def clearowners(ctx):
     if ctx.author.id != super_owner_id:
-        return await ctx.send("Only 𝚀𝚞𝚎 can clear owners.")
-    owner_ids.clear()
-    owner_ids.add(super_owner_id)
+        return await ctx.send("Only 𝚀𝚞𝚎 can do that.")
+    owners.clear()
+    owners.add(super_owner_id)
+    save_ids(OWNERS_FILE, owners)
     await ctx.send("Cleared all owners.")
 
 @bot.command()
-@is_owner()
 async def listowners(ctx):
     names = []
     for oid in owner_ids:
@@ -1759,7 +1760,6 @@ async def listowners(ctx):
                    allowed_mentions=discord.AllowedMentions.none())
 
 @bot.command()
-@is_owner()
 async def listtargets(ctx):
     names = []
     for uid in watchlist:
@@ -1773,7 +1773,6 @@ async def listtargets(ctx):
 
 @bot.command()
 @is_owner()
-@is_mod_block()
 async def purge(ctx, amount: int, member: discord.Member = None):
     await ctx.message.delete()
     try:
@@ -1817,6 +1816,7 @@ async def unlock(ctx):
 
 @bot.command()
 @is_owner()
+@is_mod()
 async def mute(ctx, member: discord.Member, duration: str):
     import datetime
 
@@ -1840,6 +1840,7 @@ async def mute(ctx, member: discord.Member, duration: str):
 
 @bot.command()
 @is_owner()
+@is_mod()
 async def unmute(ctx, member: discord.Member):
     try:
         await member.timeout(None)
@@ -1854,7 +1855,6 @@ async def unmute(ctx, member: discord.Member):
 
 @bot.command()
 @is_owner()
-@is_mod_block()
 async def ban(ctx, user: discord.User, *, reason=None):
     await ctx.guild.ban(user, reason=reason)
     await ctx.send(
@@ -1864,7 +1864,6 @@ async def ban(ctx, user: discord.User, *, reason=None):
 
 @bot.command()
 @is_owner()
-@is_mod_block()
 async def unban(ctx, *, user: str):
     try:
         user_obj = None
@@ -1891,6 +1890,7 @@ async def unban(ctx, *, user: str):
 
 @bot.command(name="listbans")
 @is_owner()
+@is_mod()
 async def listbans(ctx):
     try:
         bans = await ctx.guild.bans()
@@ -1914,25 +1914,27 @@ async def listbans(ctx):
 
 @bot.command()
 @is_owner()
+@is_mod()
 async def kick(ctx, member: discord.Member, *, reason=None):
     await member.kick(reason=reason)
     await ctx.send(f"<@{member.id}> has been kicked.", allowed_mentions=discord.AllowedMentions.none())
 
 @bot.command()
 @is_owner()
+@is_mod()
 async def addrole(ctx, member: discord.Member, role: discord.Role):
     await member.add_roles(role)
     await ctx.send(f"Added **{role.name}** to <@{member.id}>.", allowed_mentions=discord.AllowedMentions.none())
 
 @bot.command()
 @is_owner()
+@is_mod()
 async def removerole(ctx, member: discord.Member, role: discord.Role):
     await member.remove_roles(role)
     await ctx.send(f"Removed **{role.name}** from <@{member.id}>.", allowed_mentions=discord.AllowedMentions.none())
 
 @bot.command()
 @is_owner()
-@is_mod_block()
 async def speak(ctx, *, msg):
     await ctx.message.delete()
     await ctx.send(msg)
@@ -1942,7 +1944,6 @@ async def speak(ctx, *, msg):
 
 @bot.command()
 @is_owner()
-@is_mod_block()
 async def reply(ctx, message_id: int, *, text: str):
     try:
         await ctx.message.delete()
@@ -1965,6 +1966,7 @@ async def poll(ctx, *, question):
 
 @bot.command()
 @is_owner()
+@is_mod()
 async def giveaway(ctx, time: str, *, prize: str):
     match = re.match(r"(\d+)([smhdw])", time)
     if not match:
@@ -2005,7 +2007,6 @@ async def picker(ctx, *, options):
 
 @bot.command()
 @is_owner()
-@is_mod_block()
 async def aban(ctx, target):
     try:
         user = await commands.UserConverter().convert(ctx, target)
@@ -2021,7 +2022,6 @@ async def aban(ctx, target):
 
 @bot.command()
 @is_owner()
-@is_mod_block()
 async def raban(ctx, target):
     try:
         user = await commands.UserConverter().convert(ctx, target)
@@ -2040,6 +2040,7 @@ async def raban(ctx, target):
 
 @bot.command()
 @is_owner()
+@is_mod()
 async def abanlist(ctx):
     if not autoban_ids:
         return await ctx.send("No autobanned users.")
@@ -2111,33 +2112,31 @@ async def define(ctx, *, word: str):
 
 @bot.command()
 @is_owner()
-@is_mod_block()
 async def summon(ctx, *, message: str = "h-hi"):
     await ctx.message.delete()
     await ctx.send(f"@everyone {message}")
 
 @bot.command()
 @is_owner()
-@is_mod_block()
 async def block(ctx, member: discord.Member):
     blacklisted_users.add(member.id)
     await ctx.send(
-        f"✖️ <@{member.id}> (**{member.name}**) is now blocked from using commands.",
+        f"<@{member.id}> (**{member.name}**) is now blocked from using commands.",
         allowed_mentions=discord.AllowedMentions.none()
     )
 
 @bot.command()
 @is_owner()
-@is_mod_block()
 async def unblock(ctx, member: discord.Member):
     blacklisted_users.discard(member.id)
     await ctx.send(
-        f"✔️ <@{member.id}> (**{member.name}**) is now unblocked.",
+        f"<@{member.id}> (**{member.name}**) is now unblocked.",
         allowed_mentions=discord.AllowedMentions.none()
     )
 
 @bot.command()
 @is_owner()
+@is_mod()
 async def listblocks(ctx):
     if not blacklisted_users:
         return await ctx.send("No one is blocked.")
@@ -2159,16 +2158,14 @@ async def sleep(ctx):
     await ctx.send("You’re now in sleep mode. 💤 Good night!")
 
 @bot.command()
-async def setbday(ctx, date, timezone):
-    """Set your birthday and timezone. Format: .setbday DD/MM Timezone"""
+async def setbday(ctx, date):
+    """Set your birthday. Format: .setbday DD/MM"""
     try:
         datetime.datetime.strptime(date, "%d/%m")
-        if timezone not in pytz.all_timezones:
-            return await ctx.send("Invalid timezone. Use a valid timezone from pytz (e.g., Europe/London).")
 
         user_id = str(ctx.author.id)
-        birthdays[user_id] = {"date": date, "timezone": timezone}
-        
+        birthdays[user_id] = {"date": date}
+
         with open(bday_file, "w") as f:
             json.dump(birthdays, f, indent=2)
 
