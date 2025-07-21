@@ -1772,6 +1772,7 @@ async def listtargets(ctx):
 
 @bot.command()
 @is_owner()
+@is_mod()
 async def purge(ctx, amount: int, member: discord.Member = None):
     await ctx.message.delete()
     try:
