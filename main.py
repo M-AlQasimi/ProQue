@@ -108,9 +108,9 @@ def keep_alive():
     t = Thread(target=run)
     t.start()
 
-def is_owner():
+def is_owner_or_mod():
     async def predicate(ctx):
-        return ctx.author.id == super_owner_id or ctx.author.id in owners
+        return ctx.author.id in owners or ctx.author.id == super_owner_id or ctx.author.id in mods
     return commands.check(predicate)
 
 @tasks.loop(minutes=4)
@@ -927,11 +927,6 @@ async def globally_block_disabled(ctx):
 async def block_blacklisted(ctx):
     return ctx.author.id not in blacklisted_users
 
-def is_mod():
-    async def predicate(ctx):
-        return ctx.author.id in mods
-    return commands.check(predicate)
-
 @bot.command()
 @is_owner()
 async def addmod(ctx, member: discord.Member):
@@ -954,8 +949,7 @@ async def listmods(ctx):
     await ctx.send("Mods:\n" + "\n".join(mod_mentions), allowed_mentions=discord.AllowedMentions.none())
 
 @bot.command()
-@is_owner()
-@is_mod()
+@is_owner_or_mod()
 async def disable(ctx, cmd: str):
     if ctx.author.id != super_owner_id:
         return
@@ -969,8 +963,7 @@ async def disable(ctx, cmd: str):
     await ctx.send(f"Disabled **{command.name}**")
     
 @bot.command()
-@is_owner()
-@is_mod()
+@is_owner_or_mod()
 async def enable(ctx, cmd: str):
     if ctx.author.id != super_owner_id:
         return
@@ -987,8 +980,7 @@ async def enable(ctx, cmd: str):
         await ctx.send(f"**{command.name}** is not disabled.")
 
 @bot.command()
-@is_owner()
-@is_mod()
+@is_owner_or_mod()
 async def disableall(ctx):
     if ctx.author.id != super_owner_id:
         return
@@ -999,8 +991,7 @@ async def disableall(ctx):
     await ctx.send("Disabled **all commands**")
 
 @bot.command()
-@is_owner()
-@is_mod()
+@is_owner_or_mod()
 async def enableall(ctx):
     if ctx.author.id != super_owner_id:
         return
@@ -1009,8 +1000,7 @@ async def enableall(ctx):
     await ctx.send("Enabled **all commands**")
 
 @bot.command()
-@is_owner()
-@is_mod()
+@is_owner_or_mod()
 async def dclist(ctx):
     if not disabled_commands:
         await ctx.send("No commands are disabled.")
@@ -1114,8 +1104,7 @@ async def rsnipe(ctx, index: str = "1"):
         await ctx.send("Invalid index. Use a number like `.rsnipe 2` or `.rsnipe -3`.")
 
 @bot.command()
-@is_owner()
-@is_mod()
+@is_owner_or_mod()
 @commands.has_permissions(manage_emojis=True)
 async def steal(ctx):
     if not ctx.message.reference:
@@ -1191,8 +1180,7 @@ async def steal(ctx):
     await ctx.send("Choose how you want to save this:", view=StealView())
 
 @bot.command()
-@is_owner()
-@is_mod()
+@is_owner_or_mod()
 async def rolesinfo(ctx):
     try:
         roles = ctx.guild.roles[1:]
@@ -1264,8 +1252,7 @@ async def rolesinfo(ctx):
         await ctx.send(f"Error: `{type(e).__name__} - {e}`")
 
 @bot.command()
-@is_owner()
-@is_mod()
+@is_owner_or_mod()
 async def roleinfo(ctx, role: discord.Role):
     members = [member.mention for member in role.members]
     is_admin = role.permissions.administrator
@@ -1307,8 +1294,7 @@ async def deleterole(ctx, *roles: discord.Role):
     await ctx.send(response or "No roles processed.")
 
 @bot.command()
-@is_owner()
-@is_mod()
+@is_owner_or_mod()
 async def test(ctx):
     await ctx.send("I'm alive heh")
 
@@ -1672,8 +1658,7 @@ async def q(ctx):
     await ctx.send(f"**{answer}**")
 
 @bot.command()
-@is_owner()
-@is_mod()
+@is_owner_or_mod()
 async def setnick(ctx, member: discord.Member, *, nickname: str):
     try:
         await member.edit(nick=nickname)
@@ -1771,8 +1756,7 @@ async def listtargets(ctx):
     )
 
 @bot.command()
-@is_owner()
-@is_mod()
+@is_owner_or_mod()
 async def purge(ctx, amount: int, member: discord.Member = None):
     await ctx.message.delete()
     try:
@@ -1815,8 +1799,7 @@ async def unlock(ctx):
     await ctx.send("Channel unlocked.")
 
 @bot.command()
-@is_owner()
-@is_mod()
+@is_owner_or_mod()
 async def mute(ctx, member: discord.Member, duration: str):
     import datetime
 
@@ -1839,8 +1822,7 @@ async def mute(ctx, member: discord.Member, duration: str):
         await ctx.send(f"Failed to mute: {e}")
 
 @bot.command()
-@is_owner()
-@is_mod()
+@is_owner_or_mod()
 async def unmute(ctx, member: discord.Member):
     try:
         await member.timeout(None)
@@ -1889,8 +1871,7 @@ async def unban(ctx, *, user: str):
         await ctx.send("Failed to unban user.")
 
 @bot.command(name="listbans")
-@is_owner()
-@is_mod()
+@is_owner_or_mod()
 async def listbans(ctx):
     try:
         bans = await ctx.guild.bans()
@@ -1913,22 +1894,19 @@ async def listbans(ctx):
         await ctx.send(f"Error: {type(e).__name__} - {e}")
 
 @bot.command()
-@is_owner()
-@is_mod()
+@is_owner_or_mod()
 async def kick(ctx, member: discord.Member, *, reason=None):
     await member.kick(reason=reason)
     await ctx.send(f"<@{member.id}> has been kicked.", allowed_mentions=discord.AllowedMentions.none())
 
 @bot.command()
-@is_owner()
-@is_mod()
+@is_owner_or_mod()
 async def addrole(ctx, member: discord.Member, role: discord.Role):
     await member.add_roles(role)
     await ctx.send(f"Added **{role.name}** to <@{member.id}>.", allowed_mentions=discord.AllowedMentions.none())
 
 @bot.command()
-@is_owner()
-@is_mod()
+@is_owner_or_mod()
 async def removerole(ctx, member: discord.Member, role: discord.Role):
     await member.remove_roles(role)
     await ctx.send(f"Removed **{role.name}** from <@{member.id}>.", allowed_mentions=discord.AllowedMentions.none())
@@ -1965,8 +1943,7 @@ async def poll(ctx, *, question):
     await msg.add_reaction("✖️")
 
 @bot.command()
-@is_owner()
-@is_mod()
+@is_owner_or_mod()
 async def giveaway(ctx, time: str, *, prize: str):
     match = re.match(r"(\d+)([smhdw])", time)
     if not match:
@@ -2039,8 +2016,7 @@ async def raban(ctx, target):
             await ctx.send("Invalid user or ID.")
 
 @bot.command()
-@is_owner()
-@is_mod()
+@is_owner_or_mod()
 async def abanlist(ctx):
     if not autoban_ids:
         return await ctx.send("No autobanned users.")
@@ -2135,8 +2111,7 @@ async def unblock(ctx, member: discord.Member):
     )
 
 @bot.command()
-@is_owner()
-@is_mod()
+@is_owner_or_mod()
 async def listblocks(ctx):
     if not blacklisted_users:
         return await ctx.send("No one is blocked.")
