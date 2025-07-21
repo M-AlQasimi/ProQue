@@ -936,14 +936,14 @@ def is_mod():
 @is_owner()
 async def addmod(ctx, member: discord.Member):
     mods.add(member.id)
-    save_mods()
+    save_ids(MODS_FILE, mods)
     await ctx.send(f"Added <@{member.id}> as a mod.")
 
 @bot.command()
 @is_owner()
 async def removemod(ctx, member: discord.Member):
     mods.discard(member.id)
-    save_mods()
+    save_ids(MODS_FILE, mods)
     await ctx.send(f"Removed <@{member.id}> from mods.")
 
 @bot.command()
