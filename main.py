@@ -34,7 +34,6 @@ def save_ids(filename, id_set):
 
 mods = load_ids(MODS_FILE)
 owners = load_ids(OWNERS_FILE)
-targets = load_ids(TARGETS_FILE)
 
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix='.', intents=intents)
