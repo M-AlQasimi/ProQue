@@ -108,6 +108,16 @@ def keep_alive():
     t = Thread(target=run)
     t.start()
 
+def is_owner():
+    async def predicate(ctx):
+        return ctx.author.id == super_owner_id or ctx.author.id in owners
+    return commands.check(predicate)
+
+def is_mod():
+    async def predicate(ctx):
+        return ctx.author.id == super_owner_id or ctx.author.id in mods
+    return commands.check(predicate)
+
 def is_owner_or_mod():
     async def predicate(ctx):
         return ctx.author.id in owners or ctx.author.id == super_owner_id or ctx.author.id in mods
