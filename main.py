@@ -755,7 +755,7 @@ async def on_reaction_add(reaction, user):
 
 @bot.event
 async def on_member_update(before, after):
-    await asyncio.sleep(1)  
+    await asyncio.sleep(1)
     embed = None
     action_by = None
 
@@ -775,7 +775,7 @@ async def on_member_update(before, after):
         embed.add_field(name="After", value=after.nick or after.name, inline=True)
         if action_by:
             embed.add_field(name="Changed by", value=action_by, inline=False)
-        embed.timestamp = datetime.datetime.now(timezone.utc)
+        embed.timestamp = datetime.datetime.now(datetime.timezone.utc)
 
     before_roles = set(before.roles)
     after_roles = set(after.roles)
@@ -794,22 +794,28 @@ async def on_member_update(before, after):
             embed.add_field(name="Removed", value=", ".join(role.name for role in removed), inline=True)
         if action_by:
             embed.add_field(name="Updated by", value=action_by, inline=False)
-        embed.timestamp = datetime.datetime.now(timezone.utc)
+        embed.timestamp = datetime.datetime.now(datetime.timezone.utc)
 
     before_timeout = getattr(before, "communication_disabled_until", None)
     after_timeout = getattr(after, "communication_disabled_until", None)
 
-    if before_timeout != after_timeout and (before_timeout or after_timeout):
+    def to_ts(t):
+        return int(t.timestamp()) if t else None
+
+    before_ts = to_ts(before_timeout)
+    after_ts = to_ts(after_timeout)
+
+    if before_ts != after_ts:
         if after_timeout:
             embed = discord.Embed(
                 title="⏳ Member Timed Out",
                 color=discord.Color.orange()
             )
             embed.add_field(name="User", value=f"{after} ({after.id})", inline=False)
-            embed.add_field(name="Until", value=f"<t:{int(after_timeout.timestamp())}:F>", inline=False)
+            embed.add_field(name="Until", value=f"<t:{after_ts}:F>", inline=False)
             if action_by:
                 embed.add_field(name="By", value=action_by, inline=False)
-            embed.timestamp = datetime.datetime.now(timezone.utc)
+            embed.timestamp = datetime.datetime.now(datetime.timezone.utc)
         else:
             embed = discord.Embed(
                 title="✔️ Timeout Removed",
@@ -818,7 +824,7 @@ async def on_member_update(before, after):
             embed.add_field(name="User", value=f"{after} ({after.id})", inline=False)
             if action_by:
                 embed.add_field(name="By", value=action_by, inline=False)
-            embed.timestamp = datetime.datetime.now(timezone.utc)
+            embed.timestamp = datetime.datetime.now(datetime.timezone.utc)
 
     if embed:
         print("Sending log:", embed.title)
