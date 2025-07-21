@@ -43,7 +43,7 @@ log_channel_id = 1394806479881769100
 rlog_channel_id = 1394806602502115470
 bday_channel_id = 1364346683709718619
 super_owner_id = 885548126365171824  
-owner_ids = {super_owner_id}
+owners = load_ids(OWNERS_FILE)
 
 try:
     with open(bday_file, "r") as f:
@@ -110,7 +110,7 @@ def keep_alive():
 
 def is_owner():
     async def predicate(ctx):
-        return ctx.author.id in owner_ids
+        return ctx.author.id == super_owner_id or ctx.author.id in owners
     return commands.check(predicate)
 
 @tasks.loop(minutes=4)
