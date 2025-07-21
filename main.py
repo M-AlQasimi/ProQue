@@ -756,7 +756,7 @@ async def on_reaction_add(reaction, user):
 @bot.event
 async def on_member_update(before, after):
     await asyncio.sleep(1)
-    embed = None
+    embeds = []
     action_by = None
 
     guild = after.guild
@@ -776,6 +776,7 @@ async def on_member_update(before, after):
         if action_by:
             embed.add_field(name="Changed by", value=action_by, inline=False)
         embed.timestamp = datetime.datetime.now(datetime.timezone.utc)
+        embeds.append(embed)
 
     before_roles = set(before.roles)
     after_roles = set(after.roles)
@@ -795,6 +796,7 @@ async def on_member_update(before, after):
         if action_by:
             embed.add_field(name="Updated by", value=action_by, inline=False)
         embed.timestamp = datetime.datetime.now(datetime.timezone.utc)
+        embeds.append(embed)
 
     def timestamps_equal(t1, t2, tolerance_seconds=1):
         if t1 is None and t2 is None:
@@ -818,6 +820,7 @@ async def on_member_update(before, after):
             if action_by:
                 embed.add_field(name="By", value=action_by, inline=False)
             embed.timestamp = datetime.datetime.now(datetime.timezone.utc)
+            embeds.append(embed)
         else:
             embed = discord.Embed(
                 title="✔️ Timeout Removed",
@@ -827,13 +830,14 @@ async def on_member_update(before, after):
             if action_by:
                 embed.add_field(name="By", value=action_by, inline=False)
             embed.timestamp = datetime.datetime.now(datetime.timezone.utc)
+            embeds.append(embed)
 
-    if embed:
-        print("Sending log:", embed.title)
+    for e in embeds:
+        print("Sending log:", e.title)
         try:
-            await send_log(embed)
-        except Exception as e:
-            print(f"Failed to send log: {e}")
+            await send_log(e)
+        except Exception as ex:
+            print(f"Failed to send log: {ex}")
 
 @bot.event
 async def on_audit_log_entry_create(entry):
