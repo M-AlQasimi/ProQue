@@ -799,7 +799,7 @@ async def on_member_update(before, after):
     before_timeout = getattr(before, "communication_disabled_until", None)
     after_timeout = getattr(after, "communication_disabled_until", None)
 
-    if before_timeout != after_timeout:
+    if before_timeout != after_timeout and (before_timeout or after_timeout):
         if after_timeout:
             embed = discord.Embed(
                 title="⏳ Member Timed Out",
