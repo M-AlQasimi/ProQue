@@ -20,7 +20,8 @@ last_message_time = 0
 bday_file = "birthdays.json"
 MODS_FILE = "mods.json"
 OWNERS_FILE = "owners.json"
-
+AFK_FILE = "afk_users.json"
+SLEEP_FILE = "sleeping_users.json"
 
 def load_ids(filename):
     if os.path.exists(filename):
@@ -32,8 +33,33 @@ def save_ids(filename, id_set):
     with open(filename, "w") as f:
         json.dump(list(id_set), f)
 
+def load_dict(filename):
+    if os.path.exists(filename):
+        with open(filename, "r") as f:
+            return json.load(f)
+    return {}
+
+def save_dict(filename, data):
+    with open(filename, "w") as f:
+        json.dump(data, f)
+
+
 mods = load_ids(MODS_FILE)
 owners = load_ids(OWNERS_FILE)
+
+raw_afk = load_dict(AFK_FILE)
+afk_users = {
+    int(uid): {
+        "reason": data["reason"],
+        "since": datetime.datetime.fromisoformat(data["since"])
+    } for uid, data in raw_afk.items()
+}
+
+raw_sleeping = load_dict(SLEEP_FILE)
+sleeping_users = {
+    int(uid): datetime.datetime.fromisoformat(time_str)
+    for uid, time_str in raw_sleeping.items()
+}
 
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix='.', intents=intents)
@@ -402,6 +428,10 @@ async def on_message(message):
 
     if message.author.id in sleeping_users:
         start = sleeping_users.pop(message.author.id)
+        save_dict(SLEEP_FILE, {
+            str(uid): dt.isoformat()
+            for uid, dt in sleeping_users.items()
+        })
         duration = datetime.datetime.now(timezone.utc) - start
         mins, secs = divmod(int(duration.total_seconds()), 60)
         hours, mins = divmod(mins, 60)
@@ -447,6 +477,12 @@ async def on_message(message):
 
     if message.author.id in afk_users:
         afk_data = afk_users.pop(message.author.id)
+        save_dict(AFK_FILE, {
+            str(uid): {
+                "reason": data["reason"],
+                "since": data["since"].isoformat()
+            } for uid, data in afk_users.items()
+        })
         duration = datetime.datetime.now(timezone.utc) - afk_data["since"]
         mins, secs = divmod(int(duration.total_seconds()), 60)
         hours, mins = divmod(mins, 60)
@@ -1017,14 +1053,6 @@ async def dclist(ctx):
     else:
         formatted = "\n".join(f"**{name}**" for name in disabled_commands)
         await ctx.send(f"Disabled Commands:\n{formatted}")
-    
-@bot.command()
-async def afk(ctx, *, reason="AFK"):
-    afk_users[ctx.author.id] = {
-        "reason": reason,
-        "since": datetime.datetime.now(timezone.utc)
-    }
-    await ctx.send(f"{ctx.author.mention} is now AFK: **{reason}**", allowed_mentions=discord.AllowedMentions.none())
         
 @bot.command()
 async def dsnipe(ctx, index: str = "1"):
@@ -2140,7 +2168,25 @@ async def listblocks(ctx):
 @bot.command()
 async def sleep(ctx):
     sleeping_users[ctx.author.id] = datetime.datetime.now(timezone.utc)
+    save_dict(SLEEP_FILE, {
+        str(uid): dt.isoformat()
+        for uid, dt in sleeping_users.items()
+    })
     await ctx.send("You’re now in sleep mode. 💤 Good night!")
+
+@bot.command()
+async def afk(ctx, *, reason="AFK"):
+    afk_users[ctx.author.id] = {
+        "reason": reason,
+        "since": datetime.datetime.now(timezone.utc)
+    }
+    save_dict(AFK_FILE, {
+        str(uid): {
+            "reason": data["reason"],
+            "since": data["since"].isoformat()
+        } for uid, data in afk_users.items()
+    })
+    await ctx.send(f"{ctx.author.mention} is now AFK: **{reason}**", allowed_mentions=discord.AllowedMentions.none())
 
 @bot.command()
 async def setbday(ctx, date):
