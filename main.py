@@ -765,6 +765,7 @@ async def on_member_update(before, after):
             action_by = f"{entry.user} ({entry.user.id})"
             break
 
+    # Nickname change
     if before.nick != after.nick:
         embed = discord.Embed(
             title="📝 Nickname Changed",
@@ -778,6 +779,7 @@ async def on_member_update(before, after):
         embed.timestamp = datetime.datetime.now(datetime.timezone.utc)
         embeds.append(embed)
 
+    # Role changes
     before_roles = set(before.roles)
     after_roles = set(after.roles)
     added = after_roles - before_roles
@@ -798,18 +800,11 @@ async def on_member_update(before, after):
         embed.timestamp = datetime.datetime.now(datetime.timezone.utc)
         embeds.append(embed)
 
-    def timestamps_equal(t1, t2, tolerance_seconds=1):
-        if t1 is None and t2 is None:
-            return True
-        if t1 is None or t2 is None:
-            return False
-        diff = abs((t1 - t2).total_seconds())
-        return diff < tolerance_seconds
-
+    # Timeout added/removed
     before_timeout = getattr(before, "communication_disabled_until", None)
     after_timeout = getattr(after, "communication_disabled_until", None)
 
-    if not timestamps_equal(before_timeout, after_timeout):
+    if (before_timeout is not None or after_timeout is not None) and before_timeout != after_timeout:
         if after_timeout:
             embed = discord.Embed(
                 title="⏳ Member Timed Out",
@@ -832,6 +827,7 @@ async def on_member_update(before, after):
             embed.timestamp = datetime.datetime.now(datetime.timezone.utc)
             embeds.append(embed)
 
+    # Send all embeds
     for e in embeds:
         print("Sending log:", e.title)
         try:
