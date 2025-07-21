@@ -765,7 +765,6 @@ async def on_member_update(before, after):
             action_by = f"{entry.user} ({entry.user.id})"
             break
 
-    # Nickname change
     if before.nick != after.nick:
         embed = discord.Embed(
             title="📝 Nickname Changed",
@@ -779,7 +778,6 @@ async def on_member_update(before, after):
         embed.timestamp = datetime.datetime.now(datetime.timezone.utc)
         embeds.append(embed)
 
-    # Role changes
     before_roles = set(before.roles)
     after_roles = set(after.roles)
     added = after_roles - before_roles
@@ -800,34 +798,36 @@ async def on_member_update(before, after):
         embed.timestamp = datetime.datetime.now(datetime.timezone.utc)
         embeds.append(embed)
 
-    # Timeout added/removed
     before_timeout = getattr(before, "communication_disabled_until", None)
     after_timeout = getattr(after, "communication_disabled_until", None)
 
-    if (before_timeout is not None or after_timeout is not None) and before_timeout != after_timeout:
-        if after_timeout:
-            embed = discord.Embed(
-                title="⏳ Member Timed Out",
-                color=discord.Color.orange()
-            )
-            embed.add_field(name="User", value=f"{after} ({after.id})", inline=False)
-            embed.add_field(name="Until", value=f"<t:{int(after_timeout.timestamp())}:F>", inline=False)
-            if action_by:
-                embed.add_field(name="By", value=action_by, inline=False)
-            embed.timestamp = datetime.datetime.now(datetime.timezone.utc)
-            embeds.append(embed)
-        else:
-            embed = discord.Embed(
-                title="✔️ Timeout Removed",
-                color=discord.Color.green()
-            )
-            embed.add_field(name="User", value=f"{after} ({after.id})", inline=False)
-            if action_by:
-                embed.add_field(name="By", value=action_by, inline=False)
-            embed.timestamp = datetime.datetime.now(datetime.timezone.utc)
-            embeds.append(embed)
+    def is_valid_timeout(t):
+        return t is not None and t > datetime.datetime.now(datetime.timezone.utc)
 
-    # Send all embeds
+    if is_valid_timeout(before_timeout) or is_valid_timeout(after_timeout):
+        if before_timeout != after_timeout:
+            if is_valid_timeout(after_timeout):
+                embed = discord.Embed(
+                    title="⏳ Member Timed Out",
+                    color=discord.Color.orange()
+                )
+                embed.add_field(name="User", value=f"{after} ({after.id})", inline=False)
+                embed.add_field(name="Until", value=f"<t:{int(after_timeout.timestamp())}:F>", inline=False)
+                if action_by:
+                    embed.add_field(name="By", value=action_by, inline=False)
+                embed.timestamp = datetime.datetime.now(datetime.timezone.utc)
+                embeds.append(embed)
+            elif is_valid_timeout(before_timeout) and after_timeout is None:
+                embed = discord.Embed(
+                    title="✔️ Timeout Removed",
+                    color=discord.Color.green()
+                )
+                embed.add_field(name="User", value=f"{after} ({after.id})", inline=False)
+                if action_by:
+                    embed.add_field(name="By", value=action_by, inline=False)
+                embed.timestamp = datetime.datetime.now(datetime.timezone.utc)
+                embeds.append(embed)
+
     for e in embeds:
         print("Sending log:", e.title)
         try:
