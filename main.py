@@ -796,23 +796,25 @@ async def on_member_update(before, after):
             embed.add_field(name="Updated by", value=action_by, inline=False)
         embed.timestamp = datetime.datetime.now(datetime.timezone.utc)
 
+    def timestamps_equal(t1, t2, tolerance_seconds=1):
+        if t1 is None and t2 is None:
+            return True
+        if t1 is None or t2 is None:
+            return False
+        diff = abs((t1 - t2).total_seconds())
+        return diff < tolerance_seconds
+
     before_timeout = getattr(before, "communication_disabled_until", None)
     after_timeout = getattr(after, "communication_disabled_until", None)
 
-    def to_ts(t):
-        return int(t.timestamp()) if t else None
-
-    before_ts = to_ts(before_timeout)
-    after_ts = to_ts(after_timeout)
-
-    if before_ts != after_ts:
+    if not timestamps_equal(before_timeout, after_timeout):
         if after_timeout:
             embed = discord.Embed(
                 title="⏳ Member Timed Out",
                 color=discord.Color.orange()
             )
             embed.add_field(name="User", value=f"{after} ({after.id})", inline=False)
-            embed.add_field(name="Until", value=f"<t:{after_ts}:F>", inline=False)
+            embed.add_field(name="Until", value=f"<t:{int(after_timeout.timestamp())}:F>", inline=False)
             if action_by:
                 embed.add_field(name="By", value=action_by, inline=False)
             embed.timestamp = datetime.datetime.now(datetime.timezone.utc)
