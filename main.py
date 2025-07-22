@@ -43,6 +43,11 @@ def save_dict(filename, data):
     with open(filename, "w") as f:
         json.dump(data, f)
 
+try:
+    with open(bday_file, "r") as f:
+        birthdays = json.load(f)
+except FileNotFoundError:
+    birthdays = {}
 
 mods = load_ids(MODS_FILE)
 owners = load_ids(OWNERS_FILE)
@@ -69,13 +74,8 @@ log_channel_id = 1394806479881769100
 rlog_channel_id = 1394806602502115470
 bday_channel_id = 1364346683709718619
 super_owner_id = 885548126365171824  
+mods = load_ids(MODS_FILE)
 owners = load_ids(OWNERS_FILE)
-
-try:
-    with open(bday_file, "r") as f:
-        birthdays = json.load(f)
-except FileNotFoundError:
-    birthdays = {}
 
 autoban_ids = set()
 blacklisted_users = set()
@@ -755,7 +755,7 @@ async def on_reaction_add(reaction, user):
 
 @bot.event
 async def on_member_update(before, after):
-    await asyncio.sleep(1)  
+    await asyncio.sleep(1)
     embeds = []
     action_by = None
 
@@ -805,7 +805,12 @@ async def on_member_update(before, after):
                 embed.add_field(name="By", value=action_by, inline=False)
             embed.timestamp = now
             embeds.append(embed)
-        elif before_timeout and before_timeout > now and after_timeout is None:
+
+        elif (
+            before_timeout
+            and before_timeout > now
+            and (not after_timeout or after_timeout <= now)
+        ):
             embed = discord.Embed(title="✔️ Timeout Removed", color=discord.Color.green())
             embed.add_field(name="User", value=f"{after} ({after.id})", inline=False)
             if action_by:
