@@ -419,7 +419,7 @@ async def on_message(message):
     if message.author.bot:
         return
 
-    if message.channel.id in shutdown_channels and message.author.id not in owner_ids:
+    if message.channel.id in shutdown_channels and message.author.id not in owners:
         try:
             await message.delete()
         except:
@@ -975,17 +975,20 @@ async def block_blacklisted(ctx):
 
 @bot.command()
 @is_owner()
-async def addmod(ctx, member: discord.Member):
-    mods.add(member.id)
-    save_ids(MODS_FILE, mods)
-    await ctx.send(f"Added <@{member.id}> as a mod.")
+async def addmod(ctx, user: discord.User):
+    if user.id in mods:
+        await ctx.send("User is already a mod.")
+    else:
+        mods.add(user.id)
+        save_ids(MODS_FILE, mods)
+        await ctx.send(f"{user.mention} has been added as a mod.")
 
 @bot.command()
 @is_owner()
-async def removemod(ctx, member: discord.Member):
-    mods.discard(member.id)
+async def removemod(ctx, user: discord.User):
+    mods.discard(user.id)
     save_ids(MODS_FILE, mods)
-    await ctx.send(f"Removed <@{member.id}> from mods.")
+    await ctx.send(f"{user.mention} has been removed from mods.")
 
 @bot.command()
 async def listmods(ctx):
@@ -1747,20 +1750,28 @@ async def reopen(ctx):
     await ctx.send("This channel has been reopened. All users may speak now.")
 
 @bot.command()
-async def addowner(ctx, member: discord.Member):
+async def addowner(ctx, user: discord.User):
     if ctx.author.id != super_owner_id:
-        return await ctx.send("Only 𝚀𝚞𝚎 can do that.")
-    owners.add(member.id)
-    save_ids(OWNERS_FILE, owners)
-    await ctx.send(f"Added <@{member.id}> as an owner.", allowed_mentions=discord.AllowedMentions.none())
+        return await ctx.send("Only 𝚀𝚞𝚎 can add owners.")
+    
+    if user.id in owners:
+        await ctx.send("User is already an owner.")
+    else:
+        owners.add(user.id)
+        save_ids(OWNERS_FILE, owners)
+        await ctx.send(f"{user.mention} has been added as an owner.")
 
 @bot.command()
-async def removeowner(ctx, member: discord.Member):
+async def removeowner(ctx, user: discord.User):
     if ctx.author.id != super_owner_id:
-        return await ctx.send("Only 𝚀𝚞𝚎 can do that.")
-    owners.discard(member.id)
-    save_ids(OWNERS_FILE, owners)
-    await ctx.send(f"Removed <@{member.id}> from owners.", allowed_mentions=discord.AllowedMentions.none())
+        return await ctx.send("Only 𝚀𝚞𝚎 can remove owners.")
+    
+    if user.id in owners:
+        owners.remove(user.id)
+        save_ids(OWNERS_FILE, owners)
+        await ctx.send(f"{user.mention} has been removed from owners.")
+    else:
+        await ctx.send("User is not an owner.")
 
 @bot.command()
 async def clearowners(ctx):
