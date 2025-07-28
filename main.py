@@ -1784,13 +1784,10 @@ async def clearowners(ctx):
 
 @bot.command()
 async def listowners(ctx):
-    names = []
-    for oid in owners:
-        member = ctx.guild.get_member(oid)
-        if member:
-            names.append(f"<@{member.id}> ({member.name})")
-    await ctx.send("Owners:\n" + ("\n".join(names) if names else "No owners found."),
-                   allowed_mentions=discord.AllowedMentions.none())
+   if not owners:
+        return await ctx.send("No owners found.")
+    owner_mentions = [f"<@{uid}>" for uid in ownerss]
+    await ctx.send("Owners:\n" + "\n".join(owner_mentions), allowed_mentions=discord.AllowedMentions.none())
 
 @bot.command()
 async def listtargets(ctx):
