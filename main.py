@@ -976,8 +976,9 @@ async def block_blacklisted(ctx):
 @bot.command()
 @is_owner()
 async def addmod(ctx, user: discord.User):
+    global mods
     if user.id in mods:
-        await ctx.send("User is already a mod.")
+        await ctx.send("{user.mention} is already a mod.")
     else:
         mods.add(user.id)
         save_ids(MODS_FILE, mods)
@@ -986,9 +987,13 @@ async def addmod(ctx, user: discord.User):
 @bot.command()
 @is_owner()
 async def removemod(ctx, user: discord.User):
-    mods.discard(user.id)
-    save_ids(MODS_FILE, mods)
-    await ctx.send(f"{user.mention} has been removed from mods.")
+    global mods
+    if user.id in mods:
+        mods.remove(user.id)
+        save_ids(MODS_FILE, mods)
+        await ctx.send(f"{user.mention} has been removed from mods.")
+    else:
+        await ctx.send("{user.mention} is not a mod.")
 
 @bot.command()
 async def listmods(ctx):
@@ -1751,11 +1756,12 @@ async def reopen(ctx):
 
 @bot.command()
 async def addowner(ctx, user: discord.User):
+    global owners
     if ctx.author.id != super_owner_id:
         return await ctx.send("Only 𝚀𝚞𝚎 can add owners.")
     
     if user.id in owners:
-        await ctx.send("User is already an owner.")
+        await ctx.send("{user.mention} is already an owner.")
     else:
         owners.add(user.id)
         save_ids(OWNERS_FILE, owners)
@@ -1763,6 +1769,7 @@ async def addowner(ctx, user: discord.User):
 
 @bot.command()
 async def removeowner(ctx, user: discord.User):
+    global owners
     if ctx.author.id != super_owner_id:
         return await ctx.send("Only 𝚀𝚞𝚎 can remove owners.")
     
@@ -1771,10 +1778,11 @@ async def removeowner(ctx, user: discord.User):
         save_ids(OWNERS_FILE, owners)
         await ctx.send(f"{user.mention} has been removed from owners.")
     else:
-        await ctx.send("User is not an owner.")
+        await ctx.send("{user.mention} is not an owner.")
 
 @bot.command()
 async def clearowners(ctx):
+    global owners
     if ctx.author.id != super_owner_id:
         return await ctx.send("Only 𝚀𝚞𝚎 can do that.")
     owners.clear()
