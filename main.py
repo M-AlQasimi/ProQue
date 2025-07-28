@@ -1784,9 +1784,10 @@ async def clearowners(ctx):
 
 @bot.command()
 async def listowners(ctx):
-   if not owners:
+    if not owners:
         return await ctx.send("No owners found.")
-    owner_mentions = [f"<@{uid}>" for uid in ownerss]
+    
+    owner_mentions = [f"<@{uid}>" for uid in owners]
     await ctx.send("Owners:\n" + "\n".join(owner_mentions), allowed_mentions=discord.AllowedMentions.none())
 
 @bot.command()
