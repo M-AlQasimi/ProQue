@@ -526,7 +526,7 @@ async def on_command_error(ctx, error):
 
     else:
         print(f"Unexpected error in {ctx.command}: {type(error).__name__} - {error}")
-        if ctx.author.id in owner_ids:
+        if ctx.author.id in owners:
             await ctx.send("Error.")
         else:
             await ctx.send("You can't use that heh")
@@ -1724,7 +1724,7 @@ async def shut(ctx, member: discord.Member):
 @bot.command()
 @is_owner()
 async def unshut(ctx, member: discord.Member):
-    if member.id in owner_ids:
+    if member.id in owners:
         if watchlist.get(member.id) == super_owner_id and ctx.author.id != super_owner_id:
             return await ctx.send("Only 𝚀𝚞𝚎 can stop watching that owner.")
     watchlist.pop(member.id, None)
@@ -1785,7 +1785,7 @@ async def clearowners(ctx):
 @bot.command()
 async def listowners(ctx):
     names = []
-    for oid in owner_ids:
+    for oid in owners:
         member = ctx.guild.get_member(oid)
         if member:
             names.append(f"<@{member.id}> ({member.name})")
