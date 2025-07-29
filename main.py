@@ -18,10 +18,10 @@ import pytz
 last_message_time = 0
 
 bday_file = "birthdays.json"
-MODS_FILE = "mods.json"
-OWNERS_FILE = "owners.json"
 AFK_FILE = "afk_users.json"
 SLEEP_FILE = "sleeping_users.json"
+MODS_FILE = "mods.json"
+OWNERS_FILE = "owners.json"
 
 def load_ids(filename):
     if os.path.exists(filename):
@@ -48,9 +48,6 @@ try:
         birthdays = json.load(f)
 except FileNotFoundError:
     birthdays = {}
-
-mods = load_ids(MODS_FILE)
-owners = load_ids(OWNERS_FILE)
 
 raw_afk = load_dict(AFK_FILE)
 afk_users = {
