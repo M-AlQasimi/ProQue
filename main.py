@@ -438,7 +438,7 @@ async def on_message(message):
         formatted = f"{hours}h {mins}m {secs}s" if hours else f"{mins}m {secs}s" if mins else f"{secs}s"
 
         await message.channel.send(
-            f"Welcome back, {message.author.mention}. You were sleeping for {formatted}.",
+            f"Good morning, {message.author.mention} 🌅. You were sleeping for {formatted}.",
             allowed_mentions=discord.AllowedMentions.none()
         )
 
