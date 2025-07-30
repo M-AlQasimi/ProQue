@@ -751,6 +751,50 @@ async def on_reaction_add(reaction, user):
         print(f"Failed to send log: {e}")
 
 @bot.event
+async def on_raw_reaction_clear(payload):
+    channel = bot.get_channel(payload.channel_id)
+    if not channel:
+        return
+
+    try:
+        message = await channel.fetch_message(payload.message_id)
+    except Exception as e:
+        print(f"Failed to fetch message: {e}")
+        return
+
+    if not message.guild:
+        return
+
+    try:
+        async for entry in message.guild.audit_logs(limit=1, action=discord.AuditLogAction.message_reaction_remove_all):
+            remover = entry.user
+            break
+        else:
+            remover = None
+    except Exception as e:
+        print(f"Failed to fetch audit log: {e}")
+        remover = None
+
+    embed = discord.Embed(
+        title="🗑️ All Reactions Removed",
+        description=f"All reactions were removed from a [message]({message.jump_url}) in {channel.mention}.",
+        color=discord.Color.red()
+    )
+    if remover:
+        embed.add_field(name="By", value=f"{remover} ({remover.id})", inline=False)
+    else:
+        embed.add_field(name="By", value="Unknown", inline=False)
+    
+    embed.set_footer(text=f"Message ID: {message.id}")
+    embed.timestamp = datetime.datetime.utcnow()
+
+    print("Sending log: All reactions removed")
+    try:
+        await send_rlog(embed)
+    except Exception as e:
+        print(f"Failed to send log: {e}")
+        
+@bot.event
 async def on_member_update(before, after):
     await asyncio.sleep(1)  
     embed = None
