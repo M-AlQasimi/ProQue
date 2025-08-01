@@ -76,7 +76,6 @@ owners = load_ids(OWNERS_FILE)
 
 autoban_ids = set()
 blacklisted_users = set()
-mods = set()
 reaction_shut = set()
 shutdown_channels = set()
 disabled_commands = set()
@@ -467,7 +466,7 @@ async def on_message(message):
             formatted = f"{hours}h {mins}m {secs}s" if hours else f"{mins}m {secs}s" if mins else f"{secs}s"
 
             await message.channel.send(
-                f"<@{user.id}> is AFK ({formatted}): **{afk_data['reason']}**",
+                f"<@{user.id}> is AFK: **{afk_data['reason']}**",
                 allowed_mentions=discord.AllowedMentions.none()
             )
             break
