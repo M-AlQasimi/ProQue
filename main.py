@@ -1739,6 +1739,15 @@ async def c4(ctx, opponent: discord.Member):
     await update_c4_turn(game, ctx.channel)
 
 @bot.command()
+@is_owner_or_mod()
+async def endttt(ctx):
+    if ctx.channel.id in ttt_games:
+        del ttt_games[ctx.channel.id]
+        await ctx.send("Tic-Tac-Toe game ended.")
+    else:
+        await ctx.send("No Tic-Tac-Toe game is currently active in this channel.")
+
+@bot.command()
 async def q(ctx):
     answer = random.choice(["Yes", "No"])
     await ctx.send(f"**{answer}**")
