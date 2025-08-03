@@ -2198,6 +2198,17 @@ async def summon(ctx, *, message: str = "h-hi"):
 
 @bot.command()
 @is_owner()
+async def summon2(ctx, *, message: str):
+    role = discord.utils.get(ctx.guild.roles, name="everyone2")
+    if role is None:
+        return await ctx.send("Role not found.")
+    if not role.mentionable:
+        return await ctx.send("The role is not mentionable.")
+
+    await ctx.send(f"{role.mention} {message}")
+
+@bot.command()
+@is_owner()
 async def block(ctx, member: discord.Member):
     blacklisted_users.add(member.id)
     await ctx.send(
