@@ -5,7 +5,7 @@ from threading import Thread
 from datetime import timezone
 from discord.ui import Button, View
 from io import BytesIO
-from discord import File, Emoji, StickerItem
+from discord import File, Emoji, StickerItem, app_commands
 import re
 import random
 import datetime
