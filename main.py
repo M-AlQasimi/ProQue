@@ -2155,7 +2155,7 @@ def parse_time_string(time_str: str) -> int:
     return total_seconds
 
 @bot.command()
-async def timer(ctx, *, time: str, *, title: str = None):
+async def timer(ctx, *, time: str, title: str = None):
     seconds = parse_time_string(time)
     if seconds is None or seconds <= 0:
         return await ctx.send("Invalid time format. Use formats like `14h 18m`, `1d 2h`, `30m`, etc. Supported units: s, m, h, d.")
