@@ -2141,17 +2141,79 @@ async def on_member_join(member):
         except:
             pass
 
+def parse_time_string(time_str: str) -> int:
+    pattern = r'(\d+)\s*([smhd])'
+    matches = re.findall(pattern, time_str.lower())
+    if not matches:
+        return None
+    unit_map = {'s':1, 'm':60, 'h':3600, 'd':86400}
+    total_seconds = 0
+    for amount, unit in matches:
+        if unit not in unit_map:
+            return None
+        total_seconds += int(amount) * unit_map[unit]
+    return total_seconds
+
 @bot.command()
-async def timer(ctx, time: str):
-    match = re.match(r"(\d+)([smhd])", time)
-    if not match:
-        return await ctx.send("Invalid time format. Use s/m/h/d.")
-    amount, unit = int(match[1]), match[2]
-    unit_map = {'s': 1, 'm': 60, 'h': 3600, 'd': 86400}
-    seconds = amount * unit_map[unit]
-    await ctx.send(f"⏳ Timer started for {time}, {ctx.author.mention}. I'll ping you when it's done.")
-    await asyncio.sleep(seconds)
-    await ctx.send(f"⏰ {ctx.author.mention} Time's up! Your **{time}** timer is over.")
+async def timer(ctx, *, time: str, *, title: str = None):
+    seconds = parse_time_string(time)
+    if seconds is None or seconds <= 0:
+        return await ctx.send("Invalid time format. Use formats like `14h 18m`, `1d 2h`, `30m`, etc. Supported units: s, m, h, d.")
+    
+    title_display = title if title else "Timer"
+    embed = Embed(title=title_display, description=f"⏳ Time remaining: {time}", color=0x00ff00)
+    message = await ctx.send(embed=embed)
+    
+    for remaining in range(seconds, -1, -1):
+        hrs, rem = divmod(remaining, 3600)
+        mins, secs = divmod(rem, 60)
+        time_left = f"{hrs}h {mins}m {secs}s"
+        parts = []
+        if hrs > 0: parts.append(f"{hrs}h")
+        if mins > 0: parts.append(f"{mins}m")
+        parts.append(f"{secs}s")
+        time_left = " ".join(parts)
+        
+        embed.description = f"⏳ Time remaining: {time_left}"
+        await message.edit(embed=embed)
+        await asyncio.sleep(1)
+    
+    embed.description = f"⏰ Time's up! {ctx.author.mention}"
+    await message.edit(embed=embed)
+    await ctx.send(f"⏰ {ctx.author.mention} Your **{title_display}** timer for **{time}** is over!")
+
+@bot.tree.command(name="timer")
+@app_commands.describe(time="Time duration like '1h 20m'", title="Optional timer title")
+async def timer_slash(interaction: Interaction, time: str, title: str = None):
+    seconds = parse_time_string(time)
+    if seconds is None or seconds <= 0:
+        await interaction.response.send_message(
+            "Invalid time format. Use formats like `14h 18m`, `1d 2h`, `30m`, etc. Supported units: s, m, h, d.",
+            ephemeral=True
+        )
+        return
+    
+    title_display = title if title else "Timer"
+    embed = Embed(title=title_display, description=f"⏳ Time remaining: {time}", color=0x00ff00)
+    await interaction.response.send_message(embed=embed)
+    message = await interaction.original_response()
+    
+    for remaining in range(seconds, -1, -1):
+        hrs, rem = divmod(remaining, 3600)
+        mins, secs = divmod(rem, 60)
+        parts = []
+        if hrs > 0: parts.append(f"{hrs}h")
+        if mins > 0: parts.append(f"{mins}m")
+        parts.append(f"{secs}s")
+        time_left = " ".join(parts)
+        
+        embed.description = f"⏳ Time remaining: {time_left}"
+        await message.edit(embed=embed)
+        await asyncio.sleep(1)
+    
+    embed.description = f"⏰ Time's up! {interaction.user.mention}"
+    await message.edit(embed=embed)
+    await interaction.followup.send(f"⏰ {interaction.user.mention} Your **{title_display}** timer for **{time}** is over!")
 
 @bot.command()
 async def alarm(ctx, date: str):
