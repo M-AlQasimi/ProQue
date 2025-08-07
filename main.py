@@ -2165,13 +2165,19 @@ async def timer(ctx, *, args: str):
         return await ctx.send("Invalid time format. Use `1h 20m`, `30s`, `2d 5h`, etc. Supported units: s, m, h, d.")
 
     title_display = title if title else "Timer"
-    end_time = datetime.utcnow() + timedelta(seconds=seconds)
+    end_time = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=seconds)
 
-    embed = Embed(title=title_display, description="", color=0x00ff00)
+    embed = Embed(
+        title=title_display,
+        description=f"⏳ Time remaining:\n```{time_str}```",
+        color=0x00ff00
+    )
+    embed.set_footer(text=f"Ends at:")
+    embed.timestamp = end_time
     message = await ctx.send(embed=embed)
 
     while True:
-        now = datetime.utcnow()
+        now = datetime.datetime.now(datetime.timezone.utc)
         remaining = int((end_time - now).total_seconds())
 
         if remaining <= 0:
@@ -2185,15 +2191,17 @@ async def timer(ctx, *, args: str):
         parts.append(f"{secs}s")
         time_left = " ".join(parts)
 
-        embed.description = f"⏳ Time remaining: {time_left}"
+        embed.description = f"⏳ Time remaining:\n```{time_left}```"
         try:
             await message.edit(embed=embed)
         except:
-            pass
+            break
 
         await asyncio.sleep(1)
 
-    embed.description = f"⏰ Time's up!"
+    embed.description = f"⏰ Time's up!\n```{title_display} ended```"
+    embed.set_footer(text=f"Ended at:")
+    embed.timestamp = datetime.datetime.now(datetime.timezone.utc)
     await message.edit(embed=embed)
     await ctx.send(f"⏰ {ctx.author.mention} Your **{title_display}** timer for **{time_str}** is over!")
 
