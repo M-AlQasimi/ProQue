@@ -3,7 +3,7 @@ from discord.ext import commands, tasks
 from flask import Flask
 from threading import Thread
 from datetime import timezone
-from discord.ui import Button, View
+from discord.ui import Button, View, Select
 from io import BytesIO
 from discord import File, Emoji, StickerItem, app_commands, Interaction, Embed
 import re
@@ -87,6 +87,7 @@ ttt_games = {}
 edited_snipes = {}
 deleted_snipes = {}
 removed_reactions = {}
+active_timers = {}
 
 app = Flask('')
 
@@ -412,8 +413,6 @@ async def on_guild_update(before, after):
 
 @bot.event
 async def on_message(message):
-    if message.author.bot:
-        return
 
     if message.channel.id in shutdown_channels and message.author.id not in owners:
         try:
@@ -607,7 +606,6 @@ async def on_message_delete(message):
 
 @bot.event
 async def on_bulk_message_delete(messages):
-    messages = [m for m in messages if not m.author.bot]
     if not messages:
         return
 
@@ -622,7 +620,6 @@ async def on_bulk_message_delete(messages):
         for j, att in enumerate(msg.attachments, 1):
             attachments.append((f"Attachment {i}.{j}", att.url))
 
-    # Split log entries into chunks for separate embeds if too long
     chunks = []
     current = []
     current_len = 0
@@ -637,7 +634,6 @@ async def on_bulk_message_delete(messages):
     if current:
         chunks.append(current)
 
-    # Send message content embeds
     for i, chunk in enumerate(chunks, 1):
         embed = discord.Embed(
             title=f"🧹 Bulk Messages Deleted (Part {i}/{len(chunks)})",
@@ -2042,7 +2038,7 @@ async def reply(ctx, message_id: int, *, text: str):
 
 @bot.command()
 async def poll(ctx, *, question):
-    msg = await ctx.send(f"**{question}**\nYes ✔️ | No ✖️")
+    msg = await ctx.send(f"**{question}**")
     await msg.add_reaction("✔️")
     await msg.add_reaction("✖️")
 
@@ -2151,9 +2147,53 @@ def parse_time_string(time_str: str) -> int:
         total_seconds += int(amount) * unit_map.get(unit, 0)
     return total_seconds
 
+def format_remaining(seconds: int) -> str:
+    if seconds < 0:
+        seconds = 0
+    hrs, rem = divmod(seconds, 3600)
+    mins, secs = divmod(rem, 60)
+    parts = []
+    if hrs > 0: parts.append(f"{hrs}h")
+    if mins > 0: parts.append(f"{mins}m")
+    parts.append(f"{secs}s")
+    return " ".join(parts)
+
+async def timer_countdown(ctx, message, end_time, time_str, title, owner_id):
+    while True:
+        now = datetime.datetime.now(datetime.timezone.utc)
+        remaining = int((end_time - now).total_seconds())
+        if remaining <= 0:
+            break
+
+        time_left = format_remaining(remaining)
+        description = f"⏳ Time remaining:\n```{time_left}```"
+        embed = message.embeds[0]
+        embed.description = description
+        try:
+            await message.edit(embed=embed)
+        except Exception:
+            break
+        await asyncio.sleep(1)
+
+    embed.description = f"⏰ Time's up!\n```{title if title else 'Timer'}``` timer has ended"
+    embed.set_footer(text=f"Ended at:")
+    embed.timestamp = datetime.datetime.now(datetime.timezone.utc)
+    try:
+        await message.edit(embed=embed)
+    except Exception:
+        pass
+
+    active_timers.pop(message.id, None)
+
+    user = ctx.guild.get_member(owner_id) or ctx.author
+    if title:
+        await ctx.send(f"⏰ {user.mention} Your **{title}** timer for **{time_str}** is over!")
+    else:
+        await ctx.send(f"⏰ {user.mention} Your timer for **{time_str}** is over!")
+
 @bot.command()
 async def timer(ctx, *, args: str):
-    match = re.match(r'(.+?)(?:\s+"(.+?)")?$', args)
+    match = re.match(r'(.+?)(?:\s+[\"“”\'‘’](.+?)[\"“”\'‘’])?$', args)
     if not match:
         return await ctx.send("Invalid format. Use `.timer 10m` or `.timer 10m \"Title here\"`")
 
@@ -2176,34 +2216,187 @@ async def timer(ctx, *, args: str):
     embed.timestamp = end_time
     message = await ctx.send(embed=embed)
 
-    while True:
-        now = datetime.datetime.now(datetime.timezone.utc)
-        remaining = int((end_time - now).total_seconds())
+    task = asyncio.create_task(timer_countdown(ctx, message, end_time, time_str, title, ctx.author.id))
 
-        if remaining <= 0:
-            break
+    active_timers[message.id] = {
+        "owner_id": ctx.author.id,
+        "message": message,
+        "title": title,
+        "time_str": time_str,
+        "end_time": end_time,
+        "task": task
+    }
 
-        hrs, rem = divmod(remaining, 3600)
-        mins, secs = divmod(rem, 60)
-        parts = []
-        if hrs > 0: parts.append(f"{hrs}h")
-        if mins > 0: parts.append(f"{mins}m")
-        parts.append(f"{secs}s")
-        time_left = " ".join(parts)
 
-        embed.description = f"⏳ Time remaining:\n```{time_left}```"
+class CancelConfirmView(View):
+    def __init__(self, timer_id, ctx, timer_data, parent_view):
+        super().__init__(timeout=120)
+        self.timer_id = timer_id
+        self.ctx = ctx
+        self.timer_data = timer_data
+        self.parent_view = parent_view
+        self.value = None
+
+    async def on_timeout(self):
         try:
-            await message.edit(embed=embed)
+            await self.message.edit(content="Cancel confirmation timed out.", view=None)
         except:
-            break
+            pass
+        if self.parent_view:
+            self.parent_view.enable_all_items()
+            try:
+                await self.parent_view.message.edit(view=self.parent_view)
+            except:
+                pass
 
-        await asyncio.sleep(1)
+    async def interaction_check(self, interaction):
+        return interaction.user.id == self.ctx.author.id or interaction.user.id == super_owner_id
 
-    embed.description = f"⏰ Time's up!\n```{title_display} ended```"
-    embed.set_footer(text=f"Ended at:")
-    embed.timestamp = datetime.datetime.now(datetime.timezone.utc)
-    await message.edit(embed=embed)
-    await ctx.send(f"⏰ {ctx.author.mention} Your **{title_display}** timer for **{time_str}** is over!")
+    @discord.ui.button(label="Yes", style=discord.ButtonStyle.danger)
+    async def yes_button(self, interaction, button):
+        timer_task = self.timer_data.get("task")
+        if timer_task and not timer_task.done():
+            timer_task.cancel()
+
+        embed = self.timer_data["message"].embeds[0]
+        now = datetime.datetime.now(datetime.timezone.utc)
+        remaining = int((self.timer_data["end_time"] - now).total_seconds())
+        remaining_text = format_remaining(remaining)
+        embed.description = f"Timer cancelled with {remaining_text} left."
+        embed.set_footer(text="Cancelled at:")
+        embed.timestamp = now
+        try:
+            await self.timer_data["message"].edit(embed=embed)
+        except:
+            pass
+
+        active_timers.pop(self.timer_id, None)
+
+        await interaction.response.edit_message(content=f"Timer cancelled: [Jump to message]({self.timer_data['message'].jump_url})", view=None)
+
+        if self.parent_view:
+            self.parent_view.enable_all_items()
+            try:
+                await self.parent_view.message.edit(view=self.parent_view)
+            except:
+                pass
+
+        self.value = True
+        self.stop()
+
+    @discord.ui.button(label="No", style=discord.ButtonStyle.secondary)
+    async def no_button(self, interaction, button):
+        await interaction.response.edit_message(content="Cancel aborted.", view=None)
+        if self.parent_view:
+            self.parent_view.enable_all_items()
+            try:
+                await self.parent_view.message.edit(view=self.parent_view)
+            except:
+                pass
+        self.value = False
+        self.stop()
+
+class CancelSelectView(View):
+    def __init__(self, ctx, timers):
+        super().__init__(timeout=120)
+        self.ctx = ctx
+        self.timers = timers
+        self.selected_timer_id = None
+        self.message = None
+
+        options = []
+        for tid, data in timers:
+            title = data["title"]
+            if not title or title == "Timer":
+                title = ""
+            else:
+                title = f"{title} | "
+            remaining = int((data["end_time"] - datetime.datetime.now(datetime.timezone.utc)).total_seconds())
+            remaining_text = format_remaining(remaining)
+            label = f"{title}{data['time_str']} — {remaining_text} left"
+            if len(label) > 100:
+                label = label[:97] + "..."
+            options.append(discord.SelectOption(label=label, value=str(tid)))
+
+        self.select = discord.ui.Select(
+            placeholder="Select a timer to cancel...",
+            options=options,
+            min_values=1,
+            max_values=1
+        )
+        self.select.callback = self.select_callback
+        self.add_item(self.select)
+
+    async def select_callback(self, interaction):
+        timer_id = int(self.select.values[0])
+        if timer_id not in active_timers:
+            await interaction.response.send_message("This timer has already ended or been cancelled. Refreshing list...", ephemeral=True)
+            await self.refresh_view(interaction)
+            return
+
+        timer_data = active_timers[timer_id]
+
+        self.disable_all_items()
+        await interaction.response.edit_message(view=self)
+
+        confirm_view = CancelConfirmView(timer_id, self.ctx, timer_data, parent_view=self)
+        confirm_msg = await interaction.followup.send(
+            f"Are you sure you want to cancel: [Jump to timer message]({timer_data['message'].jump_url})?",
+            view=confirm_view,
+            ephemeral=True
+        )
+        confirm_view.message = confirm_msg
+
+    async def refresh_view(self, interaction):
+        new_timers = []
+        for tid, data in active_timers.items():
+            if self.ctx.author.id == super_owner_id or data["owner_id"] == self.ctx.author.id:
+                new_timers.append((tid, data))
+
+        if not new_timers:
+            await interaction.edit_original_response(content="No active timers found.", view=None)
+            return
+
+        self.timers = new_timers
+        options = []
+        for tid, data in new_timers:
+            title = data["title"]
+            if not title or title == "Timer":
+                title = ""
+            else:
+                title = f"{title} | "
+            remaining = int((data["end_time"] - datetime.datetime.now(datetime.timezone.utc)).total_seconds())
+            remaining_text = format_remaining(remaining)
+            label = f"{title}{data['time_str']} — {remaining_text} left"
+            if len(label) > 100:
+                label = label[:97] + "..."
+            options.append(discord.SelectOption(label=label, value=str(tid)))
+
+        self.select.options = options
+        self.enable_all_items()
+        await interaction.edit_original_response(content="Select a timer to cancel:", view=self)
+
+    def disable_all_items(self):
+        for item in self.children:
+            item.disabled = True
+
+    def enable_all_items(self):
+        for item in self.children:
+            item.disabled = False
+
+@bot.command()
+async def ctimer(ctx):
+    if ctx.author.id == super_owner_id:
+        timers_list = list(active_timers.items())
+    else:
+        timers_list = [(tid, data) for tid, data in active_timers.items() if data["owner_id"] == ctx.author.id]
+
+    if not timers_list:
+        return await ctx.send("No active timers found.")
+
+    view = CancelSelectView(ctx, timers_list)
+    sent_msg = await ctx.send("Select a timer to cancel:", view=view)
+    view.message = sent_msg
 
 @bot.command()
 async def alarm(ctx, date: str):
