@@ -63,8 +63,13 @@ sleeping_users = {
     for uid, time_str in raw_sleeping.items()
 }
 
+class MyBot(commands.Bot):
+    async def setup_hook(self):
+        await self.tree.sync()
+        print("Slash commands synced.")
+        
 intents = discord.Intents.all()
-bot = commands.Bot(command_prefix='.', intents=intents)
+bot = MyBot(command_prefix='.', intents=intents)
 print(f"Bot is starting with intents: {bot.intents}")
 
 log_channel_id = 1394806479881769100
@@ -155,15 +160,8 @@ async def on_ready():
     print(f'ProQue is online as {bot.user}')
     if not keep_alive_task.is_running():
         keep_alive_task.start()
-    bot.loop.create_task(birthday_check_loop())
+    asyncio.create_task(birthday_check_loop())
     print("Bot ready, waiting to sync slash commands...")
-
-async def sync_commands():
-    await bot.wait_until_ready()
-    await bot.tree.sync()
-    print("Slash commands synced.")
-
-bot.loop.create_task(sync_commands()) 
 
 @bot.event
 async def on_reaction_add(reaction, user):
