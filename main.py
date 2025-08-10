@@ -151,6 +151,21 @@ async def keep_alive_task():
     print("Heartbeat")
 
 @bot.event
+async def on_ready():
+    print(f'ProQue is online as {bot.user}')
+    if not keep_alive_task.is_running():
+        keep_alive_task.start()
+    bot.loop.create_task(birthday_check_loop())
+    print("Bot ready, waiting to sync slash commands...")
+
+async def sync_commands():
+    await bot.wait_until_ready()
+    await bot.tree.sync()
+    print("Slash commands synced.")
+
+bot.loop.create_task(sync_commands()) 
+
+@bot.event
 async def on_reaction_add(reaction, user):
     if user.bot:
         return
@@ -159,16 +174,6 @@ async def on_reaction_add(reaction, user):
             await reaction.remove(user)
         except Exception as e:
             print(f"Failed to remove reaction from {user}: {e}")
-
-@bot.event
-async def on_ready():
-    print(f'ProQue is online as {bot.user}')
-    if not keep_alive_task.is_running():
-        keep_alive_task.start()
-    bot.loop.create_task(birthday_check_loop())
-
-    await bot.tree.sync()
-    print("Slash commands synced.")
 
 async def birthday_check_loop():
     await bot.wait_until_ready()
