@@ -167,6 +167,9 @@ async def on_ready():
         keep_alive_task.start()
     bot.loop.create_task(birthday_check_loop())
 
+    await bot.tree.sync()
+    print("Slash commands synced.")
+
 async def birthday_check_loop():
     await bot.wait_until_ready()
     already_sent = set()
@@ -1010,35 +1013,6 @@ async def block_blacklisted(ctx):
     return ctx.author.id not in blacklisted_users
 
 @bot.command()
-@is_owner()
-async def addmod(ctx, user: discord.User):
-    global mods
-    if user.id in mods:
-        await ctx.send("{user.mention} is already a mod.")
-    else:
-        mods.add(user.id)
-        save_ids(MODS_FILE, mods)
-        await ctx.send(f"{user.mention} has been added as a mod.")
-
-@bot.command()
-@is_owner()
-async def removemod(ctx, user: discord.User):
-    global mods
-    if user.id in mods:
-        mods.remove(user.id)
-        save_ids(MODS_FILE, mods)
-        await ctx.send(f"{user.mention} has been removed from mods.")
-    else:
-        await ctx.send("{user.mention} is not a mod.")
-
-@bot.command()
-async def listmods(ctx):
-    if not mods:
-        return await ctx.send("No mods found.")
-    mod_mentions = [f"<@{uid}>" for uid in mods]
-    await ctx.send("Mods:\n" + "\n".join(mod_mentions), allowed_mentions=discord.AllowedMentions.none())
-
-@bot.command()
 @is_owner_or_mod()
 async def disable(ctx, cmd: str):
     if ctx.author.id != super_owner_id:
@@ -1800,17 +1774,30 @@ async def reopen(ctx):
     await ctx.send("This channel has been reopened. All users may speak now.")
 
 @bot.command()
-async def addowner(ctx, user: discord.User):
+async def addowner(ctx, *users: discord.User):
     global owners
     if ctx.author.id != super_owner_id:
         return await ctx.send("Only 𝚀𝚞𝚎 can add owners.")
     
-    if user.id in owners:
-        await ctx.send("{user.mention} is already an owner.")
-    else:
-        owners.add(user.id)
+    added = []
+    already = []
+    for user in users:
+        if user.id in owners:
+            already.append(user)
+        else:
+            owners.add(user.id)
+            added.append(user)
+    if added:
         save_ids(OWNERS_FILE, owners)
-        await ctx.send(f"{user.mention} has been added as an owner.")
+    
+    if len(added) == 1:
+        await ctx.send(f"{added[0].mention} has been added as an owner.")
+    elif len(added) > 1:
+        mentions = ", ".join(u.mention for u in added)
+        await ctx.send(f"{mentions} have been added as owners.")
+
+    for user in already:
+        await ctx.send(f"{user.mention} is already an owner.")
 
 @bot.command()
 async def removeowner(ctx, user: discord.User):
@@ -1842,6 +1829,138 @@ async def listowners(ctx):
     
     owner_mentions = [f"<@{uid}>" for uid in owners]
     await ctx.send("Owners:\n" + "\n".join(owner_mentions), allowed_mentions=discord.AllowedMentions.none())
+
+@bot.command()
+@is_owner()
+async def addmod(ctx, *users: discord.User):
+    global mods
+    added = []
+    already = []
+    for user in users:
+        if user.id in mods:
+            already.append(user)
+        else:
+            mods.add(user.id)
+            added.append(user)
+    if added:
+        save_ids(MODS_FILE, mods)
+    
+    if len(added) == 1:
+        await ctx.send(f"{added[0].mention} has been added as a mod.")
+    elif len(added) > 1:
+        mentions = ", ".join(u.mention for u in added)
+        await ctx.send(f"{mentions} have been added as mods.")
+
+    for user in already:
+        await ctx.send(f"{user.mention} is already a mod.")
+
+@bot.command()
+@is_owner()
+async def removemod(ctx, user: discord.User):
+    global mods
+    if user.id in mods:
+        mods.remove(user.id)
+        save_ids(MODS_FILE, mods)
+        await ctx.send(f"{user.mention} has been removed from mods.")
+    else:
+        await ctx.send("{user.mention} is not a mod.")
+
+@bot.command()
+async def listmods(ctx):
+    if not mods:
+        return await ctx.send("No mods found.")
+    mod_mentions = [f"<@{uid}>" for uid in mods]
+    await ctx.send("Mods:\n" + "\n".join(mod_mentions), allowed_mentions=discord.AllowedMentions.none())
+
+class OwnerModManagement(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
+
+    @app_commands.command(name="addowner", description="Add one or multiple owners")
+    async def addowner(self, interaction: discord.Interaction, users: str):
+        if interaction.user.id != super_owner_id:
+            return await interaction.response.send_message("Only 𝚀𝚞𝚎 can add owners.", ephemeral=True)
+
+        user_ids = []
+        for part in users.split():
+            if part.isdigit():
+                user_ids.append(int(part))
+            else:
+                if part.startswith('<@') and part.endswith('>'):
+                    part = part.replace('<@!', '').replace('<@', '').replace('>', '')
+                    if part.isdigit():
+                        user_ids.append(int(part))
+
+        added = []
+        already = []
+        for uid in user_ids:
+            user = self.bot.get_user(uid)
+            if not user:
+                continue
+            if uid in owners:
+                already.append(user)
+            else:
+                owners.add(uid)
+                added.append(user)
+
+        if added:
+            save_ids(OWNERS_FILE, owners)
+
+        messages = []
+        if len(added) == 1:
+            messages.append(f"{added[0].mention} has been added as an owner.")
+        elif len(added) > 1:
+            mentions = ", ".join(u.mention for u in added)
+            messages.append(f"{mentions} have been added as owners.")
+        for user in already:
+            messages.append(f"{user.mention} is already an owner.")
+
+        await interaction.response.send_message("\n".join(messages) or "No valid users specified.", ephemeral=True)
+
+    @app_commands.command(name="addmod", description="Add one or multiple mods")
+    @commands.check_any(commands.is_owner(), commands.has_permissions(administrator=True))
+    async def addmod(self, interaction: discord.Interaction, users: str):
+        if interaction.user.id != super_owner_id and interaction.user.id not in owners:
+            return await interaction.response.send_message("Only owners and 𝚀𝚞𝚎 can add mods.", ephemeral=True)
+
+        user_ids = []
+        for part in users.split():
+            if part.isdigit():
+                user_ids.append(int(part))
+            else:
+                if part.startswith('<@') and part.endswith('>'):
+                    part = part.replace('<@!', '').replace('<@', '').replace('>', '')
+                    if part.isdigit():
+                        user_ids.append(int(part))
+
+        added = []
+        already = []
+        for uid in user_ids:
+            user = self.bot.get_user(uid)
+            if not user:
+                continue
+            if uid in mods:
+                already.append(user)
+            else:
+                mods.add(uid)
+                added.append(user)
+
+        if added:
+            save_ids(MODS_FILE, mods)
+
+        messages = []
+        if len(added) == 1:
+            messages.append(f"{added[0].mention} has been added as a mod.")
+        elif len(added) > 1:
+            mentions = ", ".join(u.mention for u in added)
+            messages.append(f"{mentions} have been added as mods.")
+        for user in already:
+            messages.append(f"{user.mention} is already a mod.")
+
+        await interaction.response.send_message("\n".join(messages) or "No valid users specified.", ephemeral=True)
+
+async def setup(bot):
+    await bot.add_cog(OwnerModManagement(bot))
 
 @bot.command()
 async def listtargets(ctx):
@@ -2175,7 +2294,11 @@ async def timer_countdown(ctx, message, end_time, time_str, title, owner_id):
             break
         await asyncio.sleep(1)
 
-    embed.description = f"⏰ Time's up!\n```{title if title else 'Timer'}``` timer has ended"
+    if title and title != "Timer":
+        embed.description = f"⏰ Time's up!\n```{title}``` timer has ended"
+    else:
+        embed.description = "⏰ Time's up!"
+
     embed.set_footer(text=f"Ended at:")
     embed.timestamp = datetime.datetime.now(datetime.timezone.utc)
     try:
@@ -2253,36 +2376,42 @@ class CancelConfirmView(View):
         return interaction.user.id == self.ctx.author.id or interaction.user.id == super_owner_id
 
     @discord.ui.button(label="Yes", style=discord.ButtonStyle.danger)
-    async def yes_button(self, interaction, button):
-        timer_task = self.timer_data.get("task")
-        if timer_task and not timer_task.done():
-            timer_task.cancel()
+async def yes_button(self, interaction, button):
+    timer_task = self.timer_data.get("task")
+    if timer_task and not timer_task.done():
+        timer_task.cancel()
 
-        embed = self.timer_data["message"].embeds[0]
-        now = datetime.datetime.now(datetime.timezone.utc)
-        remaining = int((self.timer_data["end_time"] - now).total_seconds())
-        remaining_text = format_remaining(remaining)
-        embed.description = f"Timer cancelled with {remaining_text} left."
-        embed.set_footer(text="Cancelled at:")
-        embed.timestamp = now
+    embed = self.timer_data["message"].embeds[0]
+    now = datetime.datetime.now(datetime.timezone.utc)
+    remaining = int((self.timer_data["end_time"] - now).total_seconds())
+    remaining_text = format_remaining(remaining)
+    embed.description = f"Timer cancelled with {remaining_text} left."
+    embed.set_footer(text="Cancelled at:")
+    embed.timestamp = now
+    try:
+        await self.timer_data["message"].edit(embed=embed)
+    except:
+        pass
+
+    active_timers.pop(self.timer_id, None)
+
+    if self.parent_view and self.parent_view.message:
         try:
-            await self.timer_data["message"].edit(embed=embed)
+            self.parent_view.disable_all_items()
+            await self.parent_view.message.edit(
+                content=f"Timer cancelled with `{remaining_text}` left: [Timer]({self.timer_data['message'].jump_url})",
+                view=None
+            )
         except:
             pass
 
-        active_timers.pop(self.timer_id, None)
+    await interaction.response.edit_message(
+        content=f"Timer cancelled with `{remaining_text}` left: [Timer]({self.timer_data['message'].jump_url})",
+        view=None
+    )
 
-        await interaction.response.edit_message(content=f"Timer cancelled: [Jump to message]({self.timer_data['message'].jump_url})", view=None)
-
-        if self.parent_view:
-            self.parent_view.enable_all_items()
-            try:
-                await self.parent_view.message.edit(view=self.parent_view)
-            except:
-                pass
-
-        self.value = True
-        self.stop()
+    self.value = True
+    self.stop()
 
     @discord.ui.button(label="No", style=discord.ButtonStyle.secondary)
     async def no_button(self, interaction, button):
