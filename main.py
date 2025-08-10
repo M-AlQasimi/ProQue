@@ -794,17 +794,19 @@ async def on_raw_reaction_clear(payload):
         
 @bot.event
 async def on_member_update(before, after):
-    await asyncio.sleep(1)  
-    embed = None
-    action_by = None
+    await asyncio.sleep(1)
 
+    embed = None
     guild = after.guild
-    async for entry in guild.audit_logs(limit=5):
-        if entry.target.id == after.id:
-            action_by = f"{entry.user} ({entry.user.id})"
-            break
+
+    async def get_action_by(action_types):
+        async for entry in guild.audit_logs(limit=10, oldest_first=False):
+            if entry.target.id == after.id and entry.action in action_types:
+                return f"{entry.user} ({entry.user.id})"
+        return None
 
     if before.nick != after.nick:
+        action_by = await get_action_by({discord.AuditLogAction.member_update})
         embed = discord.Embed(
             title="📝 Nickname Changed",
             color=discord.Color.blue()
@@ -814,14 +816,15 @@ async def on_member_update(before, after):
         embed.add_field(name="After", value=after.nick or after.name, inline=True)
         if action_by:
             embed.add_field(name="Changed by", value=action_by, inline=False)
-        embed.timestamp = datetime.datetime.now(timezone.utc)
+        embed.timestamp = datetime.datetime.now(datetime.timezone.utc)
+        await send_log(embed)
 
     before_roles = set(before.roles)
     after_roles = set(after.roles)
     added = after_roles - before_roles
     removed = before_roles - after_roles
-
     if added or removed:
+        action_by = await get_action_by({discord.AuditLogAction.member_role_update})
         embed = discord.Embed(
             title="🎭 Roles Updated",
             color=discord.Color.teal()
@@ -833,13 +836,14 @@ async def on_member_update(before, after):
             embed.add_field(name="Removed", value=", ".join(role.name for role in removed), inline=True)
         if action_by:
             embed.add_field(name="Updated by", value=action_by, inline=False)
-        embed.timestamp = datetime.datetime.now(timezone.utc)
+        embed.timestamp = datetime.datetime.now(datetime.timezone.utc)
+        await send_log(embed)
 
     before_timeout = getattr(before, "communication_disabled_until", None)
     after_timeout = getattr(after, "communication_disabled_until", None)
-
-    if before_timeout != after_timeout and (before_timeout or after_timeout):
-        if after_timeout:
+    if before_timeout != after_timeout:
+        action_by = await get_action_by({discord.AuditLogAction.member_update})
+        if after_timeout and (after_timeout > datetime.datetime.now(datetime.timezone.utc)):
             embed = discord.Embed(
                 title="⏳ Member Timed Out",
                 color=discord.Color.orange()
@@ -848,7 +852,7 @@ async def on_member_update(before, after):
             embed.add_field(name="Until", value=f"<t:{int(after_timeout.timestamp())}:F>", inline=False)
             if action_by:
                 embed.add_field(name="By", value=action_by, inline=False)
-            embed.timestamp = datetime.datetime.now(timezone.utc)
+            embed.timestamp = datetime.datetime.now(datetime.timezone.utc)
         else:
             embed = discord.Embed(
                 title="✔️ Timeout Removed",
@@ -857,14 +861,8 @@ async def on_member_update(before, after):
             embed.add_field(name="User", value=f"{after} ({after.id})", inline=False)
             if action_by:
                 embed.add_field(name="By", value=action_by, inline=False)
-            embed.timestamp = datetime.datetime.now(timezone.utc)
-
-    if embed:
-        print("Sending log:", embed.title)
-        try:
-            await send_log(embed)
-        except Exception as e:
-            print(f"Failed to send log: {e}")
+            embed.timestamp = datetime.datetime.now(datetime.timezone.utc)
+        await send_log(embed)
 
 @bot.event
 async def on_audit_log_entry_create(entry):
@@ -2377,41 +2375,41 @@ class CancelConfirmView(View):
 
     @discord.ui.button(label="Yes", style=discord.ButtonStyle.danger)
     async def yes_button(self, interaction, button):
-    timer_task = self.timer_data.get("task")
-    if timer_task and not timer_task.done():
-        timer_task.cancel()
+        timer_task = self.timer_data.get("task")
+        if timer_task and not timer_task.done():
+            timer_task.cancel()
 
-    embed = self.timer_data["message"].embeds[0]
-    now = datetime.datetime.now(datetime.timezone.utc)
-    remaining = int((self.timer_data["end_time"] - now).total_seconds())
-    remaining_text = format_remaining(remaining)
-    embed.description = f"Timer cancelled with {remaining_text} left."
-    embed.set_footer(text="Cancelled at:")
-    embed.timestamp = now
-    try:
-        await self.timer_data["message"].edit(embed=embed)
-    except:
-        pass
-
-    active_timers.pop(self.timer_id, None)
-
-    if self.parent_view and self.parent_view.message:
+        embed = self.timer_data["message"].embeds[0]
+        now = datetime.datetime.now(datetime.timezone.utc)
+        remaining = int((self.timer_data["end_time"] - now).total_seconds())
+        remaining_text = format_remaining(remaining)
+        embed.description = f"Timer cancelled with {remaining_text} left."
+        embed.set_footer(text="Cancelled at:")
+        embed.timestamp = now
         try:
-            self.parent_view.disable_all_items()
-            await self.parent_view.message.edit(
-                content=f"Timer cancelled with `{remaining_text}` left: [Timer]({self.timer_data['message'].jump_url})",
-                view=None
-            )
+            await self.timer_data["message"].edit(embed=embed)
         except:
             pass
 
-    await interaction.response.edit_message(
-        content=f"Timer cancelled with `{remaining_text}` left: [Timer]({self.timer_data['message'].jump_url})",
-        view=None
-    )
+        active_timers.pop(self.timer_id, None)
 
-    self.value = True
-    self.stop()
+        if self.parent_view and self.parent_view.message:
+            try:
+                self.parent_view.disable_all_items()
+                await self.parent_view.message.edit(
+                    content=f"Timer cancelled with `{remaining_text}` left: [Timer]({self.timer_data['message'].jump_url})",
+                    view=None
+                )
+            except:
+                pass
+
+        await interaction.response.edit_message(
+            content=f"Timer cancelled with `{remaining_text}` left: [Timer]({self.timer_data['message'].jump_url})",
+            view=None
+        )
+
+        self.value = True
+        self.stop()
 
     @discord.ui.button(label="No", style=discord.ButtonStyle.secondary)
     async def no_button(self, interaction, button):
