@@ -2376,7 +2376,7 @@ class CancelConfirmView(View):
         return interaction.user.id == self.ctx.author.id or interaction.user.id == super_owner_id
 
     @discord.ui.button(label="Yes", style=discord.ButtonStyle.danger)
-async def yes_button(self, interaction, button):
+    async def yes_button(self, interaction, button):
     timer_task = self.timer_data.get("task")
     if timer_task and not timer_task.done():
         timer_task.cancel()
