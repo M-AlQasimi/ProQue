@@ -93,6 +93,7 @@ edited_snipes = {}
 deleted_snipes = {}
 removed_reactions = {}
 active_timers = {}
+active_polls = {}
 
 app = Flask('')
 
@@ -107,8 +108,12 @@ def home():
 async def send_log(embed):
     try:
         channel = bot.get_channel(log_channel_id)
-        if not channel:
-            channel = await bot.fetch_channel(log_channel_id)
+        if channel is None:
+            try:
+                channel = await bot.fetch_channel(log_channel_id)
+            except Exception as e:
+                print(f"Could not fetch channel: {e}")
+                return
         await channel.send(embed=embed)
     except Exception as e:
         print(f"Failed to send log: {e}")
@@ -163,16 +168,6 @@ async def on_ready():
     asyncio.create_task(birthday_check_loop())
     print("Bot ready, waiting to sync slash commands...")
 
-@bot.event
-async def on_reaction_add(reaction, user):
-    if user.bot:
-        return
-    if user.id in reaction_shut:
-        try:
-            await reaction.remove(user)
-        except Exception as e:
-            print(f"Failed to remove reaction from {user}: {e}")
-
 async def birthday_check_loop():
     await bot.wait_until_ready()
     already_sent = set()
@@ -199,12 +194,9 @@ async def on_member_join(member):
         color=discord.Color.green()
     )
     embed.add_field(name="User", value=f"{member} ({member.id})", inline=False)
-    embed.timestamp = datetime.datetime.now(timezone.utc)
-    print("Sending log:", embed.title)
-    try:
-        await send_log(embed)
-    except Exception as e:
-        print(f"Failed to send log: {e}")
+    embed.timestamp = datetime.datetime.now(datetime.timezone.utc)
+    print(f"Sending log for {member} ({member.id})")
+    await send_log(embed)
 
 @bot.event
 async def on_member_ban(guild, user):
@@ -470,8 +462,10 @@ async def on_message(message):
             hours, mins = divmod(mins, 60)
             formatted = f"{hours}h {mins}m {secs}s" if hours else f"{mins}m {secs}s" if mins else f"{secs}s"
 
+            reason = afk_data['reason']
+            reason_text = f": **{reason}**" if reason.lower() != "afk" else ""
             await message.channel.send(
-                f"<@{user.id}> is AFK: **{afk_data['reason']}**",
+                f"<@{user.id}> is AFK{reason_text}",
                 allowed_mentions=discord.AllowedMentions.none()
             )
             break
@@ -489,8 +483,10 @@ async def on_message(message):
         hours, mins = divmod(mins, 60)
         formatted = f"{hours}h {mins}m {secs}s" if hours else f"{mins}m {secs}s" if mins else f"{secs}s"
 
+        reason = afk_data['reason']
+        reason_text = f": **{reason}**" if reason.lower() != "afk" else ""
         await message.channel.send(
-            f"Welcome back, {message.author.mention}. You were AFK for {formatted}: **{afk_data['reason']}**",
+            f"Welcome back, {message.author.mention}. You were AFK for {formatted}{reason_text}",
             allowed_mentions=discord.AllowedMentions.none()
         )
 
@@ -707,6 +703,8 @@ async def on_reaction_remove(reaction, user):
     if user.bot and user.id != super_owner_id:
         return
 
+    await update_poll_counts(reaction.message)
+    
     msg = reaction.message
     entry = (user, reaction.emoji, msg, datetime.datetime.now(timezone.utc).replace(tzinfo=timezone.utc))
     removed_reactions.setdefault(msg.channel.id, []).insert(0, entry)
@@ -732,7 +730,10 @@ async def on_reaction_remove(reaction, user):
 async def on_reaction_add(reaction, user):
     if user.bot and user.id != super_owner_id:
         return
+   
+    await update_poll_counts(reaction.message)
 
+    
     msg = reaction.message
 
     embed = discord.Embed(
@@ -2158,9 +2159,42 @@ async def reply(ctx, message_id: int, *, text: str):
 
 @bot.command()
 async def poll(ctx, *, question):
-    msg = await ctx.send(f"**{question}**")
+    embed = discord.Embed(
+        title="Poll 📊",
+        description=question,
+        color=discord.Color.blue()
+    )
+    embed.add_field(name="Yes", value="0", inline=True)
+    embed.add_field(name="No", value="0", inline=True)
+
+    msg = await ctx.send(embed=embed)
     await msg.add_reaction("✔️")
     await msg.add_reaction("✖️")
+
+    active_polls[msg.id] = {"question": question, "channel_id": ctx.channel.id}
+
+async def update_poll_counts(message):
+    if message.id not in active_polls:
+        return
+
+    yes_count = 0
+    no_count = 0
+
+    for reaction in message.reactions:
+        if str(reaction.emoji) == "✔️":
+            yes_count = reaction.count - 1
+        elif str(reaction.emoji) == "✖️":
+            no_count = reaction.count - 1
+
+    embed = discord.Embed(
+        title="Poll 📊",
+        description=active_polls[message.id]["question"],
+        color=discord.Color.blue()
+    )
+    embed.add_field(name="Yes", value=str(yes_count), inline=True)
+    embed.add_field(name="No", value=str(no_count), inline=True)
+
+    await message.edit(embed=embed)
 
 @bot.command()
 @is_owner_or_mod()
@@ -2638,7 +2672,9 @@ async def afk(ctx, *, reason="AFK"):
             "since": data["since"].isoformat()
         } for uid, data in afk_users.items()
     })
-    await ctx.send(f"{ctx.author.mention} is now AFK: **{reason}**", allowed_mentions=discord.AllowedMentions.none())
+
+    reason_text = f": **{reason}**" if reason.lower() != "afk" else ""
+    await ctx.send(f"{ctx.author.mention} is now AFK{reason_text}", allowed_mentions=discord.AllowedMentions.none())
 
 @bot.command()
 async def setbday(ctx, date):
@@ -2667,6 +2703,61 @@ async def removebday(ctx):
         await ctx.send("Birthday removed.")
     else:
         await ctx.send("You haven’t set a birthday.")
+
+@bot.command()
+async def away(ctx):
+    """Shows live-updating AFK and sleeping users."""
+    now = datetime.datetime.now(timezone.utc)
+
+    async def format_status():
+        lines = []
+        now = datetime.datetime.now(timezone.utc)
+
+        if afk_users:
+            lines.append("**AFK Users:**")
+            for uid, data in afk_users.items():
+                user = bot.get_user(uid) or await bot.fetch_user(uid)
+                duration = now - data["since"]
+                days, remainder = divmod(int(duration.total_seconds()), 86400)
+                hours, remainder = divmod(remainder, 3600)
+                mins = remainder // 60
+
+                time_parts = []
+                if days: time_parts.append(f"{days}d")
+                if hours: time_parts.append(f"{hours}h")
+                if mins or not time_parts:
+                    time_parts.append(f"{mins}m")
+                formatted = " ".join(time_parts)
+
+                lines.append(f"<@!{user.id}> — {formatted}")
+
+        if sleeping_users:
+            lines.append("**Sleeping Users:**")
+            for uid, start in sleeping_users.items():
+                user = bot.get_user(uid) or await bot.fetch_user(uid)
+                duration = now - start
+                days, remainder = divmod(int(duration.total_seconds()), 86400)
+                hours, remainder = divmod(remainder, 3600)
+                mins = remainder // 60
+
+                time_parts = []
+                if days: time_parts.append(f"{days}d")
+                if hours: time_parts.append(f"{hours}h")
+                if mins or not time_parts:
+                    time_parts.append(f"{mins}m")
+                formatted = " ".join(time_parts)
+
+                lines.append(f"<@!{user.id}> — {formatted}")
+
+        if not lines:
+            return "No users are currently AFK or sleeping."
+        return "\n".join(lines)
+
+    status_msg = await ctx.send(await format_status(), allowed_mentions=discord.AllowedMentions.none())
+
+    while afk_users or sleeping_users:
+        await asyncio.sleep(10)
+        await status_msg.edit(content=await format_status())
 
 keep_alive()
 bot.run(os.getenv("DISCORD_TOKEN"))
