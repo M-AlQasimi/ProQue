@@ -2661,6 +2661,42 @@ async def sleep(ctx):
     await ctx.send("You’re now in sleep mode. 💤 Good night!")
 
 @bot.command()
+async def fsleep(ctx, members: commands.Greedy[discord.Member], *, time: str = None):
+    """
+    Force sleep users (superowner only).
+    Optionally set a starting sleep duration with time in format '1h 3m 5s', '3m 5s', '45s', etc.
+    """
+    if ctx.author.id != super_owner_id:
+        return
+
+    for member in members:
+        start_time = datetime.datetime.now(timezone.utc)
+
+        if time:
+            try:
+                h = m = s = 0
+                matches = re.findall(r'(\d+)\s*(h|m|s)', time.lower())
+                for value, unit in matches:
+                    if unit == "h":
+                        h = int(value)
+                    elif unit == "m":
+                        m = int(value)
+                    elif unit == "s":
+                        s = int(value)
+                delta = datetime.timedelta(hours=h, minutes=m, seconds=s)
+                start_time -= delta
+            except Exception:
+                continue
+
+        sleeping_users[member.id] = start_time
+
+    save_dict(SLEEP_FILE, {
+        str(uid): dt.isoformat()
+        for uid, dt in sleeping_users.items()
+    })
+
+
+@bot.command()
 async def afk(ctx, *, reason="AFK"):
     afk_users[ctx.author.id] = {
         "reason": reason,
