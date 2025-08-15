@@ -175,29 +175,6 @@ import os
 import aiohttp
 import os
 
-async def query_ai(question):
-    try:
-        async with aiohttp.ClientSession() as session:
-            headers = {"Authorization": f"Bearer {os.environ['HUGGINGFACE_API_KEY']}"}
-            payload = {"inputs": question, "parameters": {"max_new_tokens": 150}}
-            async with session.post(
-                "https://api-inference.huggingface.co/models/bigscience/bloomz-7b1",
-                headers=headers,
-                json=payload
-            ) as resp:
-                try:
-                    data = await resp.json()
-                except aiohttp.ContentTypeError:
-                    text = await resp.text()
-                    return f"Unexpected response from model: {text}"
-                
-                if isinstance(data, list) and "generated_text" in data[0]:
-                    return data[0]["generated_text"].strip()
-                else:
-                    return str(data)
-    except Exception as e:
-        return f"Error querying AI: {e}"
-
 async def birthday_check_loop():
     await bot.wait_until_ready()
     already_sent = set()
@@ -443,17 +420,6 @@ async def on_guild_update(before, after):
 async def on_message(message):
     if message.author.bot:
         return
-
-    content_lower = message.content.lower().strip()
-    if content_lower.startswith("pq"):
-        print(f"[DEBUG] PQ trigger detected: {message.content}")
-        question = message.content[2:].strip()
-        if not question:
-            question = ""
-
-        async with message.channel.typing():
-            answer = await query_ai(question)
-            await message.reply(content=f"{answer}", mention_author=True)
 
     if message.channel.id in shutdown_channels and message.author.id not in owners:
         try:
