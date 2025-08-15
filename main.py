@@ -2186,48 +2186,154 @@ async def reply(ctx, message_id: int, *, text: str):
         print(f"[REPLY ERROR] {type(e).__name__}: {e}")
 
 @bot.command()
-async def poll(ctx, *, question):
-    formatted_question = f"**__{question}__**"
+async def poll(ctx, *, args):
+    """
+    Creates a poll with optional timer. 
+    Usage: .poll Question text | 2d 3h 30m
+    """
+    if "|" in args:
+        question_part, time_part = args.split("|", 1)
+        question = question_part.strip()
+        time_str = time_part.strip()
+    else:
+        question = args.strip()
+        time_str = None
+
+    end_time = None
+    if time_str:
+        try:
+            d = h = m = 0
+            matches = re.findall(r"(\d+)\s*(d|h|m)", time_str.lower())
+            for value, unit in matches:
+                if unit == "d":
+                    d = int(value)
+                elif unit == "h":
+                    h = int(value)
+                elif unit == "m":
+                    m = int(value)
+            delta = datetime.timedelta(days=d, hours=h, minutes=m)
+            end_time = datetime.datetime.now(timezone.utc) + delta
+        except:
+            end_time = None
 
     embed = discord.Embed(
-        title="Poll 📊",
-        description=formatted_question,
+        title=question,
         color=discord.Color.blue()
     )
     embed.add_field(name="Yes", value="0", inline=True)
     embed.add_field(name="No", value="0", inline=True)
+    embed.set_footer(text="Poll 📊")
+    if end_time:
+        embed.timestamp = end_time
 
     msg = await ctx.send(embed=embed)
     await msg.add_reaction("✔️")
     await msg.add_reaction("✖️")
 
-    active_polls[msg.id] = {"question": question, "channel_id": ctx.channel.id}
+    active_polls[msg.id] = {"question": question, "channel_id": ctx.channel.id, "author_id": ctx.author.id}
+
+    if end_time:
+        await asyncio.sleep((end_time - datetime.datetime.now(timezone.utc)).total_seconds())
+        try:
+            poll_msg = await ctx.channel.fetch_message(msg.id)
+        except:
+            return
+
+        yes_count = 0
+        no_count = 0
+        for reaction in poll_msg.reactions:
+            if str(reaction.emoji) == "✔️":
+                yes_count = reaction.count - 1
+            elif str(reaction.emoji) == "✖️":
+                no_count = reaction.count - 1
+
+        final_embed = discord.Embed(
+            title=question,
+            color=discord.Color.green()
+        )
+        final_embed.add_field(name="Yes", value=str(yes_count), inline=True)
+        final_embed.add_field(name="No", value=str(no_count), inline=True)
+        final_embed.set_footer(text="Poll Ended 📊")
+        final_embed.timestamp = end_time
+
+        await poll_msg.edit(embed=final_embed)
+        author = ctx.author
+        await poll_msg.reply(f"{author.mention} your poll has ended!", mention_author=True)
+
+class EndPollSelectView(View):
+    def __init__(self, ctx, polls_list):
+        super().__init__(timeout=60)
+        self.ctx = ctx
+        self.polls_list = polls_list
+        self.message = None
+
+        options = [
+            discord.SelectOption(label=f"{data['question'][:50]}...", value=str(msg_id))
+            for msg_id, data in polls_list
+        ]
+        self.add_item(EndPollSelect(options))
 
 
-async def update_poll_counts(message):
-    if message.id not in active_polls:
-        return
+class EndPollSelect(Select):
+    def __init__(self, options):
+        super().__init__(placeholder="Select a poll to end...", min_values=1, max_values=1, options=options)
 
-    yes_count = 0
-    no_count = 0
+    async def callback(self, interaction: discord.Interaction):
+        poll_id = int(self.values[0])
+        if poll_id not in active_polls:
+            await interaction.response.send_message("Poll no longer exists.", ephemeral=True)
+            return
 
-    for reaction in message.reactions:
-        if str(reaction.emoji) == "✔️":
-            yes_count = reaction.count - 1
-        elif str(reaction.emoji) == "✖️":
-            no_count = reaction.count - 1
+        poll_data = active_polls.pop(poll_id)
+        channel = bot.get_channel(poll_data["channel_id"])
+        if not channel:
+            await interaction.response.send_message("Poll channel not found.", ephemeral=True)
+            return
 
-    formatted_question = f"**__{active_polls[message.id]['question']}__**"
+        try:
+            poll_msg = await channel.fetch_message(poll_id)
+        except:
+            await interaction.response.send_message("Poll message not found.", ephemeral=True)
+            return
 
-    embed = discord.Embed(
-        title="Poll 📊",
-        description=formatted_question,
-        color=discord.Color.dark_teal()
-    )
-    embed.add_field(name="Yes", value=str(yes_count), inline=True)
-    embed.add_field(name="No", value=str(no_count), inline=True)
+        yes_count = 0
+        no_count = 0
+        for reaction in poll_msg.reactions:
+            if str(reaction.emoji) == "✔️":
+                yes_count = reaction.count - 1
+            elif str(reaction.emoji) == "✖️":
+                no_count = reaction.count - 1
 
-    await message.edit(embed=embed)
+        final_embed = discord.Embed(
+            title=poll_data["question"],
+            color=discord.Color.green()
+        )
+        final_embed.add_field(name="Yes", value=str(yes_count), inline=True)
+        final_embed.add_field(name="No", value=str(no_count), inline=True)
+        final_embed.set_footer(text="Poll Ended 📊")
+        final_embed.timestamp = datetime.datetime.now(datetime.timezone.utc)
+
+        await poll_msg.edit(embed=final_embed)
+
+        author = await bot.fetch_user(poll_data["author_id"])
+        await poll_msg.reply(f"{author.mention} your poll has ended!", mention_author=True)
+
+        await interaction.response.send_message("Poll ended successfully.", ephemeral=True)
+
+
+@bot.command()
+async def epoll(ctx):
+    if ctx.author.id == super_owner_id:
+        polls_list = list(active_polls.items())
+    else:
+        polls_list = [(msg_id, data) for msg_id, data in active_polls.items() if data["author_id"] == ctx.author.id]
+
+    if not polls_list:
+        return await ctx.send("No active polls found.")
+
+    view = EndPollSelectView(ctx, polls_list)
+    sent_msg = await ctx.send("Select a poll to end:", view=view)
+    view.message = sent_msg
 
 @bot.command()
 @is_owner_or_mod()
