@@ -187,7 +187,7 @@ async def query_ai(question):
                 "parameters": {"max_new_tokens": 100}
             }
             async with session.post(
-                "https://api-inference.huggingface.co/models/meta-llama/Llama-2-7b-chat-hf",
+                "https://api-inference.huggingface.co/models/bigscience/bloomz-7b1",
                 headers=headers,
                 json=payload
             ) as resp:
