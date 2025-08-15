@@ -173,18 +173,20 @@ async def query_ai(question):
     try:
         async with aiohttp.ClientSession() as session:
             headers = {"Authorization": f"Bearer {os.environ['HUGGINGFACE_API_KEY']}"}
-            payload = {"inputs": question}
+            payload = {"inputs": question, "parameters": {"max_new_tokens": 100}}
             async with session.post(
-                "https://api-inference.huggingface.co/models/togethercomputer/RedPajama-INCITE-Chat-3B-v1",
+                "https://api-inference.huggingface.co/models/HuggingFaceH4/zephyr-7b-beta",
                 headers=headers,
                 json=payload
             ) as resp:
-                data = await resp.json()
-                print(f"[DEBUG] HuggingFace response: {data}")
-                return data[0]["generated_text"].strip() if isinstance(data, list) else str(data)
+                try:
+                    data = await resp.json()
+                except aiohttp.ContentTypeError:
+                    text = await resp.text()
+                    return f"Model returned an unexpected response: {text}"
+                return data[0]["generated_text"] if "generated_text" in data[0] else str(data)
     except Exception as e:
-        print(f"[ERROR] AI query failed: {e}")
-        return "Sorry, I couldn't get an answer."
+        return f"Error: {e}"
 
 async def birthday_check_loop():
     await bot.wait_until_ready()
