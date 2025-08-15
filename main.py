@@ -169,13 +169,16 @@ async def on_ready():
     asyncio.create_task(birthday_check_loop())
     print("Bot ready, waiting to sync slash commands...")
 
+import aiohttp
+import os
+
 async def query_ai(question):
     try:
         async with aiohttp.ClientSession() as session:
             headers = {"Authorization": f"Bearer {os.environ['HUGGINGFACE_API_KEY']}"}
             payload = {"inputs": question, "parameters": {"max_new_tokens": 150}}
             async with session.post(
-                "https://api-inference.huggingface.co/models/tiiuae/falcon-7b-instruct",
+                "https://api-inference.huggingface.co/models/bigscience/bloomz-7b1-mt",
                 headers=headers,
                 json=payload
             ) as resp:
