@@ -2,7 +2,7 @@ import discord
 from discord.ext import commands, tasks
 from flask import Flask
 from threading import Thread
-from datetime import timezone
+from datetime import datetime, timezone
 from discord.ui import Button, View, Select
 from io import BytesIO
 from discord import File, Emoji, StickerItem, app_commands, Interaction, Embed
@@ -426,14 +426,22 @@ async def on_message(message):
             for uid, dt in sleeping_users.items()
         })
         duration = datetime.datetime.now(timezone.utc) - start
-        mins, secs = divmod(int(duration.total_seconds()), 60)
-        hours, mins = divmod(mins, 60)
-        formatted = f"{hours}h {mins}m {secs}s" if hours else f"{mins}m {secs}s" if mins else f"{secs}s"
+        days, remainder = divmod(int(duration.total_seconds()), 86400)
+        hours, remainder = divmod(remainder, 3600)
+        mins = remainder // 60
+        time_parts = []
+        if days: time_parts.append(f"{days}d")
+        if hours: time_parts.append(f"{hours}h")
+        if mins or not time_parts:
+            time_parts.append(f"{mins}m")
+        formatted = " ".join(time_parts)
 
-        await message.channel.send(
-            f"Good morning, {message.author.mention} 🌅. You were sleeping for {formatted}.",
-            allowed_mentions=discord.AllowedMentions.none()
+        embed = discord.Embed(
+            description=f"{message.author.mention} — woke up after being asleep for {formatted} 🌅",
+            color=0x2ecc71
         )
+        embed.timestamp = datetime.datetime.now(timezone.utc)
+        await message.channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
     for uid in sleeping_users:
         if (
@@ -448,26 +456,37 @@ async def on_message(message):
                 except:
                     user = None
             if user:
-                await message.channel.send(
-                    f"<@{user.id}> is sleeping. 💤",
-                    allowed_mentions=discord.AllowedMentions.none()
+                embed = discord.Embed(
+                    description=f"<@!{user.id}> — been asleep 💤",
+                    color=0x3498db
                 )
+                embed.timestamp = datetime.datetime.now(timezone.utc)
+                await message.channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
                 break
 
     for user in message.mentions:
         if user.id in afk_users:
             afk_data = afk_users[user.id]
             duration = datetime.datetime.now(timezone.utc) - afk_data["since"]
-            mins, secs = divmod(int(duration.total_seconds()), 60)
-            hours, mins = divmod(mins, 60)
-            formatted = f"{hours}h {mins}m {secs}s" if hours else f"{mins}m {secs}s" if mins else f"{secs}s"
+            days, remainder = divmod(int(duration.total_seconds()), 86400)
+            hours, remainder = divmod(remainder, 3600)
+            mins = remainder // 60
+            time_parts = []
+            if days: time_parts.append(f"{days}d")
+            if hours: time_parts.append(f"{hours}h")
+            if mins or not time_parts:
+                time_parts.append(f"{mins}m")
+            formatted = " ".join(time_parts)
 
             reason = afk_data['reason']
             reason_text = f": **{reason}**" if reason.lower() != "afk" else ""
-            await message.channel.send(
-                f"<@{user.id}> is AFK{reason_text}",
-                allowed_mentions=discord.AllowedMentions.none()
+
+            embed = discord.Embed(
+                description=f"<@!{user.id}> — been AFK for {formatted}{reason_text}",
+                color=0xf1c40f
             )
+            embed.timestamp = datetime.datetime.now(timezone.utc)
+            await message.channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
             break
 
     if message.author.id in afk_users:
@@ -479,16 +498,25 @@ async def on_message(message):
             } for uid, data in afk_users.items()
         })
         duration = datetime.datetime.now(timezone.utc) - afk_data["since"]
-        mins, secs = divmod(int(duration.total_seconds()), 60)
-        hours, mins = divmod(mins, 60)
-        formatted = f"{hours}h {mins}m {secs}s" if hours else f"{mins}m {secs}s" if mins else f"{secs}s"
+        days, remainder = divmod(int(duration.total_seconds()), 86400)
+        hours, remainder = divmod(remainder, 3600)
+        mins = remainder // 60
+        time_parts = []
+        if days: time_parts.append(f"{days}d")
+        if hours: time_parts.append(f"{hours}h")
+        if mins or not time_parts:
+            time_parts.append(f"{mins}m")
+        formatted = " ".join(time_parts)
 
         reason = afk_data['reason']
         reason_text = f": **{reason}**" if reason.lower() != "afk" else ""
-        await message.channel.send(
-            f"Welcome back, {message.author.mention}. You were AFK for {formatted}{reason_text}",
-            allowed_mentions=discord.AllowedMentions.none()
+
+        embed = discord.Embed(
+            description=f"{message.author.mention} — came back after being AFK for {formatted}{reason_text}",
+            color=0xf1c40f
         )
+        embed.timestamp = datetime.datetime.now(timezone.utc)
+        await message.channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
     if message.author.id in watchlist and message.author.id != super_owner_id:
         try:
@@ -2159,9 +2187,11 @@ async def reply(ctx, message_id: int, *, text: str):
 
 @bot.command()
 async def poll(ctx, *, question):
+    formatted_question = f"**__{question}__**"
+
     embed = discord.Embed(
         title="Poll 📊",
-        description=question,
+        description=formatted_question,
         color=discord.Color.blue()
     )
     embed.add_field(name="Yes", value="0", inline=True)
@@ -2172,6 +2202,7 @@ async def poll(ctx, *, question):
     await msg.add_reaction("✖️")
 
     active_polls[msg.id] = {"question": question, "channel_id": ctx.channel.id}
+
 
 async def update_poll_counts(message):
     if message.id not in active_polls:
@@ -2186,10 +2217,12 @@ async def update_poll_counts(message):
         elif str(reaction.emoji) == "✖️":
             no_count = reaction.count - 1
 
+    formatted_question = f"**__{active_polls[message.id]['question']}__**"
+
     embed = discord.Embed(
         title="Poll 📊",
-        description=active_polls[message.id]["question"],
-        color=discord.Color.blue()
+        description=formatted_question,
+        color=discord.Color.dark_teal()
     )
     embed.add_field(name="Yes", value=str(yes_count), inline=True)
     embed.add_field(name="No", value=str(no_count), inline=True)
@@ -2695,6 +2728,21 @@ async def fsleep(ctx, members: commands.Greedy[discord.Member], *, time: str = N
         for uid, dt in sleeping_users.items()
     })
 
+@bot.command()
+async def wake(ctx, members: commands.Greedy[discord.Member]):
+    """
+    Force wake users (superowner only). Removes them from sleeping_users silently.
+    """
+    if ctx.author.id != super_owner_id:
+        return
+
+    for member in members:
+        sleeping_users.pop(member.id, None)
+
+    save_dict(SLEEP_FILE, {
+        str(uid): dt.isoformat()
+        for uid, dt in sleeping_users.items()
+    })
 
 @bot.command()
 async def afk(ctx, *, reason="AFK"):
@@ -2740,17 +2788,17 @@ async def removebday(ctx):
     else:
         await ctx.send("You haven’t set a birthday.")
 
-@bot.command()
+@bot.command(name="away")
 async def away(ctx):
     """Shows live-updating AFK and sleeping users."""
     now = datetime.datetime.now(timezone.utc)
 
-    async def format_status():
-        lines = []
+    async def format_status_embed():
+        embed = discord.Embed(title="AFK & Sleeping Users", color=0x3498db)
         now = datetime.datetime.now(timezone.utc)
 
         if afk_users:
-            lines.append("**AFK Users:**")
+            afk_text = ""
             for uid, data in afk_users.items():
                 user = bot.get_user(uid) or await bot.fetch_user(uid)
                 duration = now - data["since"]
@@ -2765,10 +2813,12 @@ async def away(ctx):
                     time_parts.append(f"{mins}m")
                 formatted = " ".join(time_parts)
 
-                lines.append(f"<@!{user.id}> — {formatted}")
+                afk_text += f"<@!{user.id}> — been AFK for {formatted}\n"
+
+            embed.add_field(name="AFK Users", value=afk_text, inline=False)
 
         if sleeping_users:
-            lines.append("**Sleeping Users:**")
+            sleep_text = ""
             for uid, start in sleeping_users.items():
                 user = bot.get_user(uid) or await bot.fetch_user(uid)
                 duration = now - start
@@ -2783,17 +2833,21 @@ async def away(ctx):
                     time_parts.append(f"{mins}m")
                 formatted = " ".join(time_parts)
 
-                lines.append(f"<@!{user.id}> — {formatted}")
+                sleep_text += f"<@!{user.id}> — been asleep for {formatted}\n"
 
-        if not lines:
-            return "No users are currently AFK or sleeping."
-        return "\n".join(lines)
+            embed.add_field(name="Sleeping Users", value=sleep_text, inline=False)
 
-    status_msg = await ctx.send(await format_status(), allowed_mentions=discord.AllowedMentions.none())
+        if not afk_users and not sleeping_users:
+            embed.description = "No users are currently AFK or sleeping."
+
+        embed.timestamp = now
+        return embed
+
+    status_msg = await ctx.send(embed=await format_status_embed())
 
     while afk_users or sleeping_users:
         await asyncio.sleep(10)
-        await status_msg.edit(content=await format_status())
+        await status_msg.edit(embed=await format_status_embed())
 
 keep_alive()
 bot.run(os.getenv("DISCORD_TOKEN"))
