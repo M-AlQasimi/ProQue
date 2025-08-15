@@ -170,16 +170,21 @@ async def on_ready():
     print("Bot ready, waiting to sync slash commands...")
 
 async def query_ai(question):
-    async with aiohttp.ClientSession() as session:
-        headers = {"Authorization": f"Bearer {os.environ['HUGGINGFACE_API_KEY']}"}
-        payload = {"inputs": question}
-        async with session.post(
-            "https://api-inference.huggingface.co/models/togethercomputer/RedPajama-INCITE-Chat-3B-v1",
-            headers=headers,
-            json=payload
-        ) as resp:
-            data = await resp.json()
-            return data[0]["generated_text"].strip() if isinstance(data, list) else str(data)
+    try:
+        async with aiohttp.ClientSession() as session:
+            headers = {"Authorization": f"Bearer {os.environ['HUGGINGFACE_API_KEY']}"}
+            payload = {"inputs": question}
+            async with session.post(
+                "https://api-inference.huggingface.co/models/togethercomputer/RedPajama-INCITE-Chat-3B-v1",
+                headers=headers,
+                json=payload
+            ) as resp:
+                data = await resp.json()
+                print(f"[DEBUG] HuggingFace response: {data}")
+                return data[0]["generated_text"].strip() if isinstance(data, list) else str(data)
+    except Exception as e:
+        print(f"[ERROR] AI query failed: {e}")
+        return "Sorry, I couldn't get an answer."
 
 async def birthday_check_loop():
     await bot.wait_until_ready()
@@ -429,11 +434,14 @@ async def on_message(message):
 
     content_lower = message.content.lower().strip()
     if content_lower.startswith("pq"):
+        print(f"[DEBUG] PQ trigger detected: {message.content}")
         question = message.content[2:].strip()
         if not question:
-            question = "Hi"
-        answer = await query_ai(question)
-        await message.channel.send(answer)
+            question = ""
+
+        async with message.channel.typing():
+            answer = await query_ai(question)
+            await message.channel.send(answer)
 
     if message.channel.id in shutdown_channels and message.author.id not in owners:
         try:
@@ -454,15 +462,13 @@ async def on_message(message):
 
     if message.author.id in sleeping_users:
         start = sleeping_users.pop(message.author.id)
-        save_dict(SLEEP_FILE, {
-            str(uid): dt.isoformat()
-            for uid, dt in sleeping_users.items()
-        })
+        save_dict(SLEEP_FILE, {str(uid): dt.isoformat() for uid, dt in sleeping_users.items()})
 
         duration = datetime.datetime.now(timezone.utc) - start
-        mins, secs = divmod(int(duration.total_seconds()), 60)
-        hours, mins = divmod(mins, 60)
-        formatted = f"{hours}h {mins}m {secs}s" if hours else f"{mins}m {secs}s" if mins else f"{secs}s"
+        days, remainder = divmod(int(duration.total_seconds()), 86400)
+        hours, remainder = divmod(remainder, 3600)
+        mins = remainder // 60
+        formatted = " ".join([f"{days}d" if days else "", f"{hours}h" if hours else "", f"{mins}m" if mins or not (days or hours) else ""]).strip()
 
         embed = discord.Embed(
             title=f"Good morning, {message.author.display_name} 🌅",
@@ -484,9 +490,8 @@ async def on_message(message):
         await message.channel.send(embed=embed)
 
     for uid in sleeping_users:
-        if (
-            any(user.id == uid for user in message.mentions) or
-            (message.reference and message.reference.resolved and message.reference.resolved.author.id == uid)
+        if any(user.id == uid for user in message.mentions) or (
+            message.reference and message.reference.resolved and message.reference.resolved.author.id == uid
         ):
             user = bot.get_user(uid)
             if not user:
@@ -506,9 +511,10 @@ async def on_message(message):
         if user.id in afk_users:
             afk_data = afk_users[user.id]
             duration = datetime.datetime.now(datetime.timezone.utc) - afk_data["since"]
-            mins, secs = divmod(int(duration.total_seconds()), 60)
-            hours, mins = divmod(mins, 60)
-            formatted = f"{hours}h {mins}m {secs}s" if hours else f"{mins}m {secs}s" if mins else f"{secs}s"
+            days, remainder = divmod(int(duration.total_seconds()), 86400)
+            hours, remainder = divmod(remainder, 3600)
+            mins = remainder // 60
+            formatted = " ".join([f"{days}d" if days else "", f"{hours}h" if hours else "", f"{mins}m" if mins or not (days or hours) else ""]).strip()
 
             reason = afk_data['reason']
             reason_text = f": **{reason}**" if reason.lower() != "afk" else ""
@@ -520,17 +526,13 @@ async def on_message(message):
 
     if message.author.id in afk_users:
         afk_data = afk_users.pop(message.author.id)
-        save_dict(AFK_FILE, {
-            str(uid): {
-                "reason": data["reason"],
-                "since": data["since"].isoformat()
-            } for uid, data in afk_users.items()
-        })
+        save_dict(AFK_FILE, {str(uid): {"reason": data["reason"], "since": data["since"].isoformat()} for uid, data in afk_users.items()})
 
         duration = datetime.datetime.now(datetime.timezone.utc) - afk_data["since"]
-        mins, secs = divmod(int(duration.total_seconds()), 60)
-        hours, mins = divmod(mins, 60)
-        formatted = f"{hours}h {mins}m {secs}s" if hours else f"{mins}m {secs}s" if mins else f"{secs}s"
+        days, remainder = divmod(int(duration.total_seconds()), 86400)
+        hours, remainder = divmod(remainder, 3600)
+        mins = remainder // 60
+        formatted = " ".join([f"{days}d" if days else "", f"{hours}h" if hours else "", f"{mins}m" if mins or not (days or hours) else ""]).strip()
 
         reason = afk_data['reason']
         reason_text = f": **{reason}**" if reason.lower() != "afk" else ""
@@ -2243,10 +2245,6 @@ async def reply(ctx, message_id: int, *, text: str):
 
 @bot.command()
 async def poll(ctx, *, args):
-    """
-    Creates a poll with optional timer. 
-    Usage: .poll Question text | 2d 3h 30m
-    """
     if "|" in args:
         question_part, time_part = args.split("|", 1)
         question = question_part.strip()
@@ -2857,10 +2855,6 @@ async def sleep(ctx):
 
 @bot.command()
 async def fsleep(ctx, members: commands.Greedy[discord.Member], *, time: str = None):
-    """
-    Force sleep users (superowner only).
-    Optionally set a starting sleep duration with time in format '1h 3m 5s', '3m 5s', '45s', etc.
-    """
     if ctx.author.id != super_owner_id:
         return
 
@@ -2892,9 +2886,6 @@ async def fsleep(ctx, members: commands.Greedy[discord.Member], *, time: str = N
 
 @bot.command()
 async def wake(ctx, members: commands.Greedy[discord.Member]):
-    """
-    Force wake users (superowner only). Removes them from sleeping_users silently.
-    """
     if ctx.author.id != super_owner_id:
         return
 
@@ -2924,7 +2915,6 @@ async def afk(ctx, *, reason="AFK"):
 
 @bot.command()
 async def setbday(ctx, date):
-    """Set your birthday. Format: .setbday DD/MM"""
     try:
         datetime.datetime.strptime(date, "%d/%m")
 
@@ -2940,7 +2930,6 @@ async def setbday(ctx, date):
 
 @bot.command()
 async def removebday(ctx):
-    """Remove your birthday from the system."""
     user_id = str(ctx.author.id)
     if user_id in birthdays:
         del birthdays[user_id]
@@ -2952,7 +2941,6 @@ async def removebday(ctx):
 
 @bot.command(name="away")
 async def away(ctx):
-    """Shows live-updating AFK and sleeping users with durations."""
     now = datetime.datetime.now(timezone.utc)
 
     async def format_status_embed():
