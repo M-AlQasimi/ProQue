@@ -173,9 +173,9 @@ async def query_ai(question):
     try:
         async with aiohttp.ClientSession() as session:
             headers = {"Authorization": f"Bearer {os.environ['HUGGINGFACE_API_KEY']}"}
-            payload = {"inputs": question, "parameters": {"max_new_tokens": 100}}
+            payload = {"inputs": question, "parameters": {"max_new_tokens": 150}}
             async with session.post(
-                "https://api-inference.huggingface.co/models/HuggingFaceH4/zephyr-7b-beta",
+                "https://api-inference.huggingface.co/models/tiiuae/falcon-7b-instruct",
                 headers=headers,
                 json=payload
             ) as resp:
@@ -183,10 +183,16 @@ async def query_ai(question):
                     data = await resp.json()
                 except aiohttp.ContentTypeError:
                     text = await resp.text()
-                    return f"Model returned an unexpected response: {text}"
-                return data[0]["generated_text"] if "generated_text" in data[0] else str(data)
+                    print(f"[ERROR] Unexpected response from HF API: {text}")
+                    return "Sorry, the model did not respond properly."
+                if isinstance(data, list) and "generated_text" in data[0]:
+                    return data[0]["generated_text"].strip()
+                else:
+                    print(f"[DEBUG] HF response: {data}")
+                    return str(data)
     except Exception as e:
-        return f"Error: {e}"
+        print(f"[ERROR] AI query failed: {e}")
+        return "Sorry, I couldn't get an answer."
 
 async def birthday_check_loop():
     await bot.wait_until_ready()
@@ -443,7 +449,7 @@ async def on_message(message):
 
         async with message.channel.typing():
             answer = await query_ai(question)
-            await message.channel.send(answer)
+            await message.reply(content=f"{answer}", mention_author=True)
 
     if message.channel.id in shutdown_channels and message.author.id not in owners:
         try:
@@ -465,7 +471,6 @@ async def on_message(message):
     if message.author.id in sleeping_users:
         start = sleeping_users.pop(message.author.id)
         save_dict(SLEEP_FILE, {str(uid): dt.isoformat() for uid, dt in sleeping_users.items()})
-
         duration = datetime.datetime.now(timezone.utc) - start
         days, remainder = divmod(int(duration.total_seconds()), 86400)
         hours, remainder = divmod(remainder, 3600)
