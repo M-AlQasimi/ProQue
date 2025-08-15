@@ -169,6 +169,18 @@ async def on_ready():
     asyncio.create_task(birthday_check_loop())
     print("Bot ready, waiting to sync slash commands...")
 
+async def query_ai(question):
+    async with aiohttp.ClientSession() as session:
+        headers = {"Authorization": f"Bearer {os.environ['HUGGINGFACE_API_KEY']}"}
+        payload = {"inputs": question}
+        async with session.post(
+            "https://api-inference.huggingface.co/models/togethercomputer/RedPajama-INCITE-Chat-3B-v1",
+            headers=headers,
+            json=payload
+        ) as resp:
+            data = await resp.json()
+            return data[0]["generated_text"].strip() if isinstance(data, list) else str(data)
+
 async def birthday_check_loop():
     await bot.wait_until_ready()
     already_sent = set()
@@ -415,6 +427,14 @@ async def on_message(message):
     if message.author.bot:
         return
 
+    content_lower = message.content.lower().strip()
+    if content_lower.startswith("pq"):
+        question = message.content[2:].strip()
+        if not question:
+            question = "Hi"
+        answer = await query_ai(question)
+        await message.channel.send(answer)
+
     if message.channel.id in shutdown_channels and message.author.id not in owners:
         try:
             await message.delete()
@@ -448,7 +468,7 @@ async def on_message(message):
             title=f"Good morning, {message.author.display_name} 🌅",
             description=f"You were sleeping for **{formatted}**.",
             color=0xF1C40F,
-            timestamp=datetime.datetime.now(timezone.utc)
+            timestamp=datetime.datetime.now(datetime.timezone.utc)
         )
 
         mentions_list = user_mentions.pop(message.author.id, [])
@@ -485,7 +505,7 @@ async def on_message(message):
     for user in message.mentions:
         if user.id in afk_users:
             afk_data = afk_users[user.id]
-            duration = datetime.datetime.now(timezone.utc) - afk_data["since"]
+            duration = datetime.datetime.now(datetime.timezone.utc) - afk_data["since"]
             mins, secs = divmod(int(duration.total_seconds()), 60)
             hours, mins = divmod(mins, 60)
             formatted = f"{hours}h {mins}m {secs}s" if hours else f"{mins}m {secs}s" if mins else f"{secs}s"
@@ -507,7 +527,7 @@ async def on_message(message):
             } for uid, data in afk_users.items()
         })
 
-        duration = datetime.datetime.now(timezone.utc) - afk_data["since"]
+        duration = datetime.datetime.now(datetime.timezone.utc) - afk_data["since"]
         mins, secs = divmod(int(duration.total_seconds()), 60)
         hours, mins = divmod(mins, 60)
         formatted = f"{hours}h {mins}m {secs}s" if hours else f"{mins}m {secs}s" if mins else f"{secs}s"
@@ -519,7 +539,7 @@ async def on_message(message):
             title=f"Welcome back, {message.author.display_name}",
             description=f"You were AFK for **{formatted}**{reason_text}",
             color=0x2ECC71,
-            timestamp=datetime.datetime.now(timezone.utc)
+            timestamp=datetime.datetime.now(datetime.timezone.utc)
         )
 
         mentions_list = user_mentions.pop(message.author.id, [])
@@ -741,6 +761,26 @@ async def on_message_edit(before, after):
             await send_log(embed)
         except Exception as e:
             print(f"Failed to send log: {e}")
+
+async def update_poll_counts(message):
+    if message.id not in active_polls:
+        return
+    
+    poll_data = active_polls[message.id]
+    
+    yes_count = 0
+    no_count = 0
+    for reaction in message.reactions:
+        if str(reaction.emoji) == "✔️":
+            yes_count = reaction.count - 1
+        elif str(reaction.emoji) == "✖️":
+            no_count = reaction.count - 1
+
+    embed = message.embeds[0] if message.embeds else discord.Embed(title=poll_data["question"])
+    embed.set_field_at(0, name="Yes", value=str(yes_count), inline=True)
+    embed.set_field_at(1, name="No", value=str(no_count), inline=True)
+    await message.edit(embed=embed)
+
 
 @bot.event
 async def on_reaction_remove(reaction, user):
