@@ -172,30 +172,33 @@ async def on_ready():
 import aiohttp
 import os
 
+import aiohttp
+import os
+
 async def query_ai(question):
     try:
         async with aiohttp.ClientSession() as session:
-            headers = {"Authorization": f"Bearer {os.environ['HUGGINGFACE_API_KEY']}"}
-            payload = {"inputs": question, "parameters": {"max_new_tokens": 150}}
+            headers = {
+                "Authorization": f"Bearer {os.getenv('HUGGINGFACE_API_KEY')}",
+                "Content-Type": "application/json"
+            }
+            payload = {
+                "inputs": question,
+                "parameters": {"max_new_tokens": 100}
+            }
             async with session.post(
-                "https://api-inference.huggingface.co/models/bigscience/bloomz-7b1-mt",
+                "https://api-inference.huggingface.co/models/meta-llama/Llama-2-7b-chat-hf",
                 headers=headers,
                 json=payload
             ) as resp:
                 try:
                     data = await resp.json()
+                    return data[0]["generated_text"] if "generated_text" in data[0] else str(data)
                 except aiohttp.ContentTypeError:
                     text = await resp.text()
-                    print(f"[ERROR] Unexpected response from HF API: {text}")
-                    return "Sorry, the model did not respond properly."
-                if isinstance(data, list) and "generated_text" in data[0]:
-                    return data[0]["generated_text"].strip()
-                else:
-                    print(f"[DEBUG] HF response: {data}")
-                    return str(data)
+                    return f"Model returned an unexpected response: {text}"
     except Exception as e:
-        print(f"[ERROR] AI query failed: {e}")
-        return "Sorry, I couldn't get an answer."
+        return f"Error: {e}"
 
 async def birthday_check_loop():
     await bot.wait_until_ready()
