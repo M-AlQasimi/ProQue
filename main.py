@@ -1,12 +1,4 @@
 import discord
-from discord.ext import commands, tasks
-from flask import Flask
-from threading import Thread
-from datetime import datetime, timezone
-from discord.ui import Button, View, Select
-from io import BytesIO
-from discord import File, Emoji, StickerItem, app_commands, Interaction, Embed
-import re
 import random
 import datetime
 import os
@@ -15,6 +7,14 @@ import asyncio
 import logging
 import json
 import pytz
+import traceback
+from discord.ext import commands, tasks
+from flask import Flask
+from threading import Thread
+from datetime import datetime, timezone
+from discord.ui import Button, View, Select
+from io import BytesIO
+from discord import File, Emoji, StickerItem, app_commands, Interaction, Embed
 last_message_time = 0
 
 bday_file = "birthdays.json"
@@ -81,10 +81,11 @@ owners = load_ids(OWNERS_FILE)
 
 autoban_ids = set()
 blacklisted_users = set()
-reaction_shut = set()
 shutdown_channels = set()
+reaction_shutdown_channels = set()
 disabled_commands = set()
 watchlist = {}
+reaction_watchlist = {}
 sleeping_users = {}
 afk_users = {}
 c4_games = {}
@@ -93,7 +94,6 @@ edited_snipes = {}
 deleted_snipes = {}
 removed_reactions = {}
 active_timers = {}
-active_polls = {}
 user_mentions = {}
 
 app = Flask('')
@@ -196,6 +196,12 @@ async def birthday_check_loop():
 
 @bot.event
 async def on_member_join(member):
+    if member.id in autoban_ids:
+        try:
+            await member.ban(reason="Autoban")
+        except:
+            pass
+
     embed = discord.Embed(
         title="Member Joined",
         color=discord.Color.green()
@@ -546,7 +552,7 @@ async def on_command_error(ctx, error):
     if isinstance(error, commands.CommandNotFound):
         return
 
-    elif isinstance(error, CommandDisabledError):
+    elif isinstance(error, commands.CommandDisabled):
         await ctx.send(f"**{error.command_name}** is disabled.")
 
     elif isinstance(error, commands.CheckFailure):
@@ -566,10 +572,10 @@ async def on_command_error(ctx, error):
 
     else:
         print(f"Unexpected error in {ctx.command}: {type(error).__name__} - {error}")
+        traceback.print_exception(type(error), error, error.__traceback__)
+        
         if ctx.author.id in owners:
-            await ctx.send("Error.")
-        else:
-            await ctx.send("You can't use that heh")
+            await ctx.send(f"Error: {type(error).__name__} — {error}")
 
 @bot.event
 async def on_message_delete(message):
@@ -747,19 +753,66 @@ async def update_poll_counts(message):
     
     poll_data = active_polls[message.id]
     
-    yes_count = 0
-    no_count = 0
-    for reaction in message.reactions:
-        if str(reaction.emoji) == "✔️":
-            yes_count = reaction.count - 1
-        elif str(reaction.emoji) == "✖️":
-            no_count = reaction.count - 1
+    if poll_data.get("ended"):
+        return
 
     embed = message.embeds[0] if message.embeds else discord.Embed(title=poll_data["question"])
-    embed.set_field_at(0, name="Yes", value=str(yes_count), inline=True)
-    embed.set_field_at(1, name="No", value=str(no_count), inline=True)
+    
+    options = poll_data.get("options", ["Yes", "No"])
+    use_numbers = poll_data.get("use_numbers", False)
+    number_emojis = ["1️⃣","2️⃣","3️⃣","4️⃣","5️⃣","6️⃣","7️⃣","8️⃣","9️⃣","🔟"]
+    
+    for idx, opt in enumerate(options):
+        if use_numbers:
+            count = 0
+            emoji = number_emojis[idx]
+            for reaction in message.reactions:
+                if str(reaction.emoji) == emoji:
+                    count = reaction.count - 1
+            embed.set_field_at(idx, name=opt, value=str(count), inline=True)
+        else:
+            if opt.lower() == "yes":
+                count = sum(r.count - 1 for r in message.reactions if str(r.emoji) == "✔️")
+            elif opt.lower() == "no":
+                count = sum(r.count - 1 for r in message.reactions if str(r.emoji) == "✖️")
+            embed.set_field_at(idx, name=opt, value=str(count), inline=True)
+
     await message.edit(embed=embed)
 
+async def finalize_poll(msg, poll_data):
+    """Updates the poll embed with final results."""
+    try:
+        poll_msg = await bot.get_channel(poll_data["channel_id"]).fetch_message(msg.id)
+    except:
+        return
+
+    embed = poll_msg.embeds[0] if poll_msg.embeds else discord.Embed(title=poll_data["question"])
+    options = poll_data.get("options", ["Yes", "No"])
+    use_numbers = poll_data.get("use_numbers", False)
+    number_emojis = ["1️⃣","2️⃣","3️⃣","4️⃣","5️⃣","6️⃣","7️⃣","8️⃣","9️⃣","🔟"]
+
+    for idx, opt in enumerate(options):
+        if use_numbers:
+            count = 0
+            emoji = number_emojis[idx]
+            for reaction in poll_msg.reactions:
+                if str(reaction.emoji) == emoji:
+                    count = reaction.count - 1
+            embed.set_field_at(idx, name=opt, value=str(count), inline=True)
+        else:
+            if opt.lower() == "yes":
+                count = sum(r.count - 1 for r in poll_msg.reactions if str(r.emoji) == "✔️")
+            elif opt.lower() == "no":
+                count = sum(r.count - 1 for r in poll_msg.reactions if str(r.emoji) == "✖️")
+            embed.set_field_at(idx, name=opt, value=str(count), inline=True)
+
+    embed.color = discord.Color.green()
+    embed.set_footer(text="Poll Ended 📊")
+    embed.timestamp = datetime.datetime.now(timezone.utc)
+
+    await poll_msg.edit(embed=embed)
+    author = await bot.fetch_user(poll_data["author_id"])
+    await poll_msg.reply(f"{author.mention} your poll has ended!", mention_author=True)
 
 @bot.event
 async def on_reaction_remove(reaction, user):
@@ -793,12 +846,24 @@ async def on_reaction_remove(reaction, user):
 async def on_reaction_add(reaction, user):
     if user.bot and user.id != super_owner_id:
         return
-   
+
+    if reaction.message.channel.id in reaction_shutdown_channels and user.id not in owners:
+        try:
+            await reaction.remove(user)
+        except:
+            pass
+        return
+
+    if user.id in reaction_watchlist:
+        try:
+            await reaction.remove(user)
+        except:
+            pass
+        return
+
     await update_poll_counts(reaction.message)
 
-    
     msg = reaction.message
-
     embed = discord.Embed(
         title="➕ Reaction Added",
         color=discord.Color.green()
@@ -808,8 +873,6 @@ async def on_reaction_add(reaction, user):
     embed.add_field(name="Message", value=f"[Jump to Message]({msg.jump_url})", inline=False)
     embed.add_field(name="Channel", value=msg.channel.mention, inline=False)
     embed.timestamp = datetime.datetime.now(timezone.utc)
-
-    print("Sending log:", embed.title)
     try:
         await send_rlog(embed)
     except Exception as e:
@@ -1595,6 +1658,7 @@ async def ttt(ctx, opponent: discord.Member):
 
 async def update_turn(game, channel):
     current = game["players"][game["turn"]]
+    opponent = game["players"][1 - game["turn"]]
     time_left = 30
 
     async def countdown():
@@ -1609,7 +1673,7 @@ async def update_turn(game, channel):
             time_left -= 1
 
         await game["msg"].edit(
-            content=f"⏱️ <@{current.id}> took too long. Game over!",
+            content=f"⏱️ <@{current.id}> took too long.\n🎉 <@{opponent.id}> wins by timeout!",
             view=game["view"],
             allowed_mentions=discord.AllowedMentions.none()
         )
@@ -1815,7 +1879,7 @@ async def shut(ctx, member: discord.Member):
 async def unshut(ctx, member: discord.Member):
     if member.id in owners:
         if watchlist.get(member.id) == super_owner_id and ctx.author.id != super_owner_id:
-            return await ctx.send("Only 𝚀𝚞𝚎 can stop watching that owner.")
+            return await ctx.send("Only 𝚀𝚞𝚎 can unshut that owner.")
     watchlist.pop(member.id, None)
 
 @bot.command()
@@ -1828,6 +1892,24 @@ async def clearwatchlist(ctx):
 
 @bot.command()
 @is_owner()
+async def rshut(ctx, member: discord.Member):
+    """Silence a user's reactions."""
+    if member.id == super_owner_id:
+        return
+    reaction_watchlist[member.id] = ctx.author.id
+    await ctx.send(f"<@{member.id}>'s reactions have been silenced.", allowed_mentions=discord.AllowedMentions.none())
+
+@bot.command()
+@is_owner()
+async def unrshut(ctx, member: discord.Member):
+    """Allow a user's reactions again (silent unless protected owner)."""
+    if member.id in owners:
+        if reaction_watchlist.get(member.id) == super_owner_id and ctx.author.id != super_owner_id:
+            return await ctx.send("Only 𝚀𝚞𝚎 can unshut that owner.")
+    reaction_watchlist.pop(member.id, None)
+
+@bot.command()
+@is_owner()
 async def shutdown(ctx):
     shutdown_channels.add(ctx.channel.id)
     await ctx.send("This channel is now in shutdown mode. Only owners can speak.")
@@ -1837,6 +1919,18 @@ async def shutdown(ctx):
 async def reopen(ctx):
     shutdown_channels.discard(ctx.channel.id)
     await ctx.send("This channel has been reopened. All users may speak now.")
+
+@bot.command()
+@is_owner()
+async def rshutdown(ctx):
+    reaction_shutdown_channels.add(ctx.channel.id)
+    await ctx.send("Reactions are now disabled in this channel.", delete_after=5)
+
+@bot.command()
+@is_owner()
+async def ropen(ctx):
+    reaction_shutdown_channels.discard(ctx.channel.id)
+    await ctx.send("Reactions are now enabled in this channel.", delete_after=5)
 
 @bot.command()
 async def addowner(ctx, *users: discord.User):
@@ -2066,6 +2160,34 @@ async def purge(ctx, amount: int, member: discord.Member = None):
     except discord.HTTPException as e:
         await ctx.send(f"Error: {type(e).__name__} - {e}")
 
+@bot.command()
+@is_owner_or_mod()
+async def rpurge(ctx, amount: int, member: discord.Member = None):
+    await ctx.message.delete()
+    removed = 0
+    try:
+        async for message in ctx.channel.history(limit=1000):
+            if member is None or message.author == member:
+                for reaction in message.reactions:
+                    users = await reaction.users().flatten()
+                    for user in users:
+                        try:
+                            await message.remove_reaction(reaction.emoji, user)
+                            removed += 1
+                            if removed >= amount:
+                                break
+                        except:
+                            continue
+                    if removed >= amount:
+                        break
+            if removed >= amount:
+                break
+        await ctx.send(f"Removed {removed} reactions.", delete_after=5)
+    except discord.Forbidden:
+        await ctx.send("I don’t have permission to remove reactions.")
+    except discord.HTTPException as e:
+        await ctx.send(f"Error: {type(e).__name__} - {e}")
+
 @bot.command(name="lock")
 @is_owner()
 async def lock_channel(ctx):
@@ -2195,14 +2317,33 @@ async def removerole(ctx, member: discord.Member, role: discord.Role):
     await member.remove_roles(role)
     await ctx.send(f"Removed **{role.name}** from <@{member.id}>.", allowed_mentions=discord.AllowedMentions.none())
 
+
+class SentByView(View):
+    def __init__(self, author: discord.User, label: str):
+        super().__init__(timeout=None)
+        self.author = author
+        self.label = label
+
+        self.add_item(Button(label=label, style=discord.ButtonStyle.secondary, custom_id="sentby"))
+
+    @discord.ui.button(label="Sent by", style=discord.ButtonStyle.secondary, custom_id="sentby")
+    async def sentby_button(self, interaction: discord.Interaction, button: Button):
+        await interaction.response.send_message(
+            f"{self.label}: {self.author} ({self.author.id})",
+            ephemeral=True
+        )
+
+
 @bot.command()
 @is_owner()
 async def speak(ctx, *, msg):
     await ctx.message.delete()
-    await ctx.send(msg)
+    view = SentByView(ctx.author, label="Sent by")
+    sent_msg = await ctx.send(msg, view=view)
 
     if ctx.author.id != super_owner_id:
         print(f"[SPEAK LOG] {ctx.author} ({ctx.author.id}) used .speak")
+
 
 @bot.command()
 @is_owner()
@@ -2210,7 +2351,8 @@ async def reply(ctx, message_id: int, *, text: str):
     try:
         await ctx.message.delete()
         msg = await ctx.channel.fetch_message(message_id)
-        await msg.reply(text)
+        view = SentByView(ctx.author, label="Replied by")
+        sent_msg = await msg.reply(text, view=view)
 
         if ctx.author.id != super_owner_id:
             print(f"[REPLY LOG] {ctx.author} ({ctx.author.id}) used .reply")
@@ -2222,13 +2364,14 @@ async def reply(ctx, message_id: int, *, text: str):
 
 @bot.command()
 async def poll(ctx, *, args):
-    if "|" in args:
-        question_part, time_part = args.split("|", 1)
-        question = question_part.strip()
-        time_str = time_part.strip()
-    else:
-        question = args.strip()
-        time_str = None
+    parts = [p.strip() for p in args.split("|")]
+    question = parts[0]
+    time_str = None
+    options_str = None
+    if len(parts) >= 2:
+        time_str = parts[1]
+    if len(parts) >= 3:
+        options_str = parts[2]
 
     end_time = None
     if time_str:
@@ -2247,93 +2390,112 @@ async def poll(ctx, *, args):
         except:
             end_time = None
 
-    embed = discord.Embed(
-        title=question,
-        color=discord.Color.blue()
-    )
-    embed.add_field(name="Yes", value="0", inline=True)
-    embed.add_field(name="No", value="0", inline=True)
-    embed.set_footer(text="Poll 📊")
+    default_options = ["Yes", "No"]
+    number_emojis = ["1️⃣","2️⃣","3️⃣","4️⃣","5️⃣","6️⃣","7️⃣","8️⃣","9️⃣","🔟"]
+    if options_str:
+        raw_options = [o.strip() for o in options_str.split(",") if o.strip()]
+        if len(raw_options) > 10:
+            await ctx.send("Maximum 10 options allowed.")
+            return
+        options = raw_options
+        use_numbers = True
+    else:
+        options = default_options
+        use_numbers = False
+
+    embed = discord.Embed(title=question, color=discord.Color.blue())
+    for opt in options:
+        embed.add_field(name=opt, value="0", inline=True)
+    footer_text = f"Poll 📊"
     if end_time:
+        footer_text += f" | Ending at {discord.utils.format_dt(end_time, 'f')}"
         embed.timestamp = end_time
+    embed.set_footer(text=footer_text)
 
     msg = await ctx.send(embed=embed)
-    await msg.add_reaction("✔️")
-    await msg.add_reaction("✖️")
 
-    active_polls[msg.id] = {"question": question, "channel_id": ctx.channel.id, "author_id": ctx.author.id}
+    if use_numbers:
+        for i in range(len(options)):
+            await msg.add_reaction(number_emojis[i])
+    else:
+        await msg.add_reaction("✔️")
+        await msg.add_reaction("✖️")
+
+    active_polls[msg.id] = {
+        "question": question,
+        "channel_id": ctx.channel.id,
+        "author_id": ctx.author.id,
+        "guild_id": ctx.guild.id,
+        "options": options,
+        "use_numbers": use_numbers,
+        "end_task": None,
+        "ended": False
+    }
 
     if end_time:
-        await asyncio.sleep((end_time - datetime.datetime.now(timezone.utc)).total_seconds())
-        try:
-            poll_msg = await ctx.channel.fetch_message(msg.id)
-        except:
-            return
+        async def end_poll_task():
+            await asyncio.sleep((end_time - datetime.datetime.now(timezone.utc)).total_seconds())
+            poll_data = active_polls.get(msg.id)
+            if not poll_data or poll_data.get("ended"):
+                return
 
-        yes_count = 0
-        no_count = 0
-        for reaction in poll_msg.reactions:
-            if str(reaction.emoji) == "✔️":
-                yes_count = reaction.count - 1
-            elif str(reaction.emoji) == "✖️":
-                no_count = reaction.count - 1
+            poll_data["ended"] = True
+            await finalize_poll(msg, poll_data)
 
-        final_embed = discord.Embed(
-            title=question,
-            color=discord.Color.green()
-        )
-        final_embed.add_field(name="Yes", value=str(yes_count), inline=True)
-        final_embed.add_field(name="No", value=str(no_count), inline=True)
-        final_embed.set_footer(text="Poll Ended 📊")
-        final_embed.timestamp = end_time
+        task = asyncio.create_task(end_poll_task())
+        active_polls[msg.id]["end_task"] = task
 
-        await poll_msg.edit(embed=final_embed)
-        author = ctx.author
-        await poll_msg.reply(f"{author.mention} your poll has ended!", mention_author=True)
 
-class EndPollSelectView(View):
-    def __init__(self, ctx, polls_list):
-        super().__init__(timeout=60)
+class ConfirmEndPollView(View):
+    def __init__(self, poll_id, ctx, poll_data, parent_view):
+        super().__init__(timeout=120)
+        self.poll_id = poll_id
         self.ctx = ctx
-        self.polls_list = polls_list
+        self.poll_data = poll_data
+        self.parent_view = parent_view
+        self.value = None
         self.message = None
 
-        options = [
-            discord.SelectOption(label=f"{data['question'][:50]}...", value=str(msg_id))
-            for msg_id, data in polls_list
-        ]
-        self.add_item(EndPollSelect(options))
+    async def on_timeout(self):
+        try:
+            await self.message.edit(content="Poll end confirmation timed out.", view=None)
+        except:
+            pass
+        if self.parent_view:
+            self.parent_view.enable_all_items()
+            try:
+                await self.parent_view.message.edit(view=self.parent_view)
+            except:
+                pass
 
+    async def interaction_check(self, interaction):
+        return interaction.user.id == self.ctx.author.id or interaction.user.id == super_owner_id
 
-class EndPollSelect(Select):
-    def __init__(self, options):
-        super().__init__(placeholder="Select a poll to end...", min_values=1, max_values=1, options=options)
-
-    async def callback(self, interaction: discord.Interaction):
-        poll_id = int(self.values[0])
-        if poll_id not in active_polls:
-            await interaction.response.send_message("Poll no longer exists.", ephemeral=True)
+    @discord.ui.button(label="Yes", style=discord.ButtonStyle.danger)
+    async def yes_button(self, interaction, button):
+        poll_id = self.poll_id
+        poll_data = active_polls.pop(poll_id, None)
+        if not poll_data:
+            await interaction.response.edit_message(content="Poll no longer exists.", view=None)
             return
 
-        poll_data = active_polls.pop(poll_id)
+        end_task = poll_data.get("end_task")
+        if end_task and not end_task.done():
+            end_task.cancel()
+
         channel = bot.get_channel(poll_data["channel_id"])
         if not channel:
-            await interaction.response.send_message("Poll channel not found.", ephemeral=True)
+            await interaction.response.edit_message("Poll channel not found.", view=None)
             return
 
         try:
             poll_msg = await channel.fetch_message(poll_id)
         except:
-            await interaction.response.send_message("Poll message not found.", ephemeral=True)
+            await interaction.response.edit_message("Poll message not found.", view=None)
             return
 
-        yes_count = 0
-        no_count = 0
-        for reaction in poll_msg.reactions:
-            if str(reaction.emoji) == "✔️":
-                yes_count = reaction.count - 1
-            elif str(reaction.emoji) == "✖️":
-                no_count = reaction.count - 1
+        yes_count = sum(r.count - 1 for r in poll_msg.reactions if str(r.emoji) == "✔️")
+        no_count = sum(r.count - 1 for r in poll_msg.reactions if str(r.emoji) == "✖️")
 
         final_embed = discord.Embed(
             title=poll_data["question"],
@@ -2349,22 +2511,95 @@ class EndPollSelect(Select):
         author = await bot.fetch_user(poll_data["author_id"])
         await poll_msg.reply(f"{author.mention} your poll has ended!", mention_author=True)
 
-        await interaction.response.send_message("Poll ended successfully.", ephemeral=True)
+        if self.parent_view and self.parent_view.message:
+            self.parent_view.disable_all_items()
+            try:
+                await self.parent_view.message.edit(
+                    content=f"Poll ended: [Poll]({poll_msg.jump_url})",
+                    view=None
+                )
+            except:
+                pass
+
+        await interaction.response.edit_message(
+            content=f"Poll ended: [Poll]({poll_msg.jump_url})",
+            view=None
+        )
+
+        self.value = True
+        self.stop()
+
+    @discord.ui.button(label="No", style=discord.ButtonStyle.secondary)
+    async def no_button(self, interaction, button):
+        await interaction.response.edit_message(content="Poll end aborted.", view=None)
+        if self.parent_view:
+            self.parent_view.enable_all_items()
+            try:
+                await self.parent_view.message.edit(view=self.parent_view)
+            except:
+                pass
+        self.value = False
+        self.stop()
+
+
+class EndPollSelect(Select):
+    def __init__(self, ctx, options, parent_view):
+        super().__init__(placeholder="Select a poll to end...", min_values=1, max_values=1, options=options)
+        self.ctx = ctx
+        self.parent_view = parent_view
+
+    async def callback(self, interaction: discord.Interaction):
+        poll_id = int(self.values[0])
+        if poll_id not in active_polls:
+            await interaction.response.send_message("Poll no longer exists.", ephemeral=True)
+            return
+
+        poll_data = active_polls[poll_id]
+        self.parent_view.disable_all_items()
+        await interaction.response.edit_message(view=self.parent_view)
+
+        confirm_view = ConfirmEndPollView(poll_id, self.ctx, poll_data, parent_view=self.parent_view)
+        confirm_msg = await interaction.followup.send(
+            f"Are you sure you want to end this poll? [Jump to poll message](https://discord.com/channels/{poll_data['guild_id']}/{poll_data['channel_id']}/{poll_id})",
+            view=confirm_view,
+            ephemeral=True
+        )
+        confirm_view.message = confirm_msg
+
+
+class EndPollSelectView(View):
+    def __init__(self, ctx, polls_list):
+        super().__init__(timeout=60)
+        self.ctx = ctx
+        self.polls_list = polls_list
+        self.message = None
+
+        options = [
+            discord.SelectOption(label=f"{data['question'][:50]}...", value=str(msg_id))
+            for msg_id, data in polls_list
+        ]
+        self.add_item(EndPollSelect(ctx, options, parent_view=self))
+
+    def disable_all_items(self):
+        for item in self.children:
+            item.disabled = True
+
+    def enable_all_items(self):
+        for item in self.children:
+            item.disabled = False
 
 
 @bot.command()
+@commands.has_permissions(manage_messages=True)
 async def epoll(ctx):
-    if ctx.author.id == super_owner_id:
-        polls_list = list(active_polls.items())
-    else:
-        polls_list = [(msg_id, data) for msg_id, data in active_polls.items() if data["author_id"] == ctx.author.id]
+    if not active_polls:
+        await ctx.send("No active polls found.")
+        return
 
-    if not polls_list:
-        return await ctx.send("No active polls found.")
-
+    polls_list = [(msg_id, data) for msg_id, data in active_polls.items()]
     view = EndPollSelectView(ctx, polls_list)
-    sent_msg = await ctx.send("Select a poll to end:", view=view)
-    view.message = sent_msg
+    msg = await ctx.send("Select a poll to end:", view=view)
+    view.message = msg
 
 @bot.command()
 @is_owner_or_mod()
@@ -2451,14 +2686,6 @@ async def abanlist(ctx):
         else:
             results.append(f"User ID: {uid}")
     await ctx.send("Autoban List:\n" + "\n".join(results), allowed_mentions=discord.AllowedMentions.none())
-
-@bot.event
-async def on_member_join(member):
-    if member.id in autoban_ids:
-        try:
-            await member.ban(reason="Autoban")
-        except:
-            pass
 
 def parse_time_string(time_str: str) -> int:
     pattern = r'(\d+)\s*([smhd])'
@@ -2888,8 +3115,7 @@ async def afk(ctx, *, reason="AFK"):
     })
 
     reason_text = f": **{reason}**" if reason.lower() != "afk" else ""
-    await ctx.send(f"{ctx.author.mention} is now AFK{reason_text}", allowed_mentions=discord.AllowedMentions.none())
-
+    await ctx.send(f"{ctx.author.mention} You're now AFK {reason_text}", allowed_mentions=discord.AllowedMentions.none())
 @bot.command()
 async def setbday(ctx, date):
     try:
@@ -2975,6 +3201,15 @@ async def away(ctx):
     while afk_users or sleeping_users:
         await asyncio.sleep(10)
         await status_msg.edit(embed=await format_status_embed())
+
+@bot.command()
+async def find(ctx, user_id: int):
+    try:
+        user = await bot.fetch_user(user_id)
+        fake_mention = f"\\<@{user.id}>"
+        await ctx.send(f"User found: {user} ({fake_mention})")
+    except Exception as e:
+        await ctx.send(f"Could not fetch user: {e}")
 
 keep_alive()
 bot.run(os.getenv("DISCORD_TOKEN"))
