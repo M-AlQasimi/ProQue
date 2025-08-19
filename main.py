@@ -1,6 +1,5 @@
 import discord
 import random
-import datetime
 import os
 import aiohttp
 import asyncio
@@ -94,6 +93,7 @@ edited_snipes = {}
 deleted_snipes = {}
 removed_reactions = {}
 active_timers = {}
+active_polls = {}
 user_mentions = {}
 
 app = Flask('')
@@ -552,7 +552,7 @@ async def on_command_error(ctx, error):
     if isinstance(error, commands.CommandNotFound):
         return
 
-    elif isinstance(error, commands.CommandDisabled):
+    elif isinstance(error, CommandDisabledError):
         await ctx.send(f"**{error.command_name}** is disabled.")
 
     elif isinstance(error, commands.CheckFailure):
@@ -572,10 +572,10 @@ async def on_command_error(ctx, error):
 
     else:
         print(f"Unexpected error in {ctx.command}: {type(error).__name__} - {error}")
-        traceback.print_exception(type(error), error, error.__traceback__)
-        
         if ctx.author.id in owners:
-            await ctx.send(f"Error: {type(error).__name__} — {error}")
+            await ctx.send("Error.")
+        else:
+            await ctx.send("You can't use that heh")
 
 @bot.event
 async def on_message_delete(message):
