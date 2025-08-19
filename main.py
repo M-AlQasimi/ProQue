@@ -2323,8 +2323,6 @@ class SentByView(View):
         self.author = author
         self.label = label
 
-        self.add_item(Button(label=label, style=discord.ButtonStyle.secondary, custom_id="sentby"))
-
     @discord.ui.button(label="Sent by", style=discord.ButtonStyle.secondary, custom_id="sentby")
     async def sentby_button(self, interaction: discord.Interaction, button: Button):
         await interaction.response.send_message(
@@ -2332,34 +2330,60 @@ class SentByView(View):
             ephemeral=True
         )
 
-
 @bot.command()
 @is_owner()
 async def speak(ctx, *, msg):
     await ctx.message.delete()
     view = SentByView(ctx.author, label="Sent by")
-    sent_msg = await ctx.send(msg, view=view)
+    try:
+        sent_msg = await ctx.send(msg, view=view)
+    except Exception as e:
+        print(f"[SPEAK ERROR] {type(e).__name__}: {e}")
+        await ctx.send("Failed to send message.")
+        return
 
     if ctx.author.id != super_owner_id:
         print(f"[SPEAK LOG] {ctx.author} ({ctx.author.id}) used .speak")
 
-
 @bot.command()
 @is_owner()
-async def reply(ctx, message_id: int, *, text: str):
+async def reply(ctx, *, text: str):
     try:
         await ctx.message.delete()
-        msg = await ctx.channel.fetch_message(message_id)
+
+        if ctx.message.reference:
+            try:
+                msg = await ctx.channel.fetch_message(ctx.message.reference.message_id)
+            except discord.NotFound:
+                await ctx.send("Replied-to message not found.", delete_after=5)
+                return
+        else:
+            parts = text.split(maxsplit=1)
+            if len(parts) < 2:
+                await ctx.send("Provide a message ID or reply to a message.", delete_after=5)
+                return
+            message_id_str, text = parts
+            try:
+                msg_id = int(message_id_str)
+                msg = await ctx.channel.fetch_message(msg_id)
+            except ValueError:
+                await ctx.send("Invalid message ID.", delete_after=5)
+                return
+            except discord.NotFound:
+                await ctx.send("Message not found.", delete_after=5)
+                return
+
         view = SentByView(ctx.author, label="Replied by")
-        sent_msg = await msg.reply(text, view=view)
+        await msg.reply(content=text, view=view)
 
         if ctx.author.id != super_owner_id:
             print(f"[REPLY LOG] {ctx.author} ({ctx.author.id}) used .reply")
-    except discord.NotFound:
-        await ctx.send("Message not found.")
+
+    except discord.Forbidden:
+        await ctx.send("I cannot reply to that message (missing permissions).", delete_after=5)
     except discord.HTTPException as e:
-        await ctx.send("Failed to reply to the message.")
         print(f"[REPLY ERROR] {type(e).__name__}: {e}")
+        await ctx.send("Failed to reply to the message.", delete_after=5)
 
 @bot.command()
 async def poll(ctx, *, args):
@@ -2470,75 +2494,76 @@ class ConfirmEndPollView(View):
     async def interaction_check(self, interaction):
         return interaction.user.id == self.ctx.author.id or interaction.user.id == super_owner_id
 
-    @discord.ui.button(label="Yes", style=discord.ButtonStyle.danger)
-    async def yes_button(self, interaction, button):
-        poll_id = self.poll_id
-        poll_data = active_polls.pop(poll_id, None)
-        if not poll_data:
-            await interaction.response.edit_message(content="Poll no longer exists.", view=None)
-            return
+@discord.ui.button(label="Yes", style=discord.ButtonStyle.danger)
+async def yes_button(self, interaction, button):
+    poll_id = self.poll_id
+    poll_data = active_polls.pop(poll_id, None)
+    if not poll_data:
+        await interaction.response.edit_message(content="Poll no longer exists.", view=None)
+        return
 
-        end_task = poll_data.get("end_task")
-        if end_task and not end_task.done():
-            end_task.cancel()
+    end_task = poll_data.get("end_task")
+    if end_task and not end_task.done():
+        end_task.cancel()
 
-        channel = bot.get_channel(poll_data["channel_id"])
-        if not channel:
-            await interaction.response.edit_message("Poll channel not found.", view=None)
-            return
+    channel = bot.get_channel(poll_data["channel_id"])
+    if not channel:
+        await interaction.response.edit_message(content="Poll channel not found.", view=None)
+        return
 
+    try:
+        poll_msg = await channel.fetch_message(poll_id)
+    except:
+        await interaction.response.edit_message(content="Poll message not found.", view=None)
+        return
+
+    yes_count = sum(r.count - 1 for r in poll_msg.reactions if str(r.emoji) == "✔️")
+    no_count = sum(r.count - 1 for r in poll_msg.reactions if str(r.emoji) == "✖️")
+
+    final_embed = discord.Embed(
+        title=poll_data["question"],
+        color=discord.Color.green()
+    )
+    final_embed.add_field(name="Yes", value=str(yes_count), inline=True)
+    final_embed.add_field(name="No", value=str(no_count), inline=True)
+    final_embed.set_footer(text="Poll Ended 📊")
+    final_embed.timestamp = datetime.now(timezone.utc)
+
+    await poll_msg.edit(embed=final_embed)
+
+    author = await bot.fetch_user(poll_data["author_id"])
+    await poll_msg.reply(f"{author.mention} your poll has ended!", mention_author=True)
+
+    if self.parent_view and self.parent_view.message:
+        self.parent_view.disable_all_items()
         try:
-            poll_msg = await channel.fetch_message(poll_id)
+            await self.parent_view.message.edit(
+                content=f"Poll ended: [{poll_data['question']}]({poll_msg.jump_url})",
+                view=None
+            )
         except:
-            await interaction.response.edit_message("Poll message not found.", view=None)
-            return
+            pass
 
-        yes_count = sum(r.count - 1 for r in poll_msg.reactions if str(r.emoji) == "✔️")
-        no_count = sum(r.count - 1 for r in poll_msg.reactions if str(r.emoji) == "✖️")
+    await interaction.response.edit_message(
+        content=f"Poll ended: [{poll_data['question']}]({poll_msg.jump_url})",
+        view=None
+    )
 
-        final_embed = discord.Embed(
-            title=poll_data["question"],
-            color=discord.Color.green()
-        )
-        final_embed.add_field(name="Yes", value=str(yes_count), inline=True)
-        final_embed.add_field(name="No", value=str(no_count), inline=True)
-        final_embed.set_footer(text="Poll Ended 📊")
-        final_embed.timestamp = datetime.now(timezone.utc)
+    self.value = True
+    self.stop()
 
-        await poll_msg.edit(embed=final_embed)
 
-        author = await bot.fetch_user(poll_data["author_id"])
-        await poll_msg.reply(f"{author.mention} your poll has ended!", mention_author=True)
-
-        if self.parent_view and self.parent_view.message:
-            self.parent_view.disable_all_items()
-            try:
-                await self.parent_view.message.edit(
-                    content=f"Poll ended: [Poll]({poll_msg.jump_url})",
-                    view=None
-                )
-            except:
-                pass
-
-        await interaction.response.edit_message(
-            content=f"Poll ended: [Poll]({poll_msg.jump_url})",
-            view=None
-        )
-
-        self.value = True
-        self.stop()
-
-    @discord.ui.button(label="No", style=discord.ButtonStyle.secondary)
-    async def no_button(self, interaction, button):
-        await interaction.response.edit_message(content="Poll end aborted.", view=None)
-        if self.parent_view:
-            self.parent_view.enable_all_items()
-            try:
-                await self.parent_view.message.edit(view=self.parent_view)
-            except:
-                pass
-        self.value = False
-        self.stop()
+@discord.ui.button(label="No", style=discord.ButtonStyle.secondary)
+async def no_button(self, interaction, button):
+    await interaction.response.edit_message(content="Poll end aborted.", view=None)
+    if self.parent_view:
+        self.parent_view.enable_all_items()
+        try:
+            await self.parent_view.message.edit(view=self.parent_view)
+        except:
+            pass
+    self.value = False
+    self.stop()
 
 
 class EndPollSelect(Select):
