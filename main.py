@@ -441,7 +441,7 @@ async def on_message(message):
             user_mentions[mentioned_user.id].append((
                 message.author.id,
                 message.jump_url,
-                int(message.created_at.replace(tzinfo=datetime.timezone.utc).timestamp())
+                int(message.created_at.timestamp())
             ))
 
     if message.author.id in sleeping_users:
@@ -738,7 +738,8 @@ async def on_message_edit(before, after):
         embed.add_field(name="Before", value=before.content, inline=False)
         embed.add_field(name="After", value=after.content, inline=False)
         embed.add_field(name="Message", value=f"[Jump to Message]({before.jump_url})", inline=False)
-        embed.add_field(name="Channel", value=before.channel.mention, inline=False)
+        channel_value = before.channel.mention if hasattr(before.channel, "mention") else str(before.channel)
+        embed.add_field(name="Channel", value=channel_value, inline=False)
         embed.timestamp = datetime.now(timezone.utc)
 
         print("Sending log:", embed.title)
@@ -3108,14 +3109,17 @@ async def fsleep(ctx, members: commands.Greedy[discord.Member], *, time: str = N
                 matches = re.findall(r'(\d+)\s*(h|m|s)', time.lower())
                 for value, unit in matches:
                     if unit == "h":
-                        h = int(value)
+                        h += int(value)
                     elif unit == "m":
-                        m = int(value)
+                        m += int(value)
                     elif unit == "s":
-                        s = int(value)
-                delta = datetime.timedelta(hours=h, minutes=m, seconds=s)
-                start_time -= delta
-            except Exception:
+                        s += int(value)
+
+                if h or m or s:
+                    delta = timedelta(hours=h, minutes=m, seconds=s)
+                    start_time -= delta
+            except Exception as e:
+                await ctx.send(f"⚠️ Invalid time format: {time}")
                 continue
 
         sleeping_users[member.id] = start_time
@@ -3124,6 +3128,10 @@ async def fsleep(ctx, members: commands.Greedy[discord.Member], *, time: str = N
         str(uid): dt.isoformat()
         for uid, dt in sleeping_users.items()
     })
+
+    await ctx.send(
+        f"Marked {', '.join(m.mention for m in members)} as asleep since {start_time.strftime('%Y-%m-%d %H:%M:%S UTC')}"
+    )
 
 @bot.command()
 async def wake(ctx, members: commands.Greedy[discord.Member]):
