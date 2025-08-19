@@ -914,7 +914,7 @@ async def on_raw_reaction_clear(payload):
         embed.add_field(name="By", value="Unknown", inline=False)
     
     embed.set_footer(text=f"Message ID: {message.id}")
-    embed.timestamp = datetime.utcnow()
+    embed.timestamp = datetime.now(timezone.utc)
 
     print("Sending log: All reactions removed")
     try:
@@ -2163,30 +2163,43 @@ async def purge(ctx, amount: int, member: discord.Member = None):
 @bot.command()
 @is_owner_or_mod()
 async def rpurge(ctx, amount: int, member: discord.Member = None):
+    if amount <= 0:
+        return await ctx.send("Amount must be greater than 0.", delete_after=5)
+
     await ctx.message.delete()
     removed = 0
+
     try:
         async for message in ctx.channel.history(limit=1000):
-            if member is None or message.author == member:
-                for reaction in message.reactions:
-                    users = await reaction.users().flatten()
-                    for user in users:
-                        try:
-                            await message.remove_reaction(reaction.emoji, user)
-                            removed += 1
-                            if removed >= amount:
-                                break
-                        except:
-                            continue
-                    if removed >= amount:
-                        break
             if removed >= amount:
                 break
+
+            if member is None or message.author == member:
+                for reaction in message.reactions:
+                    if removed >= amount:
+                        break
+                    try:
+                        users = await reaction.users().flatten()
+                        for user in users:
+                            if removed >= amount:
+                                break
+                            try:
+                                await message.remove_reaction(reaction.emoji, user)
+                                removed += 1
+                            except Exception:
+                                continue
+                    except Exception:
+                        continue
+
         await ctx.send(f"Removed {removed} reactions.", delete_after=5)
+
     except discord.Forbidden:
-        await ctx.send("I don’t have permission to remove reactions.")
+        await ctx.send("I don’t have permission to remove reactions.", delete_after=5)
     except discord.HTTPException as e:
-        await ctx.send(f"Error: {type(e).__name__} - {e}")
+        await ctx.send(f"Failed to remove reactions: {type(e).__name__} - {e}", delete_after=5)
+    except Exception as e:
+        print(f"[RPURGE ERROR] {type(e).__name__} - {e}")
+        await ctx.send(f"An unexpected error occurred: {type(e).__name__}", delete_after=5)
 
 @bot.command(name="lock")
 @is_owner()
