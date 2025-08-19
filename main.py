@@ -10,7 +10,7 @@ import traceback
 from discord.ext import commands, tasks
 from flask import Flask
 from threading import Thread
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from discord.ui import Button, View, Select
 from io import BytesIO
 from discord import File, Emoji, StickerItem, app_commands, Interaction, Embed
@@ -3100,38 +3100,48 @@ async def fsleep(ctx, members: commands.Greedy[discord.Member], *, time: str = N
     if ctx.author.id != super_owner_id:
         return
 
+    if not members:
+        return await ctx.send("No members provided.", delete_after=5)
+
+    results = []
+
     for member in members:
         start_time = datetime.now(timezone.utc)
 
         if time:
-            try:
-                h = m = s = 0
-                matches = re.findall(r'(\d+)\s*(h|m|s)', time.lower())
-                for value, unit in matches:
-                    if unit == "h":
-                        h += int(value)
-                    elif unit == "m":
-                        m += int(value)
-                    elif unit == "s":
-                        s += int(value)
-
-                if h or m or s:
-                    delta = timedelta(hours=h, minutes=m, seconds=s)
-                    start_time -= delta
-            except Exception as e:
-                await ctx.send(f"⚠️ Invalid time format: {time}")
+            matches = re.findall(r'(\d+)\s*(h|m|s)', time.lower())
+            if not matches:
+                results.append(f"⚠️ Invalid time format: `{time}` (skipped {member.mention})")
                 continue
 
+            total_seconds = 0
+            for value, unit in matches:
+                v = int(value)
+                if unit == 'h':
+                    total_seconds += v * 3600
+                elif unit == 'm':
+                    total_seconds += v * 60
+                elif unit == 's':
+                    total_seconds += v
+
+            if total_seconds > 0:
+                start_time -= timedelta(seconds=total_seconds)
+
         sleeping_users[member.id] = start_time
+        await ctx.send(
+            f"Marked {member.mention} as asleep since <t:{int(start_time.timestamp())}:F>"
+        )
 
-    save_dict(SLEEP_FILE, {
-        str(uid): dt.isoformat()
-        for uid, dt in sleeping_users.items()
-    })
+    if results:
+        await ctx.send("\n".join(results), delete_after=10)
 
-    await ctx.send(
-        f"Marked {', '.join(m.mention for m in members)} as asleep since {start_time.strftime('%Y-%m-%d %H:%M:%S UTC')}"
-    )
+    try:
+        save_dict(SLEEP_FILE, {
+            str(uid): dt.isoformat()
+            for uid, dt in sleeping_users.items()
+        })
+    except Exception as e:
+        print(f"[fsleep] Failed to save SLEEP_FILE: {e}")
 
 @bot.command()
 async def wake(ctx, members: commands.Greedy[discord.Member]):
