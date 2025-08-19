@@ -2925,7 +2925,7 @@ class CancelSelectView(View):
                 title = ""
             else:
                 title = f"{title} | "
-            remaining = int((data["end_time"] - datetime.now(timezone.utc).total_seconds())
+            remaining = int((data["end_time"] - datetime.now(timezone.utc)).total_seconds())
             remaining_text = format_remaining(remaining)
             label = f"{title}{data['time_str']} — {remaining_text} left"
             if len(label) > 100:
