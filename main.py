@@ -52,13 +52,13 @@ raw_afk = load_dict(AFK_FILE)
 afk_users = {
     int(uid): {
         "reason": data["reason"],
-        "since": datetime.datetime.fromisoformat(data["since"])
+        "since": datetime.fromisoformat(data["since"])
     } for uid, data in raw_afk.items()
 }
 
 raw_sleeping = load_dict(SLEEP_FILE)
 sleeping_users = {
-    int(uid): datetime.datetime.fromisoformat(time_str)
+    int(uid): datetime.fromisoformat(time_str)
     for uid, time_str in raw_sleeping.items()
 }
 
@@ -914,7 +914,7 @@ async def on_raw_reaction_clear(payload):
         embed.add_field(name="By", value="Unknown", inline=False)
     
     embed.set_footer(text=f"Message ID: {message.id}")
-    embed.timestamp = datetime.datetime.utcnow()
+    embed.timestamp = datetime.utcnow()
 
     print("Sending log: All reactions removed")
     try:
@@ -2961,7 +2961,7 @@ async def ctimer(ctx):
 @bot.command()
 async def alarm(ctx, date: str):
     try:
-        alarm_time = datetime.datetime.strptime(date, "%d/%m/%Y")
+        alarm_time = datetime.strptime(date, "%d/%m/%Y")
     except ValueError:
         return await ctx.send("Invalid date format. Use DD/MM/YYYY.")
     
@@ -3118,7 +3118,7 @@ async def afk(ctx, *, reason="AFK"):
 @bot.command()
 async def setbday(ctx, date):
     try:
-        datetime.datetime.strptime(date, "%d/%m")
+        datetime.strptime(date, "%d/%m")
 
         user_id = str(ctx.author.id)
         birthdays[user_id] = {"date": date}
