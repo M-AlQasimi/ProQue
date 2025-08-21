@@ -2741,30 +2741,40 @@ async def timer_countdown(ctx, message, end_time, time_str, title, owner_id):
 
 @bot.command()
 async def timer(ctx, *, args: str):
-    match = re.match(r'(.+?)(?:\s+[\"“”\'‘’](.+?)[\"“”\'‘’])?$', args)
-    if not match:
-        return await ctx.send("Invalid format. Use `.timer 10m` or `.timer 10m \"Title here\"`")
+    args = args.strip()
+    if not args:
+        return await ctx.send("Invalid format. Use `.timer 10m` or `.timer 10m Title here`")
 
-    time_str = match.group(1).strip()
-    title = match.group(2)
+    quote_match = re.match(r'^(\S+)\s+[\"“”\'‘’](.+?)[\"“”\'‘’]$', args)
+    if quote_match:
+        time_str = quote_match.group(1)
+        title = quote_match.group(2)
+    else:
+        parts = args.split(maxsplit=1)
+        time_str = parts[0]
+        title = parts[1] if len(parts) > 1 else None
 
     seconds = parse_time_string(time_str)
     if seconds is None or seconds <= 0:
-        return await ctx.send("Invalid time format. Use `1h 20m`, `30s`, `2d 5h`, etc. Supported units: s, m, h, d.")
+        return await ctx.send(
+            "Invalid time format. Use `1h 20m`, `30s`, `2d 5h`, etc. Supported units: s, m, h, d."
+        )
 
     title_display = title if title else "Timer"
     end_time = datetime.now(timezone.utc) + timedelta(seconds=seconds)
 
     embed = Embed(
         title=title_display,
-        description=f"⏳ Time remaining:\n```{time_str}```",
+        description=f"⏳ Time remaining:\n```{format_remaining(seconds)}```",
         color=0x00ff00
     )
-    embed.set_footer(text=f"Ends at:")
+    embed.set_footer(text="Ends at:")
     embed.timestamp = end_time
     message = await ctx.send(embed=embed)
 
-    task = asyncio.create_task(timer_countdown(ctx, message, end_time, time_str, title, ctx.author.id))
+    task = asyncio.create_task(
+        timer_countdown(ctx, message, end_time, time_str, title, ctx.author.id)
+    )
 
     active_timers[message.id] = {
         "owner_id": ctx.author.id,
