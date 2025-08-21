@@ -7,6 +7,7 @@ import logging
 import json
 import pytz
 import traceback
+import re
 from discord.ext import commands, tasks
 from flask import Flask
 from threading import Thread
@@ -434,6 +435,10 @@ async def on_message(message):
             pass
         return
 
+    if message.content.startswith(tuple(bot.command_prefix)):
+        await bot.process_commands(message)
+        return
+
     for mentioned_user in message.mentions:
         if mentioned_user.id in afk_users or mentioned_user.id in sleeping_users:
             if mentioned_user.id not in user_mentions:
@@ -623,7 +628,7 @@ async def on_message_delete(message):
     embed.add_field(name="Content", value=content[:1024], inline=False)
 
     deleted_snipes.setdefault(message.channel.id, []).insert(0, (content, message.author, message.created_at))
-    deleted_snipes[message.channel.id] = deleted_snipes[message.channel.id][:10]
+    deleted_snipes[message.channel.id] = deleted_snipes[message.channel.id][:50]
 
     if (message.mention_everyone or message.mentions) and not message.author.bot:
         try:
@@ -728,7 +733,7 @@ async def on_message_edit(before, after):
             before.jump_url,
             datetime.now(timezone.utc)
         ))
-        edited_snipes[before.channel.id] = edited_snipes[before.channel.id][:10]
+        edited_snipes[before.channel.id] = edited_snipes[before.channel.id][:50]
 
         embed = discord.Embed(
             title="✏️ Message Edited",
@@ -825,7 +830,7 @@ async def on_reaction_remove(reaction, user):
     msg = reaction.message
     entry = (user, reaction.emoji, msg, datetime.now(timezone.utc).replace(tzinfo=timezone.utc))
     removed_reactions.setdefault(msg.channel.id, []).insert(0, entry)
-    removed_reactions[msg.channel.id] = removed_reactions[msg.channel.id][:10]
+    removed_reactions[msg.channel.id] = removed_reactions[msg.channel.id][:50]
 
     embed = discord.Embed(
         title="🗑️ Reaction Removed",
@@ -1200,92 +1205,97 @@ async def dclist(ctx):
     else:
         formatted = "\n".join(f"**{name}**" for name in disabled_commands)
         await ctx.send(f"Disabled Commands:\n{formatted}")
-        
+
 @bot.command()
 async def dsnipe(ctx, index: str = "1"):
     try:
-        if index.startswith("-"):
-            count = int(index[1:])
-            messages = deleted_snipes.get(ctx.channel.id, [])
-            if not messages or count < 1:
-                return await ctx.send("Nothing to snipe.")
-            selected = messages[:count]
-            response = ""
-            for i, (content, author, timestamp) in enumerate(selected, 1):
-                unix_time = int(timestamp.replace(tzinfo=datetime.timezone.utc).timestamp())
-                response += f"#{i} - Deleted by <@{author.id}> at <t:{unix_time}:f>:\n{content}\n\n"
-            await ctx.send(response[:2000], allowed_mentions=discord.AllowedMentions.none())
+        messages = deleted_snipes.get(ctx.channel.id, [])
+        if not messages:
+            return await ctx.send("Nothing to snipe.")
+
+        n = int(index)
+        if n == 0:
+            return await ctx.send("Index cannot be 0.")
+        if n < 0:
+            n = n
         else:
-            n = int(index) - 1
-            messages = deleted_snipes.get(ctx.channel.id, [])
-            if not messages or n >= len(messages) or n < 0:
-                return await ctx.send("Nothing to snipe.")
-            content, author, timestamp = messages[n]
-            unix_time = int(timestamp.replace(tzinfo=datetime.timezone.utc).timestamp())
-            await ctx.send(
-                f"Deleted by <@{author.id}> at <t:{unix_time}:f>:\n{content}",
-                allowed_mentions=discord.AllowedMentions.none()
-            )
-    except:
+            n -= 1
+
+        if n < -len(messages) or n >= len(messages):
+            return await ctx.send("Invalid index. Use a number like `.dsnipe 3` or `.dsnipe -3`.")
+
+        content, author, timestamp = messages[n]
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=timezone.utc)
+        unix_time = int(timestamp.timestamp())
+
+        await ctx.send(
+            f"Deleted by <@{author.id}> at <t:{unix_time}:f>:\n{content}",
+            allowed_mentions=discord.AllowedMentions.none()
+        )
+    except Exception:
         await ctx.send("Invalid index. Use a number like `.dsnipe 3` or `.dsnipe -3`.")
+
 
 @bot.command()
 async def esnipe(ctx, index: str = "1"):
     try:
         messages = edited_snipes.get(ctx.channel.id, [])
-        if index.startswith("-"):
-            count = int(index[1:])
-            if not messages or count < 1:
-                return await ctx.send("Nothing to snipe.")
-            selected = messages[:count]
-            response = ""
-            for i, (before, after, author, link, timestamp) in enumerate(selected, 1):
-                unix_time = int(timestamp.timestamp())
-                response += (
-                    f"#{i} - Edited by <@{author.id}> at <t:{unix_time}:f>:\n"
-                    f"**Before:** {before}\n**After:** {after}\n[Jump to message]({link})\n\n"
-                )
-            await ctx.send(response[:2000], allowed_mentions=discord.AllowedMentions.none())
+        if not messages:
+            return await ctx.send("Nothing to snipe.")
+
+        n = int(index)
+        if n == 0:
+            return await ctx.send("Index cannot be 0.")
+        if n < 0:
+            n = n 
         else:
-            n = int(index) - 1
-            if not messages or n >= len(messages) or n < 0:
-                return await ctx.send("Nothing to snipe.")
-            before, after, author, link, timestamp = messages[n]
-            unix_time = int(timestamp.timestamp())
-            await ctx.send(
-                f"Edited by <@{author.id}> at <t:{unix_time}:f>:\n**Before:** {before}\n**After:** {after}\n[Jump to message]({link})",
-                allowed_mentions=discord.AllowedMentions.none()
-            )
-    except:
+            n -= 1
+
+        if n < -len(messages) or n >= len(messages):
+            return await ctx.send("Invalid index. Use a number like `.esnipe 2` or `.esnipe -3`.")
+
+        before, after, author, link, timestamp = messages[n]
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=timezone.utc)
+        unix_time = int(timestamp.timestamp())
+
+        await ctx.send(
+            f"Edited by <@{author.id}> at <t:{unix_time}:f>:\n**Before:** {before}\n**After:** {after}\n[Jump to message]({link})",
+            allowed_mentions=discord.AllowedMentions.none()
+        )
+    except Exception:
         await ctx.send("Invalid index. Use a number like `.esnipe 2` or `.esnipe -3`.")
+
 
 @bot.command()
 async def rsnipe(ctx, index: str = "1"):
     try:
         logs = removed_reactions.get(ctx.channel.id, [])
-        if index.startswith("-"):
-            count = int(index[1:])
-            if not logs or count < 1:
-                return await ctx.send("Nothing to snipe.")
-            selected = logs[:count]
-            response = ""
-            for i, (user, emoji, msg, timestamp) in enumerate(selected, 1):
-                unix_time = int(timestamp.replace(tzinfo=datetime.timezone.utc).timestamp())
-                response += (
-                    f"#{i} - <@{user.id}> removed {emoji} from [this message]({msg.jump_url}) at <t:{unix_time}:f>.\n\n"
-                )
-            await ctx.send(response[:2000], allowed_mentions=discord.AllowedMentions.none())
+        if not logs:
+            return await ctx.send("Nothing to snipe.")
+
+        n = int(index)
+        if n == 0:
+            return await ctx.send("Index cannot be 0.")
+        if n < 0:
+            n = n
         else:
-            n = int(index) - 1
-            if not logs or n >= len(logs) or n < 0:
-                return await ctx.send("Nothing to snipe.")
-            user, emoji, msg, timestamp = logs[n]
-            unix_time = int(timestamp.replace(tzinfo=datetime.timezone.utc).timestamp())
-            await ctx.send(
-               f"<@{user.id}> removed {emoji} from [this message]({msg.jump_url}) at <t:{unix_time}:f>.",
-                allowed_mentions=discord.AllowedMentions.none()
-            )
-    except:
+            n -= 1
+
+        if n < -len(logs) or n >= len(logs):
+            return await ctx.send("Invalid index. Use a number like `.rsnipe 2` or `.rsnipe -3`.")
+
+        user, emoji, msg, timestamp = logs[n]
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=timezone.utc)
+        unix_time = int(timestamp.timestamp())
+
+        await ctx.send(
+            f"<@{user.id}> removed {emoji} from [this message]({msg.jump_url}) at <t:{unix_time}:f>.",
+            allowed_mentions=discord.AllowedMentions.none()
+        )
+    except Exception:
         await ctx.send("Invalid index. Use a number like `.rsnipe 2` or `.rsnipe -3`.")
 
 @bot.command()
@@ -1983,14 +1993,6 @@ async def clearowners(ctx):
     await ctx.send("Cleared all owners.")
 
 @bot.command()
-async def listowners(ctx):
-    if not owners:
-        return await ctx.send("No owners found.")
-    
-    owner_mentions = [f"<@{uid}>" for uid in owners]
-    await ctx.send("Owners:\n" + "\n".join(owner_mentions), allowed_mentions=discord.AllowedMentions.none())
-
-@bot.command()
 @is_owner()
 async def addmod(ctx, *users: discord.User):
     global mods
@@ -2024,13 +2026,6 @@ async def removemod(ctx, user: discord.User):
         await ctx.send(f"{user.mention} has been removed from mods.")
     else:
         await ctx.send("{user.mention} is not a mod.")
-
-@bot.command()
-async def listmods(ctx):
-    if not mods:
-        return await ctx.send("No mods found.")
-    mod_mentions = [f"<@{uid}>" for uid in mods]
-    await ctx.send("Mods:\n" + "\n".join(mod_mentions), allowed_mentions=discord.AllowedMentions.none())
 
 class OwnerModManagement(commands.Cog):
     def __init__(self, bot):
@@ -2123,18 +2118,6 @@ async def setup(bot):
     await bot.add_cog(OwnerModManagement(bot))
 
 @bot.command()
-async def listtargets(ctx):
-    names = []
-    for uid in watchlist:
-        member = ctx.guild.get_member(uid)
-        if member:
-            names.append(f"<@{member.id}> (**{member.name}**)")
-    await ctx.send(
-        "Targets:\n" + ("\n".join(names) if names else "No targets being watched."),
-        allowed_mentions=discord.AllowedMentions.none()
-    )
-
-@bot.command()
 @is_owner_or_mod()
 async def purge(ctx, amount: int, member: discord.Member = None):
     await ctx.message.delete()
@@ -2177,25 +2160,19 @@ async def rpurge(ctx, amount: int, member: discord.Member = None):
 
             if member is None or message.author == member:
                 for reaction in message.reactions:
-                    if removed >= amount:
-                        break
-                    try:
-                        users = await reaction.users().flatten()
-                        for user in users:
-                            if removed >= amount:
-                                break
-                            try:
-                                await message.remove_reaction(reaction.emoji, user)
-                                removed += 1
-                            except Exception:
-                                continue
-                    except Exception:
-                        continue
+                    async for user in reaction.users():
+                        if removed >= amount:
+                            break
+                        try:
+                            await message.remove_reaction(reaction.emoji, user)
+                            removed += 1
+                        except discord.Forbidden:
+                            return await ctx.send("I don’t have permission to remove reactions.", delete_after=5)
+                        except Exception:
+                            continue
 
         await ctx.send(f"Removed {removed} reactions.", delete_after=5)
 
-    except discord.Forbidden:
-        await ctx.send("I don’t have permission to remove reactions.", delete_after=5)
     except discord.HTTPException as e:
         await ctx.send(f"Failed to remove reactions: {type(e).__name__} - {e}", delete_after=5)
     except Exception as e:
@@ -2289,29 +2266,6 @@ async def unban(ctx, *, user: str):
     except Exception:
         await ctx.send("Failed to unban user.")
 
-@bot.command(name="listbans")
-@is_owner_or_mod()
-async def listbans(ctx):
-    try:
-        bans = await ctx.guild.bans()
-        if not bans:
-            return await ctx.send("No banned users in this server.")
-
-        lines = []
-        for ban in bans:
-            user = ban.user
-            lines.append(f"<@{user.id}> **{user.name}#{user.discriminator}** (ID: {user.id})")
-
-        msg = "\n".join(lines)
-        if len(msg) > 2000:
-            await ctx.send(f"Too many banned users to show ({len(bans)} total).")
-        else:
-            await ctx.send(f"**Banned Users:**\n{msg}", allowed_mentions=discord.AllowedMentions.none())
-    except discord.Forbidden:
-        await ctx.send("I don’t have permission to view bans.")
-    except Exception as e:
-        await ctx.send(f"Error: {type(e).__name__} - {e}")
-
 @bot.command()
 @is_owner_or_mod()
 async def kick(ctx, member: discord.Member, *, reason=None):
@@ -2340,8 +2294,9 @@ class SentByView(View):
     @discord.ui.button(label="Sent by", style=discord.ButtonStyle.secondary, custom_id="sentby")
     async def sentby_button(self, interaction: discord.Interaction, button: Button):
         await interaction.response.send_message(
-            f"{self.label}: {self.author} ({self.author.id})",
-            ephemeral=True
+            f"{self.label}: <@{self.author.id}> ({self.author.id})",
+            ephemeral=True,
+            allowed_mentions=discord.AllowedMentions(users=False)
         )
 
 @bot.command()
@@ -3070,23 +3025,6 @@ async def unblock(ctx, member: discord.Member):
     )
 
 @bot.command()
-@is_owner_or_mod()
-async def listblocks(ctx):
-    if not blacklisted_users:
-        return await ctx.send("No one is blocked.")
-    users = []
-    for uid in blacklisted_users:
-        user = ctx.guild.get_member(uid)
-        if user:
-            users.append(f"<@{user.id}> (**{user.name}**)")
-        else:
-            users.append(f"User ID: `{uid}`")
-    await ctx.send(
-        "Blocked users:\n" + "\n".join(users),
-        allowed_mentions=discord.AllowedMentions.none()
-    )
-
-@bot.command()
 async def sleep(ctx):
     sleeping_users[ctx.author.id] = datetime.now(timezone.utc)
     save_dict(SLEEP_FILE, {
@@ -3261,10 +3199,72 @@ async def away(ctx):
 async def find(ctx, user_id: int):
     try:
         user = await bot.fetch_user(user_id)
-        fake_mention = f"\\<@{user.id}>"
-        await ctx.send(f"User found: {user} ({fake_mention})")
+        mention_text = f"<@{user.id}>"
+        await ctx.send(
+            f"User found: {user} ({mention_text})",
+            allowed_mentions=discord.AllowedMentions(users=False)
+        )
     except Exception as e:
         await ctx.send(f"Could not fetch user: {e}")
+
+def generate_list_embed(title, user_ids, guild=None, show_names=True):
+    embed = discord.Embed(title=title, color=0x3498db, timestamp=datetime.now(timezone.utc))
+    if not user_ids:
+        embed.description = "None."
+        return embed
+
+    lines = []
+    for uid in user_ids:
+        if guild:
+            member = guild.get_member(uid)
+            if member:
+                mention = f"<@{member.id}>"
+                name = f" (**{member.display_name}**)" if show_names else ""
+                lines.append(f"{mention}{name}")
+            else:
+                lines.append(f"User ID: `{uid}`")
+        else:
+            lines.append(f"<@{uid}>")
+    embed.description = "\n".join(lines)
+    return embed
+
+@bot.command()
+async def listowners(ctx):
+    embed = generate_list_embed("Owners", owners, show_names=False)
+    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
+@bot.command()
+async def listmods(ctx):
+    embed = generate_list_embed("Mods", mods, show_names=False)
+    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
+@bot.command()
+async def listtargets(ctx):
+    embed = generate_list_embed("Watched Targets", watchlist, guild=ctx.guild)
+    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
+@bot.command(name="listbans")
+@is_owner_or_mod()
+async def listbans(ctx):
+    try:
+        bans = await ctx.guild.bans()
+        if not bans:
+            return await ctx.send("No banned users in this server.")
+
+        user_ids = [ban.user.id for ban in bans]
+        embed = generate_list_embed(f"Banned Users ({len(bans)})", user_ids, guild=ctx.guild)
+        await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
+    except discord.Forbidden:
+        await ctx.send("I don’t have permission to view bans.")
+    except Exception as e:
+        await ctx.send(f"Error: {type(e).__name__} - {e}")
+
+@bot.command()
+@is_owner_or_mod()
+async def listblocks(ctx):
+    embed = generate_list_embed("Blocked Users", blacklisted_users, guild=ctx.guild)
+    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
 keep_alive()
 bot.run(os.getenv("DISCORD_TOKEN"))
