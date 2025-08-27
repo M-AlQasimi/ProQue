@@ -430,7 +430,14 @@ async def on_message(message):
     if message.author.bot:
         return
 
-    if message.author.id == super_owner_id or message.author.id in owners:
+    if message.channel.id in shutdown_channels and message.author.id not in owners:
+        try:
+            await message.delete()
+        except:
+            pass
+        return
+
+    if message.content.startswith(tuple(bot.command_prefix)):
         await bot.process_commands(message)
         return
 
@@ -442,16 +449,6 @@ async def on_message(message):
             except discord.Forbidden:
                 pass
             return
-
-    if message.channel.id in shutdown_channels and message.author.id not in owners:
-        try:
-            await message.delete()
-        except:
-            pass
-        return
-
-    if message.content.startswith(tuple(bot.command_prefix)):
-        await bot.process_commands(message)
 
     for mentioned_user in message.mentions:
         if mentioned_user.id in afk_users or mentioned_user.id in sleeping_users:
@@ -491,21 +488,24 @@ async def on_message(message):
 
         await message.channel.send(embed=embed)
 
-    for uid in sleeping_users.copy():
+    for uid in sleeping_users:
         if any(user.id == uid for user in message.mentions) or (
             message.reference and message.reference.resolved and message.reference.resolved.author.id == uid
         ):
-            user = bot.get_user(uid) or await bot.fetch_user(uid)
+            user = bot.get_user(uid)
+            if not user:
+                try:
+                    user = await bot.fetch_user(uid)
+                    await asyncio.sleep(1)
+                except:
+                    user = None
             if user:
                 sleep_messages = [
                     "Shut up you’re gonna wake them up 💤.",
                     "Let the thing sleep peacefully 😴"
                 ]
                 chosen_msg = random.choice(sleep_messages)
-                await message.reply(
-                    chosen_msg,
-                    mention_author=True
-                )
+                await message.reply(chosen_msg, mention_author=True)
                 break
 
     for user in message.mentions:
@@ -516,7 +516,6 @@ async def on_message(message):
             hours, remainder = divmod(remainder, 3600)
             mins = remainder // 60
             formatted = " ".join([f"{days}d" if days else "", f"{hours}h" if hours else "", f"{mins}m" if mins or not (days or hours) else ""]).strip()
-
             reason = afk_data['reason']
             reason_text = f": **{reason}**" if reason.lower() != "afk" else ""
             await message.channel.send(
