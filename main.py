@@ -1318,82 +1318,6 @@ async def rsnipe(ctx, index: str = "1"):
 
 @bot.command()
 @is_owner_or_mod()
-@commands.has_permissions(manage_emojis=True)
-async def steal(ctx):
-    if not ctx.message.reference:
-        return await ctx.send("Reply to a message containing a sticker or custom emoji.")
-
-    ref = await ctx.channel.fetch_message(ctx.message.reference.message_id)
-    item_url = None
-    item_name = "stolen"
-    is_emoji = False
-
-    emoji_match = re.search(r"<(a)?:\w+:(\d+)>", ref.content)
-    if emoji_match:
-        emoji_id = emoji_match.group(2)
-        is_emoji = True
-        item_url = f"https://cdn.discordapp.com/emojis/{emoji_id}.{'gif' if emoji_match.group(1) else 'png'}"
-        item_name = re.search(r":(\w+):", ref.content).group(1)
-
-    elif ref.stickers:
-        sticker = ref.stickers[0]
-        item_url = sticker.url
-        item_name = sticker.name
-
-    else:
-        return await ctx.send("No emoji or sticker found in the replied message.")
-
-    class StealView(View):
-        def __init__(self):
-            super().__init__(timeout=15)
-            self.response_sent = False
-
-        @button(label="Add as Emoji", style=discord.ButtonStyle.primary)
-        async def add_emoji(self, interaction: discord.Interaction, button: Button):
-            if self.response_sent:
-                return
-            self.response_sent = True
-            try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(item_url) as resp:
-                        if resp.status != 200:
-                            return await interaction.response.send_message("Failed to fetch image.", ephemeral=True)
-                        img_bytes = await resp.read()
-                        await ctx.guild.create_custom_emoji(name=item_name[:32], image=img_bytes)
-                        await interaction.response.send_message("✔️ Emoji added!")
-            except discord.Forbidden:
-                await interaction.response.send_message("I don't have permission to add emojis.", ephemeral=True)
-            except Exception as e:
-                await interaction.response.send_message(f"Failed: {e}", ephemeral=True)
-
-        @button(label="Add as Sticker", style=discord.ButtonStyle.success)
-        async def add_sticker(self, interaction: discord.Interaction, button: Button):
-            if self.response_sent:
-                return
-            self.response_sent = True
-            try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(item_url) as resp:
-                        if resp.status != 200:
-                            return await interaction.response.send_message("Failed to fetch sticker.", ephemeral=True)
-                        img_bytes = await resp.read()
-                        image_file = File(BytesIO(img_bytes), filename="sticker.png")
-                        await ctx.guild.create_sticker(
-                            name=item_name[:30],
-                            description="stolen sticker",
-                            emoji="👍",
-                            file=image_file
-                        )
-                        await interaction.response.send_message("✔️ Sticker added!")
-            except discord.Forbidden:
-                await interaction.response.send_message("I don't have permission to add stickers.", ephemeral=True)
-            except Exception as e:
-                await interaction.response.send_message(f"Failed: {e}", ephemeral=True)
-
-    await ctx.send("Choose how you want to save this:", view=StealView())
-
-@bot.command()
-@is_owner_or_mod()
 async def rolesinfo(ctx):
     try:
         roles = ctx.guild.roles[1:]
@@ -2135,6 +2059,9 @@ class OwnerModManagement(commands.Cog):
 async def setup(bot):
     await bot.add_cog(OwnerModManagement(bot))
 
+from collections import Counter
+from discord.utils import escape_mentions
+
 @bot.command()
 @is_owner_or_mod()
 async def purge(ctx, amount: int, member: discord.Member = None):
@@ -2156,9 +2083,9 @@ async def purge(ctx, amount: int, member: discord.Member = None):
             return await ctx.send("No messages found to delete.", delete_after=5)
 
         counts = Counter([msg.author for msg in deleted])
-        lines = [f"{user.mention}: {count}" for user, count in counts.items()]
+        lines = [f"{escape_mentions(user.display_name)}: {count}" for user, count in counts.items()]
         summary = (
-            f"**{len(deleted)} messages** were purged by {ctx.author.mention}:\n\n"
+            f"**{len(deleted)} messages** were purged by {escape_mentions(ctx.author.display_name)}:\n\n"
             + "\n".join(lines)
         )
 
@@ -2203,9 +2130,9 @@ async def rpurge(ctx, amount: int, member: discord.Member = None):
             return await ctx.send("No reactions removed.", delete_after=5)
 
         counts = Counter(reaction_owners)
-        lines = [f"{user.mention}: {count}" for user, count in counts.items()]
+        lines = [f"{escape_mentions(user.display_name)}: {count}" for user, count in counts.items()]
         summary = (
-            f"**{removed} reactions** were purged by {ctx.author.mention}:\n\n"
+            f"**{removed} reactions** were purged by {escape_mentions(ctx.author.display_name)}:\n\n"
             + "\n".join(lines)
         )
 
@@ -2322,86 +2249,223 @@ async def removerole(ctx, member: discord.Member, role: discord.Role):
     await member.remove_roles(role)
     await ctx.send(f"Removed **{role.name}** from <@{member.id}>.", allowed_mentions=discord.AllowedMentions.none())
 
+@bot.command()
+@is_owner_or_mod()
+@commands.has_permissions(manage_emojis_and_stickers=True)
+async def steal(ctx):
+    if not ctx.message.reference:
+        return await ctx.send("Reply to a message that contains a sticker, emoji, or image.", delete_after=5)
+    
+    try:
+        msg = await ctx.channel.fetch_message(ctx.message.reference.message_id)
+    except discord.NotFound:
+        return await ctx.send("Replied-to message not found.", delete_after=5)
 
-class SentByView(View):
-    def __init__(self, author: discord.User, label: str):
-        super().__init__(timeout=None)
-        self.author = author
-        self.label = label
+    sticker_url = None
+    if msg.stickers:
+        sticker_url = msg.stickers[0].url
 
-    @discord.ui.button(label="Sent by", style=discord.ButtonStyle.secondary, custom_id="sentby")
-    async def sentby_button(self, interaction: discord.Interaction, button: Button):
-        await interaction.response.send_message(
-            f"{self.label}: <@{self.author.id}> ({self.author.id})",
-            ephemeral=True,
-            allowed_mentions=discord.AllowedMentions(users=False)
-        )
+    emoji_url = None
+    if msg.content:
+        emojis = re.findall(r'<a?:\w+:\d+>', msg.content)
+        if emojis:
+            emoji_id = int(re.findall(r'\d+', emojis[0])[0])
+            emoji_obj = bot.get_emoji(emoji_id)
+            if emoji_obj:
+                emoji_url = str(emoji_obj.url)
 
+    attachment_url = msg.attachments[0].url if msg.attachments else None
+    url_to_use = sticker_url or emoji_url or attachment_url
+    if not url_to_use:
+        return await ctx.send("No sticker, emoji, or image found in that message.", delete_after=5)
+
+    class StealChoiceView(View):
+        def __init__(self):
+            super().__init__(timeout=60)
+            self.choice = None
+
+        @discord.ui.button(label="Add as Emoji", style=discord.ButtonStyle.blurple)
+        async def emoji_button(self, interaction: discord.Interaction, button: Button):
+            self.choice = "emoji"
+            self.stop()
+
+        @discord.ui.button(label="Add as Sticker", style=discord.ButtonStyle.green)
+        async def sticker_button(self, interaction: discord.Interaction, button: Button):
+            self.choice = "sticker"
+            self.stop()
+
+    view = StealChoiceView()
+    await ctx.send("Do you want to add this as an **Emoji** or **Sticker**?", view=view, ephemeral=True)
+    await view.wait()
+    if not view.choice:
+        return await ctx.send("No choice selected, cancelled.", delete_after=5)
+
+    def check(m):
+        return m.author == ctx.author and m.channel == ctx.channel
+
+    await ctx.send("Please type the name you want to give:", delete_after=60)
+    try:
+        name_msg = await bot.wait_for('message', timeout=60, check=check)
+        chosen_name = name_msg.content
+    except asyncio.TimeoutError:
+        return await ctx.send("Timed out. Command cancelled.", delete_after=5)
+
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url_to_use) as resp:
+            if resp.status != 200:
+                return await ctx.send("Failed to fetch the image/sticker.", delete_after=5)
+            data = BytesIO(await resp.read())
+
+    data_size = data.getbuffer().nbytes
+    if view.choice == "emoji":
+        if data_size > 256000:
+            return await ctx.send("Emoji file size too large (max 256 KB).", delete_after=5)
+        try:
+            await ctx.guild.create_custom_emoji(name=chosen_name, image=data.read())
+            await ctx.send(f"Emoji `{chosen_name}` added successfully!")
+        except discord.HTTPException as e:
+            await ctx.send(f"Failed to add emoji: {e}", delete_after=5)
+    elif view.choice == "sticker":
+        if data_size > 512000:
+            return await ctx.send("Sticker file size too large (max 512 KB).", delete_after=5)
+        try:
+            await ctx.guild.create_sticker(name=chosen_name, description="Stolen by bot", emoji="✨", file=File(data, filename=f"{chosen_name}.png"), tags=[chosen_name])
+            await ctx.send(f"Sticker `{chosen_name}` added successfully!")
+        except discord.HTTPException as e:
+            await ctx.send(f"Failed to add sticker: {e}", delete_after=5)
+            
 @bot.command()
 @is_owner()
-async def speak(ctx, *, msg):
+async def send(ctx, *, msg=None):
     await ctx.message.delete()
-    view = SentByView(ctx.author, label="Sent by")
+    attachments = ctx.message.attachments
+
+    if not msg and not attachments:
+        return await ctx.send("Provide a message or attachment to send.", delete_after=5)
+
     try:
-        sent_msg = await ctx.send(msg, view=view)
+        if attachments:
+            files = [await a.to_file() for a in attachments]
+            sent_msg = await ctx.send(content=msg, files=files)
+        else:
+            sent_msg = await ctx.send(msg)
     except Exception as e:
-        print(f"[SPEAK ERROR] {type(e).__name__}: {e}")
-        await ctx.send("Failed to send message.")
+        print(f"[SEND ERROR] {type(e).__name__}: {e}")
+        await ctx.send("Failed to send message.", delete_after=5)
         return
 
     if ctx.author.id != super_owner_id:
-        print(f"[SPEAK LOG] {ctx.author} ({ctx.author.id}) used .speak")
+        embed = discord.Embed(
+            title="📢 Send Command Used",
+            color=discord.Color.blue(),
+            timestamp=datetime.now(timezone.utc)
+        )
+        embed.add_field(name="User", value=f"{ctx.author} ({ctx.author.id})", inline=False)
+        embed.add_field(name="Channel", value=ctx.channel.mention, inline=False)
+
+        content_text = msg or ""
+
+        if attachments:
+            for att in attachments:
+                if att.content_type:
+                    if att.content_type.startswith("image"):
+                        embed.set_image(url=att.url)
+                    elif att.content_type.startswith("video"):
+                        embed.add_field(name="Video", value=att.url, inline=False)
+                    elif att.content_type.startswith("audio"):
+                        embed.add_field(name="Audio", value=att.url, inline=False)
+                    else:
+                        embed.add_field(name="Attachment", value=att.url, inline=False)
+                else:
+                    embed.add_field(name="Attachment", value=att.url, inline=False)
+            if len(attachments) > 1:
+                other_urls = [a.url for a in attachments[1:]]
+                embed.add_field(name="Other Attachments", value="\n".join(other_urls), inline=False)
+
+            content_text += "\n" + "\n".join(a.url for a in attachments)
+
+        embed.add_field(name="Content", value=content_text[:1024], inline=False)
+        await send_log(embed)
+
 
 @bot.command()
 @is_owner()
-async def reply(ctx, *, text: str):
+async def reply(ctx, *, text=None):
+    await ctx.message.delete()
+    if not text and not ctx.message.attachments:
+        return await ctx.send("Provide a message or attachment to reply with.", delete_after=5)
+
+    msg = None
+    attachments = ctx.message.attachments
+
+    if ctx.message.reference:
+        try:
+            msg = await ctx.channel.fetch_message(ctx.message.reference.message_id)
+        except discord.NotFound:
+            return await ctx.send("Replied-to message not found.", delete_after=5)
+    else:
+        parts = text.split(maxsplit=1)
+        if len(parts) < 2:
+            return await ctx.send("Provide a message ID or reply to a message.", delete_after=5)
+        message_id_str, text = parts
+        try:
+            msg_id = int(message_id_str)
+            msg = await ctx.channel.fetch_message(msg_id)
+        except ValueError:
+            return await ctx.send("Invalid message ID.", delete_after=5)
+        except discord.NotFound:
+            return await ctx.send("Message not found.", delete_after=5)
+
     try:
-        await ctx.message.delete()
-
-        if ctx.message.reference:
-            try:
-                msg = await ctx.channel.fetch_message(ctx.message.reference.message_id)
-            except discord.NotFound:
-                await ctx.send("Replied-to message not found.", delete_after=5)
-                return
+        if attachments:
+            files = [await a.to_file() for a in attachments]
+            await msg.reply(content=text, files=files)
         else:
-            parts = text.split(maxsplit=1)
-            if len(parts) < 2:
-                await ctx.send("Provide a message ID or reply to a message.", delete_after=5)
-                return
-            message_id_str, text = parts
-            try:
-                msg_id = int(message_id_str)
-                msg = await ctx.channel.fetch_message(msg_id)
-            except ValueError:
-                await ctx.send("Invalid message ID.", delete_after=5)
-                return
-            except discord.NotFound:
-                await ctx.send("Message not found.", delete_after=5)
-                return
-
-        view = SentByView(ctx.author, label="Replied by")
-        await msg.reply(content=text, view=view)
-
-        if ctx.author.id != super_owner_id:
-            print(f"[REPLY LOG] {ctx.author} ({ctx.author.id}) used .reply")
-
+            await msg.reply(text)
     except discord.Forbidden:
-        await ctx.send("I cannot reply to that message (missing permissions).", delete_after=5)
+        return await ctx.send("I cannot reply to that message.", delete_after=5)
     except discord.HTTPException as e:
         print(f"[REPLY ERROR] {type(e).__name__}: {e}")
-        await ctx.send("Failed to reply to the message.", delete_after=5)
+        return await ctx.send("Failed to reply to the message.", delete_after=5)
+
+    if ctx.author.id != super_owner_id:
+        embed = discord.Embed(
+            title="📢 Reply Command Used",
+            color=discord.Color.green(),
+            timestamp=datetime.now(timezone.utc)
+        )
+        embed.add_field(name="User", value=f"{ctx.author} ({ctx.author.id})", inline=False)
+        embed.add_field(name="Channel", value=ctx.channel.mention, inline=False)
+
+        content_text = text or ""
+        if attachments:
+            for att in attachments:
+                if att.content_type:
+                    if att.content_type.startswith("image"):
+                        embed.set_image(url=att.url)
+                    elif att.content_type.startswith("video"):
+                        embed.add_field(name="Video", value=att.url, inline=False)
+                    elif att.content_type.startswith("audio"):
+                        embed.add_field(name="Audio", value=att.url, inline=False)
+                    else:
+                        embed.add_field(name="Attachment", value=att.url, inline=False)
+                else:
+                    embed.add_field(name="Attachment", value=att.url, inline=False)
+            if len(attachments) > 1:
+                other_urls = [a.url for a in attachments[1:]]
+                embed.add_field(name="Other Attachments", value="\n".join(other_urls), inline=False)
+
+            content_text += "\n" + "\n".join(a.url for a in attachments)
+
+        embed.add_field(name="Content", value=content_text[:1024], inline=False)
+        await send_log(embed)
 
 @bot.command()
 async def poll(ctx, *, args):
     parts = [p.strip() for p in args.split("|")]
     question = parts[0]
-    time_str = None
-    options_str = None
-    if len(parts) >= 2:
-        time_str = parts[1]
-    if len(parts) >= 3:
-        options_str = parts[2]
+    time_str = parts[1] if len(parts) >= 2 else None
+    options_str = parts[2] if len(parts) >= 3 else None
 
     end_time = None
     if time_str:
@@ -2468,7 +2532,6 @@ async def poll(ctx, *, args):
             poll_data = active_polls.get(msg.id)
             if not poll_data or poll_data.get("ended"):
                 return
-
             poll_data["ended"] = True
             await finalize_poll(msg, poll_data)
 
@@ -2501,76 +2564,62 @@ class ConfirmEndPollView(View):
     async def interaction_check(self, interaction):
         return interaction.user.id == self.ctx.author.id or interaction.user.id == super_owner_id
 
-@discord.ui.button(label="Yes", style=discord.ButtonStyle.danger)
-async def yes_button(self, interaction, button):
-    poll_id = self.poll_id
-    poll_data = active_polls.pop(poll_id, None)
-    if not poll_data:
-        await interaction.response.edit_message(content="Poll no longer exists.", view=None)
-        return
-
-    end_task = poll_data.get("end_task")
-    if end_task and not end_task.done():
-        end_task.cancel()
-
-    channel = bot.get_channel(poll_data["channel_id"])
-    if not channel:
-        await interaction.response.edit_message(content="Poll channel not found.", view=None)
-        return
-
-    try:
-        poll_msg = await channel.fetch_message(poll_id)
-    except:
-        await interaction.response.edit_message(content="Poll message not found.", view=None)
-        return
-
-    yes_count = sum(r.count - 1 for r in poll_msg.reactions if str(r.emoji) == "✔️")
-    no_count = sum(r.count - 1 for r in poll_msg.reactions if str(r.emoji) == "✖️")
-
-    final_embed = discord.Embed(
-        title=poll_data["question"],
-        color=discord.Color.green()
-    )
-    final_embed.add_field(name="Yes", value=str(yes_count), inline=True)
-    final_embed.add_field(name="No", value=str(no_count), inline=True)
-    final_embed.set_footer(text="Poll Ended 📊")
-    final_embed.timestamp = datetime.now(timezone.utc)
-
-    await poll_msg.edit(embed=final_embed)
-
-    author = await bot.fetch_user(poll_data["author_id"])
-    await poll_msg.reply(f"{author.mention} your poll has ended!", mention_author=True)
-
-    if self.parent_view and self.parent_view.message:
-        self.parent_view.disable_all_items()
+    @discord.ui.button(label="Yes", style=discord.ButtonStyle.danger)
+    async def yes_button(self, interaction, button):
+        poll_id = self.poll_id
+        poll_data = active_polls.pop(poll_id, None)
+        if not poll_data:
+            await interaction.response.edit_message(content="Poll no longer exists.", view=None)
+            return
+        end_task = poll_data.get("end_task")
+        if end_task and not end_task.done():
+            end_task.cancel()
+        channel = bot.get_channel(poll_data["channel_id"])
+        if not channel:
+            await interaction.response.edit_message(content="Poll channel not found.", view=None)
+            return
         try:
-            await self.parent_view.message.edit(
-                content=f"Poll ended: [{poll_data['question']}]({poll_msg.jump_url})",
-                view=None
-            )
+            poll_msg = await channel.fetch_message(poll_id)
         except:
-            pass
+            await interaction.response.edit_message(content="Poll message not found.", view=None)
+            return
+        yes_count = sum(r.count - 1 for r in poll_msg.reactions if str(r.emoji) == "✔️")
+        no_count = sum(r.count - 1 for r in poll_msg.reactions if str(r.emoji) == "✖️")
+        final_embed = discord.Embed(title=poll_data["question"], color=discord.Color.green())
+        final_embed.add_field(name="Yes", value=str(yes_count), inline=True)
+        final_embed.add_field(name="No", value=str(no_count), inline=True)
+        final_embed.set_footer(text="Poll Ended 📊")
+        final_embed.timestamp = datetime.now(timezone.utc)
+        await poll_msg.edit(embed=final_embed)
+        author = await bot.fetch_user(poll_data["author_id"])
+        await poll_msg.reply(f"{author.mention} your poll has ended!", mention_author=True)
+        if self.parent_view and self.parent_view.message:
+            self.parent_view.disable_all_items()
+            try:
+                await self.parent_view.message.edit(
+                    content=f"Poll ended: [{poll_data['question']}]({poll_msg.jump_url})",
+                    view=None
+                )
+            except:
+                pass
+        await interaction.response.edit_message(
+            content=f"Poll ended: [{poll_data['question']}]({poll_msg.jump_url})",
+            view=None
+        )
+        self.value = True
+        self.stop()
 
-    await interaction.response.edit_message(
-        content=f"Poll ended: [{poll_data['question']}]({poll_msg.jump_url})",
-        view=None
-    )
-
-    self.value = True
-    self.stop()
-
-
-@discord.ui.button(label="No", style=discord.ButtonStyle.secondary)
-async def no_button(self, interaction, button):
-    await interaction.response.edit_message(content="Poll end aborted.", view=None)
-    if self.parent_view:
-        self.parent_view.enable_all_items()
-        try:
-            await self.parent_view.message.edit(view=self.parent_view)
-        except:
-            pass
-    self.value = False
-    self.stop()
+    @discord.ui.button(label="No", style=discord.ButtonStyle.secondary)
+    async def no_button(self, interaction, button):
+        await interaction.response.edit_message(content="Poll end aborted.", view=None)
+        if self.parent_view:
+            self.parent_view.enable_all_items()
+            try:
+                await self.parent_view.message.edit(view=self.parent_view)
+            except:
+                pass
+        self.value = False
+        self.stop()
 
 
 class EndPollSelect(Select):
@@ -2584,11 +2633,9 @@ class EndPollSelect(Select):
         if poll_id not in active_polls:
             await interaction.response.send_message("Poll no longer exists.", ephemeral=True)
             return
-
         poll_data = active_polls[poll_id]
         self.parent_view.disable_all_items()
         await interaction.message.edit(view=self.parent_view)
-
         confirm_view = ConfirmEndPollView(poll_id, self.ctx, poll_data, parent_view=self.parent_view)
         await interaction.response.send_message(
             f"Are you sure you want to end this poll? [Jump to poll message](https://discord.com/channels/{poll_data['guild_id']}/{poll_data['channel_id']}/{poll_id})",
@@ -2604,7 +2651,6 @@ class EndPollSelectView(View):
         self.ctx = ctx
         self.polls_list = polls_list
         self.message = None
-
         options = [
             discord.SelectOption(label=f"{data['question'][:50]}...", value=str(msg_id))
             for msg_id, data in polls_list
@@ -2623,14 +2669,15 @@ class EndPollSelectView(View):
 @bot.command()
 @commands.has_permissions(manage_messages=True)
 async def epoll(ctx):
-    if not active_polls:
-        await ctx.send("No active polls found.")
-        return
-
-    polls_list = [(msg_id, data) for msg_id, data in active_polls.items()]
+    if ctx.author.id == super_owner_id:
+        polls_list = list(active_polls.items())
+    else:
+        polls_list = [(pid, pdata) for pid, pdata in active_polls.items() if pdata["author_id"] == ctx.author.id]
+    if not polls_list:
+        return await ctx.send("No active polls found.")
     view = EndPollSelectView(ctx, polls_list)
-    msg = await ctx.send("Select a poll to end:", view=view)
-    view.message = msg
+    sent_msg = await ctx.send("Select a poll to end:", view=view)
+    view.message = sent_msg
 
 @bot.command()
 @is_owner_or_mod()
@@ -3363,8 +3410,8 @@ async def lists(ctx):
     embed.add_field(name="Watched Targets", value=targets_text, inline=True)
 
     try:
-        bans = await ctx.guild.bans()
-        banned_text = "\n".join(f"<@{ban.user.id}>" for ban in bans) if bans else "None."
+        bans_list = [ban async for ban in ctx.guild.bans()]
+        banned_text = "\n".join(f"<@{ban.user.id}>" for ban in bans_list) if bans_list else "None."
     except discord.Forbidden:
         banned_text = "Cannot view bans."
     embed.add_field(name="Banned Users", value=banned_text, inline=True)
