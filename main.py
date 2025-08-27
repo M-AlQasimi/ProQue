@@ -437,18 +437,15 @@ async def on_message(message):
             pass
         return
 
-    if message.content.startswith(tuple(bot.command_prefix)):
-        await bot.process_commands(message)
-        return
-
-    content = normalize(message.content)
-    for phrase in censored_phrases:
-        if phrase in content:
-            try:
-                await message.delete()
-            except discord.Forbidden:
-                pass
-            return
+    if message.author.id not in owners and message.author.id != super_owner_id:
+        content = normalize(message.content)
+        for phrase in censored_phrases:
+            if phrase in content:
+                try:
+                    await message.delete()
+                except discord.Forbidden:
+                    pass
+                return
 
     for mentioned_user in message.mentions:
         if mentioned_user.id in afk_users or mentioned_user.id in sleeping_users:
@@ -2336,129 +2333,71 @@ async def steal(ctx):
             
 @bot.command()
 @is_owner()
-async def send(ctx, *, msg=None):
+async def send(ctx, channel_id: int = None, *, msg=None):
     await ctx.message.delete()
     attachments = ctx.message.attachments
+
+    target_channel = ctx.channel
+    if channel_id:
+        target_channel = bot.get_channel(channel_id) or await bot.fetch_channel(channel_id)
+        if not target_channel:
+            return await ctx.send("Channel not found.", delete_after=5)
 
     if not msg and not attachments:
         return await ctx.send("Provide a message or attachment to send.", delete_after=5)
 
     try:
-        if attachments:
-            files = [await a.to_file() for a in attachments]
-            sent_msg = await ctx.send(content=msg, files=files)
-        else:
-            sent_msg = await ctx.send(msg)
+        files = [await a.to_file() for a in attachments] if attachments else None
+        await target_channel.send(content=msg, files=files)
     except Exception as e:
         print(f"[SEND ERROR] {type(e).__name__}: {e}")
-        await ctx.send("Failed to send message.", delete_after=5)
-        return
+        return await ctx.send("Failed to send message.", delete_after=5)
 
-    if ctx.author.id != super_owner_id:
-        embed = discord.Embed(
-            title="📢 Send Command Used",
-            color=discord.Color.blue(),
-            timestamp=datetime.now(timezone.utc)
-        )
-        embed.add_field(name="User", value=f"{ctx.author} ({ctx.author.id})", inline=False)
-        embed.add_field(name="Channel", value=ctx.channel.mention, inline=False)
-
-        content_text = msg or ""
-
-        if attachments:
-            for att in attachments:
-                if att.content_type:
-                    if att.content_type.startswith("image"):
-                        embed.set_image(url=att.url)
-                    elif att.content_type.startswith("video"):
-                        embed.add_field(name="Video", value=att.url, inline=False)
-                    elif att.content_type.startswith("audio"):
-                        embed.add_field(name="Audio", value=att.url, inline=False)
-                    else:
-                        embed.add_field(name="Attachment", value=att.url, inline=False)
-                else:
-                    embed.add_field(name="Attachment", value=att.url, inline=False)
-            if len(attachments) > 1:
-                other_urls = [a.url for a in attachments[1:]]
-                embed.add_field(name="Other Attachments", value="\n".join(other_urls), inline=False)
-
-            content_text += "\n" + "\n".join(a.url for a in attachments)
-
-        embed.add_field(name="Content", value=content_text[:1024], inline=False)
-        await send_log(embed)
+    await ctx.send(f"Message sent to {target_channel.mention}.", delete_after=5)
 
 
 @bot.command()
 @is_owner()
-async def reply(ctx, *, text=None):
+async def reply(ctx, message_id: int, *, text=None):
     await ctx.message.delete()
-    if not text and not ctx.message.attachments:
-        return await ctx.send("Provide a message or attachment to reply with.", delete_after=5)
-
-    msg = None
     attachments = ctx.message.attachments
 
-    if ctx.message.reference:
-        try:
-            msg = await ctx.channel.fetch_message(ctx.message.reference.message_id)
-        except discord.NotFound:
-            return await ctx.send("Replied-to message not found.", delete_after=5)
-    else:
-        parts = text.split(maxsplit=1)
-        if len(parts) < 2:
-            return await ctx.send("Provide a message ID or reply to a message.", delete_after=5)
-        message_id_str, text = parts
-        try:
-            msg_id = int(message_id_str)
-            msg = await ctx.channel.fetch_message(msg_id)
-        except ValueError:
-            return await ctx.send("Invalid message ID.", delete_after=5)
-        except discord.NotFound:
-            return await ctx.send("Message not found.", delete_after=5)
+    msg = None
+    for guild in bot.guilds:
+        for channel in guild.text_channels:
+            try:
+                msg = await channel.fetch_message(message_id)
+                break
+            except (discord.NotFound, discord.Forbidden):
+                continue
+        if msg:
+            break
+
+    if not msg:
+        for channel in bot.private_channels:
+            if isinstance(channel, discord.DMChannel):
+                try:
+                    msg = await channel.fetch_message(message_id)
+                    break
+                except (discord.NotFound, discord.Forbidden):
+                    continue
+
+    if not msg:
+        return await ctx.send("Message not found in any accessible channel.", delete_after=5)
+
+    if not text and not attachments:
+        return await ctx.send("Provide a message or attachment to reply with.", delete_after=5)
 
     try:
-        if attachments:
-            files = [await a.to_file() for a in attachments]
-            await msg.reply(content=text, files=files)
-        else:
-            await msg.reply(text)
+        files = [await a.to_file() for a in attachments] if attachments else None
+        await msg.reply(content=text, files=files)
     except discord.Forbidden:
         return await ctx.send("I cannot reply to that message.", delete_after=5)
     except discord.HTTPException as e:
         print(f"[REPLY ERROR] {type(e).__name__}: {e}")
         return await ctx.send("Failed to reply to the message.", delete_after=5)
 
-    if ctx.author.id != super_owner_id:
-        embed = discord.Embed(
-            title="📢 Reply Command Used",
-            color=discord.Color.green(),
-            timestamp=datetime.now(timezone.utc)
-        )
-        embed.add_field(name="User", value=f"{ctx.author} ({ctx.author.id})", inline=False)
-        embed.add_field(name="Channel", value=ctx.channel.mention, inline=False)
-
-        content_text = text or ""
-        if attachments:
-            for att in attachments:
-                if att.content_type:
-                    if att.content_type.startswith("image"):
-                        embed.set_image(url=att.url)
-                    elif att.content_type.startswith("video"):
-                        embed.add_field(name="Video", value=att.url, inline=False)
-                    elif att.content_type.startswith("audio"):
-                        embed.add_field(name="Audio", value=att.url, inline=False)
-                    else:
-                        embed.add_field(name="Attachment", value=att.url, inline=False)
-                else:
-                    embed.add_field(name="Attachment", value=att.url, inline=False)
-            if len(attachments) > 1:
-                other_urls = [a.url for a in attachments[1:]]
-                embed.add_field(name="Other Attachments", value="\n".join(other_urls), inline=False)
-
-            content_text += "\n" + "\n".join(a.url for a in attachments)
-
-        embed.add_field(name="Content", value=content_text[:1024], inline=False)
-        await send_log(embed)
+    await ctx.send(f"Replied to message in {msg.channel.mention}.", delete_after=5)
 
 @bot.command()
 async def poll(ctx, *, args):
