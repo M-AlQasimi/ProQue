@@ -12,7 +12,7 @@ from discord.ext import commands, tasks
 from flask import Flask
 from threading import Thread
 from datetime import datetime, timezone, timedelta
-from discord.ui import Button, View, Select
+from discord.ui import Button, View, Select, Modal, TextInput
 from io import BytesIO
 from discord import File, Emoji, StickerItem, app_commands, Interaction, Embed
 from collections import Counter
@@ -2249,90 +2249,97 @@ async def removerole(ctx, member: discord.Member, role: discord.Role):
     await member.remove_roles(role)
     await ctx.send(f"Removed **{role.name}** from <@{member.id}>.", allowed_mentions=discord.AllowedMentions.none())
 
-@bot.command()
+class NameModal(Modal):
+    def __init__(self, type_: str, asset: BytesIO, emoji_char=None):
+        super().__init__(title=f"Name your {type_}")
+        self.type_ = type_
+        self.asset = asset
+        self.emoji_char = emoji_char
+        self.name_input = TextInput(label="Name", placeholder=f"Enter a name for the {type_}", max_length=32)
+        self.add_item(self.name_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        name = self.name_input.value
+        guild = interaction.guild
+        if self.type_ == "sticker":
+            try:
+                await guild.create_sticker(
+                    name=name,
+                    image=self.asset,
+                    description="Sticker stolen via bot",
+                    reason=None
+                )
+                await interaction.response.send_message(f"Sticker `{name}` added successfully!", ephemeral=True)
+            except Exception as e:
+                await interaction.response.send_message(f"Failed to add sticker: {e}", ephemeral=True)
+        elif self.type_ == "emoji":
+            try:
+                emoji = await guild.create_custom_emoji(name=name, image=self.asset, reason=None)
+                await interaction.response.send_message(f"Emoji `{name}` added successfully! {emoji}", ephemeral=True)
+            except Exception as e:
+                await interaction.response.send_message(f"Failed to add emoji: {e}", ephemeral=True)
+
+class StealView(View):
+    def __init__(self, type_: str, asset: BytesIO, emoji_char=None):
+        super().__init__(timeout=60)
+        self.type_ = type_
+        self.asset = asset
+        self.emoji_char = emoji_char
+
+    @discord.ui.button(label="Add to server", style=discord.ButtonStyle.green)
+    async def add_button(self, interaction: discord.Interaction, button: Button):
+        await interaction.response.send_modal(NameModal(self.type_, self.asset, self.emoji_char))
+        self.stop()
+
+@commands.command()
 @is_owner_or_mod()
-@commands.has_permissions(manage_emojis_and_stickers=True)
+@commands.has_permissions(manage_guild=True)
 async def steal(ctx):
-    if not ctx.message.reference:
-        return await ctx.send("Reply to a message that contains a sticker, emoji, or image.", delete_after=5)
-    
+    ref = ctx.message.reference
+    if not ref:
+        await ctx.send("Reply to a message containing a sticker, emoji, or image.", delete_after=5)
+        return
     try:
-        msg = await ctx.channel.fetch_message(ctx.message.reference.message_id)
-    except discord.NotFound:
-        return await ctx.send("Replied-to message not found.", delete_after=5)
+        msg = await ctx.channel.fetch_message(ref.message_id)
+    except:
+        await ctx.send("Message not found.", delete_after=5)
+        return
 
-    sticker_url = None
-    if msg.stickers:
-        sticker_url = msg.stickers[0].url
+    sticker = msg.stickers[0] if msg.stickers else None
+    attachments = msg.attachments
+    content = msg.content
 
-    emoji_url = None
-    if msg.content:
-        emojis = re.findall(r'<a?:\w+:\d+>', msg.content)
-        if emojis:
-            emoji_id = int(re.findall(r'\d+', emojis[0])[0])
-            emoji_obj = bot.get_emoji(emoji_id)
-            if emoji_obj:
-                emoji_url = str(emoji_obj.url)
-
-    attachment_url = msg.attachments[0].url if msg.attachments else None
-    url_to_use = sticker_url or emoji_url or attachment_url
-    if not url_to_use:
-        return await ctx.send("No sticker, emoji, or image found in that message.", delete_after=5)
-
-    class StealChoiceView(View):
-        def __init__(self):
-            super().__init__(timeout=60)
-            self.choice = None
-
-        @discord.ui.button(label="Add as Emoji", style=discord.ButtonStyle.blurple)
-        async def emoji_button(self, interaction: discord.Interaction, button: Button):
-            self.choice = "emoji"
-            self.stop()
-
-        @discord.ui.button(label="Add as Sticker", style=discord.ButtonStyle.green)
-        async def sticker_button(self, interaction: discord.Interaction, button: Button):
-            self.choice = "sticker"
-            self.stop()
-
-    view = StealChoiceView()
-    await ctx.send("Do you want to add this as an **Emoji** or **Sticker**?", view=view, ephemeral=True)
-    await view.wait()
-    if not view.choice:
-        return await ctx.send("No choice selected, cancelled.", delete_after=5)
-
-    def check(m):
-        return m.author == ctx.author and m.channel == ctx.channel
-
-    await ctx.send("Please type the name you want to give:", delete_after=60)
-    try:
-        name_msg = await bot.wait_for('message', timeout=60, check=check)
-        chosen_name = name_msg.content
-    except asyncio.TimeoutError:
-        return await ctx.send("Timed out. Command cancelled.", delete_after=5)
-
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url_to_use) as resp:
-            if resp.status != 200:
-                return await ctx.send("Failed to fetch the image/sticker.", delete_after=5)
-            data = BytesIO(await resp.read())
-
-    data_size = data.getbuffer().nbytes
-    if view.choice == "emoji":
-        if data_size > 256000:
-            return await ctx.send("Emoji file size too large (max 256 KB).", delete_after=5)
-        try:
-            await ctx.guild.create_custom_emoji(name=chosen_name, image=data.read())
-            await ctx.send(f"Emoji `{chosen_name}` added successfully!")
-        except discord.HTTPException as e:
-            await ctx.send(f"Failed to add emoji: {e}", delete_after=5)
-    elif view.choice == "sticker":
-        if data_size > 512000:
-            return await ctx.send("Sticker file size too large (max 512 KB).", delete_after=5)
-        try:
-            await ctx.guild.create_sticker(name=chosen_name, description="Stolen by bot", emoji="✨", file=File(data, filename=f"{chosen_name}.png"), tags=[chosen_name])
-            await ctx.send(f"Sticker `{chosen_name}` added successfully!")
-        except discord.HTTPException as e:
-            await ctx.send(f"Failed to add sticker: {e}", delete_after=5)
+    emoji_match = re.findall(r'<:(\w+):(\d+)>', content)
+    if sticker:
+        buffer = BytesIO()
+        await sticker.read(buffer)
+        buffer.seek(0)
+        await ctx.send("Sticker detected!", view=StealView("sticker", buffer))
+    elif attachments:
+        first = attachments[0]
+        if first.content_type and first.content_type.startswith("image"):
+            buffer = BytesIO()
+            async with aiohttp.ClientSession() as session:
+                async with session.get(first.url) as resp:
+                    buffer.write(await resp.read())
+            buffer.seek(0)
+            await ctx.send("Image detected!", view=StealView("sticker", buffer))
+        else:
+            await ctx.send("Attachment is not an image.", delete_after=5)
+    elif emoji_match:
+        name, emoji_id = emoji_match[0]
+        emoji_obj = ctx.bot.get_emoji(int(emoji_id))
+        if emoji_obj:
+            buffer = BytesIO()
+            async with aiohttp.ClientSession() as session:
+                async with session.get(str(emoji_obj.url)) as resp:
+                    buffer.write(await resp.read())
+            buffer.seek(0)
+            await ctx.send("Emoji detected!", view=StealView("emoji", buffer, emoji_obj))
+        else:
+            await ctx.send("Could not fetch emoji.", delete_after=5)
+    else:
+        await ctx.send("No sticker, emoji, or image found in the replied message.", delete_after=5)
             
 @bot.command()
 @is_owner()
