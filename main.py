@@ -15,6 +15,7 @@ from datetime import datetime, timezone, timedelta
 from discord.ui import Button, View, Select
 from io import BytesIO
 from discord import File, Emoji, StickerItem, app_commands, Interaction, Embed
+from collections import Counter
 last_message_time = 0
 
 bday_file = "birthdays.json"
@@ -84,6 +85,7 @@ blacklisted_users = set()
 shutdown_channels = set()
 reaction_shutdown_channels = set()
 disabled_commands = set()
+censored_phrases = []
 watchlist = {}
 reaction_watchlist = {}
 sleeping_users = {}
@@ -428,6 +430,19 @@ async def on_message(message):
     if message.author.bot:
         return
 
+    if message.author.id == super_owner_id or message.author.id in owners:
+        await bot.process_commands(message)
+        return
+
+    content = normalize(message.content)
+    for phrase in censored_phrases:
+        if phrase in content:
+            try:
+                await message.delete()
+            except discord.Forbidden:
+                pass
+            return
+
     if message.channel.id in shutdown_channels and message.author.id not in owners:
         try:
             await message.delete()
@@ -489,9 +504,14 @@ async def on_message(message):
                 except:
                     user = None
             if user:
-                await message.channel.send(
-                    f"<@{user.id}> is sleeping. 💤",
-                    allowed_mentions=discord.AllowedMentions.none()
+                sleep_messages = [
+                    "Shut up you’re gonna wake them up 💤.",
+                    "Let the thing sleep peacefully 😴"
+                ]
+                chosen_msg = random.choice(sleep_messages)
+                await message.reply(
+                    f"<@{user.id}> {chosen_msg}",
+                    mention_author=True
                 )
                 break
 
@@ -503,7 +523,6 @@ async def on_message(message):
             hours, remainder = divmod(remainder, 3600)
             mins = remainder // 60
             formatted = " ".join([f"{days}d" if days else "", f"{hours}h" if hours else "", f"{mins}m" if mins or not (days or hours) else ""]).strip()
-
             reason = afk_data['reason']
             reason_text = f": **{reason}**" if reason.lower() != "afk" else ""
             await message.channel.send(
@@ -521,7 +540,6 @@ async def on_message(message):
         hours, remainder = divmod(remainder, 3600)
         mins = remainder // 60
         formatted = " ".join([f"{days}d" if days else "", f"{hours}h" if hours else "", f"{mins}m" if mins or not (days or hours) else ""]).strip()
-
         reason = afk_data['reason']
         reason_text = f": **{reason}**" if reason.lower() != "afk" else ""
 
@@ -578,7 +596,7 @@ async def on_command_error(ctx, error):
     else:
         print(f"Unexpected error in {ctx.command}: {type(error).__name__} - {error}")
         if ctx.author.id in owners:
-            await ctx.send("Error.")
+            await ctx.send(f"Error: `{error}`")
         else:
             await ctx.send("You can't use that heh")
 
@@ -2121,28 +2139,36 @@ async def setup(bot):
 @is_owner_or_mod()
 async def purge(ctx, amount: int, member: discord.Member = None):
     await ctx.message.delete()
+    deleted = []
     try:
         if member is None:
-            await ctx.channel.purge(limit=amount)
+            deleted = await ctx.channel.purge(limit=amount)
         else:
-            def check(m):
-                return m.author == member
-
-            deleted = []
             async for message in ctx.channel.history(limit=1000):
-                if check(message):
+                if message.author == member:
                     deleted.append(message)
-                    if len(deleted) == amount:
+                    if len(deleted) >= amount:
                         break
+            if deleted:
+                await ctx.channel.delete_messages(deleted)
 
-            if not deleted:
-                return await ctx.send("No messages found to delete.")
+        if not deleted:
+            return await ctx.send("No messages found to delete.", delete_after=5)
 
-            await ctx.channel.delete_messages(deleted)
+        counts = Counter([msg.author for msg in deleted])
+        lines = [f"{user.mention}: {count}" for user, count in counts.items()]
+        summary = (
+            f"**{len(deleted)} messages** were purged by {ctx.author.mention}:\n\n"
+            + "\n".join(lines)
+        )
+
+        await ctx.send(summary, delete_after=10)
+
     except discord.Forbidden:
-        await ctx.send("I don’t have permission to delete messages.")
+        await ctx.send("I don’t have permission to delete messages.", delete_after=5)
     except discord.HTTPException as e:
-        await ctx.send(f"Error: {type(e).__name__} - {e}")
+        await ctx.send(f"Error: {type(e).__name__} - {e}", delete_after=5)
+
 
 @bot.command()
 @is_owner_or_mod()
@@ -2152,6 +2178,7 @@ async def rpurge(ctx, amount: int, member: discord.Member = None):
 
     await ctx.message.delete()
     removed = 0
+    reaction_owners = []
 
     try:
         async for message in ctx.channel.history(limit=1000):
@@ -2166,12 +2193,23 @@ async def rpurge(ctx, amount: int, member: discord.Member = None):
                         try:
                             await message.remove_reaction(reaction.emoji, user)
                             removed += 1
+                            reaction_owners.append(user)
                         except discord.Forbidden:
                             return await ctx.send("I don’t have permission to remove reactions.", delete_after=5)
                         except Exception:
                             continue
 
-        await ctx.send(f"Removed {removed} reactions.", delete_after=5)
+        if removed == 0:
+            return await ctx.send("No reactions removed.", delete_after=5)
+
+        counts = Counter(reaction_owners)
+        lines = [f"{user.mention}: {count}" for user, count in counts.items()]
+        summary = (
+            f"**{removed} reactions** were purged by {ctx.author.mention}:\n\n"
+            + "\n".join(lines)
+        )
+
+        await ctx.send(summary, delete_after=10)
 
     except discord.HTTPException as e:
         await ctx.send(f"Failed to remove reactions: {type(e).__name__} - {e}", delete_after=5)
@@ -2549,15 +2587,15 @@ class EndPollSelect(Select):
 
         poll_data = active_polls[poll_id]
         self.parent_view.disable_all_items()
-        await interaction.response.edit_message(view=self.parent_view)
+        await interaction.message.edit(view=self.parent_view)
 
         confirm_view = ConfirmEndPollView(poll_id, self.ctx, poll_data, parent_view=self.parent_view)
-        confirm_msg = await interaction.followup.send(
+        await interaction.response.send_message(
             f"Are you sure you want to end this poll? [Jump to poll message](https://discord.com/channels/{poll_data['guild_id']}/{poll_data['channel_id']}/{poll_id})",
             view=confirm_view,
             ephemeral=True
         )
-        confirm_view.message = confirm_msg
+        confirm_view.message = await interaction.original_response()
 
 
 class EndPollSelectView(View):
@@ -3217,6 +3255,32 @@ async def find(ctx, user_id: int):
     except Exception as e:
         await ctx.send(f"Could not fetch user: {e}")
 
+def normalize(text: str) -> str:
+    return text.lower()
+
+@bot.command()
+async def censor(ctx, *, phrase: str):
+    phrase = normalize(phrase)
+    if phrase in censored_phrases:
+        return await ctx.send(f"'{phrase}' is already being censored.")
+    
+    censored_phrases.append(phrase)
+    await ctx.send(f"Now censoring messages containing: `{phrase}`")
+
+@bot.command()
+async def uncensor(ctx, *, phrase: str):
+    phrase = normalize(phrase)
+    if phrase not in censored_phrases:
+        return await ctx.send(f"'{phrase}' is not currently censored.")
+    
+    censored_phrases.remove(phrase)
+    await ctx.send(f"Stopped censoring: `{phrase}`")
+
+@bot.command()
+async def clearcensors(ctx):
+    censored_phrases.clear()
+    await ctx.send("All censors have been cleared.")
+
 def generate_list_embed(title, user_ids, guild=None, show_names=True):
     embed = discord.Embed(title=title, color=0x3498db, timestamp=datetime.now(timezone.utc))
     if not user_ids:
@@ -3274,6 +3338,43 @@ async def listbans(ctx):
 @is_owner_or_mod()
 async def listblocks(ctx):
     embed = generate_list_embed("Blocked Users", blacklisted_users, guild=ctx.guild)
+    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
+@bot.command()
+async def listcensors(ctx):
+    if not censored_phrases:
+        return await ctx.send("No censors are active.")
+    
+    formatted = "\n".join(f"- {p}" for p in censored_phrases)
+    await ctx.send(f"Active censors:\n{formatted}")
+
+@bot.command()
+@is_owner_or_mod()
+async def lists(ctx):
+    embed = discord.Embed(title="Server Lists", color=0x3498db, timestamp=datetime.now(timezone.utc))
+
+    owners_text = "\n".join(f"<@{uid}>" for uid in owners) if owners else "None."
+    embed.add_field(name="Owners", value=owners_text, inline=True)
+
+    mods_text = "\n".join(f"<@{uid}>" for uid in mods) if mods else "None."
+    embed.add_field(name="Mods", value=mods_text, inline=True)
+
+    targets_text = "\n".join(f"<@{uid}>" for uid in watchlist) if watchlist else "None."
+    embed.add_field(name="Watched Targets", value=targets_text, inline=True)
+
+    try:
+        bans = await ctx.guild.bans()
+        banned_text = "\n".join(f"<@{ban.user.id}>" for ban in bans) if bans else "None."
+    except discord.Forbidden:
+        banned_text = "Cannot view bans."
+    embed.add_field(name="Banned Users", value=banned_text, inline=True)
+
+    blocked_text = "\n".join(f"<@{uid}>" for uid in blacklisted_users) if blacklisted_users else "None."
+    embed.add_field(name="Blocked Users", value=blocked_text, inline=True)
+
+    censored_text = "\n".join(f"- {p}" for p in censored_phrases) if censored_phrases else "None."
+    embed.add_field(name="Censored Phrases", value=censored_text, inline=True)
+
     await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
 keep_alive()
