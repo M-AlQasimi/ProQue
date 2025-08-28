@@ -8,6 +8,9 @@ import json
 import pytz
 import traceback
 import re
+import ast
+import math
+import operator
 from discord.ext import commands, tasks
 from flask import Flask
 from threading import Thread
@@ -3001,6 +3004,131 @@ async def alarm(ctx, date: str):
     await ctx.send(f"⏰ Alarm set for {date}, {ctx.author.mention}. I'll ping you then.")
     await asyncio.sleep(delta)
     await ctx.send(f"🔔 {ctx.author.mention} It's **{date}**! Here's your alarm.")
+
+_allowed_funcs = {
+    'sin': math.sin, 'cos': math.cos, 'tan': math.tan,
+    'asin': math.asin, 'acos': math.acos, 'atan': math.atan,
+    'atan2': math.atan2, 'sinh': math.sinh, 'cosh': math.cosh, 'tanh': math.tanh,
+    'asinh': math.asinh, 'acosh': math.acosh, 'atanh': math.atanh,
+    'sqrt': math.sqrt, 'cbrt': lambda x: x ** (1/3),
+    'log': lambda x, base=math.e: math.log(x, base) if base != math.e else math.log(x),
+    'ln': math.log, 'log10': math.log10, 'log2': math.log2,
+    'exp': math.exp, 'pow': pow, 'abs': abs, 'round': round,
+    'floor': math.floor, 'ceil': math.ceil, 'trunc': math.trunc,
+    'factorial': math.factorial, 'gamma': math.gamma, 'lgamma': math.lgamma,
+    'degrees': math.degrees, 'radians': math.radians
+}
+_allowed_consts = {
+    'pi': math.pi, 'e': math.e, 'tau': math.tau, 'inf': math.inf, 'nan': math.nan
+}
+_operators = {
+    ast.Add: operator.add,
+    ast.Sub: operator.sub,
+    ast.Mult: operator.mul,
+    ast.Div: operator.truediv,
+    ast.FloorDiv: operator.floordiv,
+    ast.Mod: operator.mod,
+    ast.Pow: operator.pow,
+    ast.LShift: operator.lshift,
+    ast.RShift: operator.rshift,
+    ast.BitOr: operator.or_,
+    ast.BitAnd: operator.and_,
+    ast.BitXor: operator.xor
+}
+_unary_ops = {
+    ast.UAdd: lambda x: +x,
+    ast.USub: lambda x: -x,
+    ast.Invert: operator.invert
+}
+
+class _SafeEval(ast.NodeVisitor):
+    def visit(self, node):
+        return super().visit(node)
+
+    def visit_Expression(self, node):
+        return self.visit(node.body)
+
+    def visit_Constant(self, node):
+        if isinstance(node.value, (int, float, complex)):
+            return node.value
+        raise ValueError("Unsupported constant type")
+
+    def visit_Num(self, node):
+        return node.n
+
+    def visit_Name(self, node):
+        if node.id in _allowed_consts:
+            return _allowed_consts[node.id]
+        raise NameError(f"Unknown identifier: {node.id}")
+
+    def visit_BinOp(self, node):
+        left = self.visit(node.left)
+        right = self.visit(node.right)
+        op_type = type(node.op)
+        if op_type in _operators:
+            func = _operators[op_type]
+            return func(left, right)
+        raise ValueError("Unsupported binary operator")
+
+    def visit_UnaryOp(self, node):
+        operand = self.visit(node.operand)
+        op_type = type(node.op)
+        if op_type in _unary_ops:
+            return _unary_ops[op_type](operand)
+        raise ValueError("Unsupported unary operator")
+
+    def visit_Call(self, node):
+        if isinstance(node.func, ast.Name):
+            func_name = node.func.id
+            if func_name not in _allowed_funcs:
+                raise NameError(f"Function not allowed: {func_name}")
+            func = _allowed_funcs[func_name]
+            args = [self.visit(a) for a in node.args]
+            kwargs = {}
+            for kw in node.keywords:
+                if kw.arg is None:
+                    raise ValueError("No kwargs unpacking allowed")
+                kwargs[kw.arg] = self.visit(kw.value)
+            try:
+                return func(*args, **kwargs)
+            except Exception as e:
+                raise type(e)(f"{e}")
+        raise ValueError("Only simple function calls are allowed")
+
+    def visit_Expr(self, node):
+        return self.visit(node.value)
+
+    def visit_List(self, node):
+        return [self.visit(e) for e in node.elts]
+
+    def visit_Tuple(self, node):
+        return tuple(self.visit(e) for e in node.elts)
+
+    def generic_visit(self, node):
+        raise ValueError(f"Unsupported expression: {type(node).__name__}")
+
+def safe_eval(expr: str):
+    tree = ast.parse(expr, mode='eval')
+    visitor = _SafeEval()
+    return visitor.visit(tree)
+
+@bot.command(name="calc")
+async def calc(ctx, *, expression: str):
+    try:
+        expr = expression.replace('^', '**')
+        result = safe_eval(expr)
+        if isinstance(result, float):
+            if math.isinf(result):
+                resa = "Infinity"
+            elif math.isnan(result):
+                resa = "NaN"
+            else:
+                resa = repr(result)
+        else:
+            resa = repr(result)
+        await ctx.send(f"Input: `{expression}`\nResult: `{resa}`")
+    except Exception as e:
+        await ctx.send(f"Error: {e}")
 
 @bot.command()
 async def define(ctx, *, word: str):
