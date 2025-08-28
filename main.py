@@ -19,7 +19,6 @@ from discord.ui import Button, View, Select, Modal, TextInput
 from io import BytesIO
 from discord import File, Emoji, StickerItem, app_commands, Interaction, Embed
 from collections import Counter
-from supabase import create_client
 last_message_time = 0
 
 bday_file = "birthdays.json"
@@ -81,9 +80,6 @@ log_channel_id = 1394806479881769100
 rlog_channel_id = 1394806602502115470
 bday_channel_id = 1364346683709718619
 super_owner_id = 885548126365171824  
-SUPABASE_URL = "https://khkbgbuhlfezbgghvsol.supabase.co"
-SUPABASE_KEY = "SUPABASE_API"
-supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 mods = load_ids(MODS_FILE)
 owners = load_ids(OWNERS_FILE)
 
@@ -3498,113 +3494,6 @@ async def lists(ctx):
     embed.add_field(name="Censored Phrases", value=censored_text, inline=True)
 
     await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
-
-async def get_balance(user_id: int):
-    data = supabase.table("users").select("balance").eq("id", user_id).single().execute()
-    if data.data is None:
-        supabase.table("users").insert({"id": user_id, "balance": 0}).execute()
-        return 0
-    return data.data["balance"]
-
-async def update_balance(user_id: int, amount: int):
-    current = await get_balance(user_id)
-    new_balance = current + amount
-    supabase.table("users").upsert({"id": user_id, "balance": new_balance}).execute()
-    return new_balance
-
-@bot.group(invoke_without_command=True)
-async def pq(ctx):
-    await ctx.send("Available subcommands: cash, daily, weekly, monthly, cf, slots, slots (s), give")
-
-@pq.command()
-async def cash(ctx, member: discord.Member = None):
-    member = member or ctx.author
-    bal = await get_balance(member.id)
-    await ctx.send(f"{member.mention} has {bal} coins.")
-
-@pq.command()
-async def daily(ctx):
-    now = datetime.utcnow()
-    user_id = ctx.author.id
-    if user_id in daily_cooldown and daily_cooldown[user_id] > now:
-        remaining = daily_cooldown[user_id] - now
-        return await ctx.send(f"Daily reward on cooldown: {remaining}.")
-    reward = random.randint(100, 500)
-    await update_balance(user_id, reward)
-    daily_cooldown[user_id] = now + timedelta(hours=24)
-    await ctx.send(f"You claimed your daily reward of {reward} coins!")
-
-@pq.command()
-async def weekly(ctx):
-    now = datetime.utcnow()
-    user_id = ctx.author.id
-    if user_id in weekly_cooldown and weekly_cooldown[user_id] > now:
-        remaining = weekly_cooldown[user_id] - now
-        return await ctx.send(f"Weekly reward on cooldown: {remaining}.")
-    reward = random.randint(500, 1500)
-    await update_balance(user_id, reward)
-    weekly_cooldown[user_id] = now + timedelta(days=7)
-    await ctx.send(f"You claimed your weekly reward of {reward} coins!")
-
-@pq.command()
-async def monthly(ctx):
-    now = datetime.utcnow()
-    user_id = ctx.author.id
-    if user_id in monthly_cooldown and monthly_cooldown[user_id] > now:
-        remaining = monthly_cooldown[user_id] - now
-        return await ctx.send(f"Monthly reward on cooldown: {remaining}.")
-    reward = random.randint(2000, 5000)
-    await update_balance(user_id, reward)
-    monthly_cooldown[user_id] = now + timedelta(days=30)
-    await ctx.send(f"You claimed your monthly reward of {reward} coins!")
-
-@pq.command()
-async def cf(ctx, amount: int):
-    user_id = ctx.author.id
-    bal = await get_balance(user_id)
-    if amount <= 0 or amount > bal:
-        return await ctx.send("Invalid bet amount.")
-    result = random.choice(["heads", "tails"])
-    win = random.choice([True, False])
-    if win:
-        new_bal = await update_balance(user_id, amount)
-        await ctx.send(f"You flipped {result} and won {amount} coins! New balance: {new_bal}")
-    else:
-        new_bal = await update_balance(user_id, -amount)
-        await ctx.send(f"You flipped {result} and lost {amount} coins! New balance: {new_bal}")
-
-@pq.command(aliases=["s"])
-async def slots(ctx, amount: int):
-    user_id = ctx.author.id
-    bal = await get_balance(user_id)
-    if amount <= 0 or amount > bal:
-        return await ctx.send("Invalid bet amount.")
-    
-    emojis = ["🍒","🍋","🍊","🍇","💎"]
-    multipliers = {"🍋":2, "🍊":3, "🍒":4, "🍇":5, "💎":10}
-    slot = [random.choice(emojis) for _ in range(3)]
-    
-    win_multiplier = multipliers.get(slot[0],0) if slot[0]==slot[1]==slot[2] else 0
-    if win_multiplier > 0:
-        winnings = amount * win_multiplier
-        new_bal = await update_balance(user_id, winnings)
-        await ctx.send(f"🎰 {' '.join(slot)} 🎰\n**WIN!** x{win_multiplier} = {winnings} coins! New balance: {new_bal}")
-    else:
-        new_bal = await update_balance(user_id, -amount)
-        await ctx.send(f"🎰 {' '.join(slot)} 🎰\n**LOSE!** -{amount} coins. New balance: {new_bal}")
-
-@pq.command()
-async def give(ctx, member: discord.Member, amount: int):
-    if member.id == ctx.author.id:
-        return await ctx.send("You can't give money to yourself!")
-    if amount <= 0:
-        return await ctx.send("Amount must be positive.")
-    giver_bal = await get_balance(ctx.author.id)
-    if amount > giver_bal:
-        return await ctx.send("You don't have enough coins to give.")
-    await update_balance(ctx.author.id, -amount)
-    await update_balance(member.id, amount)
-    await ctx.send(f"{ctx.author.mention} gave {amount} coins to {member.mention}!")
 
 keep_alive()
 bot.run(os.getenv("DISCORD_TOKEN"))
