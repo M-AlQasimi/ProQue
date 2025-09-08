@@ -2195,8 +2195,13 @@ async def unmute(ctx, member: discord.Member):
 
 @bot.command()
 @is_owner()
-async def ban(ctx, user: discord.User, *, reason=None):
-    await ctx.guild.ban(user, reason=reason)
+async def ban(ctx, user: discord.User):
+    try:
+        await user.send(f"LMAO you got banned from **{ctx.guild.name}** 🤣✌🏻")
+    except Exception:
+        pass
+
+    await ctx.guild.ban(user)
     await ctx.send(
         f"<@{user.id}> has been banned.",
         allowed_mentions=discord.AllowedMentions.none()
