@@ -11,8 +11,10 @@ import re
 import ast
 import math
 import operator
+import time
 from discord.ext import commands, tasks
 from flask import Flask
+from threading import Thread
 from threading import Thread
 from datetime import datetime, timezone, timedelta
 from discord.ui import Button, View, Select, Modal, TextInput
@@ -104,8 +106,6 @@ user_mentions = {}
 daily_cooldown = {}
 weekly_cooldown = {}
 monthly_cooldown = {}
-
-app = Flask('')
 
 class CommandDisabledError(commands.CheckFailure):
     def __init__(self, command_name):
@@ -3500,5 +3500,16 @@ async def lists(ctx):
 
     await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
-keep_alive()
+app = Flask(__name__)
+
+@app.route("/")
+def home():
+    return "Bot alive"
+
+def run_flask():
+    app.run(host="0.0.0.0", port=8080)
+
+Thread(target=run_flask).start()
+
+time.sleep(20)
 bot.run(os.getenv("DISCORD_TOKEN"))
