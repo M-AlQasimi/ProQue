@@ -3500,7 +3500,7 @@ async def lists(ctx):
 
     await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
-app = Flask(__name__)
+app = Flask('')
 
 @app.route("/")
 def home():
