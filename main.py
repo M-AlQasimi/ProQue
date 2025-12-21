@@ -22,6 +22,7 @@ from io import BytesIO
 from discord import File, Emoji, StickerItem, app_commands, Interaction, Embed
 from collections import Counter
 last_message_time = 0
+app = Flask('')
 
 bday_file = "birthdays.json"
 AFK_FILE = "afk_users.json"
@@ -3500,9 +3501,6 @@ async def lists(ctx):
 
     await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
-app = Flask('')
-
-@app.route("/")
 def home():
     return "Bot alive"
 
