@@ -1,26 +1,26 @@
-import discord
-import random
-import os
-import aiohttp
 import asyncio
-import logging
-import json
-import pytz
-import traceback
-import re
 import ast
+import json
+import logging
 import math
 import operator
+import os
+import random
+import re
 import time
-from discord.ext import commands, tasks
-from flask import Flask
-from threading import Thread
-from threading import Thread
-from datetime import datetime, timezone, timedelta
-from discord.ui import Button, View, Select, Modal, TextInput
-from io import BytesIO
-from discord import File, Emoji, StickerItem, app_commands, Interaction, Embed
+import traceback
+
+import aiohttp
+import discord
+import pytz
 from collections import Counter
+from datetime import datetime, timedelta, timezone
+from discord import Embed, Emoji, File, Interaction, StickerItem, app_commands
+from discord.ext import commands, tasks
+from discord.ui import Button, Modal, Select, TextInput, View
+from flask import Flask
+from io import BytesIO
+from threading import Thread
 last_message_time = 0
 app = Flask('')
 
@@ -94,10 +94,7 @@ disabled_commands = set()
 censored_phrases = []
 watchlist = {}
 reaction_watchlist = {}
-sleeping_users = {}
-afk_users = {}
 c4_games = {}
-ttt_games = {}
 edited_snipes = {}
 deleted_snipes = {}
 removed_reactions = {}
@@ -179,11 +176,6 @@ async def on_ready():
     asyncio.create_task(birthday_check_loop())
     print("Bot ready, waiting to sync slash commands...")
 
-import aiohttp
-import os
-
-import aiohttp
-import os
 
 async def birthday_check_loop():
     await bot.wait_until_ready()
@@ -1233,7 +1225,7 @@ async def dsnipe(ctx, index: str = "1"):
         if n == 0:
             return await ctx.send("Index cannot be 0.")
         if n < 0:
-            n = n
+            n = len(messages) + n
         else:
             n -= 1
 
@@ -1264,7 +1256,7 @@ async def esnipe(ctx, index: str = "1"):
         if n == 0:
             return await ctx.send("Index cannot be 0.")
         if n < 0:
-            n = n 
+            n = len(messages) + n
         else:
             n -= 1
 
@@ -1295,7 +1287,7 @@ async def rsnipe(ctx, index: str = "1"):
         if n == 0:
             return await ctx.send("Index cannot be 0.")
         if n < 0:
-            n = n
+            n = len(logs) + n
         else:
             n -= 1
 
