@@ -3501,10 +3501,12 @@ def run_flask():
 
 Thread(target=run_flask).start()
 
+def create_bot():
+    intents = discord.Intents.all()
+    new_bot = MyBot(command_prefix='.', intents=intents)
+    return new_bot
+
 def run_bot_with_retry():
-    import discord
-    import asyncio
-    
     token = os.getenv("DISCORD_TOKEN")
     if not token:
         print("ERROR: DISCORD_TOKEN not set!")
@@ -3516,7 +3518,8 @@ def run_bot_with_retry():
     for attempt in range(max_retries):
         try:
             print(f"Attempting to login (attempt {attempt + 1}/{max_retries})...")
-            bot.run(token, reconnect=True)
+            current_bot = create_bot()
+            current_bot.run(token, reconnect=True)
             return
         except discord.errors.HTTPException as e:
             if e.status == 429:
@@ -3525,6 +3528,13 @@ def run_bot_with_retry():
                 time.sleep(delay)
             else:
                 print(f"HTTP error: {e}")
+                raise
+        except RuntimeError as e:
+            if "Session is closed" in str(e):
+                delay = base_delay * (2 ** attempt)
+                print(f"Session closed! Waiting {delay} seconds before retry...")
+                time.sleep(delay)
+            else:
                 raise
         except Exception as e:
             print(f"Unexpected error: {e}")
