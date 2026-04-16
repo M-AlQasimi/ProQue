@@ -3501,5 +3501,36 @@ def run_flask():
 
 Thread(target=run_flask).start()
 
+def run_bot_with_retry():
+    import discord
+    import asyncio
+    
+    token = os.getenv("DISCORD_TOKEN")
+    if not token:
+        print("ERROR: DISCORD_TOKEN not set!")
+        return
+    
+    max_retries = 5
+    base_delay = 5
+    
+    for attempt in range(max_retries):
+        try:
+            print(f"Attempting to login (attempt {attempt + 1}/{max_retries})...")
+            bot.run(token, reconnect=True)
+            return
+        except discord.errors.HTTPException as e:
+            if e.status == 429:
+                delay = base_delay * (2 ** attempt)
+                print(f"Rate limited! Waiting {delay} seconds before retry...")
+                time.sleep(delay)
+            else:
+                print(f"HTTP error: {e}")
+                raise
+        except Exception as e:
+            print(f"Unexpected error: {e}")
+            raise
+    
+    print("Max retries reached. Exiting.")
+
 time.sleep(20)
-bot.run(os.getenv("DISCORD_TOKEN"))
+run_bot_with_retry()
