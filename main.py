@@ -3501,11 +3501,6 @@ def run_flask():
 
 Thread(target=run_flask).start()
 
-def create_bot():
-    intents = discord.Intents.all()
-    new_bot = MyBot(command_prefix='.', intents=intents)
-    return new_bot
-
 def run_bot_with_retry():
     token = os.getenv("DISCORD_TOKEN")
     if not token:
@@ -3518,8 +3513,7 @@ def run_bot_with_retry():
     for attempt in range(max_retries):
         try:
             print(f"Attempting to login (attempt {attempt + 1}/{max_retries})...")
-            current_bot = create_bot()
-            current_bot.run(token, reconnect=True)
+            bot.run(token, reconnect=True)
             return
         except discord.errors.HTTPException as e:
             if e.status == 429:
