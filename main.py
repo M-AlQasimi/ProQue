@@ -164,6 +164,11 @@ def is_owner_or_mod():
         return ctx.author.id in owners or ctx.author.id == super_owner_id or ctx.author.id in mods
     return commands.check(predicate)
 
+def is_super_owner():
+    async def predicate(ctx):
+        return ctx.author.id == super_owner_id
+    return commands.check(predicate)
+
 @tasks.loop(minutes=4)
 async def keep_alive_task():
     print("Heartbeat")
@@ -1876,10 +1881,8 @@ async def ropen(ctx):
     await ctx.send("Reactions are now enabled in this channel.", delete_after=5)
 
 @bot.command()
+@is_super_owner()
 async def addowner(ctx, *users: discord.User):
-    global owners
-    if ctx.author.id != super_owner_id:
-        return await ctx.send("Only 𝚀𝚞𝚎 can add owners.")
     
     added = []
     already = []
@@ -1902,10 +1905,8 @@ async def addowner(ctx, *users: discord.User):
         await ctx.send(f"{user.mention} is already an owner.")
 
 @bot.command()
+@is_super_owner()
 async def removeowner(ctx, user: discord.User):
-    global owners
-    if ctx.author.id != super_owner_id:
-        return await ctx.send("Only 𝚀𝚞𝚎 can remove owners.")
     
     if user.id in owners:
         owners.remove(user.id)
@@ -1915,17 +1916,15 @@ async def removeowner(ctx, user: discord.User):
         await ctx.send("{user.mention} is not an owner.")
 
 @bot.command()
+@is_super_owner()
 async def clearowners(ctx):
-    global owners
-    if ctx.author.id != super_owner_id:
-        return await ctx.send("Only 𝚀𝚞𝚎 can do that.")
     owners.clear()
     owners.add(super_owner_id)
     save_ids(OWNERS_FILE, owners)
     await ctx.send("Cleared all owners.")
 
 @bot.command()
-@is_owner()
+@is_super_owner() @is_owner()
 async def addmod(ctx, *users: discord.User):
     global mods
     added = []
@@ -1949,7 +1948,7 @@ async def addmod(ctx, *users: discord.User):
         await ctx.send(f"{user.mention} is already a mod.")
 
 @bot.command()
-@is_owner()
+@is_super_owner() @is_owner()
 async def removemod(ctx, user: discord.User):
     global mods
     if user.id in mods:
@@ -3375,6 +3374,7 @@ def normalize(text: str) -> str:
     return text.lower()
 
 @bot.command()
+@is_owner_or_mod()
 async def censor(ctx, *, phrase: str):
     phrase = normalize(phrase)
     if phrase in censored_phrases:
@@ -3384,6 +3384,7 @@ async def censor(ctx, *, phrase: str):
     await ctx.send(f"Now censoring messages containing: `{phrase}`")
 
 @bot.command()
+@is_owner_or_mod()
 async def uncensor(ctx, *, phrase: str):
     phrase = normalize(phrase)
     if phrase not in censored_phrases:
@@ -3393,6 +3394,7 @@ async def uncensor(ctx, *, phrase: str):
     await ctx.send(f"Stopped censoring: `{phrase}`")
 
 @bot.command()
+@is_owner_or_mod()
 async def clearcensors(ctx):
     censored_phrases.clear()
     await ctx.send("All censors have been cleared.")
