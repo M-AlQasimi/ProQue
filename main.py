@@ -169,6 +169,11 @@ def is_super_owner():
         return ctx.author.id == super_owner_id
     return commands.check(predicate)
 
+def is_super_owner_or_owner():
+    async def predicate(ctx):
+        return ctx.author.id == super_owner_id or ctx.author.id in owners
+    return commands.check(predicate)
+
 @tasks.loop(minutes=4)
 async def keep_alive_task():
     print("Heartbeat")
@@ -1924,7 +1929,7 @@ async def clearowners(ctx):
     await ctx.send("Cleared all owners.")
 
 @bot.command()
-@is_super_owner() @is_owner()
+@is_super_owner_or_owner()
 async def addmod(ctx, *users: discord.User):
     global mods
     added = []
@@ -1948,7 +1953,7 @@ async def addmod(ctx, *users: discord.User):
         await ctx.send(f"{user.mention} is already a mod.")
 
 @bot.command()
-@is_super_owner() @is_owner()
+@is_super_owner_or_owner()
 async def removemod(ctx, user: discord.User):
     global mods
     if user.id in mods:
