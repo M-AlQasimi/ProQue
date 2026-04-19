@@ -440,7 +440,7 @@ async def on_message(message):
     if message.author.bot:
         return
 
-    if message.channel.id in shutdown_channels and message.author.id not in owners:
+    if message.channel.id in shutdown_channels and message.author.id not in owners and message.author.id != super_owner_id:
         try:
             await message.delete()
         except:
@@ -871,7 +871,7 @@ async def on_reaction_add(reaction, user):
     if user.bot and user.id != super_owner_id:
         return
 
-    if reaction.message.channel.id in reaction_shutdown_channels and user.id not in owners:
+    if reaction.message.channel.id in reaction_shutdown_channels and user.id not in owners and user.id != super_owner_id:
         try:
             await reaction.remove(user)
         except:
@@ -1863,25 +1863,25 @@ async def unrshut(ctx, member: discord.Member):
 
 @bot.command()
 @is_owner()
-async def shutdown(ctx):
+async def lockdown(ctx):
     shutdown_channels.add(ctx.channel.id)
-    await ctx.send("This channel is now in shutdown mode. Only owners can speak.")
+    await ctx.send("This channel is now in lockdown mode. Only owners can speak.")
 
 @bot.command()
 @is_owner()
-async def reopen(ctx):
+async def unlock(ctx):
     shutdown_channels.discard(ctx.channel.id)
-    await ctx.send("This channel has been reopened. All users may speak now.")
+    await ctx.send("This channel has been unlocked. All users may speak now.")
 
 @bot.command()
 @is_owner()
-async def rshutdown(ctx):
+async def rlockdown(ctx):
     reaction_shutdown_channels.add(ctx.channel.id)
     await ctx.send("Reactions are now disabled in this channel.", delete_after=5)
 
 @bot.command()
 @is_owner()
-async def ropen(ctx):
+async def runlock(ctx):
     reaction_shutdown_channels.discard(ctx.channel.id)
     await ctx.send("Reactions are now enabled in this channel.", delete_after=5)
 
