@@ -471,15 +471,26 @@ async def on_message(message):
             
             if question and GROQ_API_KEY:
                 await message.channel.typing()
+                
+                # Build conversation context
+                messages = [
+                    {"role": "system", "content": "You are a helpful assistant. Answer clearly, simply, and briefly. If you use information from the web, cite your sources."}
+                ]
+                
+                # Add previous message if replying to bot
+                if is_reply_to_bot and message.reference.resolved:
+                    prev_msg = message.reference.resolved
+                    if prev_msg.content:
+                        messages.append({"role": "assistant", "content": prev_msg.content})
+                
+                messages.append({"role": "user", "content": question})
+                
                 headers = {
                     "Authorization": f"Bearer {GROQ_API_KEY}",
                     "Content-Type": "application/json"
                 }
                 payload = {
-                    "messages": [
-                        {"role": "system", "content": "You are a helpful assistant. Answer clearly, simply, and briefly. If you use information from the web, cite your sources."},
-                        {"role": "user", "content": question}
-                    ],
+                    "messages": messages,
                     "model": "llama-3.1-8b-instant",
                     "temperature": 0.7,
                     "max_tokens": 500
@@ -503,15 +514,26 @@ async def on_message(message):
         question = content[2:].strip()
         if question and GROQ_API_KEY:
             await message.channel.typing()
+            
+            # Build conversation context
+            messages = [
+                {"role": "system", "content": "You are a helpful assistant. Answer clearly, simply, and briefly. If you use information from the web, cite your sources."}
+            ]
+            
+            # Check if replying to bot for context
+            if is_reply_to_bot and message.reference.resolved:
+                prev_msg = message.reference.resolved
+                if prev_msg.content:
+                    messages.append({"role": "assistant", "content": prev_msg.content})
+            
+            messages.append({"role": "user", "content": question})
+            
             headers = {
                 "Authorization": f"Bearer {GROQ_API_KEY}",
                 "Content-Type": "application/json"
             }
             payload = {
-                "messages": [
-                    {"role": "system", "content": "You are a helpful assistant. Answer clearly, simply, and briefly. If you use information from the web, cite your sources."},
-                    {"role": "user", "content": question}
-                ],
+                "messages": messages,
                 "model": "llama-3.1-8b-instant",
                 "temperature": 0.7,
                 "max_tokens": 500
