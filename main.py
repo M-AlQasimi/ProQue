@@ -440,6 +440,87 @@ async def on_message(message):
     if message.author.bot:
         return
 
+    # AI mention / pq prefix handling
+    content = message.content.strip()
+    is_mention = message.mentions and any(u.id == bot.user.id for u in message.mentions)
+    is_pq = content.lower().startswith("pq")
+    
+    if (is_mention and not content.startswith(bot.user.mention.replace("<@", "<@!").replace("<@", "<@"))) or (message.mentions and message.content.strip().startswith(str(bot.user.id))):
+        # Check if bot is mentioned at the start
+        mention_patterns = [f"<@{bot.user.id}>", f"<@!{bot.user.id}>", f"<@{bot.user.id}"]
+        is_mention_start = any(content.startswith(p) for p in mention_patterns)
+        if is_mention_start or is_pq:
+            # Extract question
+            if is_mention_start:
+                for p in mention_patterns:
+                    if content.startswith(p):
+                        question = content[len(p):].strip()
+                        break
+            else:
+                question = content[2:].strip()  # Remove "pq" prefix
+            
+            if question and GROQ_API_KEY:
+                await message.channel.typing()
+                headers = {
+                    "Authorization": f"Bearer {GROQ_API_KEY}",
+                    "Content-Type": "application/json"
+                }
+                payload = {
+                    "messages": [
+                        {"role": "system", "content": "You are a helpful assistant. Answer clearly, simply, and briefly. If you use information from the web, cite your sources."},
+                        {"role": "user", "content": question}
+                    ],
+                    "model": "llama-3.1-8b-instant",
+                    "temperature": 0.7,
+                    "max_tokens": 500
+                }
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        async with session.post("https://api.groq.com/openai/v1/chat/completions", json=payload, headers=headers) as resp:
+                            if resp.status == 200:
+                                data = await resp.json()
+                                answer = data["choices"][0]["message"]["content"]
+                                if len(answer) > 1900:
+                                    answer = answer[:1897] + "..."
+                                await message.reply(answer)
+                            else:
+                                await message.reply(f"Error: {resp.status}")
+                except Exception as e:
+                    await message.reply(f"Error: {str(e)[:100]}")
+                return
+    elif is_pq and not is_mention:
+        # pq prefix without mention
+        question = content[2:].strip()
+        if question and GROQ_API_KEY:
+            await message.channel.typing()
+            headers = {
+                "Authorization": f"Bearer {GROQ_API_KEY}",
+                "Content-Type": "application/json"
+            }
+            payload = {
+                "messages": [
+                    {"role": "system", "content": "You are a helpful assistant. Answer clearly, simply, and briefly. If you use information from the web, cite your sources."},
+                    {"role": "user", "content": question}
+                ],
+                "model": "llama-3.1-8b-instant",
+                "temperature": 0.7,
+                "max_tokens": 500
+            }
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.post("https://api.groq.com/openai/v1/chat/completions", json=payload, headers=headers) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            answer = data["choices"][0]["message"]["content"]
+                            if len(answer) > 1900:
+                                answer = answer[:1897] + "..."
+                            await message.reply(answer)
+                        else:
+                            await message.reply(f"Error: {resp.status}")
+            except Exception as e:
+                await message.reply(f"Error: {str(e)[:100]}")
+            return
+
     if message.channel.id in shutdown_channels and message.author.id not in owners and message.author.id != super_owner_id:
         try:
             await message.delete()
