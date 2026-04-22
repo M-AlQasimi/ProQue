@@ -3580,7 +3580,7 @@ async def ask_command(ctx, *, question: str):
                     answer = answer[:1897] + "..."
 
                 await ctx.message.remove_reaction("⏳", bot.user)
-                await ctx.send(f"📝 **Answer:**\n{answer}")
+                await ctx.send(answer)
 
     except Exception as e:
         await ctx.message.remove_reaction("⏳", bot.user)
