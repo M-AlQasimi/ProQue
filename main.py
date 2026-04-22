@@ -3860,3 +3860,7 @@ async def translate_command(ctx, *, args: str = None):
 
 # === RUN BOT ===
 
+
+# Start the bot
+time.sleep(20)
+run_bot_with_retry()
