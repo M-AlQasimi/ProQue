@@ -3561,7 +3561,7 @@ async def ask_command(ctx, *, question: str):
             {"role": "system", "content": "You are a helpful assistant. Answer clearly, simply, and briefly. If you use information from the web, cite your sources."},
             {"role": "user", "content": question}
         ],
-        "model": "llama-3.1-70b-versatile",
+        "model": "llama-3.1-8b-instant",
         "temperature": 0.7,
         "max_tokens": 500
     }
