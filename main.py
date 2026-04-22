@@ -3808,48 +3808,89 @@ async def analyse_command(ctx):
         await ctx.message.remove_reaction("⏳", bot.user)
         await ctx.send(f"Error: {str(e)[:100]}")
 
+# === HELPER: Language detection ===
+def detect_language(text):
+    """Detect language using simple heuristics (no external lib needed)"""
+    import re
+    # Arabic
+    if re.search(r'[؀-ۿ]', text):
+        return ["ar"]
+    # Chinese
+    if re.search(r'[\u4e00-\u9fff]', text):
+        return ["zh"]
+    # Japanese
+    if re.search(r'[\u3040-\u309f\u30a0-\u30ff]', text):
+        return ["ja"]
+    # Korean
+    if re.search(r'[\uac00-\ud7af]', text):
+        return ["ko"]
+    # Cyrillic (Russian, Ukrainian, etc)
+    if re.search(r'[\u0400-\u04FF]', text):
+        return ["ru"]
+    # Hebrew
+    if re.search(r'[֐-׿]', text):
+        return ["he"]
+    # Thai
+    if re.search(r'[฀-๿]', text):
+        return ["th"]
+    # Hindi
+    if re.search(r'[ऀ-ॿ]', text):
+        return ["hi"]
+    # Latin script - likely English or Romance languages
+    return ["en"]
+
 # === TRANSLATE COMMAND ===
 @bot.command(name="translate")
-async def translate_command(ctx, *, args: str):
-    """Translate text - .translate [from] [to] text or just .translate [to] text"""
-    # Parse: .translate en es hello (from en to es) or .translate es hello (auto-detect to es)
-    parts = args.split(None, 2)
+async def translate_command(ctx, *, args: str = None):
+    """Translate - reply to a message or provide text. Translates to English by default."""
     
-    if len(parts) == 2:
-        # .translate target text
-        target = parts[0]
-        text = parts[1]
+    # Get text to translate
+    if args:
+        text = args
         source = "auto"
-    elif len(parts) == 3:
-        # .translate source target text
-        source = parts[0]
-        target = parts[1]
-        text = parts[2]
+        targets = ["en"]
+    elif ctx.message.reference and ctx.message.reference.resolved:
+        ref_msg = ctx.message.reference.resolved
+        text = ref_msg.content
+        if not text:
+            return await ctx.send("No text found in the replied message.")
+        
+        # Detect language
+        detected = detect_language(text)
+        source = detected[0]
+        
+        # If Arabic script, could also be Urdu/Farsi - check for common words
+        if source == "ar":
+            # Check for Urdu/Farsi markers, otherwise assume Arabic + English
+            targets = ["en"]  # Default to English
+        else:
+            targets = ["en"]
     else:
-        return await ctx.send("Usage: `.translate [from] [to] text` or `.translate [to] text`")
+        return await ctx.send("Reply to a message or provide text: `.translate [text]`")
     
     await ctx.message.add_reaction("⏳")
     
+    # Build results
+    results = []
+    
     try:
-        # Using MyMemory API (free, no key required)
         async with aiohttp.ClientSession() as session:
-            url = f"https://api.mymemory.translated.net/get?q={text}&langpair={source}|{target}"
-            async with session.get(url) as resp:
-                if resp.status != 200:
-                    await ctx.message.remove_reaction("⏳", bot.user)
-                    return await ctx.send(f"Error: {resp.status}")
-                
-                data = await resp.json()
-                if data.get("responseStatus") != 200:
-                    await ctx.message.remove_reaction("⏳", bot.user)
-                    return await ctx.send(f"Error: {data.get('responseDetails', 'Translation failed')}")
-                
-                result = data["responseData"]["translatedText"]
-                match = data["responseData"]["match"]
-                
-                await ctx.message.remove_reaction("⏳", bot.user)
-                await ctx.send(f"**{source.upper()} → {target.upper()}**
-{result}")
+            for target in targets:
+                url = f"https://api.mymemory.translated.net/get?q={text}&langpair={source}|{target}"
+                async with session.get(url) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        if data.get("responseStatus") == 200:
+                            result = data["responseData"]["translatedText"]
+                            results.append(f"**{source.upper()} → {target.upper()}:** {result}")
+        
+        await ctx.message.remove_reaction("⏳", bot.user)
+        
+        if results:
+            await ctx.send("\n".join(results))
+        else:
+            await ctx.send("Translation failed.")
+            
     except Exception as e:
         await ctx.message.remove_reaction("⏳", bot.user)
         await ctx.send(f"Error: {str(e)[:100]}")
