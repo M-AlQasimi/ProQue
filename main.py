@@ -72,8 +72,7 @@ sleeping_users = {
 
 class MyBot(commands.Bot):
     async def setup_hook(self):
-        await self.tree.sync()
-        print("Slash commands synced.")
+        pass
         
 intents = discord.Intents.all()
 bot = MyBot(command_prefix='.', intents=intents)
