@@ -440,18 +440,28 @@ async def on_message(message):
     if message.author.bot:
         return
 
-    # AI mention / pq prefix handling
+    # AI mention / pq prefix / reply to bot handling
     content = message.content.strip()
     is_mention = message.mentions and any(u.id == bot.user.id for u in message.mentions)
     is_pq = content.lower().startswith("pq")
     
-    if (is_mention and not content.startswith(bot.user.mention.replace("<@", "<@!").replace("<@", "<@"))) or (message.mentions and message.content.strip().startswith(str(bot.user.id))):
+    # Check if message is a reply to the bot
+    is_reply_to_bot = (
+        message.reference and 
+        message.reference.message_id and
+        message.reference.resolved and
+        message.reference.resolved.author.id == bot.user.id
+    )
+    
+    if (is_mention or is_reply_to_bot) and not content.startswith(bot.user.mention.replace("<@", "<@!").replace("<@", "<@")) or (message.mentions and message.content.strip().startswith(str(bot.user.id))):
         # Check if bot is mentioned at the start
         mention_patterns = [f"<@{bot.user.id}>", f"<@!{bot.user.id}>", f"<@{bot.user.id}"]
         is_mention_start = any(content.startswith(p) for p in mention_patterns)
-        if is_mention_start or is_pq:
+        if is_mention_start or is_pq or is_reply_to_bot:
             # Extract question
-            if is_mention_start:
+            if is_reply_to_bot:
+                question = content  # Use full content as question
+            elif is_mention_start:
                 for p in mention_patterns:
                     if content.startswith(p):
                         question = content[len(p):].strip()
