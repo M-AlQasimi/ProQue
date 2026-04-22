@@ -3543,5 +3543,101 @@ def run_bot_with_retry():
     
     print("Max retries reached. Exiting.")
 
+# === AI COMMANDS ===
+
+# Get free API keys (no credit card):
+# - Groq: https://console.groq.com/
+# - Cloudflare: https://dash.cloudflare.com/ -> Workers AI
+
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+CLOUDFLARE_API_KEY = os.getenv("CLOUDFLARE_API_KEY", "")
+CLOUDFLARE_ACCOUNT_ID = os.getenv("CLOUDFLARE_ACCOUNT_ID", "")
+
+@bot.command(name="ask")
+async def ask_command(ctx, *, question: str):
+    """Ask AI anything - answers simply, clearly, with sources"""
+    if not GROQ_API_KEY:
+        return await ctx.send("API not configured. Set GROQ_API_KEY.")
+    
+    await ctx.message.add_reaction("⏳")
+
+    headers = {
+        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Content-Type": "application/json"
+    }
+
+    payload = {
+        "messages": [
+            {"role": "system", "content": "You are a helpful assistant. Answer clearly, simply, and briefly. If you use information from the web, cite your sources."},
+            {"role": "user", "content": question}
+        ],
+        "model": "llama-3.1-70b-versatile",
+        "temperature": 0.7,
+        "max_tokens": 500
+    }
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post("https://api.groq.com/openai/v1/chat/completions", json=payload, headers=headers) as resp:
+                if resp.status != 200:
+                    await ctx.message.remove_reaction("⏳", bot.user)
+                    return await ctx.send(f"Error: {resp.status}")
+
+                data = await resp.json()
+                answer = data["choices"][0]["message"]["content"]
+
+                if len(answer) > 1900:
+                    answer = answer[:1897] + "..."
+
+                await ctx.message.remove_reaction("⏳", bot.user)
+                await ctx.send(f"📝 **Answer:**\n{answer}")
+
+    except Exception as e:
+        await ctx.message.remove_reaction("⏳", bot.user)
+        await ctx.send(f"Error: {str(e)[:100]}")
+
+@bot.command(name="generate")
+async def generate_command(ctx, *, prompt: str):
+    """Generate an image from text"""
+    if not CLOUDFLARE_API_KEY or not CLOUDFLARE_ACCOUNT_ID:
+        return await ctx.send("API not configured. Set CLOUDFLARE_API_KEY and CLOUDFLARE_ACCOUNT_ID.")
+    
+    await ctx.message.add_reaction("⏳")
+
+    url = f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/run/@cf/black-forest-labs/flux-1-schnell"
+
+    headers = {
+        "Authorization": f"Bearer {CLOUDFLARE_API_KEY}"
+    }
+
+    payload = {
+        "prompt": prompt,
+        "num_steps": 4
+    }
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload, headers=headers) as resp:
+                if resp.status != 200:
+                    await ctx.message.remove_reaction("⏳", bot.user)
+                    return await ctx.send(f"Error: {resp.status}")
+
+                data = await resp.json()
+                image_data = data["result"]["image"]
+
+                import base64
+                from io import BytesIO
+                image_bytes = base64.b64decode(image_data)
+                file = discord.File(BytesIO(image_bytes), filename="generated.png")
+
+                await ctx.message.remove_reaction("⏳", bot.user)
+                await ctx.send(file=file)
+
+    except Exception as e:
+        await ctx.message.remove_reaction("⏳", bot.user)
+        await ctx.send(f"Error: {str(e)[:100]}")
+
+# === RUN BOT ===
+
 time.sleep(20)
 run_bot_with_retry()
