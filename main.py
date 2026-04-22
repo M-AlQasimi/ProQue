@@ -3740,7 +3740,119 @@ async def generate_command(ctx, *, prompt: str):
         await ctx.message.remove_reaction("⏳", bot.user)
         await ctx.send(f"Error: {str(e)[:100]}")
 
+
+# === IMAGE ANALYSIS COMMAND ===
+@bot.command(name="analyse")
+async def analyse_command(ctx):
+    """Analyse an image - reply to an image or attachment"""
+    if not ctx.message.reference or not ctx.message.reference.resolved:
+        return await ctx.send("Reply to an image to analyse it.")
+    
+    ref_msg = ctx.message.reference.resolved
+    image_url = None
+    
+    # Check attachments
+    if ref_msg.attachments:
+        for att in ref_msg.attachments:
+            if att.content_type and att.content_type.startswith("image/"):
+                image_url = att.url
+                break
+    
+    # Check embeds
+    if not image_url and ref_msg.embeds:
+        for emb in ref_msg.embeds:
+            if emb.image:
+                image_url = emb.image.url
+            elif emb.thumbnail:
+                image_url = emb.thumbnail.url
+    
+    if not image_url:
+        return await ctx.send("No image found in the replied message.")
+    
+    if not CLOUDFLARE_API_KEY or not CLOUDFLARE_ACCOUNT_ID:
+        return await ctx.send("API not configured.")
+    
+    await ctx.message.add_reaction("⏳")
+    
+    url = f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/run/@cf/meta/llama-3.2-90b-vision-instruct"
+    
+    headers = {"Authorization": f"Bearer {CLOUDFLARE_API_KEY}"}
+    
+    # For vision, we pass the image URL
+    payload = {
+        "messages": [
+            {"role": "user", "content": [
+                {"type": "text", "text": "Describe this image in detail."},
+                {"type": "image_url", "image_url": {"url": image_url}}
+            ]}
+        ],
+        "max_tokens": 500
+    }
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload, headers=headers) as resp:
+                if resp.status != 200:
+                    await ctx.message.remove_reaction("⏳", bot.user)
+                    return await ctx.send(f"Error: {resp.status}")
+                
+                data = await resp.json()
+                result = data["result"]["response"]
+                
+                if len(result) > 1900:
+                    result = result[:1897] + "..."
+                
+                await ctx.message.remove_reaction("⏳", bot.user)
+                await ctx.send(result)
+    except Exception as e:
+        await ctx.message.remove_reaction("⏳", bot.user)
+        await ctx.send(f"Error: {str(e)[:100]}")
+
+# === TRANSLATE COMMAND ===
+@bot.command(name="translate")
+async def translate_command(ctx, *, args: str):
+    """Translate text - .translate [from] [to] text or just .translate [to] text"""
+    # Parse: .translate en es hello (from en to es) or .translate es hello (auto-detect to es)
+    parts = args.split(None, 2)
+    
+    if len(parts) == 2:
+        # .translate target text
+        target = parts[0]
+        text = parts[1]
+        source = "auto"
+    elif len(parts) == 3:
+        # .translate source target text
+        source = parts[0]
+        target = parts[1]
+        text = parts[2]
+    else:
+        return await ctx.send("Usage: `.translate [from] [to] text` or `.translate [to] text`")
+    
+    await ctx.message.add_reaction("⏳")
+    
+    try:
+        # Using MyMemory API (free, no key required)
+        async with aiohttp.ClientSession() as session:
+            url = f"https://api.mymemory.translated.net/get?q={text}&langpair={source}|{target}"
+            async with session.get(url) as resp:
+                if resp.status != 200:
+                    await ctx.message.remove_reaction("⏳", bot.user)
+                    return await ctx.send(f"Error: {resp.status}")
+                
+                data = await resp.json()
+                if data.get("responseStatus") != 200:
+                    await ctx.message.remove_reaction("⏳", bot.user)
+                    return await ctx.send(f"Error: {data.get('responseDetails', 'Translation failed')}")
+                
+                result = data["responseData"]["translatedText"]
+                match = data["responseData"]["match"]
+                
+                await ctx.message.remove_reaction("⏳", bot.user)
+                await ctx.send(f"**{source.upper()} → {target.upper()}**
+{result}")
+    except Exception as e:
+        await ctx.message.remove_reaction("⏳", bot.user)
+        await ctx.send(f"Error: {str(e)[:100]}")
+
 # === RUN BOT ===
 
-time.sleep(20)
-run_bot_with_retry()
