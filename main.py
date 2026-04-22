@@ -2146,17 +2146,7 @@ async def lock_channel(ctx):
     await ctx.channel.set_permissions(ctx.guild.default_role, overwrite=overwrite)
     await ctx.send("Channel locked.")
 
-@bot.command()
-@is_owner()
-async def unlock(ctx):
-    overwrite = ctx.channel.overwrites_for(ctx.guild.default_role)
-    overwrite.send_messages = True
-    await ctx.channel.set_permissions(ctx.guild.default_role, overwrite=overwrite)
-    await ctx.send("Channel unlocked.")
 
-@bot.command()
-@is_owner_or_mod()
-async def mute(ctx, member: discord.Member, duration: str):
 
     time_units = {'s': 1, 'm': 60, 'h': 3600, 'd': 86400}
     try:
