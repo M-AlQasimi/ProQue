@@ -449,7 +449,7 @@ async def on_message(message):
     # AI mention / pq prefix / reply to bot handling
     content = message.content.strip()
     is_mention = message.mentions and any(u.id == bot.user.id for u in message.mentions)
-    is_pq = content.lower().startswith("pq")
+    # is_pq removed - now used for Quewo economy system
     
     # Check if message is a reply to the bot
     is_reply_to_bot = (
@@ -463,7 +463,7 @@ async def on_message(message):
         # Check if bot is mentioned at the start
         mention_patterns = [f"<@{bot.user.id}>", f"<@!{bot.user.id}>", f"<@{bot.user.id}"]
         is_mention_start = any(content.startswith(p) for p in mention_patterns)
-        if is_mention_start or is_pq or is_reply_to_bot:
+        if is_mention_start or is_reply_to_bot:
             # Extract question
             if is_reply_to_bot:
                 question = content  # Use full content as question
@@ -473,7 +473,7 @@ async def on_message(message):
                         question = content[len(p):].strip()
                         break
             else:
-                question = content[2:].strip()  # Remove "pq" prefix
+                pass  # No longer removing pq prefix
             
             if question and GROQ_API_KEY:
                 await message.channel.typing()
@@ -515,13 +515,8 @@ async def on_message(message):
                 except Exception as e:
                     await message.reply(f"Error: {str(e)[:100]}")
                 return
-    elif is_pq and not is_mention:
-        # pq prefix without mention
-        question = content[2:].strip()
-        if question and GROQ_API_KEY:
-            await message.channel.typing()
-            
-            # Build conversation context
+    elif False and False:  # pq prefix removed - economy now uses pq commands
+        pass  # pq prefix handling removed
             messages = [
                 {"role": "system", "content": "You are a helpful assistant. Answer clearly, simply, and briefly. If you use information from the web, cite your sources."}
             ]
