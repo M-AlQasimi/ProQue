@@ -467,7 +467,9 @@ async def setup(bot_ref):
     """Called when the cog is loaded"""
     global bot
     bot = bot_ref
+    print("Initializing economy system...")
     init_db()
+    print(f"Economy db_ready = {db_ready}")
     
     # Register all economy commands
     bot.add_command(bal)
