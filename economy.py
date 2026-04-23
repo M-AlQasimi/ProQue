@@ -1,48 +1,42 @@
 import asyncio
 import random
-from datetime import datetime, timezone
+import os
+import json
 import discord
 from discord.ext import commands
-import psycopg2
-from psycopg2.extras import RealDictCursor
-import os
+from datetime import datetime, timezone
+import threading
 
-# Database setup
-DATABASE_URL = os.environ.get("DATABASE_URL")
-
-def get_db_connection():
-    return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+# SQLite file location - will persist if using a persistent volume
+DB_FILE = "economy.db"
+lock = threading.Lock()
 
 def init_db():
     """Create tables if they don't exist."""
-    if not DATABASE_URL:
-        print("⚠️ DATABASE_URL not set - economy system disabled")
-        return False
-    
     try:
-        conn = get_db_connection()
+        conn = sqlite3.connect(DB_FILE)
         cur = conn.cursor()
         cur.execute("""
             CREATE TABLE IF NOT EXISTS economy (
-                user_id BIGINT PRIMARY KEY,
-                balance BIGINT DEFAULT 0,
-                daily_streak INT DEFAULT 0,
-                weekly_streak INT DEFAULT 0,
-                monthly_streak INT DEFAULT 0,
-                last_daily TIMESTAMP DEFAULT NULL,
-                last_weekly TIMESTAMP DEFAULT NULL,
-                last_monthly TIMESTAMP DEFAULT NULL,
-                total_earned BIGINT DEFAULT 0,
-                total_won BIGINT DEFAULT 0,
-                total_lost BIGINT DEFAULT 0,
-                steal_blacklist BIGINT[] DEFAULT '{}',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                user_id INTEGER PRIMARY KEY,
+                balance INTEGER DEFAULT 0,
+                daily_streak INTEGER DEFAULT 0,
+                weekly_streak INTEGER DEFAULT 0,
+                monthly_streak INTEGER DEFAULT 0,
+                last_daily TEXT,
+                last_weekly TEXT,
+                last_monthly TEXT,
+                total_earned INTEGER DEFAULT 0,
+                total_won INTEGER DEFAULT 0,
+                total_lost INTEGER DEFAULT 0,
+                steal_blacklist TEXT DEFAULT '[]',
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         """)
         conn.commit()
         cur.close()
         conn.close()
-        print("✅ Economy DB initialized")
+        print("✅ Economy DB initialized (SQLite)")
         return True
     except Exception as e:
         print(f"❌ Economy DB init failed: {e}")
@@ -55,24 +49,26 @@ def get_user(user_id):
     if not db_ready:
         return None
     
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM economy WHERE user_id = %s", (user_id,))
-    user = cur.fetchone()
-    cur.close()
-    conn.close()
+    with lock:
+        conn = sqlite3.connect(DB_FILE)
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM economy WHERE user_id = ?", (user_id,))
+        user = cur.fetchone()
+        conn.close()
     
     if not user:
         # Create new user
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute("INSERT INTO economy (user_id, balance) VALUES (%s, 0) RETURNING *", (user_id,))
-        conn.commit()
-        user = cur.fetchone()
-        cur.close()
-        conn.close()
+        with lock:
+            conn = sqlite3.connect(DB_FILE)
+            cur = conn.cursor()
+            cur.execute("INSERT INTO economy (user_id, balance) VALUES (?, 0)", (user_id,))
+            conn.commit()
+            cur.execute("SELECT * FROM economy WHERE user_id = ?", (user_id,))
+            user = cur.fetchone()
+            conn.close()
     
-    return user
+    return dict(user) if user else None
 
 def update_user(user_id, **kwargs):
     """Update user data."""
@@ -82,16 +78,17 @@ def update_user(user_id, **kwargs):
     if not kwargs:
         return
     
-    conn = get_db_connection()
-    cur = conn.cursor()
-    
-    set_clause = ", ".join([f"{k} = %s" for k in kwargs.keys()])
-    values = list(kwargs.values()) + [user_id]
-    
-    cur.execute(f"UPDATE economy SET {set_clause} WHERE user_id = %s", values)
-    conn.commit()
-    cur.close()
-    conn.close()
+    with lock:
+        conn = sqlite3.connect(DB_FILE)
+        cur = conn.cursor()
+        
+        set_clause = ", ".join([f"{k} = ?" for k in kwargs.keys()])
+        values = list(kwargs.values()) + [user_id]
+        
+        cur.execute(f"UPDATE economy SET {set_clause} WHERE user_id = ?", values)
+        conn.commit()
+        cur.close()
+        conn.close()
 
 # Currency symbol
 CURRENCY_SYMBOL = "𝚀"
@@ -143,7 +140,7 @@ class EconomyCog(commands.Cog):
         now = datetime.now(timezone.utc)
         
         if data['last_daily']:
-            last_daily = data['last_daily'].replace(tzinfo=timezone.utc) if data['last_daily'].tzinfo is None else data['last_daily']
+            last_daily = datetime.fromisoformat(data['last_daily']).replace(tzinfo=timezone.utc)
             elapsed = (now - last_daily).total_seconds()
             
             if elapsed < 86400:  # 24 hours
@@ -152,18 +149,16 @@ class EconomyCog(commands.Cog):
                 await ctx.send(f"⏰ You can claim your daily in **{hours_left}h {minutes_left}m**")
                 return
         
-        # Calculate reward with streak bonus
         streak = data['daily_streak'] + 1
         base_reward = random.randint(100, 500)
-        streak_bonus = min(streak * 10, 200)  # Max 200 bonus
+        streak_bonus = min(streak * 10, 200)
         reward = base_reward + streak_bonus
         
-        # Update
         update_user(
             user_id,
             balance=data['balance'] + reward,
             daily_streak=streak,
-            last_daily=now,
+            last_daily=now.isoformat(),
             total_earned=data['total_earned'] + reward
         )
         
@@ -181,10 +176,10 @@ class EconomyCog(commands.Cog):
         now = datetime.now(timezone.utc)
         
         if data['last_weekly']:
-            last_weekly = data['last_weekly'].replace(tzinfo=timezone.utc) if data['last_weekly'].tzinfo is None else data['last_weekly']
+            last_weekly = datetime.fromisoformat(data['last_weekly']).replace(tzinfo=timezone.utc)
             elapsed = (now - last_weekly).total_seconds()
             
-            if elapsed < 604800:  # 7 days
+            if elapsed < 604800:
                 days_left = int((604800 - elapsed) / 86400)
                 await ctx.send(f"⏰ You can claim your weekly in **{days_left}** days")
                 return
@@ -198,7 +193,7 @@ class EconomyCog(commands.Cog):
             user_id,
             balance=data['balance'] + reward,
             weekly_streak=streak,
-            last_weekly=now,
+            last_weekly=now.isoformat(),
             total_earned=data['total_earned'] + reward
         )
         
@@ -216,10 +211,10 @@ class EconomyCog(commands.Cog):
         now = datetime.now(timezone.utc)
         
         if data['last_monthly']:
-            last_monthly = data['last_monthly'].replace(tzinfo=timezone.utc) if data['last_monthly'].tzinfo is None else data['last_monthly']
+            last_monthly = datetime.fromisoformat(data['last_monthly']).replace(tzinfo=timezone.utc)
             elapsed = (now - last_monthly).total_seconds()
             
-            if elapsed < 2592000:  # 30 days
+            if elapsed < 2592000:
                 days_left = int((2592000 - elapsed) / 86400)
                 await ctx.send(f"⏰ You can claim your monthly in **{days_left}** days")
                 return
@@ -233,7 +228,7 @@ class EconomyCog(commands.Cog):
             user_id,
             balance=data['balance'] + reward,
             monthly_streak=streak,
-            last_monthly=now,
+            last_monthly=now.isoformat(),
             total_earned=data['total_earned'] + reward
         )
         
@@ -251,10 +246,10 @@ class EconomyCog(commands.Cog):
         now = datetime.now(timezone.utc)
         
         if data['last_daily']:
-            last_work = data['last_daily'].replace(tzinfo=timezone.utc) if data['last_daily'].tzinfo is None else data['last_daily']
+            last_work = datetime.fromisoformat(data['last_daily']).replace(tzinfo=timezone.utc)
             elapsed = (now - last_work).total_seconds()
             
-            if elapsed < 3600:  # 1 hour
+            if elapsed < 3600:
                 minutes_left = int((3600 - elapsed) / 60)
                 await ctx.send(f"⏰ You can work again in **{minutes_left}** minutes")
                 return
@@ -273,7 +268,7 @@ class EconomyCog(commands.Cog):
         update_user(
             user_id,
             balance=data['balance'] + reward,
-            last_daily=now,  # Reuse daily timestamp for work cooldown
+            last_daily=now.isoformat(),
             total_earned=data['total_earned'] + reward
         )
         
@@ -345,14 +340,13 @@ class EconomyCog(commands.Cog):
             await ctx.send("❌ Max bet is 5,000 𝚀")
             return
         
-        # Roulette outcomes
         outcomes = ['red'] * 18 + ['black'] * 18 + ['green'] * 2
         result = random.choice(outcomes)
         
         multipliers = {'red': 2, 'black': 2, 'green': 10}
         
         if result == color:
-            winnings = amount * multipliers[color] - amount  # Net profit
+            winnings = amount * multipliers[color] - amount
             update_user(
                 user_id,
                 balance=data['balance'] + winnings,
@@ -390,7 +384,7 @@ class EconomyCog(commands.Cog):
             return
         
         emojis = ['🍒', '🍋', '🍊', '🍇', '💎', '⭐']
-        weights = [30, 25, 20, 15, 8, 2]  # Rarer = higher multiplier
+        weights = [30, 25, 20, 15, 8, 2]
         
         reel1 = random.choices(emojis, weights=weights)[0]
         reel2 = random.choices(emojis, weights=weights)[0]
@@ -398,7 +392,6 @@ class EconomyCog(commands.Cog):
         
         result = f"{reel1} {reel2} {reel3}"
         
-        # Calculate winnings
         if reel1 == reel2 == reel3:
             multiplier = (emojis.index(reel1) + 1) * 3
             winnings = amount * multiplier
@@ -446,10 +439,8 @@ class EconomyCog(commands.Cog):
             await ctx.send(f"❌ You only have {format_balance(data['balance'])}")
             return
         
-        # Deduct from sender
         update_user(user_id, balance=data['balance'] - amount)
         
-        # Add to receiver
         receiver_data = get_user(member.id)
         update_user(member.id, balance=receiver_data['balance'] + amount)
         
@@ -463,12 +454,12 @@ class EconomyCog(commands.Cog):
             await ctx.send("❌ Economy system is not configured.")
             return
         
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute("SELECT user_id, balance FROM economy ORDER BY balance DESC LIMIT 10")
-        rows = cur.fetchall()
-        cur.close()
-        conn.close()
+        with lock:
+            conn = sqlite3.connect(DB_FILE)
+            cur = conn.cursor()
+            cur.execute("SELECT user_id, balance FROM economy ORDER BY balance DESC LIMIT 10")
+            rows = cur.fetchall()
+            conn.close()
         
         embed = discord.Embed(
             title="🏆 Leaderboard",
@@ -477,14 +468,14 @@ class EconomyCog(commands.Cog):
         
         for i, row in enumerate(rows, 1):
             try:
-                user = await self.bot.fetch_user(row['user_id'])
+                user = await self.bot.fetch_user(row[0])
                 name = user.name
             except:
-                name = f"User {row['user_id']}"
+                name = f"User {row[0]}"
             
             embed.add_field(
                 name=f"{i}. {name}",
-                value=format_balance(row['balance']),
+                value=format_balance(row[1]),
                 inline=False
             )
         
@@ -505,12 +496,11 @@ class EconomyCog(commands.Cog):
         data = get_user(user_id)
         target_data = get_user(member.id)
         
-        # Check if blacklisted
-        if target_data['steal_blacklist'] and user_id in target_data['steal_blacklist']:
+        blacklist = json.loads(target_data['steal_blacklist'] or '[]')
+        if user_id in blacklist:
             await ctx.send("❌ You are blacklisted from stealing from this user.")
             return
         
-        # 40% chance success
         success = random.random() < 0.4
         
         if success:
@@ -519,10 +509,8 @@ class EconomyCog(commands.Cog):
             update_user(member.id, balance=target_data['balance'] - stolen)
             await ctx.send(f"😈 You stole **{format_balance(stolen)}** from **{member.name}**!")
         else:
-            # Add to blacklist
-            blacklist = list(target_data['steal_blacklist']) if target_data['steal_blacklist'] else []
             blacklist.append(user_id)
-            update_user(member.id, steal_blacklist=blacklist)
+            update_user(member.id, steal_blacklist=json.dumps(blacklist))
             await ctx.send(f"💸 Failed! **{member.name}** caught you. You're blacklisted from stealing from them.")
     
     @commands.command(name="add")
