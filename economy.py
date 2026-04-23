@@ -2,13 +2,16 @@ import asyncio
 import random
 import os
 import json
+import sqlite3
 import discord
 from discord.ext import commands
 from datetime import datetime, timezone
 import threading
 
-# SQLite file location - will persist if using a persistent volume
-DB_FILE = "economy.db"
+# SQLite file location - use Railway volume mount path
+DATA_DIR = os.environ.get("DATA_DIR", "/var/data")
+os.makedirs(DATA_DIR, exist_ok=True)
+DB_FILE = os.path.join(DATA_DIR, "economy.db")
 lock = threading.Lock()
 
 def init_db():
