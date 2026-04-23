@@ -112,7 +112,7 @@ class EconomyCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
     
-    @commands.command(name="pqbal", aliases=["pqbal", "bal"])
+    @commands.command(name="pqbal", aliases=["pqbal", "bal", ".bal"])
     async def bal(self, ctx, member: discord.Member = None):
         if not db_ready:
             await ctx.send("❌ Economy system not configured.")
@@ -135,7 +135,7 @@ class EconomyCog(commands.Cog):
         
         await ctx.send(embed=embed)
     
-    @commands.command(name="pqdaily", aliases=["pqdaily", "daily"])
+    @commands.command(name="pqdaily", aliases=["pqdaily", "daily", ".daily"])
     async def daily(self, ctx):
         if not db_ready:
             await ctx.send("❌ Economy system not configured.")
@@ -170,7 +170,7 @@ class EconomyCog(commands.Cog):
         
         await ctx.send(f"🎉 You claimed **{format_balance(reward)}**!\nStreak: **{streak}** days (+{streak_bonus} bonus)")
     
-    @commands.command(name="pqweekly", aliases=["pqweekly", "weekly"])
+    @commands.command(name="pqweekly", aliases=["pqweekly", "weekly", ".weekly"])
     async def weekly(self, ctx):
         if not db_ready:
             await ctx.send("❌ Economy system not configured.")
@@ -204,7 +204,7 @@ class EconomyCog(commands.Cog):
         
         await ctx.send(f"🎉 You claimed **{format_balance(reward)}**!\nWeekly streak: **{streak}** weeks (+{streak_bonus} bonus)")
     
-    @commands.command(name="pqmonthly", aliases=["pqmonthly", "monthly"])
+    @commands.command(name="pqmonthly", aliases=["pqmonthly", "monthly", ".monthly"])
     async def monthly(self, ctx):
         if not db_ready:
             await ctx.send("❌ Economy system not configured.")
@@ -238,7 +238,7 @@ class EconomyCog(commands.Cog):
         
         await ctx.send(f"🎉 You claimed **{format_balance(reward)}**!\nMonthly streak: **{streak}** months (+{streak_bonus} bonus)")
     
-    @commands.command(name="pqwork", aliases=["pqwork", "work"])
+    @commands.command(name="pqwork", aliases=["pqwork", "work", ".work"])
     async def work(self, ctx):
         if not db_ready:
             await ctx.send("❌ Economy system not configured.")
@@ -277,7 +277,7 @@ class EconomyCog(commands.Cog):
         
         await ctx.send(f"💼 You **{job}** and earned **{format_balance(reward)}**!")
     
-    @commands.command(name="pqgamble", aliases=["pqgamble", "gamble"])
+    @commands.command(name="pqgamble", aliases=["pqgamble", "gamble", ".gamble"])
     async def gamble(self, ctx, amount: int):
         if not db_ready:
             await ctx.send("❌ Economy system not configured.")
@@ -315,7 +315,7 @@ class EconomyCog(commands.Cog):
             )
             await ctx.send(f"💸 You lost... **{format_balance(amount)}** → **{format_balance(data['balance'] - amount)}**")
     
-    @commands.command(name="pqroulette", aliases=["pqroulette", "roulette"])
+    @commands.command(name="pqroulette", aliases=["pqroulette", "roulette", ".roulette"])
     async def roulette(self, ctx, amount: int, color: str):
         if not db_ready:
             await ctx.send("❌ Economy system not configured.")
@@ -362,7 +362,7 @@ class EconomyCog(commands.Cog):
             )
             await ctx.send(f"💸 It was **{result.upper()}**. You lost **{format_balance(amount)}**")
     
-    @commands.command(name="pqslots", aliases=["pqslots", "slots"])
+    @commands.command(name="pqslots", aliases=["pqslots", "slots", ".slots"])
     async def slots(self, ctx, amount: int):
         if not db_ready:
             await ctx.send("❌ Economy system not configured.")
@@ -417,7 +417,7 @@ class EconomyCog(commands.Cog):
             )
             await ctx.send(f"🎰 {result}\n💸 No luck this time...")
     
-    @commands.command(name="pqgive", aliases=["pqgive", "give"])
+    @commands.command(name="pqgive", aliases=["pqgive", "give", ".give"])
     async def give(self, ctx, member: discord.Member, amount: int):
         if not db_ready:
             await ctx.send("❌ Economy system not configured.")
@@ -445,7 +445,7 @@ class EconomyCog(commands.Cog):
         
         await ctx.send(f"💸 You gave **{format_balance(amount)}** to **{member.name}**")
     
-    @commands.command(name="pqleaderboard", aliases=["pqleaderboard", "lb", "pq/lb", "pqlb"])
+    @commands.command(name="pqleaderboard", aliases=["pqleaderboard", "lb", "pqlb", "leaderboard", ".lb", ".leaderboard"])
     @commands.alias("lb")
     async def leaderboard(self, ctx):
         if not db_ready:
@@ -480,7 +480,7 @@ class EconomyCog(commands.Cog):
         
         await ctx.send(embed=embed)
     
-    @commands.command(name="pqsteal", aliases=["pqsteal", "steal"])
+    @commands.command(name="pqsteal", aliases=["pqsteal", "steal", ".steal"])
     async def steal(self, ctx, member: discord.Member):
         if not db_ready:
             await ctx.send("❌ Economy system not configured.")
@@ -512,7 +512,7 @@ class EconomyCog(commands.Cog):
             update_user(member.id, steal_blacklist=blacklist)
             await ctx.send(f"💸 Failed! **{member.name}** caught you. Blacklisted.")
     
-    @commands.command(name="pqadd", aliases=["pqadd", "add"])
+    @commands.command(name="pqadd", aliases=["pqadd", "add", ".add"])
     async def add(self, ctx, member: discord.Member, amount: int):
         if not is_super_owner(ctx.author.id):
             await ctx.send("❌ Bot owner only.")
@@ -531,7 +531,7 @@ class EconomyCog(commands.Cog):
         
         await ctx.send(f"✅ Added **{format_balance(amount)}** to **{member.name}**")
     
-    @commands.command(name="pqremove", aliases=["pqremove", "remove"])
+    @commands.command(name="pqremove", aliases=["pqremove", "remove", ".remove"])
     async def remove(self, ctx, member: discord.Member, amount: int):
         if not is_super_owner(ctx.author.id):
             await ctx.send("❌ Bot owner only.")
