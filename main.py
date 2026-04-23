@@ -515,44 +515,7 @@ async def on_message(message):
                 except Exception as e:
                     await message.reply(f"Error: {str(e)[:100]}")
                 return
-    elif False and False:  # pq prefix removed - economy now uses pq commands
-        pass  # pq prefix handling removed
-            messages = [
-                {"role": "system", "content": "You are a helpful assistant. Answer clearly, simply, and briefly. If you use information from the web, cite your sources."}
-            ]
-            
-            # Check if replying to bot for context
-            if is_reply_to_bot and message.reference.resolved:
-                prev_msg = message.reference.resolved
-                if prev_msg.content:
-                    messages.append({"role": "assistant", "content": prev_msg.content})
-            
-            messages.append({"role": "user", "content": question})
-            
-            headers = {
-                "Authorization": f"Bearer {GROQ_API_KEY}",
-                "Content-Type": "application/json"
-            }
-            payload = {
-                "messages": messages,
-                "model": "llama-3.1-8b-instant",
-                "temperature": 0.7,
-                "max_tokens": 500
-            }
-            try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.post("https://api.groq.com/openai/v1/chat/completions", json=payload, headers=headers) as resp:
-                        if resp.status == 200:
-                            data = await resp.json()
-                            answer = data["choices"][0]["message"]["content"]
-                            if len(answer) > 1900:
-                                answer = answer[:1897] + "..."
-                            await message.reply(answer)
-                        else:
-                            await message.reply(f"Error: {resp.status}")
-            except Exception as e:
-                await message.reply(f"Error: {str(e)[:100]}")
-            return
+
 
     if message.channel.id in shutdown_channels and message.author.id not in owners and message.author.id != super_owner_id:
         try:
@@ -2418,7 +2381,7 @@ class StealView(View):
         self.emoji_char = emoji_char
         self.preview_url = preview_url
 
-    async def interaction_check(self, interaction: discord.Interaction) ->> bool:
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
         # Allow only the person who triggered the command
         return True
 
