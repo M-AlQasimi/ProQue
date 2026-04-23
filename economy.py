@@ -7,45 +7,52 @@ import discord
 from discord.ext import commands
 from datetime import datetime, timezone
 import threading
+import psycopg2
+from psycopg2.extras import RealDictCursor
 
-# SQLite file location - use Railway volume mount path
-DATA_DIR = os.environ.get("DATA_DIR", "/var/data")
-os.makedirs(DATA_DIR, exist_ok=True)
-DB_FILE = os.path.join(DATA_DIR, "economy.db")
-lock = threading.Lock()
+# Database setup - PostgreSQL
+DATABASE_URL = os.environ.get("DATABASE_URL")
+
+def get_db_connection():
+    return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
 
 def init_db():
     """Create tables if they don't exist."""
+    if not DATABASE_URL:
+        print("⚠️ DATABASE_URL not set - economy system disabled")
+        return False
+    
     try:
-        conn = sqlite3.connect(DB_FILE)
+        conn = get_db_connection()
         cur = conn.cursor()
         cur.execute("""
             CREATE TABLE IF NOT EXISTS economy (
-                user_id INTEGER PRIMARY KEY,
-                balance INTEGER DEFAULT 0,
-                daily_streak INTEGER DEFAULT 0,
-                weekly_streak INTEGER DEFAULT 0,
-                monthly_streak INTEGER DEFAULT 0,
-                last_daily TEXT,
-                last_weekly TEXT,
-                last_monthly TEXT,
-                total_earned INTEGER DEFAULT 0,
-                total_won INTEGER DEFAULT 0,
-                total_lost INTEGER DEFAULT 0,
-                steal_blacklist TEXT DEFAULT '[]',
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                user_id BIGINT PRIMARY KEY,
+                balance BIGINT DEFAULT 0,
+                daily_streak INT DEFAULT 0,
+                weekly_streak INT DEFAULT 0,
+                monthly_streak INT DEFAULT 0,
+                last_daily TIMESTAMP DEFAULT NULL,
+                last_weekly TIMESTAMP DEFAULT NULL,
+                last_monthly TIMESTAMP DEFAULT NULL,
+                total_earned BIGINT DEFAULT 0,
+                total_won BIGINT DEFAULT 0,
+                total_lost BIGINT DEFAULT 0,
+                steal_blacklist BIGINT[] DEFAULT '{}',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
         conn.commit()
         cur.close()
         conn.close()
-        print("✅ Economy DB initialized (SQLite)")
+        print("✅ Economy DB initialized (PostgreSQL)")
         return True
     except Exception as e:
         print(f"❌ Economy DB init failed: {e}")
         return False
 
 db_ready = init_db()
+lock = threading.Lock()
 
 def get_user(user_id):
     """Get user data from DB, create if doesn't exist."""
@@ -53,25 +60,24 @@ def get_user(user_id):
         return None
     
     with lock:
-        conn = sqlite3.connect(DB_FILE)
-        conn.row_factory = sqlite3.Row
+        conn = get_db_connection()
         cur = conn.cursor()
-        cur.execute("SELECT * FROM economy WHERE user_id = ?", (user_id,))
+        cur.execute("SELECT * FROM economy WHERE user_id = %s", (user_id,))
         user = cur.fetchone()
+        cur.close()
         conn.close()
     
     if not user:
-        # Create new user
         with lock:
-            conn = sqlite3.connect(DB_FILE)
+            conn = get_db_connection()
             cur = conn.cursor()
-            cur.execute("INSERT INTO economy (user_id, balance) VALUES (?, 0)", (user_id,))
+            cur.execute("INSERT INTO economy (user_id, balance) VALUES (%s, 0) RETURNING *", (user_id,))
             conn.commit()
-            cur.execute("SELECT * FROM economy WHERE user_id = ?", (user_id,))
             user = cur.fetchone()
+            cur.close()
             conn.close()
     
-    return dict(user) if user else None
+    return dict(user)
 
 def update_user(user_id, **kwargs):
     """Update user data."""
@@ -82,13 +88,13 @@ def update_user(user_id, **kwargs):
         return
     
     with lock:
-        conn = sqlite3.connect(DB_FILE)
+        conn = get_db_connection()
         cur = conn.cursor()
         
-        set_clause = ", ".join([f"{k} = ?" for k in kwargs.keys()])
+        set_clause = ", ".join([f"{k} = %s" for k in kwargs.keys()])
         values = list(kwargs.values()) + [user_id]
         
-        cur.execute(f"UPDATE economy SET {set_clause} WHERE user_id = ?", values)
+        cur.execute(f"UPDATE economy SET {set_clause} WHERE user_id = %s", values)
         conn.commit()
         cur.close()
         conn.close()
@@ -97,7 +103,6 @@ def update_user(user_id, **kwargs):
 CURRENCY_SYMBOL = "𝚀"
 
 def format_balance(amount):
-    """Format balance with 𝚀 symbol."""
     return f"{amount:,} {CURRENCY_SYMBOL}"
 
 def is_super_owner(user_id):
@@ -109,9 +114,8 @@ class EconomyCog(commands.Cog):
     
     @commands.command(name="bal")
     async def bal(self, ctx, member: discord.Member = None):
-        """Check balance."""
         if not db_ready:
-            await ctx.send("❌ Economy system is not configured.")
+            await ctx.send("❌ Economy system not configured.")
             return
         
         user = ctx.author if not member else member
@@ -133,9 +137,8 @@ class EconomyCog(commands.Cog):
     
     @commands.command(name="daily")
     async def daily(self, ctx):
-        """Daily reward."""
         if not db_ready:
-            await ctx.send("❌ Economy system is not configured.")
+            await ctx.send("❌ Economy system not configured.")
             return
         
         user_id = ctx.author.id
@@ -143,13 +146,13 @@ class EconomyCog(commands.Cog):
         now = datetime.now(timezone.utc)
         
         if data['last_daily']:
-            last_daily = datetime.fromisoformat(data['last_daily']).replace(tzinfo=timezone.utc)
+            last_daily = data['last_daily'].replace(tzinfo=timezone.utc) if data['last_daily'].tzinfo is None else data['last_daily']
             elapsed = (now - last_daily).total_seconds()
             
-            if elapsed < 86400:  # 24 hours
+            if elapsed < 86400:
                 hours_left = int((86400 - elapsed) / 3600)
                 minutes_left = int(((86400 - elapsed) % 3600) / 60)
-                await ctx.send(f"⏰ You can claim your daily in **{hours_left}h {minutes_left}m**")
+                await ctx.send(f"⏰ You can claim daily in **{hours_left}h {minutes_left}m**")
                 return
         
         streak = data['daily_streak'] + 1
@@ -161,7 +164,7 @@ class EconomyCog(commands.Cog):
             user_id,
             balance=data['balance'] + reward,
             daily_streak=streak,
-            last_daily=now.isoformat(),
+            last_daily=now,
             total_earned=data['total_earned'] + reward
         )
         
@@ -169,9 +172,8 @@ class EconomyCog(commands.Cog):
     
     @commands.command(name="weekly")
     async def weekly(self, ctx):
-        """Weekly reward."""
         if not db_ready:
-            await ctx.send("❌ Economy system is not configured.")
+            await ctx.send("❌ Economy system not configured.")
             return
         
         user_id = ctx.author.id
@@ -179,12 +181,12 @@ class EconomyCog(commands.Cog):
         now = datetime.now(timezone.utc)
         
         if data['last_weekly']:
-            last_weekly = datetime.fromisoformat(data['last_weekly']).replace(tzinfo=timezone.utc)
+            last_weekly = data['last_weekly'].replace(tzinfo=timezone.utc) if data['last_weekly'].tzinfo is None else data['last_weekly']
             elapsed = (now - last_weekly).total_seconds()
             
             if elapsed < 604800:
                 days_left = int((604800 - elapsed) / 86400)
-                await ctx.send(f"⏰ You can claim your weekly in **{days_left}** days")
+                await ctx.send(f"⏰ You can claim weekly in **{days_left}** days")
                 return
         
         streak = data['weekly_streak'] + 1
@@ -196,7 +198,7 @@ class EconomyCog(commands.Cog):
             user_id,
             balance=data['balance'] + reward,
             weekly_streak=streak,
-            last_weekly=now.isoformat(),
+            last_weekly=now,
             total_earned=data['total_earned'] + reward
         )
         
@@ -204,9 +206,8 @@ class EconomyCog(commands.Cog):
     
     @commands.command(name="monthly")
     async def monthly(self, ctx):
-        """Monthly reward."""
         if not db_ready:
-            await ctx.send("❌ Economy system is not configured.")
+            await ctx.send("❌ Economy system not configured.")
             return
         
         user_id = ctx.author.id
@@ -214,12 +215,12 @@ class EconomyCog(commands.Cog):
         now = datetime.now(timezone.utc)
         
         if data['last_monthly']:
-            last_monthly = datetime.fromisoformat(data['last_monthly']).replace(tzinfo=timezone.utc)
+            last_monthly = data['last_monthly'].replace(tzinfo=timezone.utc) if data['last_monthly'].tzinfo is None else data['last_monthly']
             elapsed = (now - last_monthly).total_seconds()
             
             if elapsed < 2592000:
                 days_left = int((2592000 - elapsed) / 86400)
-                await ctx.send(f"⏰ You can claim your monthly in **{days_left}** days")
+                await ctx.send(f"⏰ You can claim monthly in **{days_left}** days")
                 return
         
         streak = data['monthly_streak'] + 1
@@ -231,7 +232,7 @@ class EconomyCog(commands.Cog):
             user_id,
             balance=data['balance'] + reward,
             monthly_streak=streak,
-            last_monthly=now.isoformat(),
+            last_monthly=now,
             total_earned=data['total_earned'] + reward
         )
         
@@ -239,9 +240,8 @@ class EconomyCog(commands.Cog):
     
     @commands.command(name="work")
     async def work(self, ctx):
-        """Work for money (1hr cooldown)."""
         if not db_ready:
-            await ctx.send("❌ Economy system is not configured.")
+            await ctx.send("❌ Economy system not configured.")
             return
         
         user_id = ctx.author.id
@@ -249,7 +249,7 @@ class EconomyCog(commands.Cog):
         now = datetime.now(timezone.utc)
         
         if data['last_daily']:
-            last_work = datetime.fromisoformat(data['last_daily']).replace(tzinfo=timezone.utc)
+            last_work = data['last_daily'].replace(tzinfo=timezone.utc) if data['last_daily'].tzinfo is None else data['last_daily']
             elapsed = (now - last_work).total_seconds()
             
             if elapsed < 3600:
@@ -271,7 +271,7 @@ class EconomyCog(commands.Cog):
         update_user(
             user_id,
             balance=data['balance'] + reward,
-            last_daily=now.isoformat(),
+            last_daily=now,
             total_earned=data['total_earned'] + reward
         )
         
@@ -279,9 +279,8 @@ class EconomyCog(commands.Cog):
     
     @commands.command(name="gamble")
     async def gamble(self, ctx, amount: int):
-        """50/50 gamble."""
         if not db_ready:
-            await ctx.send("❌ Economy system is not configured.")
+            await ctx.send("❌ Economy system not configured.")
             return
         
         if amount <= 0:
@@ -318,9 +317,8 @@ class EconomyCog(commands.Cog):
     
     @commands.command(name="roulette")
     async def roulette(self, ctx, amount: int, color: str):
-        """Roulette: red (2x), black (2x), green (10x)."""
         if not db_ready:
-            await ctx.send("❌ Economy system is not configured.")
+            await ctx.send("❌ Economy system not configured.")
             return
         
         color = color.lower()
@@ -366,9 +364,8 @@ class EconomyCog(commands.Cog):
     
     @commands.command(name="slots")
     async def slots(self, ctx, amount: int):
-        """Slot machine."""
         if not db_ready:
-            await ctx.send("❌ Economy system is not configured.")
+            await ctx.send("❌ Economy system not configured.")
             return
         
         if amount <= 0:
@@ -422,9 +419,8 @@ class EconomyCog(commands.Cog):
     
     @commands.command(name="give")
     async def give(self, ctx, member: discord.Member, amount: int):
-        """Transfer Quesos to another user."""
         if not db_ready:
-            await ctx.send("❌ Economy system is not configured.")
+            await ctx.send("❌ Economy system not configured.")
             return
         
         if amount <= 0:
@@ -432,7 +428,7 @@ class EconomyCog(commands.Cog):
             return
         
         if member.id == ctx.author.id:
-            await ctx.send("❌ You can't transfer to yourself.")
+            await ctx.send("❌ Can't transfer to yourself.")
             return
         
         user_id = ctx.author.id
@@ -452,16 +448,16 @@ class EconomyCog(commands.Cog):
     @commands.command(name="leaderboard")
     @commands.alias("lb")
     async def leaderboard(self, ctx):
-        """Top Quesos holders."""
         if not db_ready:
-            await ctx.send("❌ Economy system is not configured.")
+            await ctx.send("❌ Economy system not configured.")
             return
         
         with lock:
-            conn = sqlite3.connect(DB_FILE)
+            conn = get_db_connection()
             cur = conn.cursor()
             cur.execute("SELECT user_id, balance FROM economy ORDER BY balance DESC LIMIT 10")
             rows = cur.fetchall()
+            cur.close()
             conn.close()
         
         embed = discord.Embed(
@@ -471,14 +467,14 @@ class EconomyCog(commands.Cog):
         
         for i, row in enumerate(rows, 1):
             try:
-                user = await self.bot.fetch_user(row[0])
+                user = await self.bot.fetch_user(row['user_id'])
                 name = user.name
             except:
-                name = f"User {row[0]}"
+                name = f"User {row['user_id']}"
             
             embed.add_field(
                 name=f"{i}. {name}",
-                value=format_balance(row[1]),
+                value=format_balance(row['balance']),
                 inline=False
             )
         
@@ -486,22 +482,21 @@ class EconomyCog(commands.Cog):
     
     @commands.command(name="steal")
     async def steal(self, ctx, member: discord.Member):
-        """Attempt to steal Quesos (risky!)."""
         if not db_ready:
-            await ctx.send("❌ Economy system is not configured.")
+            await ctx.send("❌ Economy system not configured.")
             return
         
         if member.id == ctx.author.id:
-            await ctx.send("❌ You can't steal from yourself.")
+            await ctx.send("❌ Can't steal from yourself.")
             return
         
         user_id = ctx.author.id
         data = get_user(user_id)
         target_data = get_user(member.id)
         
-        blacklist = json.loads(target_data['steal_blacklist'] or '[]')
+        blacklist = target_data['steal_blacklist'] or []
         if user_id in blacklist:
-            await ctx.send("❌ You are blacklisted from stealing from this user.")
+            await ctx.send("❌ You are blacklisted from this user.")
             return
         
         success = random.random() < 0.4
@@ -512,15 +507,15 @@ class EconomyCog(commands.Cog):
             update_user(member.id, balance=target_data['balance'] - stolen)
             await ctx.send(f"😈 You stole **{format_balance(stolen)}** from **{member.name}**!")
         else:
+            blacklist = list(blacklist) if blacklist else []
             blacklist.append(user_id)
-            update_user(member.id, steal_blacklist=json.dumps(blacklist))
-            await ctx.send(f"💸 Failed! **{member.name}** caught you. You're blacklisted from stealing from them.")
+            update_user(member.id, steal_blacklist=blacklist)
+            await ctx.send(f"💸 Failed! **{member.name}** caught you. Blacklisted.")
     
     @commands.command(name="add")
     async def add(self, ctx, member: discord.Member, amount: int):
-        """Add Quesos (super owner only)."""
         if not is_super_owner(ctx.author.id):
-            await ctx.send("❌ This command is for the bot owner only.")
+            await ctx.send("❌ Bot owner only.")
             return
         
         if amount <= 0:
@@ -538,9 +533,8 @@ class EconomyCog(commands.Cog):
     
     @commands.command(name="remove")
     async def remove(self, ctx, member: discord.Member, amount: int):
-        """Remove Quesos (super owner only)."""
         if not is_super_owner(ctx.author.id):
-            await ctx.send("❌ This command is for the bot owner only.")
+            await ctx.send("❌ Bot owner only.")
             return
         
         if amount <= 0:
