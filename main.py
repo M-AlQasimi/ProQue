@@ -76,7 +76,11 @@ class MyBot(commands.Bot):
         pass
         
 intents = discord.Intents.all()
-bot = MyBot(command_prefix='.', intents=intents)
+def get_prefix(bot, message):
+    """Support both . and pq as prefixes"""
+    return commands.when_mentioned_or('.', 'pq')(bot, message)
+
+bot = MyBot(command_prefix=get_prefix, intents=intents)
 print(f"Bot is starting with intents: {bot.intents}")
 
 log_channel_id = 1394806479881769100
