@@ -463,7 +463,7 @@ async def remove(ctx, member: discord.Member, amount: int):
     
     await ctx.send(f"✅ Removed **{format_balance(amount)}** from **{member.name}**")
 
-def setup(bot_ref):
+async def setup(bot_ref):
     """Called when the cog is loaded"""
     global bot
     bot = bot_ref
