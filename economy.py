@@ -1,27 +1,31 @@
 import asyncio
 import random
 import os
-import json
-import sqlite3
-import discord
-from discord.ext import commands
-from datetime import datetime, timezone
-import threading
 import psycopg2
 from psycopg2.extras import RealDictCursor
+from datetime import datetime, timezone
+import discord
+from discord.ext import commands
+from threading import Lock
 
-# Database setup - PostgreSQL
-DATABASE_URL = os.environ.get("DATABASE_URL")
+lock = Lock()
+db_ready = False
+
+# Bot reference - set in setup()
+bot = None
 
 def get_db_connection():
-    return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+    return psycopg2.connect(
+        host=os.getenv("DB_HOST", "postgres.railway.internal"),
+        port=os.getenv("DB_PORT", "5432"),
+        database=os.getenv("DB_NAME", "railway"),
+        user=os.getenv("DB_USER", "postgres"),
+        password=os.getenv("DB_PASSWORD", "postgres"),
+        cursor_factory=RealDictCursor
+    )
 
 def init_db():
-    """Create tables if they don't exist."""
-    if not DATABASE_URL:
-        print("⚠️ DATABASE_URL not set - economy system disabled")
-        return False
-    
+    global db_ready
     try:
         conn = get_db_connection()
         cur = conn.cursor()
@@ -29,36 +33,28 @@ def init_db():
             CREATE TABLE IF NOT EXISTS economy (
                 user_id BIGINT PRIMARY KEY,
                 balance BIGINT DEFAULT 0,
-                daily_streak INT DEFAULT 0,
-                weekly_streak INT DEFAULT 0,
-                monthly_streak INT DEFAULT 0,
-                last_daily TIMESTAMP DEFAULT NULL,
-                last_weekly TIMESTAMP DEFAULT NULL,
-                last_monthly TIMESTAMP DEFAULT NULL,
+                daily_streak INTEGER DEFAULT 0,
+                weekly_streak INTEGER DEFAULT 0,
+                monthly_streak INTEGER DEFAULT 0,
+                last_daily TIMESTAMP,
+                last_weekly TIMESTAMP,
+                last_monthly TIMESTAMP,
                 total_earned BIGINT DEFAULT 0,
                 total_won BIGINT DEFAULT 0,
                 total_lost BIGINT DEFAULT 0,
-                steal_blacklist BIGINT[] DEFAULT '{}',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                steal_blacklist BIGINT[] DEFAULT '{}'
             )
         """)
         conn.commit()
         cur.close()
         conn.close()
+        db_ready = True
         print("✅ Economy DB initialized (PostgreSQL)")
-        return True
     except Exception as e:
         print(f"❌ Economy DB init failed: {e}")
-        return False
-
-db_ready = init_db()
-lock = threading.Lock()
+        db_ready = False
 
 def get_user(user_id):
-    """Get user data from DB, create if doesn't exist."""
-    if not db_ready:
-        return None
-    
     with lock:
         conn = get_db_connection()
         cur = conn.cursor()
@@ -67,55 +63,45 @@ def get_user(user_id):
         cur.close()
         conn.close()
     
-    if not user:
-        with lock:
-            conn = get_db_connection()
-            cur = conn.cursor()
-            cur.execute("INSERT INTO economy (user_id, balance) VALUES (%s, 0) RETURNING *", (user_id,))
-            conn.commit()
-            user = cur.fetchone()
-            cur.close()
-            conn.close()
+    if user is None:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("INSERT INTO economy (user_id, balance) VALUES (%s, 0) RETURNING *", (user_id,))
+        user = cur.fetchone()
+        conn.commit()
+        cur.close()
+        conn.close()
     
-    return dict(user)
+    return user
 
 def update_user(user_id, **kwargs):
-    """Update user data."""
-    if not db_ready:
-        return
-    
-    if not kwargs:
-        return
-    
     with lock:
         conn = get_db_connection()
         cur = conn.cursor()
         
-        set_clause = ", ".join([f"{k} = %s" for k in kwargs.keys()])
-        values = list(kwargs.values()) + [user_id]
+        set_clauses = []
+        values = []
+        for key, value in kwargs.items():
+            set_clauses.append(f"{key} = %s")
+            values.append(value)
         
-        cur.execute(f"UPDATE economy SET {set_clause} WHERE user_id = %s", values)
+        values.append(user_id)
+        
+        query = f"UPDATE economy SET {', '.join(set_clauses)} WHERE user_id = %s RETURNING *"
+        cur.execute(query, values)
         conn.commit()
         cur.close()
         conn.close()
 
-# Currency symbol
-CURRENCY_SYMBOL = "𝚀"
-
 def format_balance(amount):
-    return f"{amount:,} {CURRENCY_SYMBOL}"
+    return f"{amount:,} 𝚀"
 
 def is_super_owner(user_id):
     return user_id == 885548126365171824
 
-# Create command group for pq - using @commands.group() decorator pattern
-@commands.group(name="pq", description="Quewo economy system")
-async def pq_group(ctx):
-    """Placeholder - subcommands added below"""
-    pass
-
-@pq_group.command(name="bal")
-async def bal(self, ctx, member: discord.Member = None):
+# Individual commands - accessible as .bal, .daily, etc.
+@commands.command()
+async def bal(ctx, member: discord.Member = None):
     if not db_ready:
         await ctx.send("❌ Economy system not configured.")
         return
@@ -137,8 +123,8 @@ async def bal(self, ctx, member: discord.Member = None):
     
     await ctx.send(embed=embed)
 
-@pq_group.command(name="daily")
-async def daily(self, ctx):
+@commands.command()
+async def daily(ctx):
     if not db_ready:
         await ctx.send("❌ Economy system not configured.")
         return
@@ -172,8 +158,8 @@ async def daily(self, ctx):
     
     await ctx.send(f"🎉 You claimed **{format_balance(reward)}**!\nStreak: **{streak}** days (+{streak_bonus} bonus)")
 
-@pq_group.command(name="weekly")
-async def weekly(self, ctx):
+@commands.command()
+async def weekly(ctx):
     if not db_ready:
         await ctx.send("❌ Economy system not configured.")
         return
@@ -206,8 +192,8 @@ async def weekly(self, ctx):
     
     await ctx.send(f"🎉 You claimed **{format_balance(reward)}**!\nWeekly streak: **{streak}** weeks (+{streak_bonus} bonus)")
 
-@pq_group.command(name="monthly")
-async def monthly(self, ctx):
+@commands.command()
+async def monthly(ctx):
     if not db_ready:
         await ctx.send("❌ Economy system not configured.")
         return
@@ -240,47 +226,8 @@ async def monthly(self, ctx):
     
     await ctx.send(f"🎉 You claimed **{format_balance(reward)}**!\nMonthly streak: **{streak}** months (+{streak_bonus} bonus)")
 
-@pq_group.command(name="work")
-async def work(self, ctx):
-    if not db_ready:
-        await ctx.send("❌ Economy system not configured.")
-        return
-    
-    user_id = ctx.author.id
-    data = get_user(user_id)
-    now = datetime.now(timezone.utc)
-    
-    if data['last_daily']:
-        last_work = data['last_daily'].replace(tzinfo=timezone.utc) if data['last_daily'].tzinfo is None else data['last_daily']
-        elapsed = (now - last_work).total_seconds()
-        
-        if elapsed < 3600:
-            minutes_left = int((3600 - elapsed) / 60)
-            await ctx.send(f"⏰ You can work again in **{minutes_left}** minutes")
-            return
-    
-    jobs = [
-        ("delivered pizzas", random.randint(50, 150)),
-        ("fixed bugs in code", random.randint(100, 300)),
-        ("walked dogs", random.randint(30, 80)),
-        ("tutored students", random.randint(150, 400)),
-        ("flipped burgers", random.randint(40, 100)),
-        ("did freelance work", random.randint(200, 500)),
-    ]
-    
-    job, reward = random.choice(jobs)
-    
-    update_user(
-        user_id,
-        balance=data['balance'] + reward,
-        last_daily=now,
-        total_earned=data['total_earned'] + reward
-    )
-    
-    await ctx.send(f"💼 You **{job}** and earned **{format_balance(reward)}**!")
-
-@pq_group.command(name="gamble")
-async def gamble(self, ctx, amount: int):
+@commands.command()
+async def gamble(ctx, amount: int):
     if not db_ready:
         await ctx.send("❌ Economy system not configured.")
         return
@@ -317,15 +264,15 @@ async def gamble(self, ctx, amount: int):
         )
         await ctx.send(f"💸 You lost... **{format_balance(amount)}** → **{format_balance(data['balance'] - amount)}**")
 
-@pq_group.command(name="roulette")
-async def roulette(self, ctx, amount: int, color: str):
+@commands.command()
+async def roulette(ctx, amount: int, color: str):
     if not db_ready:
         await ctx.send("❌ Economy system not configured.")
         return
     
     color = color.lower()
     if color not in ['red', 'black', 'green']:
-        await ctx.send("❌ Use: `pq roulette <amount> <red|black|green>`")
+        await ctx.send("❌ Use: `.roulette <amount> <red|black|green>`")
         return
     
     if amount <= 0:
@@ -364,8 +311,8 @@ async def roulette(self, ctx, amount: int, color: str):
         )
         await ctx.send(f"💸 It was **{result.upper()}**. You lost **{format_balance(amount)}**")
 
-@pq_group.command(name="slots")
-async def slots(self, ctx, amount: int):
+@commands.command()
+async def slots(ctx, amount: int):
     if not db_ready:
         await ctx.send("❌ Economy system not configured.")
         return
@@ -419,8 +366,8 @@ async def slots(self, ctx, amount: int):
         )
         await ctx.send(f"🎰 {result}\n💸 No luck this time...")
 
-@pq_group.command(name="give")
-async def give(self, ctx, member: discord.Member, amount: int):
+@commands.command()
+async def give(ctx, member: discord.Member, amount: int):
     if not db_ready:
         await ctx.send("❌ Economy system not configured.")
         return
@@ -447,8 +394,8 @@ async def give(self, ctx, member: discord.Member, amount: int):
     
     await ctx.send(f"💸 You gave **{format_balance(amount)}** to **{member.name}**")
 
-@pq_group.command(name="leaderboard")
-async def leaderboard(self, ctx):
+@commands.command(name="lb")
+async def lb(ctx):
     if not db_ready:
         await ctx.send("❌ Economy system not configured.")
         return
@@ -481,40 +428,8 @@ async def leaderboard(self, ctx):
     
     await ctx.send(embed=embed)
 
-@pq_group.command(name="steal")
-async def steal(self, ctx, member: discord.Member):
-    if not db_ready:
-        await ctx.send("❌ Economy system not configured.")
-        return
-    
-    if member.id == ctx.author.id:
-        await ctx.send("❌ Can't steal from yourself.")
-        return
-    
-    user_id = ctx.author.id
-    data = get_user(user_id)
-    target_data = get_user(member.id)
-    
-    blacklist = target_data['steal_blacklist'] or []
-    if user_id in blacklist:
-        await ctx.send("❌ You are blacklisted from this user.")
-        return
-    
-    success = random.random() < 0.4
-    
-    if success:
-        stolen = random.randint(50, min(500, target_data['balance']))
-        update_user(user_id, balance=data['balance'] + stolen)
-        update_user(member.id, balance=target_data['balance'] - stolen)
-        await ctx.send(f"😈 You stole **{format_balance(stolen)}** from **{member.name}**!")
-    else:
-        blacklist = list(blacklist) if blacklist else []
-        blacklist.append(user_id)
-        update_user(member.id, steal_blacklist=blacklist)
-        await ctx.send(f"💸 Failed! **{member.name}** caught you. Blacklisted.")
-
-@pq_group.command(name="add")
-async def add(self, ctx, member: discord.Member, amount: int):
+@commands.command()
+async def add(ctx, member: discord.Member, amount: int):
     if not is_super_owner(ctx.author.id):
         await ctx.send("❌ Bot owner only.")
         return
@@ -532,8 +447,8 @@ async def add(self, ctx, member: discord.Member, amount: int):
     
     await ctx.send(f"✅ Added **{format_balance(amount)}** to **{member.name}**")
 
-@pq_group.command(name="remove")
-async def remove(self, ctx, member: discord.Member, amount: int):
+@commands.command()
+async def remove(ctx, member: discord.Member, amount: int):
     if not is_super_owner(ctx.author.id):
         await ctx.send("❌ Bot owner only.")
         return
@@ -548,12 +463,8 @@ async def remove(self, ctx, member: discord.Member, amount: int):
     
     await ctx.send(f"✅ Removed **{format_balance(amount)}** from **{member.name}**")
 
-class EconomyCog(commands.Cog):
-    def __init__(self, bot):
-        self.bot = bot
-        # pq_group is added via @commands.group decorator above
-        # Just remove default command if exists
-        self.bot.remove_command("pq")
-
-def setup(bot):
-    bot.add_cog(EconomyCog(bot))
+def setup(bot_ref):
+    """Called when the cog is loaded"""
+    global bot
+    bot = bot_ref
+    init_db()
