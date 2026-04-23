@@ -114,7 +114,8 @@ async def pq_group(ctx):
     """Placeholder - subcommands added below"""
     pass
 
-# Then add subcommands using pq_group.command() decorator
+@pq_group.command(name="bal")
+async def bal(self, ctx, member: discord.Member = None):
     if not db_ready:
         await ctx.send("❌ Economy system not configured.")
         return
