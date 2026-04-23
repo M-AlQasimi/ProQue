@@ -468,3 +468,16 @@ def setup(bot_ref):
     global bot
     bot = bot_ref
     init_db()
+    
+    # Register all economy commands
+    bot.add_command(bal)
+    bot.add_command(daily)
+    bot.add_command(weekly)
+    bot.add_command(monthly)
+    bot.add_command(gamble)
+    bot.add_command(roulette)
+    bot.add_command(slots)
+    bot.add_command(give)
+    bot.add_command(lb)
+    bot.add_command(add)
+    bot.add_command(remove)
