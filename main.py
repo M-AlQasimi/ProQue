@@ -21,6 +21,7 @@ from discord.ui import Button, Modal, Select, TextInput, View
 from flask import Flask
 from io import BytesIO
 from threading import Thread
+from economy import setup as economy_setup
 last_message_time = 0
 app = Flask('')
 
@@ -183,6 +184,12 @@ async def on_ready():
     if not keep_alive_task.is_running():
         keep_alive_task.start()
     asyncio.create_task(birthday_check_loop())
+    # Load economy cog
+    try:
+        await economy_setup(bot)
+        print("Economy system loaded")
+    except Exception as e:
+        print(f"Economy system not loaded: {e}")
     print("Bot ready, waiting to sync slash commands...")
 
 
