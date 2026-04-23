@@ -111,7 +111,7 @@ def is_super_owner(user_id):
 # Create command group for pq
 pq_group = commands.Group(name="pq", description="Quewo economy system")
 
-@pq_group.command(name="bal", aliases=["balance"])
+@pq_group.command(name="bal")
 async def bal(self, ctx, member: discord.Member = None):
     if not db_ready:
         await ctx.send("❌ Economy system not configured.")
@@ -444,7 +444,7 @@ async def give(self, ctx, member: discord.Member, amount: int):
     
     await ctx.send(f"💸 You gave **{format_balance(amount)}** to **{member.name}**")
 
-@pq_group.command(name="leaderboard", aliases=["lb"])
+@pq_group.command(name="leaderboard")
 async def leaderboard(self, ctx):
     if not db_ready:
         await ctx.send("❌ Economy system not configured.")
@@ -545,64 +545,11 @@ async def remove(self, ctx, member: discord.Member, amount: int):
     
     await ctx.send(f"✅ Removed **{format_balance(amount)}** from **{member.name}**")
 
-# Legacy commands with .prefix
 class EconomyCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.bot.remove_command("pq")
         self.bot.add_command(pq_group)
-    
-    @commands.command(name="bal", aliases=["balance"])
-    async def bal_legacy(self, ctx, member: discord.Member = None):
-        await bal(self, ctx, member)
-    
-    @commands.command(name="daily")
-    async def daily_legacy(self, ctx):
-        await daily(self, ctx)
-    
-    @commands.command(name="weekly")
-    async def weekly_legacy(self, ctx):
-        await weekly(self, ctx)
-    
-    @commands.command(name="monthly")
-    async def monthly_legacy(self, ctx):
-        await monthly(self, ctx)
-    
-    @commands.command(name="work")
-    async def work_legacy(self, ctx):
-        await work(self, ctx)
-    
-    @commands.command(name="gamble")
-    async def gamble_legacy(self, ctx, amount: int):
-        await gamble(self, ctx, amount)
-    
-    @commands.command(name="roulette")
-    async def roulette_legacy(self, ctx, amount: int, color: str):
-        await roulette(self, ctx, amount, color)
-    
-    @commands.command(name="slots")
-    async def slots_legacy(self, ctx, amount: int):
-        await slots(self, ctx, amount)
-    
-    @commands.command(name="give")
-    async def give_legacy(self, ctx, member: discord.Member, amount: int):
-        await give(self, ctx, member, amount)
-    
-    @commands.command(name="leaderboard", aliases=["lb"])
-    async def leaderboard_legacy(self, ctx):
-        await leaderboard(self, ctx)
-    
-    @commands.command(name="steal")
-    async def steal_legacy(self, ctx, member: discord.Member):
-        await steal(self, ctx, member)
-    
-    @commands.command(name="add")
-    async def add_legacy(self, ctx, member: discord.Member, amount: int):
-        await add(self, ctx, member, amount)
-    
-    @commands.command(name="remove")
-    async def remove_legacy(self, ctx, member: discord.Member, amount: int):
-        await remove(self, ctx, member, amount)
 
 def setup(bot):
     bot.add_cog(EconomyCog(bot))
