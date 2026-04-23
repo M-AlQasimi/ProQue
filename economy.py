@@ -108,25 +108,13 @@ def format_balance(amount):
 def is_super_owner(user_id):
     return user_id == 885548126365171824
 
-# Create command group for pq - lazily created
-class _PQGroup:
-    """Lazy loader for pq_group"""
-    _instance = None
-    
-    @property
-    def group(self):
-        if _PQGroup._instance is None:
-            _PQGroup._instance = commands.Group(name="pq", description="Quewo economy system")
-        return _PQGroup._instance
-    
-    def command(self, *args, **kwargs):
-        return self.group.command(*args, **kwargs)
+# Create command group for pq - using @commands.group() decorator pattern
+@commands.group(name="pq", description="Quewo economy system")
+async def pq_group(ctx):
+    """Placeholder - subcommands added below"""
+    pass
 
-pq_loader = _PQGroup()
-
-# Use pq_loader.group or pq_loader.command() instead of pq_group
-@pq_loader.command(name="bal")
-async def bal(self, ctx, member: discord.Member = None):
+# Then add subcommands using pq_group.command() decorator
     if not db_ready:
         await ctx.send("❌ Economy system not configured.")
         return
@@ -148,7 +136,7 @@ async def bal(self, ctx, member: discord.Member = None):
     
     await ctx.send(embed=embed)
 
-@pq_loader.command(name="daily")
+@pq_group.command(name="daily")
 async def daily(self, ctx):
     if not db_ready:
         await ctx.send("❌ Economy system not configured.")
@@ -183,7 +171,7 @@ async def daily(self, ctx):
     
     await ctx.send(f"🎉 You claimed **{format_balance(reward)}**!\nStreak: **{streak}** days (+{streak_bonus} bonus)")
 
-@pq_loader.command(name="weekly")
+@pq_group.command(name="weekly")
 async def weekly(self, ctx):
     if not db_ready:
         await ctx.send("❌ Economy system not configured.")
@@ -217,7 +205,7 @@ async def weekly(self, ctx):
     
     await ctx.send(f"🎉 You claimed **{format_balance(reward)}**!\nWeekly streak: **{streak}** weeks (+{streak_bonus} bonus)")
 
-@pq_loader.command(name="monthly")
+@pq_group.command(name="monthly")
 async def monthly(self, ctx):
     if not db_ready:
         await ctx.send("❌ Economy system not configured.")
@@ -251,7 +239,7 @@ async def monthly(self, ctx):
     
     await ctx.send(f"🎉 You claimed **{format_balance(reward)}**!\nMonthly streak: **{streak}** months (+{streak_bonus} bonus)")
 
-@pq_loader.command(name="work")
+@pq_group.command(name="work")
 async def work(self, ctx):
     if not db_ready:
         await ctx.send("❌ Economy system not configured.")
@@ -290,7 +278,7 @@ async def work(self, ctx):
     
     await ctx.send(f"💼 You **{job}** and earned **{format_balance(reward)}**!")
 
-@pq_loader.command(name="gamble")
+@pq_group.command(name="gamble")
 async def gamble(self, ctx, amount: int):
     if not db_ready:
         await ctx.send("❌ Economy system not configured.")
@@ -328,7 +316,7 @@ async def gamble(self, ctx, amount: int):
         )
         await ctx.send(f"💸 You lost... **{format_balance(amount)}** → **{format_balance(data['balance'] - amount)}**")
 
-@pq_loader.command(name="roulette")
+@pq_group.command(name="roulette")
 async def roulette(self, ctx, amount: int, color: str):
     if not db_ready:
         await ctx.send("❌ Economy system not configured.")
@@ -375,7 +363,7 @@ async def roulette(self, ctx, amount: int, color: str):
         )
         await ctx.send(f"💸 It was **{result.upper()}**. You lost **{format_balance(amount)}**")
 
-@pq_loader.command(name="slots")
+@pq_group.command(name="slots")
 async def slots(self, ctx, amount: int):
     if not db_ready:
         await ctx.send("❌ Economy system not configured.")
@@ -430,7 +418,7 @@ async def slots(self, ctx, amount: int):
         )
         await ctx.send(f"🎰 {result}\n💸 No luck this time...")
 
-@pq_loader.command(name="give")
+@pq_group.command(name="give")
 async def give(self, ctx, member: discord.Member, amount: int):
     if not db_ready:
         await ctx.send("❌ Economy system not configured.")
@@ -458,7 +446,7 @@ async def give(self, ctx, member: discord.Member, amount: int):
     
     await ctx.send(f"💸 You gave **{format_balance(amount)}** to **{member.name}**")
 
-@pq_loader.command(name="leaderboard")
+@pq_group.command(name="leaderboard")
 async def leaderboard(self, ctx):
     if not db_ready:
         await ctx.send("❌ Economy system not configured.")
@@ -492,7 +480,7 @@ async def leaderboard(self, ctx):
     
     await ctx.send(embed=embed)
 
-@pq_loader.command(name="steal")
+@pq_group.command(name="steal")
 async def steal(self, ctx, member: discord.Member):
     if not db_ready:
         await ctx.send("❌ Economy system not configured.")
@@ -524,7 +512,7 @@ async def steal(self, ctx, member: discord.Member):
         update_user(member.id, steal_blacklist=blacklist)
         await ctx.send(f"💸 Failed! **{member.name}** caught you. Blacklisted.")
 
-@pq_loader.command(name="add")
+@pq_group.command(name="add")
 async def add(self, ctx, member: discord.Member, amount: int):
     if not is_super_owner(ctx.author.id):
         await ctx.send("❌ Bot owner only.")
@@ -543,7 +531,7 @@ async def add(self, ctx, member: discord.Member, amount: int):
     
     await ctx.send(f"✅ Added **{format_balance(amount)}** to **{member.name}**")
 
-@pq_loader.command(name="remove")
+@pq_group.command(name="remove")
 async def remove(self, ctx, member: discord.Member, amount: int):
     if not is_super_owner(ctx.author.id):
         await ctx.send("❌ Bot owner only.")
@@ -562,8 +550,9 @@ async def remove(self, ctx, member: discord.Member, amount: int):
 class EconomyCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        # pq_group is added via @commands.group decorator above
+        # Just remove default command if exists
         self.bot.remove_command("pq")
-        self.bot.add_command(pq_loader.group)
 
 def setup(bot):
     bot.add_cog(EconomyCog(bot))
