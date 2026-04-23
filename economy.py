@@ -11,21 +11,21 @@ from threading import Lock
 lock = Lock()
 db_ready = False
 
+# Database URL from Railway
+DATABASE_URL = os.getenv("DATABASE_URL")
+
 # Bot reference - set in setup()
 bot = None
 
 def get_db_connection():
-    return psycopg2.connect(
-        host=os.getenv("DB_HOST", "postgres.railway.internal"),
-        port=os.getenv("DB_PORT", "5432"),
-        database=os.getenv("DB_NAME", "railway"),
-        user=os.getenv("DB_USER", "postgres"),
-        password=os.getenv("DB_PASSWORD", "postgres"),
-        cursor_factory=RealDictCursor
-    )
+    return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
 
 def init_db():
     global db_ready
+    if not DATABASE_URL:
+        print("⚠️ DATABASE_URL not set - economy system disabled")
+        return
+    
     try:
         conn = get_db_connection()
         cur = conn.cursor()
