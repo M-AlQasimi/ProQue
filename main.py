@@ -41,6 +41,9 @@ def save_ids(filename, id_set):
     with open(filename, "w") as f:
         json.dump(list(id_set), f)
 
+def normalize(text: str) -> str:
+    return text.lower()
+
 def load_dict(filename):
     if os.path.exists(filename):
         with open(filename, "r") as f:
@@ -1976,7 +1979,7 @@ async def removeowner(ctx, user: discord.User):
         save_ids(OWNERS_FILE, owners)
         await ctx.send(f"{user.mention} has been removed from owners.")
     else:
-        await ctx.send("{user.mention} is not an owner.")
+        await ctx.send(f"{user.mention} is not an owner.")
 
 @bot.command()
 @is_super_owner()
@@ -2019,11 +2022,14 @@ async def removemod(ctx, user: discord.User):
         save_ids(MODS_FILE, mods)
         await ctx.send(f"{user.mention} has been removed from mods.")
     else:
-        await ctx.send("{user.mention} is not a mod.")
+        await ctx.send(f"{user.mention} is not a mod.")
 
 class OwnerModManagement(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+
+    async def cog_load(self):
+        pass
 
     @app_commands.command(name="addowner", description="Add one or multiple owners")
     async def addowner(self, interaction: discord.Interaction, users: str):
@@ -2196,7 +2202,7 @@ async def rpurge(ctx, amount: int, member: discord.Member = None):
         print(f"[RPURGE ERROR] {type(e).__name__} - {e}")
         await ctx.send(f"An unexpected error occurred: {type(e).__name__}", delete_after=5)
 
-@bot.command(name="lock")
+@bot.command()
 @is_owner()
 async def lock_channel(ctx):
     overwrite = ctx.channel.overwrites_for(ctx.guild.default_role)
@@ -2204,25 +2210,6 @@ async def lock_channel(ctx):
     await ctx.channel.set_permissions(ctx.guild.default_role, overwrite=overwrite)
     await ctx.send("Channel locked.")
 
-
-
-    time_units = {'s': 1, 'm': 60, 'h': 3600, 'd': 86400}
-    try:
-        seconds = int(duration[:-1]) * time_units.get(duration[-1], 0)
-        if seconds <= 0:
-            return await ctx.send("Invalid duration.")
-    except:
-        return await ctx.send("Invalid duration format. Use like `10m`, `1h`, etc.")
-
-    try:
-        until = datetime.now(timezone.utc) + timedelta(seconds=seconds)
-        await member.timeout(until)
-        await ctx.send(
-            f"{member.mention} has been muted for {duration}.",
-            allowed_mentions=discord.AllowedMentions.none()
-        )
-    except Exception as e:
-        await ctx.send(f"Failed to mute: {e}")
 
 @bot.command()
 @is_owner_or_mod()
@@ -3533,9 +3520,6 @@ async def find(ctx, user_id: int):
     except Exception as e:
         await ctx.send(f"Could not fetch user: {e}")
 
-def normalize(text: str) -> str:
-    return text.lower()
-
 @bot.command()
 @is_owner_or_mod()
 async def censor(ctx, *, phrase: str):
@@ -3702,10 +3686,6 @@ def run_bot_with_retry():
     print("Max retries reached. Exiting.")
 
 # === AI COMMANDS ===
-
-# Get free API keys (no credit card):
-# - Groq: https://console.groq.com/
-# - Cloudflare: https://dash.cloudflare.com/ -> Workers AI
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 CLOUDFLARE_API_KEY = os.getenv("CLOUDFLARE_API_KEY", "")
