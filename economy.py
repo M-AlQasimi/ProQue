@@ -120,7 +120,7 @@ async def bal(ctx, member: discord.Member = None):
     try:
         data = get_user(user.id)
     except Exception:
-        await ctx.send("❌ Database error. Try again in a moment.")
+        await ctx.send("💧 Gimme a sec, im drinking water. Try again in a bit.")
         return
 
     embed = discord.Embed(
@@ -147,7 +147,7 @@ async def daily(ctx):
     try:
         data = get_user(user_id)
     except Exception:
-        await ctx.send("❌ Database error. Try again in a moment.")
+        await ctx.send("💧 Gimme a sec, im drinking water. Try again in a bit.")
         return
 
     now = datetime.now(timezone.utc)
@@ -176,7 +176,7 @@ async def daily(ctx):
             total_earned=data['total_earned'] + reward
         )
     except Exception:
-        await ctx.send("❌ Database error. Try again in a moment.")
+        await ctx.send("💧 Gimme a sec, im drinking water. Try again in a bit.")
         return
 
     await ctx.send(f"🎉 You claimed **{format_balance(reward)}**!\nStreak: **{streak}** days (+{streak_bonus} bonus)")
@@ -191,7 +191,7 @@ async def weekly(ctx):
     try:
         data = get_user(user_id)
     except Exception:
-        await ctx.send("❌ Database error. Try again in a moment.")
+        await ctx.send("💧 Gimme a sec, im drinking water. Try again in a bit.")
         return
 
     now = datetime.now(timezone.utc)
@@ -219,7 +219,7 @@ async def weekly(ctx):
             total_earned=data['total_earned'] + reward
         )
     except Exception:
-        await ctx.send("❌ Database error. Try again in a moment.")
+        await ctx.send("💧 Gimme a sec, im drinking water. Try again in a bit.")
         return
 
     await ctx.send(f"🎉 You claimed **{format_balance(reward)}**!\nWeekly streak: **{streak}** weeks (+{streak_bonus} bonus)")
@@ -234,7 +234,7 @@ async def monthly(ctx):
     try:
         data = get_user(user_id)
     except Exception:
-        await ctx.send("❌ Database error. Try again in a moment.")
+        await ctx.send("💧 Gimme a sec, im drinking water. Try again in a bit.")
         return
 
     now = datetime.now(timezone.utc)
@@ -262,7 +262,7 @@ async def monthly(ctx):
             total_earned=data['total_earned'] + reward
         )
     except Exception:
-        await ctx.send("❌ Database error. Try again in a moment.")
+        await ctx.send("💧 Gimme a sec, im drinking water. Try again in a bit.")
         return
 
     await ctx.send(f"🎉 You claimed **{format_balance(reward)}**!\nMonthly streak: **{streak}** months (+{streak_bonus} bonus)")
@@ -281,7 +281,7 @@ async def gamble(ctx, amount: int):
     try:
         data = get_user(user_id)
     except Exception:
-        await ctx.send("❌ Database error. Try again in a moment.")
+        await ctx.send("💧 Gimme a sec, im drinking water. Try again in a bit.")
         return
 
     if amount > data['balance']:
@@ -310,7 +310,7 @@ async def gamble(ctx, amount: int):
             )
             await ctx.send(f"💸 You lost... **{format_balance(amount)}** → **{format_balance(data['balance'] - amount)}**")
     except Exception:
-        await ctx.send("❌ Database error. Try again in a moment.")
+        await ctx.send("💧 Gimme a sec, im drinking water. Try again in a bit.")
         return
 
 @commands.command()
@@ -332,7 +332,7 @@ async def roulette(ctx, amount: int, color: str):
     try:
         data = get_user(user_id)
     except Exception:
-        await ctx.send("❌ Database error. Try again in a moment.")
+        await ctx.send("💧 Gimme a sec, im drinking water. Try again in a bit.")
         return
 
     if amount > data['balance']:
@@ -365,7 +365,7 @@ async def roulette(ctx, amount: int, color: str):
             )
             await ctx.send(f"💸 It was **{result.upper()}**. You lost **{format_balance(amount)}**")
     except Exception:
-        await ctx.send("❌ Database error. Try again in a moment.")
+        await ctx.send("💧 Gimme a sec, im drinking water. Try again in a bit.")
         return
 
 @commands.command()
@@ -382,7 +382,7 @@ async def slots(ctx, amount: int):
     try:
         data = get_user(user_id)
     except Exception:
-        await ctx.send("❌ Database error. Try again in a moment.")
+        await ctx.send("💧 Gimme a sec, im drinking water. Try again in a bit.")
         return
 
     if amount > data['balance']:
@@ -428,7 +428,7 @@ async def slots(ctx, amount: int):
             )
             await ctx.send(f"🎰 {result}\n💸 No luck this time...")
     except Exception:
-        await ctx.send("❌ Database error. Try again in a moment.")
+        await ctx.send("💧 Gimme a sec, im drinking water. Try again in a bit.")
         return
 
 @commands.command()
@@ -449,7 +449,7 @@ async def give(ctx, member: discord.Member, amount: int):
     try:
         data = get_user(user_id)
     except Exception:
-        await ctx.send("❌ Database error. Try again in a moment.")
+        await ctx.send("💧 Gimme a sec, im drinking water. Try again in a bit.")
         return
 
     if amount > data['balance']:
@@ -461,7 +461,7 @@ async def give(ctx, member: discord.Member, amount: int):
         receiver_data = get_user(member.id)
         update_user(member.id, balance=receiver_data['balance'] + amount)
     except Exception:
-        await ctx.send("❌ Database error. Try again in a moment.")
+        await ctx.send("💧 Gimme a sec, im drinking water. Try again in a bit.")
         return
 
     await ctx.send(f"💸 You gave **{format_balance(amount)}** to **{member.name}**")
@@ -480,7 +480,7 @@ async def lb(ctx):
         cur.close()
         conn.close()
     except Exception:
-        await ctx.send("❌ Database error. Try again in a moment.")
+        await ctx.send("💧 Gimme a sec, im drinking water. Try again in a bit.")
         return
 
     embed = discord.Embed(
@@ -521,7 +521,7 @@ async def add(ctx, member: discord.Member, amount: int):
             total_earned=target_data['total_earned'] + amount
         )
     except Exception:
-        await ctx.send("❌ Database error. Try again in a moment.")
+        await ctx.send("💧 Gimme a sec, im drinking water. Try again in a bit.")
         return
 
     await ctx.send(f"✅ Added **{format_balance(amount)}** to **{member.name}**")
@@ -541,7 +541,7 @@ async def remove(ctx, member: discord.Member, amount: int):
         new_balance = max(0, target_data['balance'] - amount)
         update_user(member.id, balance=new_balance)
     except Exception:
-        await ctx.send("❌ Database error. Try again in a moment.")
+        await ctx.send("💧 Gimme a sec, im drinking water. Try again in a bit.")
         return
 
     await ctx.send(f"✅ Removed **{format_balance(amount)}** from **{member.name}**")
