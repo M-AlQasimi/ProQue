@@ -50,6 +50,8 @@ def init_db():
                 roulette_streak INTEGER DEFAULT 0,
                 slots_streak INTEGER DEFAULT 0,
                 blackjack_streak INTEGER DEFAULT 0,
+                scratch_streak INTEGER DEFAULT 0,
+                wheel_streak INTEGER DEFAULT 0,
                 steal_blacklist BIGINT[] DEFAULT '{}'
             )
         """)
@@ -970,6 +972,489 @@ async def remove(ctx, member: discord.Member, amount: int):
     await ctx.send(f"✅ Removed **{format_balance(amount)}** from **{member.name}**")
 
 # =====================
+# SCRATCH CARD
+# =====================
+# Design: horizontal ticket with 5 hidden cells, animated one-by-one reveal
+# Win: all 5 cells match = ×8 payout, 3-4 matches = ×2 payout
+
+SCRATCH_TIERS = [
+    (2, 2),   # 2 matches = ×2
+    (3, 3),   # 3 matches = ×2
+    (4, 4),   # 4 matches = ×2
+    (5, 5),   # 5 matches = ×8
+]
+SCRATCH_SYMBOLS = ['💎', '⭐', '🔮', '🌙', '🔥']
+
+@commands.command()
+async def scratch(ctx, amount: str):
+    if not db_ready:
+        await send_error(ctx, "Gimme a sec, im drinking water. Try again in a bit.")
+        return
+
+    cd = check_cooldown(ctx.author.id, "scratch")
+    if cd > 0:
+        await ctx.send(f"⏳ Chill for **{cd:.1f}s** before scratching again.")
+        return
+
+    parsed = parse_amount(amount)
+    if parsed is None:
+        await ctx.send("❌ Use `.scratch all` or `.scratch <amount>` (max 150,000 𝚚)")
+        return
+
+    amount = parsed
+    user_id = ctx.author.id
+
+    try:
+        data = get_user(user_id)
+    except Exception:
+        await send_error(ctx, "Gimme a sec, im drinking water. Try again in a bit.")
+        return
+
+    if amount <= 0:
+        await ctx.send("❌ Amount must be positive.")
+        return
+
+    if amount > data['balance']:
+        await ctx.send(f"❌ You only have {format_balance(data['balance'])}")
+        return
+
+    win_symbol = random.choice(SCRATCH_SYMBOLS)
+    n_matches = random.choices([2, 3, 4, 5], weights=[35, 30, 20, 15])[0]
+    ticket = [win_symbol] * n_matches
+    other_symbols = [s for s in SCRATCH_SYMBOLS if s != win_symbol]
+    while len(ticket) < 5:
+        ticket.append(random.choice(other_symbols))
+    random.shuffle(ticket)
+
+    match_count = ticket.count(win_symbol)
+    if match_count == 5:
+        multiplier = 8
+    elif match_count >= 3:
+        multiplier = 2
+    else:
+        multiplier = 0
+
+    cell_states = ['[????]'] * 5
+    hidden = list(range(5))
+    random.shuffle(hidden)
+
+    async def scratch_msg(states, extra=None):
+        cells_line = '  '.join(states)
+        return (
+            f"🎫 **SCRATCH CARD**\n"
+            f"─────────────────\n"
+            f"`{cells_line}`\n"
+            f"─────────────────\n"
+            f"{extra or f'Bet: **{format_balance(amount)}**\n_Revealing cells..._'}"
+        )
+
+    msg = await ctx.send(await scratch_msg(cell_states))
+
+    for idx in hidden:
+        await asyncio.sleep(0.55)
+        cell_states[idx] = f"[{ticket[idx]}]"
+        await msg.edit(content=await scratch_msg(cell_states))
+
+    await asyncio.sleep(0.4)
+    streak = data.get('scratch_streak', 0)
+    mult = 1 + (streak * STREAK_MULTIPLIER)
+
+    try:
+        if multiplier > 0:
+            winnings = int(amount * mult * multiplier)
+            update_user(
+                user_id,
+                balance=data['balance'] + winnings - amount,
+                scratch_streak=streak + 1,
+                total_won=data['total_won'] + winnings - amount
+            )
+            streak_msg = f" 🔥 {streak + 1} streak! ×{1 + ((streak + 1) * STREAK_MULTIPLIER):.2f}" if streak > 0 else ""
+            await msg.edit(
+                content=(
+                    f"🎫 **SCRATCH CARD — WIN!**\n"
+                    f"─────────────────\n"
+                    f"`{'  '.join(cell_states)}`\n"
+                    f"─────────────────\n"
+                    f">>> ✨ **{match_count}/5 {win_symbol} matched!**\n"
+                    f"Multiplier: ×{multiplier}  |  Streak bonus: ×{mult:.2f}\n"
+                    f"Won: **{format_balance(winnings)}**{streak_msg}\n"
+                    f"New Balance: **{format_balance(data['balance'] + winnings - amount)}**"
+                )
+            )
+        else:
+            update_user(
+                user_id,
+                balance=data['balance'] - amount,
+                scratch_streak=0,
+                total_lost=data['total_lost'] + amount
+            )
+            await msg.edit(
+                content=(
+                    f"🎫 **SCRATCH CARD**\n"
+                    f"─────────────────\n"
+                    f"`{'  '.join(cell_states)}`\n"
+                    f"─────────────────\n"
+                    f">>> 💸 **{match_count}/5 matched** — no prize\n"
+                    f"Lost: **{format_balance(amount)}**\n"
+                    f"Balance: **{format_balance(data['balance'] - amount)}**\n"
+                    f"Streak reset."
+                )
+            )
+    except Exception:
+        await send_error(ctx, "Gimme a sec, im drinking water. Try again in a bit.")
+
+
+# MINESWEEPER
+# =====================
+# Design: grid of hidden gems and bombs, cursor reveals one at a time
+# Bet × rows revealed, but hit a bomb = lose everything staked
+# Win condition: reveal all gems without hitting a bomb
+# Cost per cell revealed = bet / grid_size * cells_revealed (scaled)
+
+GRID_EMOJIS = {
+    'gem': '💎',
+    'bomb': '💣',
+    'hidden': '⬛',
+    'cursor': '🟨',
+}
+
+@commands.command()
+async def minesweeper(ctx, amount: str, grid: str = None):
+    """Play minesweeper. Use `.minesweeper all 3x3` or `.minesweeper 500 4x4` etc. Safe gems = all cells - bombs."""
+    if not db_ready:
+        await send_error(ctx, "Gimme a sec, im drinking water. Try again in a bit.")
+        return
+
+    cd = check_cooldown(ctx.author.id, "minesweeper")
+    if cd > 0:
+        await ctx.send(f"⏳ Chill for **{cd:.1f}s** before minesweeper again.")
+        return
+
+    parsed = parse_amount(amount)
+    if parsed is None:
+        await ctx.send("❌ Use `.minesweeper all` or `.minesweeper <amount> [3x3|4x4|5x5]`")
+        return
+
+    amount = parsed
+    user_id = ctx.author.id
+
+    try:
+        data = get_user(user_id)
+    except Exception:
+        await send_error(ctx, "Gimme a sec, im drinking water. Try again in a bit.")
+        return
+
+    if amount <= 0:
+        await ctx.send("❌ Amount must be positive.")
+        return
+
+    if amount > data['balance']:
+        await ctx.send(f"❌ You only have {format_balance(data['balance'])}")
+        return
+
+    # Parse grid size
+    rows, cols = 3, 3
+    bomb_count = 3
+    if grid:
+        m = re.match(r'(\d+)x(\d+)', grid.lower())
+        if m:
+            rows = int(m.group(1))
+            cols = int(m.group(2))
+            rows = max(2, min(rows, 6))
+            cols = max(2, min(cols, 6))
+            bomb_count = max(1, min(rows * cols - 2, (rows * cols) // 3))
+
+    total_cells = rows * cols
+    safe_cells = total_cells - bomb_count
+
+    # Build board
+    cells = ['gem'] * safe_cells + ['bomb'] * bomb_count
+    random.shuffle(cells)
+    board = [cells[i * cols:(i + 1) * cols] for i in range(rows)]
+
+    revealed = [[False] * cols for _ in range(rows)]
+    game_over = False
+    game_won = False
+    revealed_count = 0
+    multiplier = 1.0
+
+    def render_board(cursor_r=None, cursor_c=None, flash_bomb=False):
+        lines = []
+        for r in range(rows):
+            row_str = ""
+            for c in range(cols):
+                if cursor_r == r and cursor_c == c and not revealed[r][c]:
+                    cell = GRID_EMOJIS['cursor']
+                elif revealed[r][c]:
+                    if board[r][c] == 'gem':
+                        cell = GRID_EMOJIS['gem']
+                    else:
+                        cell = GRID_EMOJIS['bomb']
+                else:
+                    cell = GRID_EMOJIS['hidden']
+                row_str += cell
+            lines.append(row_str)
+        header = f"💎 **MINE HUNT** `{rows}x{cols}` | 💣 {bomb_count} | Bet **{format_balance(amount)}**"
+        if game_over:
+            if game_won:
+                header += f"\n> ✨ All gems found! ×{multiplier:.2f} multiplier!"
+            else:
+                header += f"\n> 💥 BOOM! Game over."
+        elif revealed_count > 0:
+            header += f"\n> Current multiplier: ×{multiplier:.2f} (×{1 + (revealed_count * 0.15):.2f} if won now)"
+        return header + "\n" + "\n".join(lines)
+
+    # Show board with select view
+    class MSCell(discord.ui.Button):
+        def __init__(self, row, col):
+            super().__init__(
+                style=discord.ButtonStyle.secondary,
+                emoji=GRID_EMOJIS['hidden'],
+                row=row
+            )
+            self.row = row
+            self.col = col
+
+        async def callback(self, interaction):
+            nonlocal game_over, game_won, revealed_count, multiplier
+
+            if game_over or revealed[self.row][self.col]:
+                return
+
+            if interaction.user.id != ctx.author.id:
+                return
+
+            revealed[self.row][self.col] = True
+            cell = board[self.row][self.col]
+
+            if cell == 'bomb':
+                game_over = True
+                game_won = False
+                # Reveal all
+                for r in range(rows):
+                    for c in range(cols):
+                        revealed[r][c] = True
+                new_content = render_board()
+                self.view.clear_items()
+                await interaction.response.edit_message(content=new_content, view=self.view)
+                try:
+                    update_user(
+                        user_id,
+                        balance=data['balance'] - amount,
+                        total_lost=data['total_lost'] + amount
+                    )
+                except:
+                    pass
+                return
+
+            revealed_count += 1
+            multiplier = 1 + (revealed_count * 0.15)
+
+            # Check win
+            if revealed_count == safe_cells:
+                game_over = True
+                game_won = True
+                winnings = int(amount * multiplier)
+                new_content = render_board()
+                self.view.clear_items()
+                await interaction.response.edit_message(content=new_content, view=self.view)
+                try:
+                    update_user(
+                        user_id,
+                        balance=data['balance'] + winnings - amount,
+                        total_won=data['total_won'] + winnings - amount
+                    )
+                except:
+                    pass
+                return
+
+            # Update board
+            new_content = render_board()
+            await interaction.response.edit_message(content=new_content, view=self.view)
+
+    class MSView(discord.ui.View):
+        def __init__(self):
+            super().__init__(timeout=60)
+            for r in range(rows):
+                for c in range(cols):
+                    self.add_item(MSCell(r, c))
+
+        async def interaction_check(self, interaction):
+            return interaction.user.id == ctx.author.id
+
+        async def on_timeout(self):
+            nonlocal game_over, game_won, revealed_count, multiplier
+            if not game_over:
+                game_over = True
+                game_won = False
+                self.clear_items()
+                content = render_board() + f"\n> ⏰ Timed out! Lost **{format_balance(amount)}**"
+                try:
+                    await self.message.edit(content=content, view=self)
+                    update_user(user_id, balance=data['balance'] - amount, total_lost=data['total_lost'] + amount)
+                except:
+                    pass
+
+    view = MSView()
+    msg = await ctx.send(render_board(), view=view)
+    view.message = msg
+
+
+# =====================
+# WHEEL SPIN
+# =====================
+# Design: vertical wheel divided into colored segments, animated spin with land-on indicator
+# Segments: various multipliers + 2 blanks, wheel spins for ~3 seconds before landing
+
+WHEEL_SEGMENTS = [
+    ('×0.5', 0xCC0000, '🔴'),   # red
+    ('×1',   0x1E90FF, '🔵'),   # blue
+    ('×1',   0x228B22, '🟢'),   # green
+    ('×2',   0xFF8C00, '🟠'),   # orange
+    ('×2',   0x9932CC, '🟣'),   # purple
+    ('×3',   0xFFD700, '🟡'),   # gold
+    ('BLANK', 0x555555, '⬛'),    # grey - lose nothing won
+    ('×5',   0xFF1493, '💗'),   # pink - rare
+]
+WHEEL_WEIGHTS = [15, 25, 25, 15, 10, 5, 3, 2]  # sum = 100
+
+@commands.command()
+async def wheel(ctx, amount: str):
+    if not db_ready:
+        await send_error(ctx, "Gimme a sec, im drinking water. Try again in a bit.")
+        return
+
+    cd = check_cooldown(ctx.author.id, "wheel")
+    if cd > 0:
+        await ctx.send(f"⏳ Chill for **{cd:.1f}s** before wheel again.")
+        return
+
+    parsed = parse_amount(amount)
+    if parsed is None:
+        await ctx.send("❌ Use `.wheel all` or `.wheel <amount>` (max 150,000 𝚀)")
+        return
+
+    amount = parsed
+    user_id = ctx.author.id
+
+    try:
+        data = get_user(user_id)
+    except Exception:
+        await send_error(ctx, "Gimme a sec, im drinking water. Try again in a bit.")
+        return
+
+    if amount <= 0:
+        await ctx.send("❌ Amount must be positive.")
+        return
+
+    if amount > data['balance']:
+        await ctx.send(f"❌ You only have {format_balance(data['balance'])}")
+        return
+
+    # Pre-select outcome
+    segment_idx = random.choices(range(len(WHEEL_SEGMENTS)), weights=WHEEL_WEIGHTS)[0]
+    label, color_hex, emoji = WHEEL_SEGMENTS[segment_idx]
+
+    # Build display: show 7 segments vertically, with indicator
+    def render_wheel(spinning=True, offset=0, landed_idx=None):
+        lines = []
+        n = len(WHEEL_SEGMENTS)
+        for i in range(7):
+            idx = (i + offset) % n
+            seg_label, seg_color, seg_emoji = WHEEL_SEGMENTS[idx]
+            is_landed = (landed_idx is not None and idx == landed_idx)
+            prefix = "⬆️ " if is_landed else "   "
+            lines.append(f"{prefix}`{seg_emoji} {seg_label:6s}`")
+        header = f"🎡 **FORTUNE WHEEL**  |  Bet **{format_balance(amount)}**"
+        if not spinning:
+            if label == 'BLANK':
+                header += f"\n> {emoji} **{label}** — nothing lost, nothing won"
+            else:
+                mult_val = float(label.replace('×', ''))
+                header += f"\n> 🎯 Landed on: **{emoji} {label}**"
+        else:
+            header += "\n> _Spinning..._"
+        return header + "\n" + "\n".join(lines)
+
+    msg = await ctx.send(render_wheel(spinning=True))
+
+    # Animate wheel: 10 rapid updates, slowing down
+    import math
+    total_steps = 40
+    # Land at segment_idx after slowing, offset determines where landed_idx appears in window
+    # We want landed_idx to appear at position 3 (middle) when animation ends
+    target_pos = 3
+    final_offset = (segment_idx - target_pos) % len(WHEEL_SEGMENTS)
+
+    for step in range(total_steps):
+        await asyncio.sleep(0.08 if step < 25 else 0.15)
+        eased = 1 - math.exp(-step / 15)
+        current_offset = int(final_offset * eased) % len(WHEEL_SEGMENTS)
+        landed = segment_idx if step == total_steps - 1 else None
+        await msg.edit(content=render_wheel(spinning=True, offset=current_offset, landed_idx=landed))
+
+    await asyncio.sleep(0.5)
+
+    # Resolve
+    streak = data.get('wheel_streak', 0)
+    mult = 1 + (streak * STREAK_MULTIPLIER)
+
+    try:
+        if label == 'BLANK':
+            update_user(user_id, wheel_streak=0)
+            await msg.edit(
+                content=render_wheel(spinning=False, offset=final_offset, landed_idx=segment_idx)
+            )
+            await ctx.send(
+                f"🎡 **FORTUNE WHEEL**\n"
+                f">>> ⚪ **{label}**\n"
+                f"Nothing lost, nothing won."
+            )
+        else:
+            mult_val = float(label.replace('×', ''))
+            winnings = int(amount * mult * mult_val)
+            if winnings > amount or (mult_val > 1 and winnings > 0):
+                # Win
+                update_user(
+                    user_id,
+                    balance=data['balance'] + winnings - amount,
+                    wheel_streak=streak + 1,
+                    total_won=data['total_won'] + winnings - amount
+                )
+                streak_msg = f" 🔥 {streak + 1} in a row! ×{1 + ((streak + 1) * STREAK_MULTIPLIER):.2f}" if streak > 0 else ""
+                await msg.edit(
+                    content=render_wheel(spinning=False, offset=final_offset, landed_idx=segment_idx)
+                )
+                await ctx.send(
+                    f"🎡 **FORTUNE WHEEL**\n"
+                    f">>> **{emoji} {label}!**\n"
+                    f"Multiplier: ×{mult * mult_val:.2f} (base ×{mult_val}, streak ×{mult:.2f})\n"
+                    f"Won: **{format_balance(winnings)}**{streak_msg}\n"
+                    f"New Balance: **{format_balance(data['balance'] + winnings - amount)}**"
+                )
+            else:
+                # Lose (×0.5)
+                update_user(
+                    user_id,
+                    balance=data['balance'] - amount,
+                    wheel_streak=0,
+                    total_lost=data['total_lost'] + amount
+                )
+                await msg.edit(
+                    content=render_wheel(spinning=False, offset=final_offset, landed_idx=segment_idx)
+                )
+                await ctx.send(
+                    f"🎡 **FORTUNE WHEEL**\n"
+                    f">>> **{emoji} {label}**\n"
+                    f"Lost: **{format_balance(amount)}**\n"
+                    f"Balance: **{format_balance(data['balance'] - amount)}**\n"
+                    f"Streak reset."
+                )
+    except Exception:
+        await send_error(ctx, "Gimme a sec, im drinking water. Try again in a bit.")
+
+
+# =====================
 # SETUP
 # =====================
 async def setup(bot_ref):
@@ -987,6 +1472,9 @@ async def setup(bot_ref):
     bot.add_command(roulette)
     bot.add_command(slots)
     bot.add_command(blackjack)
+    bot.add_command(scratch)
+    bot.add_command(minesweeper)
+    bot.add_command(wheel)
     bot.add_command(give)
     bot.add_command(lb)
     bot.add_command(add)
