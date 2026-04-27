@@ -450,75 +450,52 @@ async def on_message(message):
     if message.author.bot:
         return
 
-    # AI mention / pq prefix / reply to bot handling
+    # AI mention handling
     content = message.content.strip()
     is_mention = message.mentions and any(u.id == bot.user.id for u in message.mentions)
-    # is_pq removed - now used for Quewo economy system
     
-    # Check if message is a reply to the bot
-    is_reply_to_bot = (
-        message.reference and 
-        message.reference.message_id and
-        message.reference.resolved and
-        message.reference.resolved.author.id == bot.user.id
-    )
+    mention_patterns = [f"<@{bot.user.id}>", f"<@!{bot.user.id}>", f"<@{bot.user.id}"]
+    is_mention_start = any(content.startswith(p) for p in mention_patterns)
     
-    if (is_mention or is_reply_to_bot) and not content.startswith(bot.user.mention.replace("<@", "<@!").replace("<@", "<@")) or (message.mentions and message.content.strip().startswith(str(bot.user.id))):
-        # Check if bot is mentioned at the start
-        mention_patterns = [f"<@{bot.user.id}>", f"<@!{bot.user.id}>", f"<@{bot.user.id}"]
-        is_mention_start = any(content.startswith(p) for p in mention_patterns)
-        if is_mention_start or is_reply_to_bot:
-            # Extract question
-            if is_reply_to_bot:
-                question = content  # Use full content as question
-            elif is_mention_start:
-                for p in mention_patterns:
-                    if content.startswith(p):
-                        question = content[len(p):].strip()
-                        break
-            else:
-                pass  # No longer removing pq prefix
+    if is_mention and is_mention_start and GROQ_API_KEY:
+        # Extract question after mention
+        for p in mention_patterns:
+            if content.startswith(p):
+                question = content[len(p):].strip()
+                break
+        
+        if question:
+            await message.channel.typing()
             
-            if question and GROQ_API_KEY:
-                await message.channel.typing()
-                
-                # Build conversation context
-                messages = [
-                    {"role": "system", "content": "You are a helpful assistant. Answer clearly, simply, and briefly. If you use information from the web, cite your sources."}
-                ]
-                
-                # Add previous message if replying to bot
-                if is_reply_to_bot and message.reference.resolved:
-                    prev_msg = message.reference.resolved
-                    if prev_msg.content:
-                        messages.append({"role": "assistant", "content": prev_msg.content})
-                
-                messages.append({"role": "user", "content": question})
-                
-                headers = {
-                    "Authorization": f"Bearer {GROQ_API_KEY}",
-                    "Content-Type": "application/json"
-                }
-                payload = {
-                    "messages": messages,
-                    "model": "llama-3.1-8b-instant",
-                    "temperature": 0.7,
-                    "max_tokens": 500
-                }
-                try:
-                    async with aiohttp.ClientSession() as session:
-                        async with session.post("https://api.groq.com/openai/v1/chat/completions", json=payload, headers=headers) as resp:
-                            if resp.status == 200:
-                                data = await resp.json()
-                                answer = data["choices"][0]["message"]["content"]
-                                if len(answer) > 1900:
-                                    answer = answer[:1897] + "..."
-                                await message.reply(answer)
-                            else:
-                                await message.reply(f"Error: {resp.status}")
-                except Exception as e:
-                    await message.reply(f"Error: {str(e)[:100]}")
-                return
+            messages = [
+                {"role": "system", "content": "You are a helpful assistant. Answer clearly, simply, and briefly. If you use information from the web, cite your sources."}
+            ]
+            messages.append({"role": "user", "content": question})
+            
+            headers = {
+                "Authorization": f"Bearer {GROQ_API_KEY}",
+                "Content-Type": "application/json"
+            }
+            payload = {
+                "messages": messages,
+                "model": "llama-3.1-8b-instant",
+                "temperature": 0.7,
+                "max_tokens": 500
+            }
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.post("https://api.groq.com/openai/v1/chat/completions", json=payload, headers=headers) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            answer = data["choices"][0]["message"]["content"]
+                            if len(answer) > 1900:
+                                answer = answer[:1897] + "..."
+                            await message.channel.send(answer)
+                        else:
+                            await message.channel.send(f"Error: {resp.status}")
+            except Exception as e:
+                await message.channel.send(f"Error: {str(e)[:100]}")
+            return
 
 
     if message.channel.id in shutdown_channels and message.author.id not in owners and message.author.id != super_owner_id:
