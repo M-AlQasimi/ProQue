@@ -26,43 +26,68 @@ def get_db_connection():
 
 def init_db():
     global db_ready
-    if not os.getenv("DATABASE_URL"):
+    url = os.getenv("DATABASE_URL")
+    if not url:
         print("⚠️ DATABASE_URL not set - economy system disabled")
         return
 
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS economy (
-                user_id BIGINT PRIMARY KEY,
-                balance BIGINT DEFAULT 0,
-                daily_streak INTEGER DEFAULT 0,
-                weekly_streak INTEGER DEFAULT 0,
-                monthly_streak INTEGER DEFAULT 0,
-                last_daily TIMESTAMP,
-                last_weekly TIMESTAMP,
-                last_monthly TIMESTAMP,
-                total_earned BIGINT DEFAULT 0,
-                total_won BIGINT DEFAULT 0,
-                total_lost BIGINT DEFAULT 0,
-                gamble_streak INTEGER DEFAULT 0,
-                roulette_streak INTEGER DEFAULT 0,
-                slots_streak INTEGER DEFAULT 0,
-                blackjack_streak INTEGER DEFAULT 0,
-                scratch_streak INTEGER DEFAULT 0,
-                wheel_streak INTEGER DEFAULT 0,
-                steal_blacklist BIGINT[] DEFAULT '{}'
-            )
-        """)
-        conn.commit()
-        cur.close()
-        conn.close()
-        db_ready = True
-        print("✅ Economy DB initialized (PostgreSQL)")
-    except Exception as e:
-        print(f"❌ Economy DB init failed: {e}")
-        db_ready = False
+    # Retry loop — wait for DB to finish starting up (e.g. Railway cold-start recovery)
+    for attempt in range(1, 11):
+        try:
+            conn = psycopg2.connect(url, connect_timeout=5)
+            cur = conn.cursor()
+
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS economy (
+                    user_id BIGINT PRIMARY KEY,
+                    balance BIGINT DEFAULT 0,
+                    daily_streak INTEGER DEFAULT 0,
+                    weekly_streak INTEGER DEFAULT 0,
+                    monthly_streak INTEGER DEFAULT 0,
+                    last_daily TIMESTAMP,
+                    last_weekly TIMESTAMP,
+                    last_monthly TIMESTAMP,
+                    total_earned BIGINT DEFAULT 0,
+                    total_won BIGINT DEFAULT 0,
+                    total_lost BIGINT DEFAULT 0,
+                    gamble_streak INTEGER DEFAULT 0,
+                    roulette_streak INTEGER DEFAULT 0,
+                    slots_streak INTEGER DEFAULT 0,
+                    blackjack_streak INTEGER DEFAULT 0,
+                    scratch_streak INTEGER DEFAULT 0,
+                    wheel_streak INTEGER DEFAULT 0,
+                    steal_blacklist BIGINT[] DEFAULT '{}'
+                )
+            """)
+
+            # Add missing columns to existing table (safe to run on every init)
+            for col, col_type in [
+                ("scratch_streak", "INTEGER DEFAULT 0"),
+                ("wheel_streak", "INTEGER DEFAULT 0"),
+                ("steal_blacklist", "BIGINT[] DEFAULT '{}'"),
+            ]:
+                try:
+                    cur.execute(f"ALTER TABLE economy ADD COLUMN IF NOT EXISTS {col} {col_type}")
+                except psycopg2.Error:
+                    pass  # Column already exists or other minor error
+
+            conn.commit()
+            cur.close()
+            conn.close()
+            db_ready = True
+            print(f"✅ Economy DB initialized (PostgreSQL) on attempt {attempt}")
+            return
+        except psycopg2.OperationalError as e:
+            if attempt < 10:
+                print(f"⏳ Economy DB attempt {attempt}/10 failed (DB starting up), retrying in 5s...")
+                time.sleep(5)
+            else:
+                print(f"❌ Economy DB init failed after 10 attempts: {e}")
+                db_ready = False
+        except Exception as e:
+            print(f"❌ Economy DB init failed: {e}")
+            db_ready = False
+            return
 
 def get_user(user_id):
     for attempt in range(3):
