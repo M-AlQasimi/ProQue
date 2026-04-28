@@ -82,7 +82,8 @@ def pg_init():
 # === OWNERS & MODS (stored as JSONB arrays in bot_config) ===
 
 def load_bot_config(key, default=None):
-    """Load a value from bot_config. Returns default if not found or DB unavailable."""
+    """Load a value from bot_config. Initializes DB if needed. Returns default if not found or DB unavailable."""
+    _ensure_ready()
     if not pg_ready:
         return default
     try:
@@ -99,6 +100,53 @@ def load_bot_config(key, default=None):
         return default
     except Exception:
         return default
+
+
+def _ensure_ready():
+    """Called on first use to initialize DB connection if not already tried."""
+    global pg_ready
+    if pg_ready:
+        return
+    # Try once without retry — on startup this may just be the DB still starting up
+    # The retry loop in pg_init handles that case; here we just try once for early calls
+    url = os.getenv("DATABASE_URL")
+    if not url:
+        pg_ready = False
+        return
+    try:
+        conn = psycopg2.connect(url, connect_timeout=5)
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS bot_config (
+                key TEXT PRIMARY KEY,
+                value JSONB NOT NULL
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS birthdays (
+                user_id BIGINT PRIMARY KEY,
+                date TEXT NOT NULL
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS afk_users (
+                user_id BIGINT PRIMARY KEY,
+                reason TEXT,
+                since TIMESTAMP NOT NULL
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS sleeping_users (
+                user_id BIGINT PRIMARY KEY,
+                since TIMESTAMP NOT NULL
+            )
+        """)
+        conn.commit()
+        cur.close()
+        conn.close()
+        pg_ready = True
+    except Exception:
+        pg_ready = False
 
 def save_bot_config(key, value):
     """Save a value to bot_config. Also writes to JSON backup."""
