@@ -40,11 +40,29 @@ class MyBot(commands.Bot):
         
 intents = discord.Intents.all()
 def get_prefix(bot, message):
-    """Support pq-with-space as the prefix"""
-    return commands.when_mentioned_or('pq ')(bot, message)
+    """Support normal dot commands and pq-space economy commands."""
+    return commands.when_mentioned_or('.', 'pq ')(bot, message)
 
 bot = MyBot(command_prefix=get_prefix, intents=intents)
 print(f"Bot is starting with intents: {bot.intents}")
+
+ECONOMY_COMMANDS = {
+    "bal", "daily", "weekly", "monthly", "flip", "cf", "roulette",
+    "slots", "blackjack", "scratch", "minesweeper", "wheel", "give",
+    "lb", "add", "remove"
+}
+
+@bot.check
+async def enforce_command_prefix(ctx):
+    if ctx.command is None:
+        return True
+
+    command_name = ctx.command.qualified_name.split()[0]
+    if ctx.prefix == "pq ":
+        return command_name in ECONOMY_COMMANDS
+    if ctx.prefix == ".":
+        return command_name not in ECONOMY_COMMANDS
+    return True
 
 log_channel_id = 1394806479881769100
 rlog_channel_id = 1394806602502115470

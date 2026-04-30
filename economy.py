@@ -363,22 +363,22 @@ async def monthly(ctx):
     await ctx.send(f"🎉 You claimed **{format_balance(reward)}**!\nMonthly streak: **{streak}** months (+{streak_bonus} bonus)")
 
 # =====================
-# GAMBLE
+# COIN FLIP
 # =====================
-@commands.command(name="roll")
+@commands.command(name="flip", aliases=["cf"])
 async def gamble(ctx, amount: str):
     if not db_ready:
         await send_error(ctx, "Gimme a sec, im drinking water. Try again in a bit.")
         return
 
-    cd = check_cooldown(ctx.author.id, "roll")
+    cd = check_cooldown(ctx.author.id, "flip")
     if cd > 0:
-        await ctx.send(f"⏳ Chill for **{cd:.1f}s** before rolling again.")
+        await ctx.send(f"⏳ Chill for **{cd:.1f}s** before flipping again.")
         return
 
     parsed = parse_amount(amount, ctx.author.id)
     if parsed is None:
-        await ctx.send("❌ Use `pqroll all` or `pqroll <amount>` (max 150,000 𝚀)")
+        await ctx.send("❌ Use `pq flip all`, `pq flip <amount>`, or `pq cf <amount>` (max 150,000 𝚀)")
         return
 
     amount = parsed
@@ -401,19 +401,19 @@ async def gamble(ctx, amount: str):
     streak = data.get('gamble_streak', 0)
     mult = 1 + (streak * STREAK_MULTIPLIER)
     win = random.choice([True, False])
-    roll_value = random.randint(1, 100)
-    roll_msg = await ctx.send(
-        f"🎲 **ROLLING...**\n"
+    coin_result = "HEADS" if win else "TAILS"
+    flip_msg = await ctx.send(
+        f"🪙 **COIN FLIP**\n"
         f"─────────────────\n"
-        f"`[ ? ]`  Bet: **{format_balance(amount)}**"
+        f"`[ spinning ]`  Bet: **{format_balance(amount)}**"
     )
-    for face in ["[ . ]", "[ .. ]", "[ ... ]", f"[ {roll_value} ]"]:
+    for face in ["HEADS", "TAILS", "HEADS", coin_result]:
         await asyncio.sleep(0.8)
-        await roll_msg.edit(
+        await flip_msg.edit(
             content=(
-                f"🎲 **ROLLING...**\n"
+                f"🪙 **COIN FLIP**\n"
                 f"─────────────────\n"
-                f"`{face}`  Bet: **{format_balance(amount)}**"
+                f"`[ {face} ]`  Bet: **{format_balance(amount)}**"
             )
         )
 
@@ -427,12 +427,11 @@ async def gamble(ctx, amount: str):
                 total_won=data['total_won'] + winnings - amount
             )
             streak_msg = f" 🔥 {streak + 1} in a row! ×{1 + ((streak + 1) * STREAK_MULTIPLIER):.2f} payout" if streak > 0 else ""
-            await roll_msg.edit(
+            await flip_msg.edit(
                 content=(
-                f"🎲 **ROLLING...**\n"
+                f"🪙 **COIN FLIP**\n"
                 f"─────────────────\n"
-                f">>> 🟢 **YOU WIN!**\n"
-                f"Rolled: **{roll_value}**\n"
+                f">>> 🟢 **HEADS — YOU WIN!**\n"
                 f"Prize: **{format_balance(winnings)}**{streak_msg}\n"
                 f"New Balance: **{format_balance(data['balance'] + winnings - amount)}**"
                 )
@@ -444,12 +443,11 @@ async def gamble(ctx, amount: str):
                 gamble_streak=0,
                 total_lost=data['total_lost'] + amount
             )
-            await roll_msg.edit(
+            await flip_msg.edit(
                 content=(
-                f"🎲 **ROLLING...**\n"
+                f"🪙 **COIN FLIP**\n"
                 f"─────────────────\n"
-                f">>> 🔴 **YOU LOSE**\n"
-                f"Rolled: **{roll_value}**\n"
+                f">>> 🔴 **TAILS — YOU LOSE**\n"
                 f"Lost: **{format_balance(amount)}**\n"
                 f"Balance: **{format_balance(data['balance'] - amount)}**\n"
                 f"Streak reset."
