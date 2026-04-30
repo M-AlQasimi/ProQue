@@ -5,7 +5,6 @@ import logging
 import math
 import operator
 import os
-from pgdata import *
 import random
 import re
 import time
@@ -55,60 +54,30 @@ def save_dict(filename, data):
     with open(filename, "w") as f:
         json.dump(data, f)
 
-# Load owners from DB, fall back to JSON file
-_owners_json = load_ids(OWNERS_FILE)
-owners = pgdata.load_bot_config("owners", None)
-if owners is None:
-    owners = _owners_json
-    pgdata.save_bot_config("owners", list(owners))
-else:
-    owners = set(owners)
-
-# Load mods from DB, fall back to JSON file
-_mods_json = load_ids(MODS_FILE)
-mods = pgdata.load_bot_config("mods", None)
-if mods is None:
-    mods = _mods_json
-    pgdata.save_bot_config("mods", list(mods))
-else:
-    mods = set(mods)
-
-# Load birthdays from DB, fall back to JSON file
-_bdays_json = {}
 try:
     with open(bday_file, "r") as f:
-        _bdays_json = json.load(f)
+        birthdays = json.load(f)
 except FileNotFoundError:
-    pass
-_db_bdays = pgdata.load_birthdays()
-if _db_bdays is not None:
-    birthdays = _db_bdays
-else:
-    birthdays = _bdays_json
+    birthdays = {}
 
-# Load AFK users from DB, fall back to JSON file
-_raw_afk = load_dict(AFK_FILE)
-_db_afk = pgdata.load_afk_users()
-if _db_afk is not None:
-    afk_users = _db_afk
-else:
-    afk_users = {
-        int(uid): {"reason": data["reason"], "since": datetime.fromisoformat(data["since"])}
-        for uid, data in _raw_afk.items()
-    }
+raw_afk = load_dict(AFK_FILE)
+afk_users = {
+    int(uid): {
+        "reason": data["reason"],
+        "since": datetime.fromisoformat(data["since"])
+    } for uid, data in raw_afk.items()
+}
 
-# Load sleeping users from DB, fall back to JSON file
-_raw_sleeping = load_dict(SLEEP_FILE)
-_db_sleeping = pgdata.load_sleeping_users()
-if _db_sleeping is not None:
-    sleeping_users = _db_sleeping
-else:
-    sleeping_users = {int(uid): datetime.fromisoformat(time_str) for uid, time_str in _raw_sleeping.items()}
+raw_sleeping = load_dict(SLEEP_FILE)
+sleeping_users = {
+    int(uid): datetime.fromisoformat(time_str)
+    for uid, time_str in raw_sleeping.items()
+}
 
 class MyBot(commands.Bot):
     async def setup_hook(self):
         pass
-
+        
 intents = discord.Intents.all()
 def get_prefix(bot, message):
     """Support both . and pq as prefixes"""
@@ -120,7 +89,9 @@ print(f"Bot is starting with intents: {bot.intents}")
 log_channel_id = 1394806479881769100
 rlog_channel_id = 1394806602502115470
 bday_channel_id = 1364346683709718619
-super_owner_id = 885548126365171824
+super_owner_id = 885548126365171824  
+mods = load_ids(MODS_FILE)
+owners = load_ids(OWNERS_FILE)
 
 autoban_ids = set()
 blacklisted_users = set()
@@ -485,25 +456,25 @@ async def on_message(message):
     # AI mention handling
     content = message.content.strip()
     is_mention = message.mentions and any(u.id == bot.user.id for u in message.mentions)
-
+    
     mention_patterns = [f"<@{bot.user.id}>", f"<@!{bot.user.id}>", f"<@{bot.user.id}"]
     is_mention_start = any(content.startswith(p) for p in mention_patterns)
-
+    
     if is_mention and is_mention_start and GROQ_API_KEY:
         # Extract question after mention
         for p in mention_patterns:
             if content.startswith(p):
                 question = content[len(p):].strip()
                 break
-
+        
         if question:
             await message.channel.typing()
-
+            
             messages = [
                 {"role": "system", "content": "You are a helpful assistant. Answer clearly, simply, and briefly. If you use information from the web, cite your sources."}
             ]
             messages.append({"role": "user", "content": question})
-
+            
             headers = {
                 "Authorization": f"Bearer {GROQ_API_KEY}",
                 "Content-Type": "application/json"
@@ -559,7 +530,6 @@ async def on_message(message):
 
     if message.author.id in sleeping_users:
         start = sleeping_users.pop(message.author.id)
-        pgdata.remove_sleeping_user(message.author.id)
         save_dict(SLEEP_FILE, {str(uid): dt.isoformat() for uid, dt in sleeping_users.items()})
         duration = datetime.now(timezone.utc) - start
         days, remainder = divmod(int(duration.total_seconds()), 86400)
@@ -580,7 +550,7 @@ async def on_message(message):
             for uid, link, ts in mentions_list:
                 embed.add_field(
                     name=f"{bot.get_user(uid) or await bot.fetch_user(uid)}",
-                    value=f"<t:{ts}:R> - [Click to view message]({link})",
+                    value=f"<t:{ts}:R> — [Click to view message]({link})",
                     inline=True
                 )
 
@@ -599,7 +569,7 @@ async def on_message(message):
                     user = None
             if user:
                 sleep_messages = [
-                    "Shut up you're gonna wake them up 💤.",
+                    "Shut up you’re gonna wake them up 💤.",
                     "Let the thing sleep peacefully 😴"
                 ]
                 chosen_msg = random.choice(sleep_messages)
@@ -624,7 +594,6 @@ async def on_message(message):
 
     if message.author.id in afk_users:
         afk_data = afk_users.pop(message.author.id)
-        pgdata.remove_afk_user(message.author.id)
         save_dict(AFK_FILE, {str(uid): {"reason": data["reason"], "since": data["since"].isoformat()} for uid, data in afk_users.items()})
 
         duration = datetime.now(timezone.utc) - afk_data["since"]
@@ -648,7 +617,7 @@ async def on_message(message):
             for uid, link, ts in mentions_list:
                 embed.add_field(
                     name=f"{bot.get_user(uid) or await bot.fetch_user(uid)}",
-                    value=f"<t:{ts}:R> - [Click to view message]({link})",
+                    value=f"<t:{ts}:R> — [Click to view message]({link})",
                     inline=True
                 )
 
@@ -677,7 +646,7 @@ async def on_command_error(ctx, error):
             await ctx.send("You can't use that heh")
 
     elif isinstance(error, commands.MissingPermissions):
-        await ctx.send("You don't have permission to do that.")
+        await ctx.send("You don’t have permission to do that.")
 
     elif isinstance(error, commands.MissingRequiredArgument):
         await ctx.send("Missing required argument.")
@@ -828,7 +797,7 @@ async def on_bulk_message_delete(messages):
                 await send_log(embed)
             except Exception as e:
                 print(f"Failed to send attachment log part {i}: {e}")
-
+    
 
 @bot.event
 async def on_message_edit(before, after):
@@ -866,18 +835,18 @@ async def on_message_edit(before, after):
 async def update_poll_counts(message):
     if message.id not in active_polls:
         return
-
+    
     poll_data = active_polls[message.id]
-
+    
     if poll_data.get("ended"):
         return
 
     embed = message.embeds[0] if message.embeds else discord.Embed(title=poll_data["question"])
-
+    
     options = poll_data.get("options", ["Yes", "No"])
     use_numbers = poll_data.get("use_numbers", False)
     number_emojis = ["1️⃣","2️⃣","3️⃣","4️⃣","5️⃣","6️⃣","7️⃣","8️⃣","9️⃣","🔟"]
-
+    
     for idx, opt in enumerate(options):
         if use_numbers:
             count = 0
@@ -936,7 +905,7 @@ async def on_reaction_remove(reaction, user):
         return
 
     await update_poll_counts(reaction.message)
-
+    
     msg = reaction.message
     entry = (user, reaction.emoji, msg, datetime.now(timezone.utc).replace(tzinfo=timezone.utc))
     removed_reactions.setdefault(msg.channel.id, []).insert(0, entry)
@@ -1028,7 +997,7 @@ async def on_raw_reaction_clear(payload):
         embed.add_field(name="By", value=f"{remover} ({remover.id})", inline=False)
     else:
         embed.add_field(name="By", value="Unknown", inline=False)
-
+    
     embed.set_footer(text=f"Message ID: {message.id}")
     embed.timestamp = datetime.now(timezone.utc)
 
@@ -1037,7 +1006,7 @@ async def on_raw_reaction_clear(payload):
         await send_rlog(embed)
     except Exception as e:
         print(f"Failed to send log: {e}")
-
+        
 @bot.event
 async def on_member_update(before, after):
     await asyncio.sleep(1)
@@ -1215,7 +1184,7 @@ async def on_member_remove(member):
         await send_log(embed)
     except Exception as e:
         print(f"Failed to send log: {e}")
-
+        
 @bot.event
 async def on_voice_state_update(member, before, after):
     changes = []
@@ -1269,7 +1238,7 @@ async def disable(ctx, cmd: str):
 
     disabled_commands.add(command.name)
     await ctx.send(f"Disabled **{command.name}**")
-
+    
 @bot.command()
 @is_owner_or_mod()
 async def enable(ctx, cmd: str):
@@ -1639,7 +1608,7 @@ async def disable_all_buttons(view):
 
 class AcceptView(View):
     def __init__(self, ctx, opponent):
-        super().__init__(timeout=30)
+        super().__init__(timeout=30) 
         self.ctx = ctx
         self.opponent = opponent
         self.accepted = False
@@ -1924,14 +1893,14 @@ async def shut(ctx, member: discord.Member):
 async def unshut(ctx, member: discord.Member):
     if member.id in owners:
         if watchlist.get(member.id) == super_owner_id and ctx.author.id != super_owner_id:
-            return await ctx.send("Only Que can unshut that owner.")
+            return await ctx.send("Only 𝚀𝚞𝚎 can unshut that owner.")
     watchlist.pop(member.id, None)
 
 @bot.command()
 @is_owner()
 async def clearwatchlist(ctx):
     if ctx.author.id != super_owner_id:
-        return await ctx.send("Only Que can clear the watchlist.")
+        return await ctx.send("Only 𝚀𝚞𝚎 can clear the watchlist.")
     watchlist.clear()
     await ctx.send("Watchlist cleared.")
 
@@ -1950,7 +1919,7 @@ async def unrshut(ctx, member: discord.Member):
     """Allow a user's reactions again (silent unless protected owner)."""
     if member.id in owners:
         if reaction_watchlist.get(member.id) == super_owner_id and ctx.author.id != super_owner_id:
-            return await ctx.send("Only Que can unshut that owner.")
+            return await ctx.send("Only 𝚀𝚞𝚎 can unshut that owner.")
     reaction_watchlist.pop(member.id, None)
 
 @bot.command()
@@ -1980,7 +1949,7 @@ async def runlock(ctx):
 @bot.command()
 @is_super_owner()
 async def addowner(ctx, *users: discord.User):
-
+    
     added = []
     already = []
     for user in users:
@@ -1991,7 +1960,7 @@ async def addowner(ctx, *users: discord.User):
             added.append(user)
     if added:
         save_ids(OWNERS_FILE, owners)
-
+    
     if len(added) == 1:
         await ctx.send(f"{added[0].mention} has been added as an owner.")
     elif len(added) > 1:
@@ -2004,7 +1973,7 @@ async def addowner(ctx, *users: discord.User):
 @bot.command()
 @is_super_owner()
 async def removeowner(ctx, user: discord.User):
-
+    
     if user.id in owners:
         owners.remove(user.id)
         save_ids(OWNERS_FILE, owners)
@@ -2033,9 +2002,8 @@ async def addmod(ctx, *users: discord.User):
             mods.add(user.id)
             added.append(user)
     if added:
-        pgdata.save_bot_config("mods", list(mods))
         save_ids(MODS_FILE, mods)
-
+    
     if len(added) == 1:
         await ctx.send(f"{added[0].mention} has been added as a mod.")
     elif len(added) > 1:
@@ -2051,7 +2019,6 @@ async def removemod(ctx, user: discord.User):
     global mods
     if user.id in mods:
         mods.remove(user.id)
-        pgdata.save_bot_config("mods", list(mods))
         save_ids(MODS_FILE, mods)
         await ctx.send(f"{user.mention} has been removed from mods.")
     else:
@@ -2067,7 +2034,7 @@ class OwnerModManagement(commands.Cog):
     @app_commands.command(name="addowner", description="Add one or multiple owners")
     async def addowner(self, interaction: discord.Interaction, users: str):
         if interaction.user.id != super_owner_id:
-            return await interaction.response.send_message("Only Que can add owners.", ephemeral=True)
+            return await interaction.response.send_message("Only 𝚀𝚞𝚎 can add owners.", ephemeral=True)
 
         user_ids = []
         for part in users.split():
@@ -2109,7 +2076,7 @@ class OwnerModManagement(commands.Cog):
     @commands.check_any(commands.is_owner(), commands.has_permissions(administrator=True))
     async def addmod(self, interaction: discord.Interaction, users: str):
         if interaction.user.id != super_owner_id and interaction.user.id not in owners:
-            return await interaction.response.send_message("Only owners and Que can add mods.", ephemeral=True)
+            return await interaction.response.send_message("Only owners and 𝚀𝚞𝚎 can add mods.", ephemeral=True)
 
         user_ids = []
         for part in users.split():
@@ -2183,7 +2150,7 @@ async def purge(ctx, amount: int, member: discord.Member = None):
         await ctx.send(summary, delete_after=10)
 
     except discord.Forbidden:
-        await ctx.send("I don't have permission to delete messages.", delete_after=5)
+        await ctx.send("I don’t have permission to delete messages.", delete_after=5)
     except discord.HTTPException as e:
         await ctx.send(f"Error: {type(e).__name__} - {e}", delete_after=5)
 
@@ -2213,7 +2180,7 @@ async def rpurge(ctx, amount: int, member: discord.Member = None):
                             removed += 1
                             reaction_owners.append(user)
                         except discord.Forbidden:
-                            return await ctx.send("I don't have permission to remove reactions.", delete_after=5)
+                            return await ctx.send("I don’t have permission to remove reactions.", delete_after=5)
                         except Exception:
                             continue
 
@@ -2335,11 +2302,11 @@ class NameModal(Modal):
         if not name:
             await interaction.response.send_message("Please enter a name.", ephemeral=True)
             return
-
+        
         # Sanitize name - Discord emoji/sticker names only allow alphanumeric, underscores
         name = re.sub(r'[^\w]+', '_', name)
         name = name[:32]  # Max length
-
+        
         guild = interaction.guild
         if self.type_ == "sticker":
             try:
@@ -2404,12 +2371,12 @@ class StealView(View):
 @commands.has_permissions(manage_guild=True)
 async def steal(ctx):
     await ctx.message.delete()
-
+    
     ref = ctx.message.reference
     if not ref:
         await ctx.send("Reply to a message containing a sticker, emoji, or image.", delete_after=5)
         return
-
+    
     try:
         msg = await ctx.channel.fetch_message(ref.message_id)
     except discord.NotFound:
@@ -2442,11 +2409,11 @@ async def steal(ctx):
         except Exception as e:
             await ctx.send(f"Error reading sticker: {e}", delete_after=5)
             return
-
+    
     elif attachments:
         first = attachments[0]
         content_type = first.content_type or ""
-
+        
         if content_type.startswith("image/"):
             try:
                 buffer = BytesIO()
@@ -2454,7 +2421,7 @@ async def steal(ctx):
                     async with session.get(first.url) as resp:
                         buffer.write(await resp.read())
                 buffer.seek(0)
-
+                
                 embed = discord.Embed(title="Image Detected", color=discord.Color.blurple())
                 embed.set_image(url=first.url)
                 embed.add_field(name="Filename", value=first.filename, inline=True)
@@ -2466,12 +2433,12 @@ async def steal(ctx):
         else:
             await ctx.send("Attachment is not an image.", delete_after=5)
             return
-
+    
     elif animated_emoji_match:
         # Handle animated emoji
         name, emoji_id = animated_emoji_match[0]
         emoji_obj = ctx.bot.get_emoji(int(emoji_id))
-
+        
         if emoji_obj and emoji_obj.animated:
             try:
                 buffer = BytesIO()
@@ -2479,7 +2446,7 @@ async def steal(ctx):
                     async with session.get(str(emoji_obj.url)) as resp:
                         buffer.write(await resp.read())
                 buffer.seek(0)
-
+                
                 embed = discord.Embed(title="Animated Emoji Detected", color=discord.Color.blurple())
                 embed.add_field(name="Name", value=name, inline=True)
                 embed.add_field(name="Animated", value="Yes", inline=True)
@@ -2491,11 +2458,11 @@ async def steal(ctx):
         else:
             await ctx.send("Could not fetch emoji.", delete_after=5)
             return
-
+    
     elif emoji_match:
         name, emoji_id = emoji_match[0]
         emoji_obj = ctx.bot.get_emoji(int(emoji_id))
-
+        
         if emoji_obj:
             try:
                 buffer = BytesIO()
@@ -2503,7 +2470,7 @@ async def steal(ctx):
                     async with session.get(str(emoji_obj.url)) as resp:
                         buffer.write(await resp.read())
                 buffer.seek(0)
-
+                
                 embed = discord.Embed(title="Emoji Detected", color=discord.Color.blurple())
                 embed.add_field(name="Name", value=name, inline=True)
                 embed.add_field(name="Animated", value="No", inline=True)
@@ -2517,7 +2484,7 @@ async def steal(ctx):
             return
     else:
         await ctx.send("No sticker, emoji, or image found in the replied message.", delete_after=5)
-
+            
 @bot.command()
 @is_owner()
 async def send(ctx, channel_id: int = None, *, msg=None):
@@ -2956,7 +2923,7 @@ async def timer(ctx, *, args: str):
     if not args:
         return await ctx.send("Invalid format. Use `.timer 10m` or `.timer 10m Title here`")
 
-    quote_match = re.match(r'^(\S+)\s+[\"""\'''](.+?)[\"""\''']$', args)
+    quote_match = re.match(r'^(\S+)\s+[\"“”\'‘’](.+?)[\"“”\'‘’]$', args)
     if quote_match:
         time_str = quote_match.group(1)
         title = quote_match.group(2)
@@ -3088,7 +3055,7 @@ class CancelSelectView(View):
                 title = f"{title} | "
             remaining = int((data["end_time"] - datetime.now(timezone.utc)).total_seconds())
             remaining_text = format_remaining(remaining)
-            label = f"{title}{data['time_str']} - {remaining_text} left"
+            label = f"{title}{data['time_str']} — {remaining_text} left"
             if len(label) > 100:
                 label = label[:97] + "..."
             options.append(discord.SelectOption(label=label, value=str(tid)))
@@ -3142,7 +3109,7 @@ class CancelSelectView(View):
                 title = f"{title} | "
             remaining = int((data["end_time"] - datetime.now(timezone.utc)).total_seconds())
             remaining_text = format_remaining(remaining)
-            label = f"{title}{data['time_str']} - {remaining_text} left"
+            label = f"{title}{data['time_str']} — {remaining_text} left"
             if len(label) > 100:
                 label = label[:97] + "..."
             options.append(discord.SelectOption(label=label, value=str(tid)))
@@ -3179,11 +3146,11 @@ async def alarm(ctx, date: str):
         alarm_time = datetime.strptime(date, "%d/%m/%Y")
     except ValueError:
         return await ctx.send("Invalid date format. Use DD/MM/YYYY.")
-
+    
     now = datetime.now(timezone.utc)
     if alarm_time <= now:
         return await ctx.send("Date must be in the future.")
-
+    
     delta = (alarm_time - now).total_seconds()
     await ctx.send(f"⏰ Alarm set for {date}, {ctx.author.mention}. I'll ping you then.")
     await asyncio.sleep(delta)
@@ -3373,12 +3340,11 @@ async def unblock(ctx, member: discord.Member):
 @bot.command()
 async def sleep(ctx):
     sleeping_users[ctx.author.id] = datetime.now(timezone.utc)
-    pgdata.save_sleeping_user(ctx.author.id, datetime.now(timezone.utc))
     save_dict(SLEEP_FILE, {
         str(uid): dt.isoformat()
         for uid, dt in sleeping_users.items()
     })
-    await ctx.send("You're now in sleep mode. 💤 Good night!")
+    await ctx.send("You’re now in sleep mode. 💤 Good night!")
 
 @bot.command()
 async def fsleep(ctx, members: commands.Greedy[discord.Member], *, time: str = None):
@@ -3413,7 +3379,6 @@ async def fsleep(ctx, members: commands.Greedy[discord.Member], *, time: str = N
                 start_time -= timedelta(seconds=total_seconds)
 
         sleeping_users[member.id] = start_time
-        pgdata.save_sleeping_user(member.id, start_time)
         await ctx.send(
             f"Marked {member.mention} as asleep since <t:{int(start_time.timestamp())}:F>"
         )
@@ -3436,7 +3401,6 @@ async def wake(ctx, members: commands.Greedy[discord.Member]):
 
     for member in members:
         sleeping_users.pop(member.id, None)
-        pgdata.remove_sleeping_user(member.id)
 
     save_dict(SLEEP_FILE, {
         str(uid): dt.isoformat()
@@ -3449,7 +3413,6 @@ async def afk(ctx, *, reason="AFK"):
         "reason": reason,
         "since": datetime.now(timezone.utc)
     }
-    pgdata.save_afk_user(ctx.author.id, reason, datetime.now(timezone.utc))
     save_dict(AFK_FILE, {
         str(uid): {
             "reason": data["reason"],
@@ -3483,7 +3446,7 @@ async def removebday(ctx):
             json.dump(birthdays, f, indent=2)
         await ctx.send("Birthday removed.")
     else:
-        await ctx.send("You haven't set a birthday.")
+        await ctx.send("You haven’t set a birthday.")
 
 @bot.command(name="away")
 async def away(ctx):
@@ -3509,7 +3472,7 @@ async def away(ctx):
                     time_parts.append(f"{mins}m")
                 formatted = " ".join(time_parts)
 
-                afk_text += f"<@!{user.id}> - been AFK for {formatted}\n"
+                afk_text += f"<@!{user.id}> — been AFK for {formatted}\n"
 
             embed.add_field(name="AFK Users", value=afk_text, inline=False)
 
@@ -3529,7 +3492,7 @@ async def away(ctx):
                     time_parts.append(f"{mins}m")
                 formatted = " ".join(time_parts)
 
-                sleep_text += f"<@!{user.id}> - been asleep for {formatted}\n"
+                sleep_text += f"<@!{user.id}> — been asleep for {formatted}\n"
 
             embed.add_field(name="Sleeping Users", value=sleep_text, inline=False)
 
@@ -3563,7 +3526,7 @@ async def censor(ctx, *, phrase: str):
     phrase = normalize(phrase)
     if phrase in censored_phrases:
         return await ctx.send(f"'{phrase}' is already being censored.")
-
+    
     censored_phrases.append(phrase)
     await ctx.send(f"Now censoring messages containing: `{phrase}`")
 
@@ -3573,7 +3536,7 @@ async def uncensor(ctx, *, phrase: str):
     phrase = normalize(phrase)
     if phrase not in censored_phrases:
         return await ctx.send(f"'{phrase}' is not currently censored.")
-
+    
     censored_phrases.remove(phrase)
     await ctx.send(f"Stopped censoring: `{phrase}`")
 
@@ -3632,7 +3595,7 @@ async def listbans(ctx):
         await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
     except discord.Forbidden:
-        await ctx.send("I don't have permission to view bans.")
+        await ctx.send("I don’t have permission to view bans.")
     except Exception as e:
         await ctx.send(f"Error: {type(e).__name__} - {e}")
 
@@ -3646,7 +3609,7 @@ async def listblocks(ctx):
 async def listcensors(ctx):
     if not censored_phrases:
         return await ctx.send("No censors are active.")
-
+    
     formatted = "\n".join(f"- {p}" for p in censored_phrases)
     await ctx.send(f"Active censors:\n{formatted}")
 
@@ -3692,10 +3655,10 @@ def run_bot_with_retry():
     if not token:
         print("ERROR: DISCORD_TOKEN not set!")
         return
-
+    
     max_retries = 5
     base_delay = 5
-
+    
     for attempt in range(max_retries):
         try:
             print(f"Attempting to login (attempt {attempt + 1}/{max_retries})...")
@@ -3719,7 +3682,7 @@ def run_bot_with_retry():
         except Exception as e:
             print(f"Unexpected error: {e}")
             raise
-
+    
     print("Max retries reached. Exiting.")
 
 # === AI COMMANDS ===
@@ -3733,7 +3696,7 @@ async def ask_command(ctx, *, question: str):
     """Ask AI anything - answers simply, clearly, with sources"""
     if not GROQ_API_KEY:
         return await ctx.send("API not configured. Set GROQ_API_KEY.")
-
+    
     await ctx.message.add_reaction("⏳")
 
     headers = {
@@ -3776,7 +3739,7 @@ async def generate_command(ctx, *, prompt: str):
     """Generate an image from text"""
     if not CLOUDFLARE_API_KEY or not CLOUDFLARE_ACCOUNT_ID:
         return await ctx.send("API not configured. Set CLOUDFLARE_API_KEY and CLOUDFLARE_ACCOUNT_ID.")
-
+    
     await ctx.message.add_reaction("⏳")
 
     url = f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/run/@cf/black-forest-labs/flux-1-schnell"
@@ -3819,17 +3782,17 @@ async def analyse_command(ctx):
     """Analyse an image - reply to an image or attachment"""
     if not ctx.message.reference or not ctx.message.reference.resolved:
         return await ctx.send("Reply to an image to analyse it.")
-
+    
     ref_msg = ctx.message.reference.resolved
     image_url = None
-
+    
     # Check attachments
     if ref_msg.attachments:
         for att in ref_msg.attachments:
             if att.content_type and att.content_type.startswith("image/"):
                 image_url = att.url
                 break
-
+    
     # Check embeds
     if not image_url and ref_msg.embeds:
         for emb in ref_msg.embeds:
@@ -3837,19 +3800,19 @@ async def analyse_command(ctx):
                 image_url = emb.image.url
             elif emb.thumbnail:
                 image_url = emb.thumbnail.url
-
+    
     if not image_url:
         return await ctx.send("No image found in the replied message.")
-
+    
     if not CLOUDFLARE_API_KEY or not CLOUDFLARE_ACCOUNT_ID:
         return await ctx.send("API not configured.")
-
+    
     await ctx.message.add_reaction("⏳")
-
+    
     url = f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/run/@cf/meta/llama-3.2-90b-vision-instruct"
-
+    
     headers = {"Authorization": f"Bearer {CLOUDFLARE_API_KEY}"}
-
+    
     # For vision, we pass the image URL
     payload = {
         "messages": [
@@ -3860,20 +3823,20 @@ async def analyse_command(ctx):
         ],
         "max_tokens": 500
     }
-
+    
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(url, json=payload, headers=headers) as resp:
                 if resp.status != 200:
                     await ctx.message.remove_reaction("⏳", bot.user)
                     return await ctx.send(f"Error: {resp.status}")
-
+                
                 data = await resp.json()
                 result = data["result"]["response"]
-
+                
                 if len(result) > 1900:
                     result = result[:1897] + "..."
-
+                
                 await ctx.message.remove_reaction("⏳", bot.user)
                 await ctx.send(result)
     except Exception as e:
@@ -3884,7 +3847,7 @@ async def analyse_command(ctx):
 @bot.command(name="translate")
 async def translate_command(ctx, *, args: str = None):
     """Translate - reply to a message or provide text. Auto-detects language, translates to English."""
-
+    
     # Get text to translate
     if args:
         text = args
@@ -3895,9 +3858,9 @@ async def translate_command(ctx, *, args: str = None):
             return await ctx.send("No text found in the replied message.")
     else:
         return await ctx.send("Reply to a message or provide text: `.translate [text]`")
-
+    
     await ctx.message.add_reaction("⏳")
-
+    
     try:
         # MyMemory auto-detect: use "auto" as source
         async with aiohttp.ClientSession() as session:
@@ -3907,25 +3870,25 @@ async def translate_command(ctx, *, args: str = None):
                 if resp.status != 200:
                     await ctx.message.remove_reaction("⏳", bot.user)
                     return await ctx.send(f"Error: {resp.status}")
-
+                
                 data = await resp.json()
                 if data.get("responseStatus") != 200:
                     await ctx.message.remove_reaction("⏳", bot.user)
                     return await ctx.send(f"Error: {data.get('responseDetails', 'Translation failed')}")
-
+                
                 # MyMemory returns detected language in responseData
                 detected_lang = data.get("responseData", {}).get("detectedLanguage", "unknown")
                 result = data["responseData"]["translatedText"]
-
+                
                 # If text is already English or very similar, note it
                 if detected_lang == "en":
                     response = f"**Detected: English**\n{result}"
                 else:
                     response = f"**Detected: {detected_lang.upper()} → English**\n{result}"
-
+                
                 await ctx.message.remove_reaction("⏳", bot.user)
                 await ctx.send(response)
-
+            
     except Exception as e:
         await ctx.message.remove_reaction("⏳", bot.user)
         await ctx.send(f"Error: {str(e)[:100]}")
