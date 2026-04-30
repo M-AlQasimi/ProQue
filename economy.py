@@ -161,11 +161,13 @@ def check_cooldown(user_id, command):
     _cooldowns[key] = now
     return 0
 
-def parse_amount(raw):
+def parse_amount(raw, user_id=None):
     if str(raw).lower() == "all":
         return MAX_BET
     try:
         val = int(raw)
+        if user_id is not None and is_super_owner(user_id):
+            return val
         return min(val, MAX_BET)
     except:
         return None
@@ -352,20 +354,20 @@ async def monthly(ctx):
 # =====================
 # GAMBLE
 # =====================
-@commands.command()
+@commands.command(name="roll")
 async def gamble(ctx, amount: str):
     if not db_ready:
         await send_error(ctx, "Gimme a sec, im drinking water. Try again in a bit.")
         return
 
-    cd = check_cooldown(ctx.author.id, "gamble")
+    cd = check_cooldown(ctx.author.id, "roll")
     if cd > 0:
-        await ctx.send(f"⏳ Chill for **{cd:.1f}s** before gambling again.")
+        await ctx.send(f"⏳ Chill for **{cd:.1f}s** before rolling again.")
         return
 
-    parsed = parse_amount(amount)
+    parsed = parse_amount(amount, ctx.author.id)
     if parsed is None:
-        await ctx.send("❌ Use `.gamble all` or `.gamble <amount>` (max 150,000 𝚀)")
+        await ctx.send("❌ Use `.roll all` or `.roll <amount>` (max 150,000 𝚀)")
         return
 
     amount = parsed
@@ -381,7 +383,7 @@ async def gamble(ctx, amount: str):
         await ctx.send("❌ Amount must be positive.")
         return
 
-    if amount > data['balance']:
+    if amount > data['balance'] and not is_super_owner(ctx.author.id):
         await ctx.send(f"❌ You only have {format_balance(data['balance'])}")
         return
 
@@ -445,7 +447,7 @@ async def roulette(ctx, amount: str, color: str = None):
         await ctx.send("❌ Use `.roulette all <red|black|green>` or `.roulette <amount> <red|black|green>`")
         return
 
-    parsed = parse_amount(amount)
+    parsed = parse_amount(amount, ctx.author.id)
     if parsed is None:
         await ctx.send("❌ Use `.roulette all <red|black|green>` or `.roulette <amount> <red|black|green>`")
         return
@@ -467,7 +469,7 @@ async def roulette(ctx, amount: str, color: str = None):
         await ctx.send("❌ Amount must be positive.")
         return
 
-    if amount > data['balance']:
+    if amount > data['balance'] and not is_super_owner(ctx.author.id):
         await ctx.send(f"❌ You only have {format_balance(data['balance'])}")
         return
 
@@ -534,7 +536,7 @@ async def slots(ctx, amount: str):
         await ctx.send(f"⏳ Chill for **{cd:.1f}s** before slots again.")
         return
 
-    parsed = parse_amount(amount)
+    parsed = parse_amount(amount, ctx.author.id)
     if parsed is None:
         await ctx.send("❌ Use `.slots all` or `.slots <amount>` (max 150,000 𝚀)")
         return
@@ -552,7 +554,7 @@ async def slots(ctx, amount: str):
         await ctx.send("❌ Amount must be positive.")
         return
 
-    if amount > data['balance']:
+    if amount > data['balance'] and not is_super_owner(ctx.author.id):
         await ctx.send(f"❌ You only have {format_balance(data['balance'])}")
         return
 
@@ -698,7 +700,7 @@ async def blackjack(ctx, amount: str):
         await ctx.send(f"⏳ Chill for **{cd:.1f}s** before blackjack again.")
         return
 
-    parsed = parse_amount(amount)
+    parsed = parse_amount(amount, ctx.author.id)
     if parsed is None:
         await ctx.send("❌ Use `.blackjack all` or `.blackjack <amount>` (max 150,000 𝚀)")
         return
@@ -716,7 +718,7 @@ async def blackjack(ctx, amount: str):
         await ctx.send("❌ Amount must be positive.")
         return
 
-    if amount > data['balance']:
+    if amount > data['balance'] and not is_super_owner(ctx.author.id):
         await ctx.send(f"❌ You only have {format_balance(data['balance'])}")
         return
 
@@ -777,17 +779,10 @@ async def blackjack(ctx, amount: str):
         except Exception:
             await send_error(ctx, "Gimme a sec, im drinking water. Try again in a bit.")
 
-    def make_buttons():
-        hit_btn = discord.ui.Button(label="Hit", style=discord.ButtonStyle.success, custom_id="hit")
-        stand_btn = discord.ui.Button(label="Stand", style=discord.ButtonStyle.danger, custom_id="stand")
-        return [hit_btn, stand_btn]
-
     class BJView(discord.ui.View):
         def __init__(self):
             super().__init__(timeout=30)
             self.done = False
-            for btn in make_buttons():
-                self.add_item(btn)
 
         async def interaction_check(self, interaction):
             return interaction.user.id == ctx.author.id
@@ -877,7 +872,7 @@ async def give(ctx, member: discord.Member, amount: str):
         await send_error(ctx, "Gimme a sec, im drinking water. Try again in a bit.")
         return
 
-    parsed = parse_amount(amount)
+    parsed = parse_amount(amount, ctx.author.id)
     if parsed is None:
         await ctx.send("❌ Use `.give @user all` or `.give @user <amount>`")
         return
@@ -899,7 +894,7 @@ async def give(ctx, member: discord.Member, amount: str):
         await ctx.send("❌ Can't transfer to yourself.")
         return
 
-    if amount > data['balance']:
+    if amount > data['balance'] and not is_super_owner(ctx.author.id):
         await ctx.send(f"❌ You only have {format_balance(data['balance'])}")
         return
 
@@ -1024,7 +1019,7 @@ async def scratch(ctx, amount: str):
         await ctx.send(f"⏳ Chill for **{cd:.1f}s** before scratching again.")
         return
 
-    parsed = parse_amount(amount)
+    parsed = parse_amount(amount, ctx.author.id)
     if parsed is None:
         await ctx.send("❌ Use `.scratch all` or `.scratch <amount>` (max 150,000 𝚚)")
         return
@@ -1042,12 +1037,12 @@ async def scratch(ctx, amount: str):
         await ctx.send("❌ Amount must be positive.")
         return
 
-    if amount > data['balance']:
+    if amount > data['balance'] and not is_super_owner(ctx.author.id):
         await ctx.send(f"❌ You only have {format_balance(data['balance'])}")
         return
 
     win_symbol = random.choice(SCRATCH_SYMBOLS)
-    n_matches = random.choices([2, 3, 4, 5], weights=[35, 30, 20, 15])[0]
+    n_matches = random.choices([2, 3, 4, 5], weights=[40, 40, 15, 5])[0]
     ticket = [win_symbol] * n_matches
     other_symbols = [s for s in SCRATCH_SYMBOLS if s != win_symbol]
     while len(ticket) < 5:
@@ -1147,8 +1142,8 @@ GRID_EMOJIS = {
 }
 
 @commands.command()
-async def minesweeper(ctx, amount: str, grid: str = None):
-    """Play minesweeper. Use `.minesweeper all 3x3` or `.minesweeper 500 4x4` etc. Safe gems = all cells - bombs."""
+async def minesweeper(ctx, amount: str):
+    """Play minesweeper. Use `.minesweeper all` or `.minesweeper 500`."""
     if not db_ready:
         await send_error(ctx, "Gimme a sec, im drinking water. Try again in a bit.")
         return
@@ -1158,9 +1153,9 @@ async def minesweeper(ctx, amount: str, grid: str = None):
         await ctx.send(f"⏳ Chill for **{cd:.1f}s** before minesweeper again.")
         return
 
-    parsed = parse_amount(amount)
+    parsed = parse_amount(amount, ctx.author.id)
     if parsed is None:
-        await ctx.send("❌ Use `.minesweeper all` or `.minesweeper <amount> [3x3|4x4|5x5]`")
+        await ctx.send("❌ Use `.minesweeper all` or `.minesweeper <amount>`")
         return
 
     amount = parsed
@@ -1176,21 +1171,49 @@ async def minesweeper(ctx, amount: str, grid: str = None):
         await ctx.send("❌ Amount must be positive.")
         return
 
-    if amount > data['balance']:
+    if amount > data['balance'] and not is_super_owner(ctx.author.id):
         await ctx.send(f"❌ You only have {format_balance(data['balance'])}")
         return
 
-    # Parse grid size
-    rows, cols = 3, 3
-    bomb_count = 3
-    if grid:
-        m = re.match(r'(\d+)x(\d+)', grid.lower())
-        if m:
-            rows = int(m.group(1))
-            cols = int(m.group(2))
-            rows = max(2, min(rows, 6))
-            cols = max(2, min(cols, 6))
-            bomb_count = max(1, min(rows * cols - 2, (rows * cols) // 3))
+    class SizeView(discord.ui.View):
+        def __init__(self):
+            super().__init__(timeout=30)
+            self.grid = None
+
+        async def interaction_check(self, interaction):
+            return interaction.user.id == ctx.author.id
+
+        async def choose(self, interaction, grid_size):
+            self.grid = grid_size
+            for item in self.children:
+                item.disabled = True
+            await interaction.response.edit_message(
+                content=f"💎 **MINE HUNT** `{grid_size}x{grid_size}` selected.",
+                view=self
+            )
+            self.stop()
+
+        @discord.ui.button(label="3x3", style=discord.ButtonStyle.success)
+        async def size_3(self, interaction, button):
+            await self.choose(interaction, 3)
+
+        @discord.ui.button(label="4x4", style=discord.ButtonStyle.primary)
+        async def size_4(self, interaction, button):
+            await self.choose(interaction, 4)
+
+        @discord.ui.button(label="5x5", style=discord.ButtonStyle.danger)
+        async def size_5(self, interaction, button):
+            await self.choose(interaction, 5)
+
+    size_view = SizeView()
+    size_msg = await ctx.send("💎 Choose your minefield size:", view=size_view)
+    await size_view.wait()
+    if size_view.grid is None:
+        await size_msg.edit(content="⏰ Mine hunt cancelled.", view=None)
+        return
+
+    rows = cols = size_view.grid
+    bomb_count = max(1, min(rows * cols - 2, (rows * cols) // 3))
 
     total_cells = rows * cols
     safe_cells = total_cells - bomb_count
@@ -1357,7 +1380,7 @@ async def wheel(ctx, amount: str):
         await ctx.send(f"⏳ Chill for **{cd:.1f}s** before wheel again.")
         return
 
-    parsed = parse_amount(amount)
+    parsed = parse_amount(amount, ctx.author.id)
     if parsed is None:
         await ctx.send("❌ Use `.wheel all` or `.wheel <amount>` (max 150,000 𝚀)")
         return
@@ -1375,7 +1398,7 @@ async def wheel(ctx, amount: str):
         await ctx.send("❌ Amount must be positive.")
         return
 
-    if amount > data['balance']:
+    if amount > data['balance'] and not is_super_owner(ctx.author.id):
         await ctx.send(f"❌ You only have {format_balance(data['balance'])}")
         return
 
@@ -1383,16 +1406,15 @@ async def wheel(ctx, amount: str):
     segment_idx = random.choices(range(len(WHEEL_SEGMENTS)), weights=WHEEL_WEIGHTS)[0]
     label, color_hex, emoji = WHEEL_SEGMENTS[segment_idx]
 
-    # Build display: show 7 segments vertically, with indicator
     def render_wheel(spinning=True, offset=0, landed_idx=None):
-        lines = []
         n = len(WHEEL_SEGMENTS)
-        for i in range(7):
-            idx = (i + offset) % n
-            seg_label, seg_color, seg_emoji = WHEEL_SEGMENTS[idx]
-            is_landed = (landed_idx is not None and idx == landed_idx)
-            prefix = "⬆️ " if is_landed else "   "
-            lines.append(f"{prefix}`{seg_emoji} {seg_label:6s}`")
+        center_idx = landed_idx if landed_idx is not None else (offset + 2) % n
+        top = WHEEL_SEGMENTS[(offset + 0) % n][2]
+        left = WHEEL_SEGMENTS[(offset + 1) % n][2]
+        center_label, center_color, center_emoji = WHEEL_SEGMENTS[center_idx]
+        right = WHEEL_SEGMENTS[(offset + 3) % n][2]
+        bottom = WHEEL_SEGMENTS[(offset + 4) % n][2]
+        wheel_art = f"      {top}\n   {left}  {center_emoji}  {right}\n      {bottom}"
         header = f"🎡 **FORTUNE WHEEL**  |  Bet **{format_balance(amount)}**"
         if not spinning:
             if label == 'BLANK':
@@ -1402,26 +1424,15 @@ async def wheel(ctx, amount: str):
                 header += f"\n> 🎯 Landed on: **{emoji} {label}**"
         else:
             header += "\n> _Spinning..._"
-        return header + "\n" + "\n".join(lines)
+        return header + "\n```text\n" + wheel_art + "\n```"
 
     msg = await ctx.send(render_wheel(spinning=True))
 
-    # Animate wheel: 10 rapid updates, slowing down
-    import math
-    total_steps = 40
-    # Land at segment_idx after slowing, offset determines where landed_idx appears in window
-    # We want landed_idx to appear at position 3 (middle) when animation ends
-    target_pos = 3
-    final_offset = (segment_idx - target_pos) % len(WHEEL_SEGMENTS)
+    final_offset = (segment_idx - 2) % len(WHEEL_SEGMENTS)
 
-    for step in range(total_steps):
-        await asyncio.sleep(0.08 if step < 25 else 0.15)
-        eased = 1 - math.exp(-step / 15)
-        current_offset = int(final_offset * eased) % len(WHEEL_SEGMENTS)
-        landed = segment_idx if step == total_steps - 1 else None
-        await msg.edit(content=render_wheel(spinning=True, offset=current_offset, landed_idx=landed))
-
-    await asyncio.sleep(0.5)
+    for step in range(12):
+        await asyncio.sleep(0.15 if step < 8 else 0.25)
+        await msg.edit(content=render_wheel(spinning=True, offset=step % len(WHEEL_SEGMENTS)))
 
     # Resolve
     streak = data.get('wheel_streak', 0)
@@ -1431,12 +1442,12 @@ async def wheel(ctx, amount: str):
         if label == 'BLANK':
             update_user(user_id, wheel_streak=0)
             await msg.edit(
-                content=render_wheel(spinning=False, offset=final_offset, landed_idx=segment_idx)
-            )
-            await ctx.send(
-                f"🎡 **FORTUNE WHEEL**\n"
+                content=(
+                    render_wheel(spinning=False, offset=final_offset, landed_idx=segment_idx) +
+                    "\n" +
                 f">>> ⚪ **{label}**\n"
                 f"Nothing lost, nothing won."
+                )
             )
         else:
             mult_val = float(label.replace('×', ''))
@@ -1451,14 +1462,14 @@ async def wheel(ctx, amount: str):
                 )
                 streak_msg = f" 🔥 {streak + 1} in a row! ×{1 + ((streak + 1) * STREAK_MULTIPLIER):.2f}" if streak > 0 else ""
                 await msg.edit(
-                    content=render_wheel(spinning=False, offset=final_offset, landed_idx=segment_idx)
-                )
-                await ctx.send(
-                    f"🎡 **FORTUNE WHEEL**\n"
+                    content=(
+                        render_wheel(spinning=False, offset=final_offset, landed_idx=segment_idx) +
+                        "\n" +
                     f">>> **{emoji} {label}!**\n"
                     f"Multiplier: ×{mult * mult_val:.2f} (base ×{mult_val}, streak ×{mult:.2f})\n"
                     f"Won: **{format_balance(winnings)}**{streak_msg}\n"
                     f"New Balance: **{format_balance(data['balance'] + winnings - amount)}**"
+                    )
                 )
             else:
                 # Lose (×0.5)
@@ -1469,14 +1480,14 @@ async def wheel(ctx, amount: str):
                     total_lost=data['total_lost'] + amount
                 )
                 await msg.edit(
-                    content=render_wheel(spinning=False, offset=final_offset, landed_idx=segment_idx)
-                )
-                await ctx.send(
-                    f"🎡 **FORTUNE WHEEL**\n"
+                    content=(
+                        render_wheel(spinning=False, offset=final_offset, landed_idx=segment_idx) +
+                        "\n" +
                     f">>> **{emoji} {label}**\n"
                     f"Lost: **{format_balance(amount)}**\n"
                     f"Balance: **{format_balance(data['balance'] - amount)}**\n"
                     f"Streak reset."
+                    )
                 )
     except Exception:
         await send_error(ctx, "Gimme a sec, im drinking water. Try again in a bit.")
