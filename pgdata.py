@@ -96,7 +96,7 @@ def load_bot_config(key, default=None):
         cur.close()
         conn.close()
         if row:
-            return json.loads(row[0])
+            return json.loads(row[0]) if isinstance(row[0], str) else row[0]
         return default
     except Exception:
         return default

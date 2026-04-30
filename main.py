@@ -1,6 +1,5 @@
 import asyncio
 import ast
-import json
 import logging
 import math
 import operator
@@ -25,54 +24,15 @@ from economy import setup as economy_setup
 last_message_time = 0
 app = Flask('')
 
-bday_file = "birthdays.json"
-AFK_FILE = "afk_users.json"
-SLEEP_FILE = "sleeping_users.json"
-MODS_FILE = "mods.json"
-OWNERS_FILE = "owners.json"
+# JSON storage removed - PostgreSQL is the single source of truth
 
-def load_ids(filename):
-    if os.path.exists(filename):
-        with open(filename, "r") as f:
-            return set(json.load(f))
-    return set()
+# JSON helpers removed - using PostgreSQL only
 
-def save_ids(filename, id_set):
-    with open(filename, "w") as f:
-        json.dump(list(id_set), f)
+birthdays = {}  # now loaded from PostgreSQL via DB layer
 
-def normalize(text: str) -> str:
-    return text.lower()
-
-def load_dict(filename):
-    if os.path.exists(filename):
-        with open(filename, "r") as f:
-            return json.load(f)
-    return {}
-
-def save_dict(filename, data):
-    with open(filename, "w") as f:
-        json.dump(data, f)
-
-try:
-    with open(bday_file, "r") as f:
-        birthdays = json.load(f)
-except FileNotFoundError:
-    birthdays = {}
-
-raw_afk = load_dict(AFK_FILE)
-afk_users = {
-    int(uid): {
-        "reason": data["reason"],
-        "since": datetime.fromisoformat(data["since"])
-    } for uid, data in raw_afk.items()
-}
-
-raw_sleeping = load_dict(SLEEP_FILE)
-sleeping_users = {
-    int(uid): datetime.fromisoformat(time_str)
-    for uid, time_str in raw_sleeping.items()
-}
+# Loaded from PostgreSQL instead of JSON
+afk_users = {}
+sleeping_users = {}
 
 class MyBot(commands.Bot):
     async def setup_hook(self):
@@ -90,8 +50,9 @@ log_channel_id = 1394806479881769100
 rlog_channel_id = 1394806602502115470
 bday_channel_id = 1364346683709718619
 super_owner_id = 885548126365171824  
-mods = load_ids(MODS_FILE)
-owners = load_ids(OWNERS_FILE)
+# Loaded from PostgreSQL bot_config table
+mods = set()
+owners = set()
 
 autoban_ids = set()
 blacklisted_users = set()
