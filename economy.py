@@ -179,6 +179,17 @@ async def send_error(ctx, text):
     except:
         pass
 
+async def require_economy_prefix(ctx):
+    if ctx.prefix == "pq":
+        return True
+    raise commands.CheckFailure("economy_prefix")
+
+async def economy_command_error(ctx, error):
+    if isinstance(error, commands.CheckFailure) and str(error) == "economy_prefix":
+        await ctx.send(f"Use `pq{ctx.command.name}` for economy commands.")
+        return
+    raise error
+
 # =====================
 # BALANCE + STREAKS
 # =====================
@@ -367,7 +378,7 @@ async def gamble(ctx, amount: str):
 
     parsed = parse_amount(amount, ctx.author.id)
     if parsed is None:
-        await ctx.send("❌ Use `.roll all` or `.roll <amount>` (max 150,000 𝚀)")
+        await ctx.send("❌ Use `pqroll all` or `pqroll <amount>` (max 150,000 𝚀)")
         return
 
     amount = parsed
@@ -390,6 +401,21 @@ async def gamble(ctx, amount: str):
     streak = data.get('gamble_streak', 0)
     mult = 1 + (streak * STREAK_MULTIPLIER)
     win = random.choice([True, False])
+    roll_value = random.randint(1, 100)
+    roll_msg = await ctx.send(
+        f"🎲 **ROLLING...**\n"
+        f"─────────────────\n"
+        f"`[ ? ]`  Bet: **{format_balance(amount)}**"
+    )
+    for face in ["[ . ]", "[ .. ]", "[ ... ]", f"[ {roll_value} ]"]:
+        await asyncio.sleep(0.8)
+        await roll_msg.edit(
+            content=(
+                f"🎲 **ROLLING...**\n"
+                f"─────────────────\n"
+                f"`{face}`  Bet: **{format_balance(amount)}**"
+            )
+        )
 
     try:
         if win:
@@ -401,13 +427,15 @@ async def gamble(ctx, amount: str):
                 total_won=data['total_won'] + winnings - amount
             )
             streak_msg = f" 🔥 {streak + 1} in a row! ×{1 + ((streak + 1) * STREAK_MULTIPLIER):.2f} payout" if streak > 0 else ""
-            await ctx.send(
+            await roll_msg.edit(
+                content=(
                 f"🎲 **ROLLING...**\n"
                 f"─────────────────\n"
                 f">>> 🟢 **YOU WIN!**\n"
-                f"Rolled: **{random.randint(1, 100)}**\n"
+                f"Rolled: **{roll_value}**\n"
                 f"Prize: **{format_balance(winnings)}**{streak_msg}\n"
                 f"New Balance: **{format_balance(data['balance'] + winnings - amount)}**"
+                )
             )
         else:
             update_user(
@@ -416,14 +444,16 @@ async def gamble(ctx, amount: str):
                 gamble_streak=0,
                 total_lost=data['total_lost'] + amount
             )
-            await ctx.send(
+            await roll_msg.edit(
+                content=(
                 f"🎲 **ROLLING...**\n"
                 f"─────────────────\n"
                 f">>> 🔴 **YOU LOSE**\n"
-                f"Rolled: **{random.randint(1, 100)}**\n"
+                f"Rolled: **{roll_value}**\n"
                 f"Lost: **{format_balance(amount)}**\n"
                 f"Balance: **{format_balance(data['balance'] - amount)}**\n"
                 f"Streak reset."
+                )
             )
     except Exception:
         await send_error(ctx, "Gimme a sec, im drinking water. Try again in a bit.")
@@ -444,18 +474,18 @@ async def roulette(ctx, amount: str, color: str = None):
         return
 
     if not color:
-        await ctx.send("❌ Use `.roulette all <red|black|green>` or `.roulette <amount> <red|black|green>`")
+        await ctx.send("❌ Use `pqroulette all <red|black|green>` or `pqroulette <amount> <red|black|green>`")
         return
 
     parsed = parse_amount(amount, ctx.author.id)
     if parsed is None:
-        await ctx.send("❌ Use `.roulette all <red|black|green>` or `.roulette <amount> <red|black|green>`")
+        await ctx.send("❌ Use `pqroulette all <red|black|green>` or `pqroulette <amount> <red|black|green>`")
         return
 
     amount = parsed
     color = color.lower()
     if color not in ['red', 'black', 'green']:
-        await ctx.send("❌ Use `.roulette all <red|black|green>` or `.roulette <amount> <red|black|green>`")
+        await ctx.send("❌ Use `pqroulette all <red|black|green>` or `pqroulette <amount> <red|black|green>`")
         return
 
     user_id = ctx.author.id
@@ -476,8 +506,26 @@ async def roulette(ctx, amount: str, color: str = None):
     outcomes = ['red'] * 18 + ['black'] * 18 + ['green'] * 2
     result = random.choice(outcomes)
     multipliers = {'red': 2, 'black': 2, 'green': 10}
+    emoji_map = {'red': '🔴', 'black': '⚫', 'green': '🟢'}
     streak = data.get('roulette_streak', 0)
     mult = 1 + (streak * STREAK_MULTIPLIER)
+    roulette_msg = await ctx.send(
+        f"🎡 **ROULETTE**\n"
+        f"─────────────────\n"
+        f"🎯 Pick: **{emoji_map[color]} {color.upper()}**\n"
+        f"`[ spinning... ]`"
+    )
+    spin_frames = ["🔴 ⚫ 🟢", "⚫ 🟢 🔴", "🟢 🔴 ⚫", "⚫ 🔴 ⚫"]
+    for frame in spin_frames:
+        await asyncio.sleep(0.8)
+        await roulette_msg.edit(
+            content=(
+                f"🎡 **ROULETTE**\n"
+                f"─────────────────\n"
+                f"🎯 Pick: **{emoji_map[color]} {color.upper()}**\n"
+                f"`[ {frame} ]`"
+            )
+        )
 
     try:
         if result == color:
@@ -489,9 +537,9 @@ async def roulette(ctx, amount: str, color: str = None):
                 total_won=data['total_won'] + winnings - amount
             )
             streak_msg = f" 🔥 {streak + 1} in a row! ×{1 + ((streak + 1) * STREAK_MULTIPLIER):.2f} payout" if streak > 0 else ""
-            emoji_map = {'red': '🔴', 'black': '⚫', 'green': '🟢'}
-            await ctx.send(
-                f"🎡 **SPINNING THE WHEEL...**\n"
+            await roulette_msg.edit(
+                content=(
+                f"🎡 **ROULETTE**\n"
                 f"─────────────────\n"
                 f"🎯 You picked: **{emoji_map[color]} {color.upper()}**\n"
                 f"─────────────────\n"
@@ -499,6 +547,7 @@ async def roulette(ctx, amount: str, color: str = None):
                 f"Multiplier: ×{mult * multipliers[color]:.2f}\n"
                 f"Won: **{format_balance(winnings)}**{streak_msg}\n"
                 f"New Balance: **{format_balance(data['balance'] + winnings - amount)}**"
+                )
             )
         else:
             update_user(
@@ -507,9 +556,9 @@ async def roulette(ctx, amount: str, color: str = None):
                 roulette_streak=0,
                 total_lost=data['total_lost'] + amount
             )
-            emoji_map = {'red': '🔴', 'black': '⚫', 'green': '🟢'}
-            await ctx.send(
-                f"🎡 **SPINNING THE WHEEL...**\n"
+            await roulette_msg.edit(
+                content=(
+                f"🎡 **ROULETTE**\n"
                 f"─────────────────\n"
                 f"🎯 You picked: **{emoji_map[color]} {color.upper()}**\n"
                 f"─────────────────\n"
@@ -517,6 +566,7 @@ async def roulette(ctx, amount: str, color: str = None):
                 f"Lost: **{format_balance(amount)}**\n"
                 f"Balance: **{format_balance(data['balance'] - amount)}**\n"
                 f"Streak reset."
+                )
             )
     except Exception:
         await send_error(ctx, "Gimme a sec, im drinking water. Try again in a bit.")
@@ -538,7 +588,7 @@ async def slots(ctx, amount: str):
 
     parsed = parse_amount(amount, ctx.author.id)
     if parsed is None:
-        await ctx.send("❌ Use `.slots all` or `.slots <amount>` (max 150,000 𝚀)")
+        await ctx.send("❌ Use `pqslots all` or `pqslots <amount>` (max 150,000 𝚀)")
         return
 
     amount = parsed
@@ -568,27 +618,29 @@ async def slots(ctx, amount: str):
         f"─────────────────"
     )
 
-    await asyncio.sleep(0.6)
+    await asyncio.sleep(1.1)
     r1 = random.choices(emojis, weights=weights)[0]
     await slots_msg.edit(
         content=(
             f"🎰 **SPINNING...**\n"
             f"─────────────────\n"
             f"| {r1} | 🎰 | 🎰 |\n"
-            f"─────────────────"
+            f"─────────────────\n"
+            f"_First reel locked..._"
         )
     )
-    await asyncio.sleep(0.6)
+    await asyncio.sleep(1.1)
     r2 = random.choices(emojis, weights=weights)[0]
     await slots_msg.edit(
         content=(
             f"🎰 **SPINNING...**\n"
             f"─────────────────\n"
             f"| {r1} | {r2} | 🎰 |\n"
-            f"─────────────────"
+            f"─────────────────\n"
+            f"_One reel left..._"
         )
     )
-    await asyncio.sleep(0.6)
+    await asyncio.sleep(1.0)
     r3 = random.choices(emojis, weights=weights)[0]
 
     result = f"{r1} {r2} {r3}"
@@ -702,7 +754,7 @@ async def blackjack(ctx, amount: str):
 
     parsed = parse_amount(amount, ctx.author.id)
     if parsed is None:
-        await ctx.send("❌ Use `.blackjack all` or `.blackjack <amount>` (max 150,000 𝚀)")
+        await ctx.send("❌ Use `pqblackjack all` or `pqblackjack <amount>` (max 150,000 𝚀)")
         return
 
     amount = parsed
@@ -874,7 +926,7 @@ async def give(ctx, member: discord.Member, amount: str):
 
     parsed = parse_amount(amount, ctx.author.id)
     if parsed is None:
-        await ctx.send("❌ Use `.give @user all` or `.give @user <amount>`")
+        await ctx.send("❌ Use `pqgive @user all` or `pqgive @user <amount>`")
         return
 
     amount = parsed
@@ -1021,7 +1073,7 @@ async def scratch(ctx, amount: str):
 
     parsed = parse_amount(amount, ctx.author.id)
     if parsed is None:
-        await ctx.send("❌ Use `.scratch all` or `.scratch <amount>` (max 150,000 𝚚)")
+        await ctx.send("❌ Use `pqscratch all` or `pqscratch <amount>` (max 150,000 𝚚)")
         return
 
     amount = parsed
@@ -1143,7 +1195,7 @@ GRID_EMOJIS = {
 
 @commands.command()
 async def minesweeper(ctx, amount: str):
-    """Play minesweeper. Use `.minesweeper all` or `.minesweeper 500`."""
+    """Play minesweeper. Use `pqminesweeper all` or `pqminesweeper 500`pq"""
     if not db_ready:
         await send_error(ctx, "Gimme a sec, im drinking water. Try again in a bit.")
         return
@@ -1155,7 +1207,7 @@ async def minesweeper(ctx, amount: str):
 
     parsed = parse_amount(amount, ctx.author.id)
     if parsed is None:
-        await ctx.send("❌ Use `.minesweeper all` or `.minesweeper <amount>`")
+        await ctx.send("❌ Use `pqminesweeper all` or `pqminesweeper <amount>`")
         return
 
     amount = parsed
@@ -1382,7 +1434,7 @@ async def wheel(ctx, amount: str):
 
     parsed = parse_amount(amount, ctx.author.id)
     if parsed is None:
-        await ctx.send("❌ Use `.wheel all` or `.wheel <amount>` (max 150,000 𝚀)")
+        await ctx.send("❌ Use `pqwheel all` or `pqwheel <amount>` (max 150,000 𝚀)")
         return
 
     amount = parsed
@@ -1503,18 +1555,11 @@ async def setup(bot_ref):
     init_db()
     print(f"Economy db_ready = {db_ready}")
 
-    bot.add_command(bal)
-    bot.add_command(daily)
-    bot.add_command(weekly)
-    bot.add_command(monthly)
-    bot.add_command(gamble)
-    bot.add_command(roulette)
-    bot.add_command(slots)
-    bot.add_command(blackjack)
-    bot.add_command(scratch)
-    bot.add_command(minesweeper)
-    bot.add_command(wheel)
-    bot.add_command(give)
-    bot.add_command(lb)
-    bot.add_command(add)
-    bot.add_command(remove)
+    economy_commands = [
+        bal, daily, weekly, monthly, gamble, roulette, slots, blackjack,
+        scratch, minesweeper, wheel, give, lb, add, remove
+    ]
+    for command in economy_commands:
+        command.add_check(require_economy_prefix)
+        command.error(economy_command_error)
+        bot.add_command(command)
