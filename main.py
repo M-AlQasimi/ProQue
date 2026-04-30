@@ -40,8 +40,8 @@ class MyBot(commands.Bot):
         
 intents = discord.Intents.all()
 def get_prefix(bot, message):
-    """Support both . and pq as prefixes"""
-    return commands.when_mentioned_or('.', 'pq')(bot, message)
+    """Support pq-with-space as the prefix"""
+    return commands.when_mentioned_or('pq ')(bot, message)
 
 bot = MyBot(command_prefix=get_prefix, intents=intents)
 print(f"Bot is starting with intents: {bot.intents}")
