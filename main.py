@@ -40,8 +40,8 @@ class MyBot(commands.Bot):
         
 intents = discord.Intents.all()
 def get_prefix(bot, message):
-    """Support normal dot commands and pq-space economy commands."""
-    return commands.when_mentioned_or('.', 'pq ')(bot, message)
+    """Support dot commands and pq economy commands."""
+    return commands.when_mentioned_or('.', 'pq')(bot, message)
 
 bot = MyBot(command_prefix=get_prefix, intents=intents)
 print(f"Bot is starting with intents: {bot.intents}")
@@ -58,7 +58,7 @@ async def enforce_command_prefix(ctx):
         return True
 
     command_name = ctx.command.qualified_name.split()[0]
-    if ctx.prefix == "pq ":
+    if ctx.prefix == "pq":
         return command_name in ECONOMY_COMMANDS
     if ctx.prefix == ".":
         return command_name not in ECONOMY_COMMANDS
