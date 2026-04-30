@@ -179,17 +179,6 @@ async def send_error(ctx, text):
     except:
         pass
 
-async def require_economy_prefix(ctx):
-    if ctx.prefix == "pq":
-        return True
-    raise commands.CheckFailure("economy_prefix")
-
-async def economy_command_error(ctx, error):
-    if isinstance(error, commands.CheckFailure) and str(error) == "economy_prefix":
-        await ctx.send(f"Use `pq{ctx.command.name}` for economy commands.")
-        return
-    raise error
-
 # =====================
 # BALANCE + STREAKS
 # =====================
@@ -378,7 +367,7 @@ async def gamble(ctx, amount: str):
 
     parsed = parse_amount(amount, ctx.author.id)
     if parsed is None:
-        await ctx.send("❌ Use `pq flip all`, `pq flip <amount>`, or `pq cf <amount>` (max 150,000 𝚀)")
+        await ctx.send("❌ Use `.flip all`, `.flip <amount>`, or `.cf <amount>` (max 150,000 𝚀)")
         return
 
     amount = parsed
@@ -472,18 +461,18 @@ async def roulette(ctx, amount: str, color: str = None):
         return
 
     if not color:
-        await ctx.send("❌ Use `pqroulette all <red|black|green>` or `pqroulette <amount> <red|black|green>`")
+        await ctx.send("❌ Use `.roulette all <red|black|green>` or `.roulette <amount> <red|black|green>`")
         return
 
     parsed = parse_amount(amount, ctx.author.id)
     if parsed is None:
-        await ctx.send("❌ Use `pqroulette all <red|black|green>` or `pqroulette <amount> <red|black|green>`")
+        await ctx.send("❌ Use `.roulette all <red|black|green>` or `.roulette <amount> <red|black|green>`")
         return
 
     amount = parsed
     color = color.lower()
     if color not in ['red', 'black', 'green']:
-        await ctx.send("❌ Use `pqroulette all <red|black|green>` or `pqroulette <amount> <red|black|green>`")
+        await ctx.send("❌ Use `.roulette all <red|black|green>` or `.roulette <amount> <red|black|green>`")
         return
 
     user_id = ctx.author.id
@@ -586,7 +575,7 @@ async def slots(ctx, amount: str):
 
     parsed = parse_amount(amount, ctx.author.id)
     if parsed is None:
-        await ctx.send("❌ Use `pqslots all` or `pqslots <amount>` (max 150,000 𝚀)")
+        await ctx.send("❌ Use `.slots all` or `.slots <amount>` (max 150,000 𝚀)")
         return
 
     amount = parsed
@@ -752,7 +741,7 @@ async def blackjack(ctx, amount: str):
 
     parsed = parse_amount(amount, ctx.author.id)
     if parsed is None:
-        await ctx.send("❌ Use `pqblackjack all` or `pqblackjack <amount>` (max 150,000 𝚀)")
+        await ctx.send("❌ Use `.blackjack all` or `.blackjack <amount>` (max 150,000 𝚀)")
         return
 
     amount = parsed
@@ -924,7 +913,7 @@ async def give(ctx, member: discord.Member, amount: str):
 
     parsed = parse_amount(amount, ctx.author.id)
     if parsed is None:
-        await ctx.send("❌ Use `pqgive @user all` or `pqgive @user <amount>`")
+        await ctx.send("❌ Use `.give @user all` or `.give @user <amount>`")
         return
 
     amount = parsed
@@ -1071,7 +1060,7 @@ async def scratch(ctx, amount: str):
 
     parsed = parse_amount(amount, ctx.author.id)
     if parsed is None:
-        await ctx.send("❌ Use `pqscratch all` or `pqscratch <amount>` (max 150,000 𝚚)")
+        await ctx.send("❌ Use `.scratch all` or `.scratch <amount>` (max 150,000 𝚚)")
         return
 
     amount = parsed
@@ -1193,7 +1182,7 @@ GRID_EMOJIS = {
 
 @commands.command()
 async def minesweeper(ctx, amount: str):
-    """Play minesweeper. Use `pqminesweeper all` or `pqminesweeper 500`pq"""
+    """Play minesweeper. Use `.minesweeper all` or `.minesweeper 500`."""
     if not db_ready:
         await send_error(ctx, "Gimme a sec, im drinking water. Try again in a bit.")
         return
@@ -1205,7 +1194,7 @@ async def minesweeper(ctx, amount: str):
 
     parsed = parse_amount(amount, ctx.author.id)
     if parsed is None:
-        await ctx.send("❌ Use `pqminesweeper all` or `pqminesweeper <amount>`")
+        await ctx.send("❌ Use `.minesweeper all` or `.minesweeper <amount>`")
         return
 
     amount = parsed
@@ -1432,7 +1421,7 @@ async def wheel(ctx, amount: str):
 
     parsed = parse_amount(amount, ctx.author.id)
     if parsed is None:
-        await ctx.send("❌ Use `pqwheel all` or `pqwheel <amount>` (max 150,000 𝚀)")
+        await ctx.send("❌ Use `.wheel all` or `.wheel <amount>` (max 150,000 𝚀)")
         return
 
     amount = parsed
@@ -1558,6 +1547,4 @@ async def setup(bot_ref):
         scratch, minesweeper, wheel, give, lb, add, remove
     ]
     for command in economy_commands:
-        command.add_check(require_economy_prefix)
-        command.error(economy_command_error)
         bot.add_command(command)
