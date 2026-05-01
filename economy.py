@@ -1123,7 +1123,7 @@ async def scratch(ctx, amount: str):
 
     parsed = parse_amount(amount, ctx.author.id)
     if parsed is None:
-        await ctx.send("❌ Use `.scratch all` or `.scratch <amount>` (max 150,000 𝚚)")
+        await ctx.send("❌ Use `.scratch all` or `.scratch <amount>` (max 150,000 𝚀)")
         return
 
     amount = parsed
