@@ -1243,7 +1243,7 @@ GRID_EMOJIS = {
     'cursor': '🟨',
 }
 
-@commands.command()
+@commands.command(aliases=["ms"])
 async def minesweeper(ctx, amount: str):
     """Play minesweeper. Use `.minesweeper all` or `.minesweeper 500`."""
     if not await ensure_db_ready(ctx):
@@ -1608,6 +1608,7 @@ EXPLANATIONS = {
     "blackjack": "Blackjack with Hit and Stand buttons. Beat the dealer without busting.",
     "scratch": "Scratch card. More matching symbols means a better payout.",
     "minesweeper": "Pick a grid size, reveal safe tiles, avoid bombs.",
+    "ms": "Alias for `.minesweeper`.",
     "wheel": "Spin the wheel for a multiplier or blank result.",
     "give": "Transfer your money to another user.",
     "lb": "Shows the top 10 balances.",
