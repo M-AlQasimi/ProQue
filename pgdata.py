@@ -93,6 +93,164 @@ def _create_tables(cur):
         )
     """)
 
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS bot_blacklist (
+            user_id BIGINT PRIMARY KEY
+        )
+    """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS autoban_users (
+            user_id BIGINT PRIMARY KEY
+        )
+    """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS disabled_commands (
+            command_name TEXT PRIMARY KEY
+        )
+    """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS shutdown_channels (
+            channel_id BIGINT PRIMARY KEY
+        )
+    """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS reaction_shutdown_channels (
+            channel_id BIGINT PRIMARY KEY
+        )
+    """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS censored_phrases (
+            phrase TEXT PRIMARY KEY
+        )
+    """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS watched_users (
+            user_id BIGINT PRIMARY KEY,
+            owner_id BIGINT NOT NULL
+        )
+    """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS reaction_watched_users (
+            user_id BIGINT PRIMARY KEY,
+            owner_id BIGINT NOT NULL
+        )
+    """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS active_polls (
+            message_id BIGINT PRIMARY KEY,
+            channel_id BIGINT NOT NULL,
+            guild_id BIGINT NOT NULL,
+            author_id BIGINT NOT NULL,
+            question TEXT NOT NULL,
+            options TEXT[] NOT NULL,
+            use_numbers BOOLEAN NOT NULL,
+            end_time TIMESTAMP,
+            ended BOOLEAN NOT NULL DEFAULT FALSE
+        )
+    """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS active_timers (
+            message_id BIGINT PRIMARY KEY,
+            channel_id BIGINT NOT NULL,
+            guild_id BIGINT NOT NULL,
+            owner_id BIGINT NOT NULL,
+            title TEXT,
+            time_str TEXT NOT NULL,
+            end_time TIMESTAMP NOT NULL
+        )
+    """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS guild_bot_owners (
+            guild_id BIGINT NOT NULL,
+            user_id BIGINT NOT NULL,
+            PRIMARY KEY (guild_id, user_id)
+        )
+    """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS guild_bot_mods (
+            guild_id BIGINT NOT NULL,
+            user_id BIGINT NOT NULL,
+            PRIMARY KEY (guild_id, user_id)
+        )
+    """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS guild_bot_blacklist (
+            guild_id BIGINT NOT NULL,
+            user_id BIGINT NOT NULL,
+            PRIMARY KEY (guild_id, user_id)
+        )
+    """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS guild_autoban_users (
+            guild_id BIGINT NOT NULL,
+            user_id BIGINT NOT NULL,
+            PRIMARY KEY (guild_id, user_id)
+        )
+    """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS guild_disabled_commands (
+            guild_id BIGINT NOT NULL,
+            command_name TEXT NOT NULL,
+            PRIMARY KEY (guild_id, command_name)
+        )
+    """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS guild_shutdown_channels (
+            guild_id BIGINT NOT NULL,
+            channel_id BIGINT NOT NULL,
+            PRIMARY KEY (guild_id, channel_id)
+        )
+    """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS guild_reaction_shutdown_channels (
+            guild_id BIGINT NOT NULL,
+            channel_id BIGINT NOT NULL,
+            PRIMARY KEY (guild_id, channel_id)
+        )
+    """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS guild_censored_phrases (
+            guild_id BIGINT NOT NULL,
+            phrase TEXT NOT NULL,
+            PRIMARY KEY (guild_id, phrase)
+        )
+    """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS guild_watched_users (
+            guild_id BIGINT NOT NULL,
+            user_id BIGINT NOT NULL,
+            owner_id BIGINT NOT NULL,
+            PRIMARY KEY (guild_id, user_id)
+        )
+    """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS guild_reaction_watched_users (
+            guild_id BIGINT NOT NULL,
+            user_id BIGINT NOT NULL,
+            owner_id BIGINT NOT NULL,
+            PRIMARY KEY (guild_id, user_id)
+        )
+    """)
+
 def _migrate_bot_config(cur):
     cur.execute("SELECT to_regclass('public.bot_config')")
     if cur.fetchone()[0] is None:
@@ -135,7 +293,7 @@ def _migrate_bot_config(cur):
 
     cur.execute("DROP TABLE bot_config")
 
-def _fetch_id_set(table):
+def _fetch_id_set(table, column="user_id"):
     _ensure_ready()
     if not pg_ready:
         return set()
@@ -144,7 +302,7 @@ def _fetch_id_set(table):
         if conn is None:
             return set()
         cur = conn.cursor()
-        cur.execute(f"SELECT user_id FROM {table}")
+        cur.execute(f"SELECT {column} FROM {table}")
         rows = cur.fetchall()
         cur.close()
         conn.close()
@@ -152,7 +310,7 @@ def _fetch_id_set(table):
     except Exception:
         return set()
 
-def _save_id_set(table, id_set):
+def _save_id_set(table, id_set, column="user_id"):
     _ensure_ready()
     if not pg_ready:
         return
@@ -164,7 +322,7 @@ def _save_id_set(table, id_set):
         cur.execute(f"DELETE FROM {table}")
         for user_id in id_set:
             cur.execute(
-                f"INSERT INTO {table} (user_id) VALUES (%s) ON CONFLICT DO NOTHING",
+                f"INSERT INTO {table} ({column}) VALUES (%s) ON CONFLICT DO NOTHING",
                 (int(user_id),)
             )
         conn.commit()
@@ -174,16 +332,430 @@ def _save_id_set(table, id_set):
         pass
 
 def load_owner_ids():
-    return _fetch_id_set("bot_owners")
+    return _fetch_scoped_id_sets("guild_bot_owners")
 
-def save_owner_ids(id_set):
-    _save_id_set("bot_owners", id_set)
+def save_owner_ids(guild_id, id_set):
+    _save_scoped_id_set("guild_bot_owners", guild_id, id_set)
 
 def load_mod_ids():
-    return _fetch_id_set("bot_mods")
+    return _fetch_scoped_id_sets("guild_bot_mods")
 
-def save_mod_ids(id_set):
-    _save_id_set("bot_mods", id_set)
+def save_mod_ids(guild_id, id_set):
+    _save_scoped_id_set("guild_bot_mods", guild_id, id_set)
+
+def _fetch_text_set(table, column):
+    _ensure_ready()
+    if not pg_ready:
+        return set()
+    try:
+        conn = pg_conn()
+        if conn is None:
+            return set()
+        cur = conn.cursor()
+        cur.execute(f"SELECT {column} FROM {table}")
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        return {str(row[0]) for row in rows}
+    except Exception:
+        return set()
+
+def _save_text_set(table, column, values):
+    _ensure_ready()
+    if not pg_ready:
+        return
+    try:
+        conn = pg_conn()
+        if conn is None:
+            return
+        cur = conn.cursor()
+        cur.execute(f"DELETE FROM {table}")
+        for value in values:
+            cur.execute(
+                f"INSERT INTO {table} ({column}) VALUES (%s) ON CONFLICT DO NOTHING",
+                (str(value),)
+            )
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception:
+        pass
+
+def _fetch_id_map(table):
+    _ensure_ready()
+    if not pg_ready:
+        return {}
+    try:
+        conn = pg_conn()
+        if conn is None:
+            return {}
+        cur = conn.cursor()
+        cur.execute(f"SELECT user_id, owner_id FROM {table}")
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        return {int(user_id): int(owner_id) for user_id, owner_id in rows}
+    except Exception:
+        return {}
+
+def _save_id_map(table, data):
+    _ensure_ready()
+    if not pg_ready:
+        return
+    try:
+        conn = pg_conn()
+        if conn is None:
+            return
+        cur = conn.cursor()
+        cur.execute(f"DELETE FROM {table}")
+        for user_id, owner_id in data.items():
+            cur.execute(
+                f"INSERT INTO {table} (user_id, owner_id) VALUES (%s, %s) "
+                "ON CONFLICT (user_id) DO UPDATE SET owner_id = EXCLUDED.owner_id",
+                (int(user_id), int(owner_id))
+            )
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception:
+        pass
+
+def _fetch_scoped_id_sets(table, column="user_id"):
+    _ensure_ready()
+    if not pg_ready:
+        return {}
+    try:
+        conn = pg_conn()
+        if conn is None:
+            return {}
+        cur = conn.cursor()
+        cur.execute(f"SELECT guild_id, {column} FROM {table}")
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        data = {}
+        for guild_id, value in rows:
+            data.setdefault(int(guild_id), set()).add(int(value))
+        return data
+    except Exception:
+        return {}
+
+def _save_scoped_id_set(table, guild_id, values, column="user_id"):
+    _ensure_ready()
+    if not pg_ready or guild_id is None:
+        return
+    try:
+        conn = pg_conn()
+        if conn is None:
+            return
+        cur = conn.cursor()
+        cur.execute(f"DELETE FROM {table} WHERE guild_id = %s", (int(guild_id),))
+        for value in values:
+            cur.execute(
+                f"INSERT INTO {table} (guild_id, {column}) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                (int(guild_id), int(value))
+            )
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception:
+        pass
+
+def _fetch_scoped_text_sets(table, column):
+    _ensure_ready()
+    if not pg_ready:
+        return {}
+    try:
+        conn = pg_conn()
+        if conn is None:
+            return {}
+        cur = conn.cursor()
+        cur.execute(f"SELECT guild_id, {column} FROM {table}")
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        data = {}
+        for guild_id, value in rows:
+            data.setdefault(int(guild_id), set()).add(str(value))
+        return data
+    except Exception:
+        return {}
+
+def _save_scoped_text_set(table, guild_id, values, column):
+    _ensure_ready()
+    if not pg_ready or guild_id is None:
+        return
+    try:
+        conn = pg_conn()
+        if conn is None:
+            return
+        cur = conn.cursor()
+        cur.execute(f"DELETE FROM {table} WHERE guild_id = %s", (int(guild_id),))
+        for value in values:
+            cur.execute(
+                f"INSERT INTO {table} (guild_id, {column}) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                (int(guild_id), str(value))
+            )
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception:
+        pass
+
+def _fetch_scoped_id_maps(table):
+    _ensure_ready()
+    if not pg_ready:
+        return {}
+    try:
+        conn = pg_conn()
+        if conn is None:
+            return {}
+        cur = conn.cursor()
+        cur.execute(f"SELECT guild_id, user_id, owner_id FROM {table}")
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        data = {}
+        for guild_id, user_id, owner_id in rows:
+            data.setdefault(int(guild_id), {})[int(user_id)] = int(owner_id)
+        return data
+    except Exception:
+        return {}
+
+def _save_scoped_id_map(table, guild_id, data):
+    _ensure_ready()
+    if not pg_ready or guild_id is None:
+        return
+    try:
+        conn = pg_conn()
+        if conn is None:
+            return
+        cur = conn.cursor()
+        cur.execute(f"DELETE FROM {table} WHERE guild_id = %s", (int(guild_id),))
+        for user_id, owner_id in data.items():
+            cur.execute(
+                f"INSERT INTO {table} (guild_id, user_id, owner_id) VALUES (%s, %s, %s) "
+                "ON CONFLICT (guild_id, user_id) DO UPDATE SET owner_id = EXCLUDED.owner_id",
+                (int(guild_id), int(user_id), int(owner_id))
+            )
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception:
+        pass
+
+def load_blacklisted_users():
+    return _fetch_scoped_id_sets("guild_bot_blacklist")
+
+def save_blacklisted_users(guild_id, id_set):
+    _save_scoped_id_set("guild_bot_blacklist", guild_id, id_set)
+
+def load_autoban_ids():
+    return _fetch_scoped_id_sets("guild_autoban_users")
+
+def save_autoban_ids(guild_id, id_set):
+    _save_scoped_id_set("guild_autoban_users", guild_id, id_set)
+
+def load_disabled_commands():
+    return _fetch_scoped_text_sets("guild_disabled_commands", "command_name")
+
+def save_disabled_commands(guild_id, commands):
+    _save_scoped_text_set("guild_disabled_commands", guild_id, commands, "command_name")
+
+def load_shutdown_channels():
+    return _fetch_scoped_id_sets("guild_shutdown_channels", "channel_id")
+
+def save_shutdown_channels(guild_id, channel_ids):
+    _save_scoped_id_set("guild_shutdown_channels", guild_id, channel_ids, "channel_id")
+
+def load_reaction_shutdown_channels():
+    return _fetch_scoped_id_sets("guild_reaction_shutdown_channels", "channel_id")
+
+def save_reaction_shutdown_channels(guild_id, channel_ids):
+    _save_scoped_id_set("guild_reaction_shutdown_channels", guild_id, channel_ids, "channel_id")
+
+def load_censored_phrases():
+    return {guild_id: list(values) for guild_id, values in _fetch_scoped_text_sets("guild_censored_phrases", "phrase").items()}
+
+def save_censored_phrases(guild_id, phrases):
+    _save_scoped_text_set("guild_censored_phrases", guild_id, phrases, "phrase")
+
+def load_watchlist():
+    return _fetch_scoped_id_maps("guild_watched_users")
+
+def save_watchlist(guild_id, data):
+    _save_scoped_id_map("guild_watched_users", guild_id, data)
+
+def load_reaction_watchlist():
+    return _fetch_scoped_id_maps("guild_reaction_watched_users")
+
+def save_reaction_watchlist(guild_id, data):
+    _save_scoped_id_map("guild_reaction_watched_users", guild_id, data)
+
+def load_active_polls():
+    _ensure_ready()
+    if not pg_ready:
+        return {}
+    try:
+        conn = pg_conn()
+        if conn is None:
+            return {}
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT message_id, channel_id, guild_id, author_id, question, options, use_numbers, end_time, ended "
+            "FROM active_polls"
+        )
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        return {
+            int(message_id): {
+                "channel_id": int(channel_id),
+                "guild_id": int(guild_id),
+                "author_id": int(author_id),
+                "question": question,
+                "options": list(options),
+                "use_numbers": bool(use_numbers),
+                "end_time": end_time,
+                "ended": bool(ended),
+                "end_task": None,
+            }
+            for message_id, channel_id, guild_id, author_id, question, options, use_numbers, end_time, ended in rows
+        }
+    except Exception:
+        return {}
+
+def save_active_poll(message_id, data):
+    _ensure_ready()
+    if not pg_ready:
+        return
+    try:
+        conn = pg_conn()
+        if conn is None:
+            return
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO active_polls "
+            "(message_id, channel_id, guild_id, author_id, question, options, use_numbers, end_time, ended) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) "
+            "ON CONFLICT (message_id) DO UPDATE SET "
+            "channel_id = EXCLUDED.channel_id, guild_id = EXCLUDED.guild_id, "
+            "author_id = EXCLUDED.author_id, question = EXCLUDED.question, "
+            "options = EXCLUDED.options, use_numbers = EXCLUDED.use_numbers, "
+            "end_time = EXCLUDED.end_time, ended = EXCLUDED.ended",
+            (
+                int(message_id),
+                int(data["channel_id"]),
+                int(data["guild_id"]),
+                int(data["author_id"]),
+                data["question"],
+                list(data["options"]),
+                bool(data["use_numbers"]),
+                data.get("end_time"),
+                bool(data.get("ended", False)),
+            )
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception:
+        pass
+
+def remove_active_poll(message_id):
+    _ensure_ready()
+    if not pg_ready:
+        return
+    try:
+        conn = pg_conn()
+        if conn is None:
+            return
+        cur = conn.cursor()
+        cur.execute("DELETE FROM active_polls WHERE message_id = %s", (int(message_id),))
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception:
+        pass
+
+def load_active_timers():
+    _ensure_ready()
+    if not pg_ready:
+        return {}
+    try:
+        conn = pg_conn()
+        if conn is None:
+            return {}
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT message_id, channel_id, guild_id, owner_id, title, time_str, end_time FROM active_timers"
+        )
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        return {
+            int(message_id): {
+                "channel_id": int(channel_id),
+                "guild_id": int(guild_id),
+                "owner_id": int(owner_id),
+                "title": title,
+                "time_str": time_str,
+                "end_time": end_time,
+                "task": None,
+                "message": None,
+            }
+            for message_id, channel_id, guild_id, owner_id, title, time_str, end_time in rows
+        }
+    except Exception:
+        return {}
+
+def save_active_timer(message_id, data):
+    _ensure_ready()
+    if not pg_ready:
+        return
+    try:
+        conn = pg_conn()
+        if conn is None:
+            return
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO active_timers "
+            "(message_id, channel_id, guild_id, owner_id, title, time_str, end_time) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s) "
+            "ON CONFLICT (message_id) DO UPDATE SET "
+            "channel_id = EXCLUDED.channel_id, guild_id = EXCLUDED.guild_id, "
+            "owner_id = EXCLUDED.owner_id, title = EXCLUDED.title, "
+            "time_str = EXCLUDED.time_str, end_time = EXCLUDED.end_time",
+            (
+                int(message_id),
+                int(data["channel_id"]),
+                int(data["guild_id"]),
+                int(data["owner_id"]),
+                data.get("title"),
+                data["time_str"],
+                data["end_time"],
+            )
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception:
+        pass
+
+def remove_active_timer(message_id):
+    _ensure_ready()
+    if not pg_ready:
+        return
+    try:
+        conn = pg_conn()
+        if conn is None:
+            return
+        cur = conn.cursor()
+        cur.execute("DELETE FROM active_timers WHERE message_id = %s", (int(message_id),))
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception:
+        pass
 
 
 def _ensure_ready():
