@@ -1,12 +1,9 @@
 """
 Shared PostgreSQL helpers for non-economy persistent data.
-Migrated from JSON files to survive deployments.
 """
 import os
-import json
 import time
 import psycopg2
-from psycopg2.extras import RealDictCursor
 
 pg_ready = False
 
@@ -24,7 +21,7 @@ def pg_init():
     global pg_ready
     url = os.getenv("DATABASE_URL")
     if not url:
-        print("⚠️ DATABASE_URL not set - bot config in JSON-only mode")
+        print("⚠️ DATABASE_URL not set - persistent bot data disabled")
         return
 
     for attempt in range(1, 11):
@@ -32,34 +29,8 @@ def pg_init():
             conn = psycopg2.connect(url, connect_timeout=5)
             cur = conn.cursor()
 
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS bot_config (
-                    key TEXT PRIMARY KEY,
-                    value JSONB NOT NULL
-                )
-            """)
-
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS birthdays (
-                    user_id BIGINT PRIMARY KEY,
-                    date TEXT NOT NULL
-                )
-            """)
-
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS afk_users (
-                    user_id BIGINT PRIMARY KEY,
-                    reason TEXT,
-                    since TIMESTAMP NOT NULL
-                )
-            """)
-
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS sleeping_users (
-                    user_id BIGINT PRIMARY KEY,
-                    since TIMESTAMP NOT NULL
-                )
-            """)
+            _create_tables(cur)
+            _migrate_bot_config(cur)
 
             conn.commit()
             cur.close()
@@ -79,27 +50,140 @@ def pg_init():
             pg_ready = False
             return
 
-# === OWNERS & MODS (stored as JSONB arrays in bot_config) ===
+def _create_tables(cur):
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS bot_owners (
+            user_id BIGINT PRIMARY KEY
+        )
+    """)
 
-def load_bot_config(key, default=None):
-    """Load a value from bot_config. Initializes DB if needed. Returns default if not found or DB unavailable."""
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS bot_mods (
+            user_id BIGINT PRIMARY KEY
+        )
+    """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS guild_log_config (
+            guild_id BIGINT PRIMARY KEY,
+            log_channel_id BIGINT NOT NULL,
+            reaction_log_channel_id BIGINT NOT NULL
+        )
+    """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS birthdays (
+            user_id BIGINT PRIMARY KEY,
+            date TEXT NOT NULL
+        )
+    """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS afk_users (
+            user_id BIGINT PRIMARY KEY,
+            reason TEXT,
+            since TIMESTAMP NOT NULL
+        )
+    """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS sleeping_users (
+            user_id BIGINT PRIMARY KEY,
+            since TIMESTAMP NOT NULL
+        )
+    """)
+
+def _migrate_bot_config(cur):
+    cur.execute("SELECT to_regclass('public.bot_config')")
+    if cur.fetchone()[0] is None:
+        return
+
+    cur.execute("""
+        INSERT INTO bot_owners (user_id)
+        SELECT user_id_text::BIGINT
+        FROM bot_config, jsonb_array_elements_text(value) AS user_id_text
+        WHERE key = 'owners'
+          AND jsonb_typeof(value) = 'array'
+          AND user_id_text ~ '^[0-9]+$'
+        ON CONFLICT DO NOTHING
+    """)
+    cur.execute("""
+        INSERT INTO bot_mods (user_id)
+        SELECT user_id_text::BIGINT
+        FROM bot_config, jsonb_array_elements_text(value) AS user_id_text
+        WHERE key = 'mods'
+          AND jsonb_typeof(value) = 'array'
+          AND user_id_text ~ '^[0-9]+$'
+        ON CONFLICT DO NOTHING
+    """)
+    cur.execute("""
+        INSERT INTO guild_log_config (guild_id, log_channel_id, reaction_log_channel_id)
+        SELECT
+            split_part(key, ':', 2)::BIGINT,
+            (value->>'log_channel_id')::BIGINT,
+            (value->>'reaction_log_channel_id')::BIGINT
+        FROM bot_config
+        WHERE key ~ '^guild_log_config:[0-9]+$'
+          AND value ? 'log_channel_id'
+          AND value ? 'reaction_log_channel_id'
+          AND (value->>'log_channel_id') ~ '^[0-9]+$'
+          AND (value->>'reaction_log_channel_id') ~ '^[0-9]+$'
+        ON CONFLICT (guild_id) DO UPDATE SET
+            log_channel_id = EXCLUDED.log_channel_id,
+            reaction_log_channel_id = EXCLUDED.reaction_log_channel_id
+    """)
+
+    cur.execute("DROP TABLE bot_config")
+
+def _fetch_id_set(table):
     _ensure_ready()
     if not pg_ready:
-        return default
+        return set()
     try:
         conn = pg_conn()
         if conn is None:
-            return default
+            return set()
         cur = conn.cursor()
-        cur.execute("SELECT value FROM bot_config WHERE key = %s", (key,))
-        row = cur.fetchone()
+        cur.execute(f"SELECT user_id FROM {table}")
+        rows = cur.fetchall()
         cur.close()
         conn.close()
-        if row:
-            return json.loads(row[0]) if isinstance(row[0], str) else row[0]
-        return default
+        return {int(row[0]) for row in rows}
     except Exception:
-        return default
+        return set()
+
+def _save_id_set(table, id_set):
+    _ensure_ready()
+    if not pg_ready:
+        return
+    try:
+        conn = pg_conn()
+        if conn is None:
+            return
+        cur = conn.cursor()
+        cur.execute(f"DELETE FROM {table}")
+        for user_id in id_set:
+            cur.execute(
+                f"INSERT INTO {table} (user_id) VALUES (%s) ON CONFLICT DO NOTHING",
+                (int(user_id),)
+            )
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception:
+        pass
+
+def load_owner_ids():
+    return _fetch_id_set("bot_owners")
+
+def save_owner_ids(id_set):
+    _save_id_set("bot_owners", id_set)
+
+def load_mod_ids():
+    return _fetch_id_set("bot_mods")
+
+def save_mod_ids(id_set):
+    _save_id_set("bot_mods", id_set)
 
 
 def _ensure_ready():
@@ -116,31 +200,8 @@ def _ensure_ready():
     try:
         conn = psycopg2.connect(url, connect_timeout=5)
         cur = conn.cursor()
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS bot_config (
-                key TEXT PRIMARY KEY,
-                value JSONB NOT NULL
-            )
-        """)
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS birthdays (
-                user_id BIGINT PRIMARY KEY,
-                date TEXT NOT NULL
-            )
-        """)
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS afk_users (
-                user_id BIGINT PRIMARY KEY,
-                reason TEXT,
-                since TIMESTAMP NOT NULL
-            )
-        """)
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS sleeping_users (
-                user_id BIGINT PRIMARY KEY,
-                since TIMESTAMP NOT NULL
-            )
-        """)
+        _create_tables(cur)
+        _migrate_bot_config(cur)
         conn.commit()
         cur.close()
         conn.close()
@@ -148,35 +209,53 @@ def _ensure_ready():
     except Exception:
         pg_ready = False
 
-def save_bot_config(key, value):
-    """Save a value to bot_config."""
-    if pg_ready:
-        try:
-            conn = pg_conn()
-            if conn:
-                cur = conn.cursor()
-                cur.execute(
-                    "INSERT INTO bot_config (key, value) VALUES (%s, %s) "
-                    "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
-                    (key, json.dumps(value))
-                )
-                conn.commit()
-                cur.close()
-                conn.close()
-        except Exception:
-            pass  # Best-effort
-
 def load_guild_log_config(guild_id):
-    return load_bot_config(f"guild_log_config:{guild_id}", None)
+    _ensure_ready()
+    if not pg_ready:
+        return None
+    try:
+        conn = pg_conn()
+        if conn is None:
+            return None
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT log_channel_id, reaction_log_channel_id FROM guild_log_config WHERE guild_id = %s",
+            (guild_id,)
+        )
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        if not row:
+            return None
+        return {
+            "log_channel_id": int(row[0]),
+            "reaction_log_channel_id": int(row[1])
+        }
+    except Exception:
+        return None
 
 def save_guild_log_config(guild_id, log_channel_id, reaction_log_channel_id):
-    save_bot_config(
-        f"guild_log_config:{guild_id}",
-        {
-            "log_channel_id": int(log_channel_id),
-            "reaction_log_channel_id": int(reaction_log_channel_id)
-        }
-    )
+    _ensure_ready()
+    if not pg_ready:
+        return
+    try:
+        conn = pg_conn()
+        if conn is None:
+            return
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO guild_log_config (guild_id, log_channel_id, reaction_log_channel_id) "
+            "VALUES (%s, %s, %s) "
+            "ON CONFLICT (guild_id) DO UPDATE SET "
+            "log_channel_id = EXCLUDED.log_channel_id, "
+            "reaction_log_channel_id = EXCLUDED.reaction_log_channel_id",
+            (int(guild_id), int(log_channel_id), int(reaction_log_channel_id))
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception:
+        pass
 
 # === BIRTHDAYS ===
 

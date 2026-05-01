@@ -24,8 +24,9 @@ from economy import setup as economy_setup
 from pgdata import (
     load_afk_users as pg_load_afk_users,
     load_birthdays as pg_load_birthdays,
-    load_bot_config,
     load_guild_log_config,
+    load_mod_ids,
+    load_owner_ids,
     load_sleeping_users as pg_load_sleeping_users,
     pg_init,
     remove_afk_user,
@@ -33,47 +34,23 @@ from pgdata import (
     remove_sleeping_user,
     save_afk_user,
     save_birthday,
-    save_bot_config,
     save_guild_log_config,
+    save_mod_ids,
+    save_owner_ids,
     save_sleeping_user,
 )
 last_message_time = 0
 app = Flask('')
 
-# JSON storage removed - PostgreSQL is the single source of truth
-AFK_FILE = "afk_users"
-SLEEP_FILE = "sleeping_users"
-MODS_FILE = "mods"
-OWNERS_FILE = "owners"
-
-# JSON helpers removed - using PostgreSQL only
+# PostgreSQL is the single source of truth
 pg_init()
-
-def load_ids(key):
-    return set(int(uid) for uid in load_bot_config(key, []))
-
-def save_ids(key, id_set):
-    save_bot_config(key, list(id_set))
-
-def save_dict(key, data):
-    if key == AFK_FILE:
-        for uid, value in data.items():
-            since = value["since"]
-            if isinstance(since, str):
-                since = datetime.fromisoformat(since)
-            save_afk_user(int(uid), value["reason"], since)
-    elif key == SLEEP_FILE:
-        for uid, since in data.items():
-            if isinstance(since, str):
-                since = datetime.fromisoformat(since)
-            save_sleeping_user(int(uid), since)
 
 birthdays = {
     str(uid): {"date": date}
     for uid, date in (pg_load_birthdays() or {}).items()
 }
 
-# Loaded from PostgreSQL instead of JSON
+# Loaded from PostgreSQL
 afk_users = pg_load_afk_users() or {}
 sleeping_users = pg_load_sleeping_users() or {}
 
@@ -93,9 +70,9 @@ log_channel_id = None
 rlog_channel_id = None
 bday_channel_id = 1364346683709718619
 super_owner_id = 885548126365171824  
-# Loaded from PostgreSQL bot_config table
-mods = load_ids(MODS_FILE)
-owners = load_ids(OWNERS_FILE)
+# Loaded from PostgreSQL tables
+mods = load_mod_ids()
+owners = load_owner_ids()
 
 autoban_ids = set()
 blacklisted_users = set()
@@ -727,7 +704,6 @@ async def on_message(message):
     if message.author.id in sleeping_users:
         start = sleeping_users.pop(message.author.id)
         remove_sleeping_user(message.author.id)
-        save_dict(SLEEP_FILE, {str(uid): dt.isoformat() for uid, dt in sleeping_users.items()})
         duration = datetime.now(timezone.utc) - start
         days, remainder = divmod(int(duration.total_seconds()), 86400)
         hours, remainder = divmod(remainder, 3600)
@@ -792,7 +768,6 @@ async def on_message(message):
     if message.author.id in afk_users:
         afk_data = afk_users.pop(message.author.id)
         remove_afk_user(message.author.id)
-        save_dict(AFK_FILE, {str(uid): {"reason": data["reason"], "since": data["since"].isoformat()} for uid, data in afk_users.items()})
 
         duration = datetime.now(timezone.utc) - afk_data["since"]
         days, remainder = divmod(int(duration.total_seconds()), 86400)
@@ -2157,7 +2132,7 @@ async def addowner(ctx, *users: discord.User):
             owners.add(user.id)
             added.append(user)
     if added:
-        save_ids(OWNERS_FILE, owners)
+        save_owner_ids(owners)
     
     if len(added) == 1:
         await ctx.send(f"{added[0].mention} has been added as an owner.")
@@ -2174,7 +2149,7 @@ async def removeowner(ctx, user: discord.User):
     
     if user.id in owners:
         owners.remove(user.id)
-        save_ids(OWNERS_FILE, owners)
+        save_owner_ids(owners)
         await ctx.send(f"{user.mention} has been removed from owners.")
     else:
         await ctx.send(f"{user.mention} is not an owner.")
@@ -2184,7 +2159,7 @@ async def removeowner(ctx, user: discord.User):
 async def clearowners(ctx):
     owners.clear()
     owners.add(super_owner_id)
-    save_ids(OWNERS_FILE, owners)
+    save_owner_ids(owners)
     await ctx.send("Cleared all owners.")
 
 @bot.command()
@@ -2200,7 +2175,7 @@ async def addmod(ctx, *users: discord.User):
             mods.add(user.id)
             added.append(user)
     if added:
-        save_ids(MODS_FILE, mods)
+        save_mod_ids(mods)
     
     if len(added) == 1:
         await ctx.send(f"{added[0].mention} has been added as a mod.")
@@ -2217,7 +2192,7 @@ async def removemod(ctx, user: discord.User):
     global mods
     if user.id in mods:
         mods.remove(user.id)
-        save_ids(MODS_FILE, mods)
+        save_mod_ids(mods)
         await ctx.send(f"{user.mention} has been removed from mods.")
     else:
         await ctx.send(f"{user.mention} is not a mod.")
@@ -2257,7 +2232,7 @@ class OwnerModManagement(commands.Cog):
                 added.append(user)
 
         if added:
-            save_ids(OWNERS_FILE, owners)
+            save_owner_ids(owners)
 
         messages = []
         if len(added) == 1:
@@ -2299,7 +2274,7 @@ class OwnerModManagement(commands.Cog):
                 added.append(user)
 
         if added:
-            save_ids(MODS_FILE, mods)
+            save_mod_ids(mods)
 
         messages = []
         if len(added) == 1:
@@ -3539,10 +3514,6 @@ async def unblock(ctx, member: discord.Member):
 async def sleep(ctx):
     sleeping_users[ctx.author.id] = datetime.now(timezone.utc)
     save_sleeping_user(ctx.author.id, sleeping_users[ctx.author.id])
-    save_dict(SLEEP_FILE, {
-        str(uid): dt.isoformat()
-        for uid, dt in sleeping_users.items()
-    })
     await ctx.send("You’re now in sleep mode. 💤 Good night!")
 
 @bot.command()
@@ -3586,14 +3557,6 @@ async def fsleep(ctx, members: commands.Greedy[discord.Member], *, time: str = N
     if results:
         await ctx.send("\n".join(results), delete_after=10)
 
-    try:
-        save_dict(SLEEP_FILE, {
-            str(uid): dt.isoformat()
-            for uid, dt in sleeping_users.items()
-        })
-    except Exception as e:
-        print(f"[fsleep] Failed to save SLEEP_FILE: {e}")
-
 @bot.command()
 async def wake(ctx, members: commands.Greedy[discord.Member]):
     if ctx.author.id != super_owner_id:
@@ -3603,11 +3566,6 @@ async def wake(ctx, members: commands.Greedy[discord.Member]):
         sleeping_users.pop(member.id, None)
         remove_sleeping_user(member.id)
 
-    save_dict(SLEEP_FILE, {
-        str(uid): dt.isoformat()
-        for uid, dt in sleeping_users.items()
-    })
-
 @bot.command()
 async def afk(ctx, *, reason="AFK"):
     afk_users[ctx.author.id] = {
@@ -3615,12 +3573,6 @@ async def afk(ctx, *, reason="AFK"):
         "since": datetime.now(timezone.utc)
     }
     save_afk_user(ctx.author.id, reason, afk_users[ctx.author.id]["since"])
-    save_dict(AFK_FILE, {
-        str(uid): {
-            "reason": data["reason"],
-            "since": data["since"].isoformat()
-        } for uid, data in afk_users.items()
-    })
 
     reason_text = f": **{reason}**" if reason.lower() != "afk" else ""
     await ctx.send(f"{ctx.author.mention} You're now AFK {reason_text}", allowed_mentions=discord.AllowedMentions.none())
