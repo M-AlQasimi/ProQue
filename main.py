@@ -213,9 +213,13 @@ async def prompt_log_setup(guild):
             def __init__(self, parent, prompt):
                 self.parent = parent
                 options = []
+                bot_member = guild.get_member(bot.user.id) or guild.me
                 for text_channel in guild.text_channels:
-                    perms = text_channel.permissions_for(guild.me)
-                    if perms.view_channel and perms.send_messages:
+                    can_send = True
+                    if bot_member is not None:
+                        perms = text_channel.permissions_for(bot_member)
+                        can_send = perms.view_channel and perms.send_messages
+                    if can_send:
                         options.append(discord.SelectOption(
                             label=f"#{text_channel.name}"[:100],
                             value=str(text_channel.id)
@@ -256,7 +260,12 @@ async def prompt_log_setup(guild):
         return
 
     normal_view = ChannelPickView("Choose normal log channel")
-    await channel.send("Choose the normal log channel:", view=normal_view)
+    try:
+        await channel.send("Choose the normal log channel:", view=normal_view)
+    except Exception as e:
+        await channel.send(f"Could not show channel dropdown: `{type(e).__name__}`")
+        print(f"[log setup] Failed to send normal channel dropdown: {e}")
+        return
     await normal_view.wait()
     if normal_view.channel_id is None:
         return
@@ -265,7 +274,12 @@ async def prompt_log_setup(guild):
         reaction_channel_id = normal_view.channel_id
     else:
         reaction_view = ChannelPickView("Choose reaction log channel")
-        await channel.send("Choose the reaction log channel:", view=reaction_view)
+        try:
+            await channel.send("Choose the reaction log channel:", view=reaction_view)
+        except Exception as e:
+            await channel.send(f"Could not show channel dropdown: `{type(e).__name__}`")
+            print(f"[log setup] Failed to send reaction channel dropdown: {e}")
+            return
         await reaction_view.wait()
         if reaction_view.channel_id is None:
             return

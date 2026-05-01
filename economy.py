@@ -179,20 +179,44 @@ async def send_error(ctx, text):
     except:
         pass
 
+async def ensure_db_ready(ctx):
+    if db_ready:
+        return True
+
+    msg = await ctx.send("Loading database")
+    task = asyncio.create_task(asyncio.to_thread(init_db))
+    frames = ["Loading database.", "Loading database..", "Loading database..."]
+    frame_index = 0
+
+    while not task.done():
+        await asyncio.sleep(1)
+        try:
+            await msg.edit(content=frames[frame_index % len(frames)])
+        except:
+            pass
+        frame_index += 1
+
+    await task
+    if db_ready:
+        await msg.edit(content="Database loaded")
+        return True
+
+    await msg.edit(content="Database unavailable. Try again shortly.")
+    return False
+
 # =====================
 # BALANCE + STREAKS
 # =====================
 @commands.command()
 async def bal(ctx, member: discord.Member = None):
-    if not db_ready:
-        await send_error(ctx, "Gimme a sec, im drinking water. Try again in a bit.")
+    if not await ensure_db_ready(ctx):
         return
 
     user = ctx.author if not member else member
     try:
         data = get_user(user.id)
     except Exception:
-        await send_error(ctx, "Gimme a sec, im drinking water. Try again in a bit.")
+        await send_error(ctx, "Database unavailable. Try again shortly.")
         return
 
     streak_lines = ""
@@ -223,15 +247,14 @@ async def bal(ctx, member: discord.Member = None):
 # =====================
 @commands.command()
 async def daily(ctx):
-    if not db_ready:
-        await send_error(ctx, "Gimme a sec, im drinking water. Try again in a bit.")
+    if not await ensure_db_ready(ctx):
         return
 
     user_id = ctx.author.id
     try:
         data = get_user(user_id)
     except Exception:
-        await send_error(ctx, "Gimme a sec, im drinking water. Try again in a bit.")
+        await send_error(ctx, "Database unavailable. Try again shortly.")
         return
 
     now = datetime.now(timezone.utc)
@@ -260,22 +283,21 @@ async def daily(ctx):
             total_earned=data['total_earned'] + reward
         )
     except Exception:
-        await send_error(ctx, "Gimme a sec, im drinking water. Try again in a bit.")
+        await send_error(ctx, "Database unavailable. Try again shortly.")
         return
 
     await ctx.send(f"🎉 You claimed **{format_balance(reward)}**!\nStreak: **{streak}** days (+{streak_bonus} bonus)")
 
 @commands.command()
 async def weekly(ctx):
-    if not db_ready:
-        await send_error(ctx, "Gimme a sec, im drinking water. Try again in a bit.")
+    if not await ensure_db_ready(ctx):
         return
 
     user_id = ctx.author.id
     try:
         data = get_user(user_id)
     except Exception:
-        await send_error(ctx, "Gimme a sec, im drinking water. Try again in a bit.")
+        await send_error(ctx, "Database unavailable. Try again shortly.")
         return
 
     now = datetime.now(timezone.utc)
@@ -303,22 +325,21 @@ async def weekly(ctx):
             total_earned=data['total_earned'] + reward
         )
     except Exception:
-        await send_error(ctx, "Gimme a sec, im drinking water. Try again in a bit.")
+        await send_error(ctx, "Database unavailable. Try again shortly.")
         return
 
     await ctx.send(f"🎉 You claimed **{format_balance(reward)}**!\nWeekly streak: **{streak}** weeks (+{streak_bonus} bonus)")
 
 @commands.command()
 async def monthly(ctx):
-    if not db_ready:
-        await send_error(ctx, "Gimme a sec, im drinking water. Try again in a bit.")
+    if not await ensure_db_ready(ctx):
         return
 
     user_id = ctx.author.id
     try:
         data = get_user(user_id)
     except Exception:
-        await send_error(ctx, "Gimme a sec, im drinking water. Try again in a bit.")
+        await send_error(ctx, "Database unavailable. Try again shortly.")
         return
 
     now = datetime.now(timezone.utc)
@@ -346,7 +367,7 @@ async def monthly(ctx):
             total_earned=data['total_earned'] + reward
         )
     except Exception:
-        await send_error(ctx, "Gimme a sec, im drinking water. Try again in a bit.")
+        await send_error(ctx, "Database unavailable. Try again shortly.")
         return
 
     await ctx.send(f"🎉 You claimed **{format_balance(reward)}**!\nMonthly streak: **{streak}** months (+{streak_bonus} bonus)")
@@ -356,8 +377,7 @@ async def monthly(ctx):
 # =====================
 @commands.command(name="flip", aliases=["cf"])
 async def gamble(ctx, amount: str, choice: str = None):
-    if not db_ready:
-        await send_error(ctx, "Gimme a sec, im drinking water. Try again in a bit.")
+    if not await ensure_db_ready(ctx):
         return
 
     cd = check_cooldown(ctx.author.id, "flip")
@@ -376,7 +396,7 @@ async def gamble(ctx, amount: str, choice: str = None):
     try:
         data = get_user(user_id)
     except Exception:
-        await send_error(ctx, "Gimme a sec, im drinking water. Try again in a bit.")
+        await send_error(ctx, "Database unavailable. Try again shortly.")
         return
 
     if amount <= 0:
@@ -492,7 +512,7 @@ async def gamble(ctx, amount: str, choice: str = None):
                 )
             )
     except Exception:
-        await send_error(ctx, "Gimme a sec, im drinking water. Try again in a bit.")
+        await send_error(ctx, "Database unavailable. Try again shortly.")
         return
 
 # =====================
@@ -500,8 +520,7 @@ async def gamble(ctx, amount: str, choice: str = None):
 # =====================
 @commands.command()
 async def roulette(ctx, amount: str, color: str = None):
-    if not db_ready:
-        await send_error(ctx, "Gimme a sec, im drinking water. Try again in a bit.")
+    if not await ensure_db_ready(ctx):
         return
 
     cd = check_cooldown(ctx.author.id, "roulette")
@@ -528,7 +547,7 @@ async def roulette(ctx, amount: str, color: str = None):
     try:
         data = get_user(user_id)
     except Exception:
-        await send_error(ctx, "Gimme a sec, im drinking water. Try again in a bit.")
+        await send_error(ctx, "Database unavailable. Try again shortly.")
         return
 
     if amount <= 0:
@@ -605,7 +624,7 @@ async def roulette(ctx, amount: str, color: str = None):
                 )
             )
     except Exception:
-        await send_error(ctx, "Gimme a sec, im drinking water. Try again in a bit.")
+        await send_error(ctx, "Database unavailable. Try again shortly.")
         return
 
 # =====================
@@ -613,8 +632,7 @@ async def roulette(ctx, amount: str, color: str = None):
 # =====================
 @commands.command()
 async def slots(ctx, amount: str):
-    if not db_ready:
-        await send_error(ctx, "Gimme a sec, im drinking water. Try again in a bit.")
+    if not await ensure_db_ready(ctx):
         return
 
     cd = check_cooldown(ctx.author.id, "slots")
@@ -633,7 +651,7 @@ async def slots(ctx, amount: str):
     try:
         data = get_user(user_id)
     except Exception:
-        await send_error(ctx, "Gimme a sec, im drinking water. Try again in a bit.")
+        await send_error(ctx, "Database unavailable. Try again shortly.")
         return
 
     if amount <= 0:
@@ -745,7 +763,7 @@ async def slots(ctx, amount: str):
                 )
             )
     except Exception:
-        await send_error(ctx, "Gimme a sec, im drinking water. Try again in a bit.")
+        await send_error(ctx, "Database unavailable. Try again shortly.")
         return
 
 # =====================
@@ -779,8 +797,7 @@ def format_hand(hand):
 
 @commands.command()
 async def blackjack(ctx, amount: str):
-    if not db_ready:
-        await send_error(ctx, "Gimme a sec, im drinking water. Try again in a bit.")
+    if not await ensure_db_ready(ctx):
         return
 
     cd = check_cooldown(ctx.author.id, "blackjack")
@@ -799,7 +816,7 @@ async def blackjack(ctx, amount: str):
     try:
         data = get_user(user_id)
     except Exception:
-        await send_error(ctx, "Gimme a sec, im drinking water. Try again in a bit.")
+        await send_error(ctx, "Database unavailable. Try again shortly.")
         return
 
     if amount <= 0:
@@ -865,7 +882,7 @@ async def blackjack(ctx, amount: str):
                     )
                 )
         except Exception:
-            await send_error(ctx, "Gimme a sec, im drinking water. Try again in a bit.")
+            await send_error(ctx, "Database unavailable. Try again shortly.")
 
     class BJView(discord.ui.View):
         def __init__(self):
@@ -956,8 +973,7 @@ async def blackjack(ctx, amount: str):
 # =====================
 @commands.command()
 async def give(ctx, member: discord.Member, amount: str):
-    if not db_ready:
-        await send_error(ctx, "Gimme a sec, im drinking water. Try again in a bit.")
+    if not await ensure_db_ready(ctx):
         return
 
     parsed = parse_amount(amount, ctx.author.id)
@@ -971,7 +987,7 @@ async def give(ctx, member: discord.Member, amount: str):
     try:
         data = get_user(user_id)
     except Exception:
-        await send_error(ctx, "Gimme a sec, im drinking water. Try again in a bit.")
+        await send_error(ctx, "Database unavailable. Try again shortly.")
         return
 
     if amount <= 0:
@@ -991,7 +1007,7 @@ async def give(ctx, member: discord.Member, amount: str):
         receiver_data = get_user(member.id)
         update_user(member.id, balance=receiver_data['balance'] + amount)
     except Exception:
-        await send_error(ctx, "Gimme a sec, im drinking water. Try again in a bit.")
+        await send_error(ctx, "Database unavailable. Try again shortly.")
         return
 
     await ctx.send(f"💸 You gave **{format_balance(amount)}** to **{member.name}**")
@@ -1001,8 +1017,7 @@ async def give(ctx, member: discord.Member, amount: str):
 # =====================
 @commands.command(name="lb")
 async def lb(ctx):
-    if not db_ready:
-        await send_error(ctx, "Gimme a sec, im drinking water. Try again in a bit.")
+    if not await ensure_db_ready(ctx):
         return
 
     try:
@@ -1013,7 +1028,7 @@ async def lb(ctx):
         cur.close()
         conn.close()
     except Exception:
-        await send_error(ctx, "Gimme a sec, im drinking water. Try again in a bit.")
+        await send_error(ctx, "Database unavailable. Try again shortly.")
         return
 
     embed = discord.Embed(
@@ -1057,7 +1072,7 @@ async def add(ctx, member: discord.Member, amount: int):
             total_earned=target_data['total_earned'] + amount
         )
     except Exception:
-        await send_error(ctx, "Gimme a sec, im drinking water. Try again in a bit.")
+        await send_error(ctx, "Database unavailable. Try again shortly.")
         return
 
     await ctx.send(f"✅ Added **{format_balance(amount)}** to **{member.name}**")
@@ -1077,7 +1092,7 @@ async def remove(ctx, member: discord.Member, amount: int):
         new_balance = max(0, target_data['balance'] - amount)
         update_user(member.id, balance=new_balance)
     except Exception:
-        await send_error(ctx, "Gimme a sec, im drinking water. Try again in a bit.")
+        await send_error(ctx, "Database unavailable. Try again shortly.")
         return
 
     await ctx.send(f"✅ Removed **{format_balance(amount)}** from **{member.name}**")
@@ -1098,8 +1113,7 @@ SCRATCH_SYMBOLS = ['💎', '⭐', '🔮', '🌙', '🔥']
 
 @commands.command()
 async def scratch(ctx, amount: str):
-    if not db_ready:
-        await send_error(ctx, "Gimme a sec, im drinking water. Try again in a bit.")
+    if not await ensure_db_ready(ctx):
         return
 
     cd = check_cooldown(ctx.author.id, "scratch")
@@ -1118,7 +1132,7 @@ async def scratch(ctx, amount: str):
     try:
         data = get_user(user_id)
     except Exception:
-        await send_error(ctx, "Gimme a sec, im drinking water. Try again in a bit.")
+        await send_error(ctx, "Database unavailable. Try again shortly.")
         return
 
     if amount <= 0:
@@ -1212,7 +1226,7 @@ async def scratch(ctx, amount: str):
                 )
             )
     except Exception:
-        await send_error(ctx, "Gimme a sec, im drinking water. Try again in a bit.")
+        await send_error(ctx, "Database unavailable. Try again shortly.")
 
 
 # MINESWEEPER
@@ -1232,8 +1246,7 @@ GRID_EMOJIS = {
 @commands.command()
 async def minesweeper(ctx, amount: str):
     """Play minesweeper. Use `.minesweeper all` or `.minesweeper 500`."""
-    if not db_ready:
-        await send_error(ctx, "Gimme a sec, im drinking water. Try again in a bit.")
+    if not await ensure_db_ready(ctx):
         return
 
     cd = check_cooldown(ctx.author.id, "minesweeper")
@@ -1252,7 +1265,7 @@ async def minesweeper(ctx, amount: str):
     try:
         data = get_user(user_id)
     except Exception:
-        await send_error(ctx, "Gimme a sec, im drinking water. Try again in a bit.")
+        await send_error(ctx, "Database unavailable. Try again shortly.")
         return
 
     if amount <= 0:
@@ -1459,8 +1472,7 @@ WHEEL_WEIGHTS = [15, 25, 25, 15, 10, 5, 3, 2]  # sum = 100
 
 @commands.command()
 async def wheel(ctx, amount: str):
-    if not db_ready:
-        await send_error(ctx, "Gimme a sec, im drinking water. Try again in a bit.")
+    if not await ensure_db_ready(ctx):
         return
 
     cd = check_cooldown(ctx.author.id, "wheel")
@@ -1479,7 +1491,7 @@ async def wheel(ctx, amount: str):
     try:
         data = get_user(user_id)
     except Exception:
-        await send_error(ctx, "Gimme a sec, im drinking water. Try again in a bit.")
+        await send_error(ctx, "Database unavailable. Try again shortly.")
         return
 
     if amount <= 0:
@@ -1578,7 +1590,7 @@ async def wheel(ctx, amount: str):
                     )
                 )
     except Exception:
-        await send_error(ctx, "Gimme a sec, im drinking water. Try again in a bit.")
+        await send_error(ctx, "Database unavailable. Try again shortly.")
 
 
 # =====================
