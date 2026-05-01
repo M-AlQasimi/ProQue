@@ -1061,6 +1061,9 @@ async def lb(ctx):
 # =====================
 @commands.command()
 async def add(ctx, member: discord.Member, amount: int):
+    if not await ensure_db_ready(ctx):
+        return
+
     if not is_super_owner(ctx.author.id, ctx.guild):
         await ctx.send("❌ Bot owner only.")
         return
@@ -1084,6 +1087,9 @@ async def add(ctx, member: discord.Member, amount: int):
 
 @commands.command()
 async def remove(ctx, member: discord.Member, amount: int):
+    if not await ensure_db_ready(ctx):
+        return
+
     if not is_super_owner(ctx.author.id, ctx.guild):
         await ctx.send("❌ Bot owner only.")
         return
