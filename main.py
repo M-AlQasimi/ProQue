@@ -200,6 +200,15 @@ async def prompt_log_setup(guild):
             self.stop()
 
     async def ask_for_channel(prompt):
+        def valid_log_channel(selected_channel):
+            if not isinstance(selected_channel, discord.TextChannel):
+                return False
+            if selected_channel.guild.id != guild.id:
+                return False
+            bot_member = guild.get_member(bot.user.id) or guild.me
+            perms = selected_channel.permissions_for(bot_member)
+            return perms.view_channel and perms.send_messages
+
         class LogChannelSelect(discord.ui.ChannelSelect):
             def __init__(self):
                 super().__init__(
@@ -211,9 +220,7 @@ async def prompt_log_setup(guild):
 
             async def callback(self, interaction):
                 selected_channel = self.values[0]
-                bot_member = guild.get_member(bot.user.id) or guild.me
-                perms = selected_channel.permissions_for(bot_member)
-                if not perms.view_channel or not perms.send_messages:
+                if not valid_log_channel(selected_channel):
                     await interaction.response.send_message(
                         "I can't send messages in that channel.",
                         ephemeral=True,
@@ -244,8 +251,56 @@ async def prompt_log_setup(guild):
                 return True
 
         view = LogChannelView()
-        message = await channel.send(prompt, view=view)
-        await view.wait()
+        message = await channel.send(
+            f"{prompt}\nIf the channel is missing, reply with the channel mention or ID.",
+            view=view,
+        )
+
+        def check(reply):
+            if requester is not None and reply.author.id != requester.id:
+                return False
+            return reply.channel.id == channel.id
+
+        message_task = asyncio.create_task(bot.wait_for("message", check=check, timeout=120))
+        view_task = asyncio.create_task(view.wait())
+        done, pending = await asyncio.wait(
+            {message_task, view_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+
+        for task in pending:
+            task.cancel()
+
+        if message_task in done:
+            try:
+                reply = message_task.result()
+            except asyncio.TimeoutError:
+                reply = None
+            if reply is not None:
+                selected_channel = reply.channel_mentions[0] if reply.channel_mentions else None
+                if selected_channel is None and reply.content.strip().isdigit():
+                    channel_id = int(reply.content.strip())
+                    selected_channel = guild.get_channel(channel_id)
+                    if selected_channel is None:
+                        try:
+                            selected_channel = await bot.fetch_channel(channel_id)
+                        except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+                            selected_channel = None
+                if valid_log_channel(selected_channel):
+                    view.channel_id = selected_channel.id
+                    view.stop()
+                    await message.edit(
+                        content=f"{prompt} {selected_channel.mention}",
+                        view=None,
+                        allowed_mentions=discord.AllowedMentions.none(),
+                    )
+                else:
+                    await message.edit(
+                        content="I can't send messages in that channel.",
+                        view=None,
+                    )
+                    return None
+
         if view.channel_id is None:
             await message.edit(content="Log setup timed out.", view=None)
         return view.channel_id
