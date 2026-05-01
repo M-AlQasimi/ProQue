@@ -149,7 +149,7 @@ def _ensure_ready():
         pg_ready = False
 
 def save_bot_config(key, value):
-    """Save a value to bot_config. Also writes to JSON backup."""
+    """Save a value to bot_config."""
     if pg_ready:
         try:
             conn = pg_conn()
@@ -165,6 +165,18 @@ def save_bot_config(key, value):
                 conn.close()
         except Exception:
             pass  # Best-effort
+
+def load_guild_log_config(guild_id):
+    return load_bot_config(f"guild_log_config:{guild_id}", None)
+
+def save_guild_log_config(guild_id, log_channel_id, reaction_log_channel_id):
+    save_bot_config(
+        f"guild_log_config:{guild_id}",
+        {
+            "log_channel_id": int(log_channel_id),
+            "reaction_log_channel_id": int(reaction_log_channel_id)
+        }
+    )
 
 # === BIRTHDAYS ===
 

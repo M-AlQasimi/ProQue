@@ -355,7 +355,7 @@ async def monthly(ctx):
 # COIN FLIP
 # =====================
 @commands.command(name="flip", aliases=["cf"])
-async def gamble(ctx, amount: str):
+async def gamble(ctx, amount: str, choice: str = None):
     if not db_ready:
         await send_error(ctx, "Gimme a sec, im drinking water. Try again in a bit.")
         return
@@ -387,13 +387,59 @@ async def gamble(ctx, amount: str):
         await ctx.send(f"❌ You only have {format_balance(data['balance'])}")
         return
 
+    if choice:
+        choice = choice.lower()
+        if choice in ("h", "heads"):
+            chosen_side = "HEADS"
+        elif choice in ("t", "tails"):
+            chosen_side = "TAILS"
+        else:
+            await ctx.send("❌ Pick `h`, `heads`, `t`, `tails`, or leave it blank.")
+            return
+    else:
+        class FlipChoiceView(discord.ui.View):
+            def __init__(self):
+                super().__init__(timeout=30)
+                self.choice = None
+
+            async def interaction_check(self, interaction):
+                return interaction.user.id == ctx.author.id
+
+            async def choose(self, interaction, selected):
+                self.choice = selected
+                for item in self.children:
+                    item.disabled = True
+                await interaction.response.edit_message(content=f"🪙 You picked **{selected}**.", view=self)
+                self.stop()
+
+            @discord.ui.button(label="Heads", style=discord.ButtonStyle.primary)
+            async def heads(self, interaction, button):
+                await self.choose(interaction, "HEADS")
+
+            @discord.ui.button(label="Tails", style=discord.ButtonStyle.primary)
+            async def tails(self, interaction, button):
+                await self.choose(interaction, "TAILS")
+
+            @discord.ui.button(label="Random", style=discord.ButtonStyle.secondary)
+            async def random_side(self, interaction, button):
+                await self.choose(interaction, random.choice(["HEADS", "TAILS"]))
+
+        choice_view = FlipChoiceView()
+        choice_msg = await ctx.send("🪙 Pick heads, tails, or random:", view=choice_view)
+        await choice_view.wait()
+        if choice_view.choice is None:
+            await choice_msg.edit(content="⏰ Coin flip cancelled.", view=None)
+            return
+        chosen_side = choice_view.choice
+
     streak = data.get('gamble_streak', 0)
     mult = 1 + (streak * STREAK_MULTIPLIER)
-    win = random.choice([True, False])
-    coin_result = "HEADS" if win else "TAILS"
+    coin_result = random.choice(["HEADS", "TAILS"])
+    win = coin_result == chosen_side
     flip_msg = await ctx.send(
         f"🪙 **COIN FLIP**\n"
         f"─────────────────\n"
+        f"Pick: **{chosen_side}**\n"
         f"`[ spinning ]`  Bet: **{format_balance(amount)}**"
     )
     for face in ["HEADS", "TAILS", "HEADS", coin_result]:
@@ -402,6 +448,7 @@ async def gamble(ctx, amount: str):
             content=(
                 f"🪙 **COIN FLIP**\n"
                 f"─────────────────\n"
+                f"Pick: **{chosen_side}**\n"
                 f"`[ {face} ]`  Bet: **{format_balance(amount)}**"
             )
         )
@@ -420,7 +467,8 @@ async def gamble(ctx, amount: str):
                 content=(
                 f"🪙 **COIN FLIP**\n"
                 f"─────────────────\n"
-                f">>> 🟢 **HEADS — YOU WIN!**\n"
+                f"Pick: **{chosen_side}**\n"
+                f">>> 🟢 **{coin_result} — YOU WIN!**\n"
                 f"Prize: **{format_balance(winnings)}**{streak_msg}\n"
                 f"New Balance: **{format_balance(data['balance'] + winnings - amount)}**"
                 )
@@ -436,7 +484,8 @@ async def gamble(ctx, amount: str):
                 content=(
                 f"🪙 **COIN FLIP**\n"
                 f"─────────────────\n"
-                f">>> 🔴 **TAILS — YOU LOSE**\n"
+                f"Pick: **{chosen_side}**\n"
+                f">>> 🔴 **{coin_result} — YOU LOSE**\n"
                 f"Lost: **{format_balance(amount)}**\n"
                 f"Balance: **{format_balance(data['balance'] - amount)}**\n"
                 f"Streak reset."
@@ -1533,6 +1582,44 @@ async def wheel(ctx, amount: str):
 
 
 # =====================
+# EXPLAIN
+# =====================
+EXPLANATIONS = {
+    "bal": "Shows your balance, streaks, and total earned/won/lost.",
+    "daily": "Claim a daily reward. Higher daily streak means a small bonus.",
+    "weekly": "Claim a weekly reward. Higher weekly streak means a bigger bonus.",
+    "monthly": "Claim a monthly reward. Higher monthly streak means a bigger bonus.",
+    "flip": "Bet on heads or tails. Use `.flip <amount> h` or `.flip <amount> tails`.",
+    "cf": "Alias for `.flip`.",
+    "roulette": "Bet on red, black, or green. Matching color wins.",
+    "slots": "Slot machine. Matching reels pay out; three matching reels pay more.",
+    "blackjack": "Blackjack with Hit and Stand buttons. Beat the dealer without busting.",
+    "scratch": "Scratch card. More matching symbols means a better payout.",
+    "minesweeper": "Pick a grid size, reveal safe tiles, avoid bombs.",
+    "wheel": "Spin the wheel for a multiplier or blank result.",
+    "give": "Transfer your money to another user.",
+    "lb": "Shows the top 10 balances.",
+    "add": "Bot owner command. Adds money to a user.",
+    "remove": "Bot owner command. Removes money from a user.",
+}
+
+@commands.command()
+async def explain(ctx, command_name: str = None):
+    if not command_name:
+        names = ", ".join(sorted(EXPLANATIONS))
+        await ctx.send(f"Use `.explain <command>`. Commands: {names}")
+        return
+
+    key = command_name.lower().lstrip(".")
+    text = EXPLANATIONS.get(key)
+    if not text:
+        await ctx.send("I don't have a short explanation for that command.")
+        return
+
+    await ctx.send(f"**.{key}** — {text}")
+
+
+# =====================
 # SETUP
 # =====================
 async def setup(bot_ref):
@@ -1544,7 +1631,7 @@ async def setup(bot_ref):
 
     economy_commands = [
         bal, daily, weekly, monthly, gamble, roulette, slots, blackjack,
-        scratch, minesweeper, wheel, give, lb, add, remove
+        scratch, minesweeper, wheel, give, lb, add, remove, explain
     ]
     for command in economy_commands:
         bot.add_command(command)

@@ -21,18 +21,61 @@ from flask import Flask
 from io import BytesIO
 from threading import Thread
 from economy import setup as economy_setup
+from pgdata import (
+    load_afk_users as pg_load_afk_users,
+    load_birthdays as pg_load_birthdays,
+    load_bot_config,
+    load_guild_log_config,
+    load_sleeping_users as pg_load_sleeping_users,
+    pg_init,
+    remove_afk_user,
+    remove_birthday,
+    remove_sleeping_user,
+    save_afk_user,
+    save_birthday,
+    save_bot_config,
+    save_guild_log_config,
+    save_sleeping_user,
+)
 last_message_time = 0
 app = Flask('')
 
 # JSON storage removed - PostgreSQL is the single source of truth
+AFK_FILE = "afk_users"
+SLEEP_FILE = "sleeping_users"
+MODS_FILE = "mods"
+OWNERS_FILE = "owners"
 
 # JSON helpers removed - using PostgreSQL only
+pg_init()
 
-birthdays = {}  # now loaded from PostgreSQL via DB layer
+def load_ids(key):
+    return set(int(uid) for uid in load_bot_config(key, []))
+
+def save_ids(key, id_set):
+    save_bot_config(key, list(id_set))
+
+def save_dict(key, data):
+    if key == AFK_FILE:
+        for uid, value in data.items():
+            since = value["since"]
+            if isinstance(since, str):
+                since = datetime.fromisoformat(since)
+            save_afk_user(int(uid), value["reason"], since)
+    elif key == SLEEP_FILE:
+        for uid, since in data.items():
+            if isinstance(since, str):
+                since = datetime.fromisoformat(since)
+            save_sleeping_user(int(uid), since)
+
+birthdays = {
+    str(uid): {"date": date}
+    for uid, date in (pg_load_birthdays() or {}).items()
+}
 
 # Loaded from PostgreSQL instead of JSON
-afk_users = {}
-sleeping_users = {}
+afk_users = pg_load_afk_users() or {}
+sleeping_users = pg_load_sleeping_users() or {}
 
 class MyBot(commands.Bot):
     async def setup_hook(self):
@@ -46,13 +89,13 @@ def get_prefix(bot, message):
 bot = MyBot(command_prefix=get_prefix, intents=intents)
 print(f"Bot is starting with intents: {bot.intents}")
 
-log_channel_id = 1394806479881769100
-rlog_channel_id = 1394806602502115470
+log_channel_id = None
+rlog_channel_id = None
 bday_channel_id = 1364346683709718619
 super_owner_id = 885548126365171824  
 # Loaded from PostgreSQL bot_config table
-mods = set()
-owners = set()
+mods = load_ids(MODS_FILE)
+owners = load_ids(OWNERS_FILE)
 
 autoban_ids = set()
 blacklisted_users = set()
@@ -81,12 +124,21 @@ class CommandDisabledError(commands.CheckFailure):
 def home():
     return "I'm alive", 200
 
-async def send_log(embed):
+def get_log_channel_id(guild_id, key):
+    config = load_guild_log_config(guild_id)
+    if not config:
+        return None
+    return config.get(key)
+
+async def send_log(embed, guild=None):
     try:
-        channel = bot.get_channel(log_channel_id)
+        channel_id = get_log_channel_id(guild.id, "log_channel_id") if guild else log_channel_id
+        if not channel_id:
+            return
+        channel = bot.get_channel(channel_id)
         if channel is None:
             try:
-                channel = await bot.fetch_channel(log_channel_id)
+                channel = await bot.fetch_channel(channel_id)
             except Exception as e:
                 print(f"Could not fetch channel: {e}")
                 return
@@ -94,12 +146,121 @@ async def send_log(embed):
     except Exception as e:
         print(f"Failed to send log: {e}")
 
-async def send_rlog(embed):
-    channel = bot.get_channel(rlog_channel_id)
+async def send_rlog(embed, guild=None):
+    channel_id = get_log_channel_id(guild.id, "reaction_log_channel_id") if guild else rlog_channel_id
+    if not channel_id:
+        return
+    channel = bot.get_channel(channel_id)
     if channel:
         await channel.send(embed=embed)
     else:
         print("Reaction log channel not found.")
+
+def first_sendable_text_channel(guild):
+    for channel in guild.text_channels:
+        perms = channel.permissions_for(guild.me)
+        if perms.send_messages and perms.view_channel:
+            return channel
+    return None
+
+async def find_bot_adder(guild):
+    try:
+        async for entry in guild.audit_logs(limit=10, action=discord.AuditLogAction.bot_add):
+            if entry.target and entry.target.id == bot.user.id:
+                return entry.user
+    except Exception:
+        pass
+    return guild.owner
+
+async def prompt_log_setup(guild):
+    channel = first_sendable_text_channel(guild)
+    if channel is None:
+        return
+
+    requester = await find_bot_adder(guild)
+
+    class SameChannelView(discord.ui.View):
+        def __init__(self):
+            super().__init__(timeout=120)
+            self.same = None
+
+        async def interaction_check(self, interaction):
+            return requester is None or interaction.user.id == requester.id
+
+        @discord.ui.button(label="Same channel", style=discord.ButtonStyle.success)
+        async def same_channel(self, interaction, button):
+            self.same = True
+            await interaction.response.edit_message(content="Select the log channel.", view=None)
+            self.stop()
+
+        @discord.ui.button(label="Separate channels", style=discord.ButtonStyle.primary)
+        async def separate_channels(self, interaction, button):
+            self.same = False
+            await interaction.response.edit_message(content="Select the normal log channel first.", view=None)
+            self.stop()
+
+    class ChannelPickView(discord.ui.View):
+        def __init__(self, prompt):
+            super().__init__(timeout=120)
+            self.channel_id = None
+            self.prompt = prompt
+            self.add_item(self.ChannelSelect(self))
+
+        async def interaction_check(self, interaction):
+            return requester is None or interaction.user.id == requester.id
+
+        class ChannelSelect(discord.ui.ChannelSelect):
+            def __init__(self, parent):
+                self.parent = parent
+                super().__init__(
+                    placeholder=parent.prompt,
+                    channel_types=[discord.ChannelType.text],
+                    min_values=1,
+                    max_values=1
+                )
+
+            async def callback(self, interaction):
+                self.parent.channel_id = self.values[0].id
+                await interaction.response.edit_message(
+                    content=f"Selected {self.values[0].mention}.",
+                    view=None
+                )
+                self.parent.stop()
+
+    mention = requester.mention if requester else guild.owner.mention
+    same_view = SameChannelView()
+    await channel.send(
+        f"{mention} should normal logs and reaction logs use the same channel?",
+        view=same_view,
+        allowed_mentions=discord.AllowedMentions(users=True)
+    )
+    await same_view.wait()
+    if same_view.same is None:
+        return
+
+    normal_view = ChannelPickView("Choose normal log channel")
+    await channel.send("Choose the normal log channel:", view=normal_view)
+    await normal_view.wait()
+    if normal_view.channel_id is None:
+        return
+
+    if same_view.same:
+        reaction_channel_id = normal_view.channel_id
+    else:
+        reaction_view = ChannelPickView("Choose reaction log channel")
+        await channel.send("Choose the reaction log channel:", view=reaction_view)
+        await reaction_view.wait()
+        if reaction_view.channel_id is None:
+            return
+        reaction_channel_id = reaction_view.channel_id
+
+    save_guild_log_config(guild.id, normal_view.channel_id, reaction_channel_id)
+    await channel.send("Log channels saved.")
+
+async def send_user_update_log(embed, user_id):
+    for guild in bot.guilds:
+        if guild.get_member(user_id) and load_guild_log_config(guild.id):
+            await send_log(embed.copy(), guild)
 
 async def safe_send(destination, *args, **kwargs):
     global last_message_time
@@ -196,7 +357,7 @@ async def on_member_join(member):
     embed.add_field(name="User", value=f"{member} ({member.id})", inline=False)
     embed.timestamp = datetime.now(timezone.utc)
     print(f"Sending log for {member} ({member.id})")
-    await send_log(embed)
+    await send_log(embed, member.guild)
 
 @bot.event
 async def on_member_ban(guild, user):
@@ -212,7 +373,7 @@ async def on_member_ban(guild, user):
             embed.timestamp = datetime.now(timezone.utc)
             print("Sending log:", embed.title)
             try:
-                await send_log(embed)
+                await send_log(embed, guild)
             except Exception as e:
                 print(f"Failed to send log: {e}")
             return
@@ -231,7 +392,7 @@ async def on_member_unban(guild, user):
             embed.timestamp = datetime.now(timezone.utc)
             print("Sending log:", embed.title)
             try:
-                await send_log(embed)
+                await send_log(embed, guild)
             except Exception as e:
                 print(f"Failed to send log: {e}")
             return
@@ -239,6 +400,7 @@ async def on_member_unban(guild, user):
 @bot.event
 async def on_guild_join(guild):
     print(f"Joined server: {guild.name} ({guild.id})")
+    await prompt_log_setup(guild)
 
 @bot.event
 async def on_guild_remove(guild):
@@ -260,7 +422,7 @@ async def on_guild_channel_create(channel):
     embed.timestamp = datetime.now(timezone.utc)
     print("Sending log:", embed.title)
     try:
-        await send_log(embed)
+        await send_log(embed, channel.guild)
     except Exception as e:
         print(f"Failed to send log: {e}")
 
@@ -280,7 +442,7 @@ async def on_guild_channel_delete(channel):
     embed.timestamp = datetime.now(timezone.utc)
     print("Sending log:", embed.title)
     try:
-        await send_log(embed)
+        await send_log(embed, channel.guild)
     except Exception as e:
         print(f"Failed to send log: {e}")
 
@@ -300,7 +462,7 @@ async def on_guild_role_create(role):
     embed.timestamp = datetime.now(timezone.utc)
     print("Sending log:", embed.title)
     try:
-        await send_log(embed)
+        await send_log(embed, role.guild)
     except Exception as e:
         print(f"Failed to send log: {e}")
 
@@ -320,7 +482,7 @@ async def on_guild_role_delete(role):
     embed.timestamp = datetime.now(timezone.utc)
     print("Sending log:", embed.title)
     try:
-        await send_log(embed)
+        await send_log(embed, role.guild)
     except Exception as e:
         print(f"Failed to send log: {e}")
 
@@ -361,7 +523,7 @@ async def on_guild_role_update(before, after):
     embed.timestamp = datetime.now(timezone.utc)
     print("Sending log:", embed.title)
     try:
-        await send_log(embed)
+        await send_log(embed, after.guild)
     except Exception as e:
         print(f"Failed to send log: {e}")
 
@@ -405,7 +567,7 @@ async def on_guild_update(before, after):
         embed.timestamp = datetime.now(timezone.utc)
         print("Sending log:", embed.title)
         try:
-            await send_log(embed)
+            await send_log(embed, guild)
         except Exception as e:
             print(f"Failed to send log: {e}")
 
@@ -491,6 +653,7 @@ async def on_message(message):
 
     if message.author.id in sleeping_users:
         start = sleeping_users.pop(message.author.id)
+        remove_sleeping_user(message.author.id)
         save_dict(SLEEP_FILE, {str(uid): dt.isoformat() for uid, dt in sleeping_users.items()})
         duration = datetime.now(timezone.utc) - start
         days, remainder = divmod(int(duration.total_seconds()), 86400)
@@ -555,6 +718,7 @@ async def on_message(message):
 
     if message.author.id in afk_users:
         afk_data = afk_users.pop(message.author.id)
+        remove_afk_user(message.author.id)
         save_dict(AFK_FILE, {str(uid): {"reason": data["reason"], "since": data["since"].isoformat()} for uid, data in afk_users.items()})
 
         duration = datetime.now(timezone.utc) - afk_data["since"]
@@ -690,13 +854,13 @@ async def on_message_delete(message):
             ghost_embed.timestamp = message.created_at
 
             print("Sending log:", ghost_embed.title)
-            await send_log(ghost_embed)
+            await send_log(ghost_embed, message.guild)
         except Exception as e:
             print(f"[Ghost Ping Log Error] {e}")
 
     print("Sending log:", embed.title)
     try:
-        await send_log(embed)
+        await send_log(embed, message.guild)
     except Exception as e:
         print(f"Failed to send log: {e}")
 
@@ -739,7 +903,7 @@ async def on_bulk_message_delete(messages):
         embed.add_field(name="Channel", value=messages[0].channel.mention, inline=False)
         embed.timestamp = datetime.now(timezone.utc)
         try:
-            await send_log(embed)
+            await send_log(embed, messages[0].guild)
         except Exception as e:
             print(f"Failed to send log part {i}: {e}")
 
@@ -755,7 +919,7 @@ async def on_bulk_message_delete(messages):
             embed.add_field(name="Channel", value=messages[0].channel.mention, inline=False)
             embed.timestamp = datetime.now(timezone.utc)
             try:
-                await send_log(embed)
+                await send_log(embed, messages[0].guild)
             except Exception as e:
                 print(f"Failed to send attachment log part {i}: {e}")
     
@@ -789,7 +953,7 @@ async def on_message_edit(before, after):
 
         print("Sending log:", embed.title)
         try:
-            await send_log(embed)
+            await send_log(embed, before.guild)
         except Exception as e:
             print(f"Failed to send log: {e}")
 
@@ -884,7 +1048,7 @@ async def on_reaction_remove(reaction, user):
 
     print("Sending log:", embed.title)
     try:
-        await send_rlog(embed)
+        await send_rlog(embed, msg.guild)
     except Exception as e:
         print(f"Failed to send log: {e}")
 
@@ -920,7 +1084,7 @@ async def on_reaction_add(reaction, user):
     embed.add_field(name="Channel", value=msg.channel.mention, inline=False)
     embed.timestamp = datetime.now(timezone.utc)
     try:
-        await send_rlog(embed)
+        await send_rlog(embed, msg.guild)
     except Exception as e:
         print(f"Failed to send log: {e}")
 
@@ -964,7 +1128,7 @@ async def on_raw_reaction_clear(payload):
 
     print("Sending log: All reactions removed")
     try:
-        await send_rlog(embed)
+        await send_rlog(embed, message.guild)
     except Exception as e:
         print(f"Failed to send log: {e}")
         
@@ -993,7 +1157,7 @@ async def on_member_update(before, after):
         if action_by:
             embed.add_field(name="Changed by", value=action_by, inline=False)
         embed.timestamp = datetime.now(timezone.utc)
-        await send_log(embed)
+        await send_log(embed, guild)
 
     before_roles = set(before.roles)
     after_roles = set(after.roles)
@@ -1013,7 +1177,7 @@ async def on_member_update(before, after):
         if action_by:
             embed.add_field(name="Updated by", value=action_by, inline=False)
         embed.timestamp = datetime.now(timezone.utc)
-        await send_log(embed)
+        await send_log(embed, guild)
 
     before_timeout = getattr(before, "communication_disabled_until", None)
     after_timeout = getattr(after, "communication_disabled_until", None)
@@ -1038,7 +1202,7 @@ async def on_member_update(before, after):
             if action_by:
                 embed.add_field(name="By", value=action_by, inline=False)
             embed.timestamp = datetime.now(timezone.utc)
-        await send_log(embed)
+        await send_log(embed, guild)
 
 @bot.event
 async def on_audit_log_entry_create(entry):
@@ -1059,7 +1223,7 @@ async def on_audit_log_entry_create(entry):
             embed.add_field(name="By", value=f"{entry.user} ({entry.user.id})", inline=False)
             embed.timestamp = datetime.now(timezone.utc)
             try:
-                await send_log(embed)
+                await send_log(embed, entry.guild)
             except Exception as e:
                 print(f"Failed to send timeout log: {e}")
 
@@ -1072,7 +1236,7 @@ async def on_audit_log_entry_create(entry):
             embed.add_field(name="By", value=f"{entry.user} ({entry.user.id})", inline=False)
             embed.timestamp = datetime.now(timezone.utc)
             try:
-                await send_log(embed)
+                await send_log(embed, entry.guild)
             except Exception as e:
                 print(f"Failed to send timeout removal log: {e}")
 
@@ -1086,7 +1250,7 @@ async def on_user_update(before, after):
         embed.timestamp = datetime.now(timezone.utc)
         print("Sending log:", embed.title)
         try:
-            await send_log(embed)
+            await send_user_update_log(embed, after.id)
         except Exception as e:
             print(f"Failed to send log: {e}")
 
@@ -1098,7 +1262,7 @@ async def on_user_update(before, after):
         embed.timestamp = datetime.now(timezone.utc)
         print("Sending log:", embed.title)
         try:
-            await send_log(embed)
+            await send_user_update_log(embed, after.id)
         except Exception as e:
             print(f"Failed to send log: {e}")
 
@@ -1110,7 +1274,7 @@ async def on_user_update(before, after):
         embed.timestamp = datetime.now(timezone.utc)
         print("Sending log:", embed.title)
         try:
-            await send_log(embed)
+            await send_user_update_log(embed, after.id)
         except Exception as e:
             print(f"Failed to send log: {e}")
 
@@ -1129,7 +1293,7 @@ async def on_member_remove(member):
             embed.add_field(name="Reason", value=entry.reason or "No reason provided", inline=False)
             print("Sending log:", embed.title)
             try:
-                await send_log(embed)
+                await send_log(embed, guild)
             except Exception as e:
                 print(f"Failed to send log: {e}")
             return
@@ -1142,7 +1306,7 @@ async def on_member_remove(member):
     embed.add_field(name="User", value=f"{member} ({member.id})", inline=False)
     print("Sending log:", embed.title)
     try:
-        await send_log(embed)
+        await send_log(embed, guild)
     except Exception as e:
         print(f"Failed to send log: {e}")
         
@@ -1172,7 +1336,7 @@ async def on_voice_state_update(member, before, after):
         embed.timestamp = datetime.now(timezone.utc)
         print("Sending log:", embed.title)
         try:
-            await send_log(embed)
+            await send_log(embed, member.guild)
         except Exception as e:
             print(f"Failed to send log: {e}")
 
@@ -1461,7 +1625,7 @@ async def test(ctx):
 async def testlog(ctx):
     embed = discord.Embed(title="Test Log", description="This is a test log.", color=discord.Color.green())
     try:
-        await send_log(embed)
+        await send_log(embed, ctx.guild)
         print("DEBUG: testlog command used")
     except Exception as e:
         print(f"Failed to send test log: {e}")
@@ -3301,6 +3465,7 @@ async def unblock(ctx, member: discord.Member):
 @bot.command()
 async def sleep(ctx):
     sleeping_users[ctx.author.id] = datetime.now(timezone.utc)
+    save_sleeping_user(ctx.author.id, sleeping_users[ctx.author.id])
     save_dict(SLEEP_FILE, {
         str(uid): dt.isoformat()
         for uid, dt in sleeping_users.items()
@@ -3340,6 +3505,7 @@ async def fsleep(ctx, members: commands.Greedy[discord.Member], *, time: str = N
                 start_time -= timedelta(seconds=total_seconds)
 
         sleeping_users[member.id] = start_time
+        save_sleeping_user(member.id, start_time)
         await ctx.send(
             f"Marked {member.mention} as asleep since <t:{int(start_time.timestamp())}:F>"
         )
@@ -3362,6 +3528,7 @@ async def wake(ctx, members: commands.Greedy[discord.Member]):
 
     for member in members:
         sleeping_users.pop(member.id, None)
+        remove_sleeping_user(member.id)
 
     save_dict(SLEEP_FILE, {
         str(uid): dt.isoformat()
@@ -3374,6 +3541,7 @@ async def afk(ctx, *, reason="AFK"):
         "reason": reason,
         "since": datetime.now(timezone.utc)
     }
+    save_afk_user(ctx.author.id, reason, afk_users[ctx.author.id]["since"])
     save_dict(AFK_FILE, {
         str(uid): {
             "reason": data["reason"],
@@ -3390,9 +3558,7 @@ async def setbday(ctx, date):
 
         user_id = str(ctx.author.id)
         birthdays[user_id] = {"date": date}
-
-        with open(bday_file, "w") as f:
-            json.dump(birthdays, f, indent=2)
+        save_birthday(ctx.author.id, date)
 
         await ctx.send("✔️ Birthday saved!")
     except ValueError:
@@ -3403,8 +3569,7 @@ async def removebday(ctx):
     user_id = str(ctx.author.id)
     if user_id in birthdays:
         del birthdays[user_id]
-        with open(bday_file, "w") as f:
-            json.dump(birthdays, f, indent=2)
+        remove_birthday(ctx.author.id)
         await ctx.send("Birthday removed.")
     else:
         await ctx.send("You haven’t set a birthday.")
