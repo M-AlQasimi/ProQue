@@ -259,33 +259,33 @@ def _migrate_bot_config(cur):
     cur.execute("""
         INSERT INTO bot_owners (user_id)
         SELECT user_id_text::BIGINT
-        FROM bot_config, jsonb_array_elements_text(value) AS user_id_text
-        WHERE key = 'owners'
-          AND jsonb_typeof(value) = 'array'
+        FROM bot_config, jsonb_array_elements_text(bot_config.value) AS user_id_text
+        WHERE bot_config.key = 'owners'
+          AND jsonb_typeof(bot_config.value) = 'array'
           AND user_id_text ~ '^[0-9]+$'
         ON CONFLICT DO NOTHING
     """)
     cur.execute("""
         INSERT INTO bot_mods (user_id)
         SELECT user_id_text::BIGINT
-        FROM bot_config, jsonb_array_elements_text(value) AS user_id_text
-        WHERE key = 'mods'
-          AND jsonb_typeof(value) = 'array'
+        FROM bot_config, jsonb_array_elements_text(bot_config.value) AS user_id_text
+        WHERE bot_config.key = 'mods'
+          AND jsonb_typeof(bot_config.value) = 'array'
           AND user_id_text ~ '^[0-9]+$'
         ON CONFLICT DO NOTHING
     """)
     cur.execute("""
         INSERT INTO guild_log_config (guild_id, log_channel_id, reaction_log_channel_id)
         SELECT
-            split_part(key, ':', 2)::BIGINT,
-            (value->>'log_channel_id')::BIGINT,
-            (value->>'reaction_log_channel_id')::BIGINT
+            split_part(bot_config.key, ':', 2)::BIGINT,
+            (bot_config.value->>'log_channel_id')::BIGINT,
+            (bot_config.value->>'reaction_log_channel_id')::BIGINT
         FROM bot_config
-        WHERE key ~ '^guild_log_config:[0-9]+$'
-          AND value ? 'log_channel_id'
-          AND value ? 'reaction_log_channel_id'
-          AND (value->>'log_channel_id') ~ '^[0-9]+$'
-          AND (value->>'reaction_log_channel_id') ~ '^[0-9]+$'
+        WHERE bot_config.key ~ '^guild_log_config:[0-9]+$'
+          AND bot_config.value ? 'log_channel_id'
+          AND bot_config.value ? 'reaction_log_channel_id'
+          AND (bot_config.value->>'log_channel_id') ~ '^[0-9]+$'
+          AND (bot_config.value->>'reaction_log_channel_id') ~ '^[0-9]+$'
         ON CONFLICT (guild_id) DO UPDATE SET
             log_channel_id = EXCLUDED.log_channel_id,
             reaction_log_channel_id = EXCLUDED.reaction_log_channel_id
