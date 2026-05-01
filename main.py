@@ -190,63 +190,65 @@ async def prompt_log_setup(guild):
         @discord.ui.button(label="Same channel", style=discord.ButtonStyle.success)
         async def same_channel(self, interaction, button):
             self.same = True
-            await interaction.response.edit_message(content="Select the log channel.", view=None)
+            await interaction.response.edit_message(content="Choose the log channel next.", view=None)
             self.stop()
 
         @discord.ui.button(label="Separate channels", style=discord.ButtonStyle.primary)
         async def separate_channels(self, interaction, button):
             self.same = False
-            await interaction.response.edit_message(content="Select the normal log channel first.", view=None)
+            await interaction.response.edit_message(content="Choose the normal log channel next.", view=None)
             self.stop()
 
-    class ChannelPickView(discord.ui.View):
-        def __init__(self, prompt):
-            super().__init__(timeout=120)
-            self.channel_id = None
-            self.prompt = prompt
-            self.add_item(self.ChannelSelect(self, prompt))
-
-        async def interaction_check(self, interaction):
-            return requester is None or interaction.user.id == requester.id
-
-        class ChannelSelect(discord.ui.Select):
-            def __init__(self, parent, prompt):
-                self.parent = parent
-                options = []
-                bot_member = guild.get_member(bot.user.id) or guild.me
-                for text_channel in guild.text_channels:
-                    can_send = True
-                    if bot_member is not None:
-                        perms = text_channel.permissions_for(bot_member)
-                        can_send = perms.view_channel and perms.send_messages
-                    if can_send:
-                        options.append(discord.SelectOption(
-                            label=f"#{text_channel.name}"[:100],
-                            value=str(text_channel.id)
-                        ))
-                    if len(options) == 25:
-                        break
-                if not options:
-                    options.append(discord.SelectOption(label="No sendable channels", value="0"))
+    async def ask_for_channel(prompt):
+        class LogChannelSelect(discord.ui.ChannelSelect):
+            def __init__(self):
                 super().__init__(
-                    placeholder=prompt,
-                    options=options,
+                    placeholder="Select a text channel",
                     min_values=1,
-                    max_values=1
+                    max_values=1,
+                    channel_types=[discord.ChannelType.text],
                 )
 
             async def callback(self, interaction):
-                if self.values[0] == "0":
-                    await interaction.response.edit_message(content="No sendable channels found.", view=None)
-                    self.parent.stop()
+                selected_channel = self.values[0]
+                bot_member = guild.get_member(bot.user.id) or guild.me
+                perms = selected_channel.permissions_for(bot_member)
+                if not perms.view_channel or not perms.send_messages:
+                    await interaction.response.send_message(
+                        "I can't send messages in that channel.",
+                        ephemeral=True,
+                    )
                     return
-                self.parent.channel_id = int(self.values[0])
-                selected = guild.get_channel(self.parent.channel_id)
+
+                self.view.channel_id = selected_channel.id
                 await interaction.response.edit_message(
-                    content=f"Selected {selected.mention if selected else self.parent.channel_id}.",
-                    view=None
+                    content=f"{prompt} {selected_channel.mention}",
+                    view=None,
+                    allowed_mentions=discord.AllowedMentions.none(),
                 )
-                self.parent.stop()
+                self.view.stop()
+
+        class LogChannelView(discord.ui.View):
+            def __init__(self):
+                super().__init__(timeout=120)
+                self.channel_id = None
+                self.add_item(LogChannelSelect())
+
+            async def interaction_check(self, interaction):
+                if requester is not None and interaction.user.id != requester.id:
+                    await interaction.response.send_message(
+                        "Only the person who added me can choose this.",
+                        ephemeral=True,
+                    )
+                    return False
+                return True
+
+        view = LogChannelView()
+        message = await channel.send(prompt, view=view)
+        await view.wait()
+        if view.channel_id is None:
+            await message.edit(content="Log setup timed out.", view=None)
+        return view.channel_id
 
     mention = requester.mention if requester else guild.owner.mention
     same_view = SameChannelView()
@@ -259,33 +261,18 @@ async def prompt_log_setup(guild):
     if same_view.same is None:
         return
 
-    normal_view = ChannelPickView("Choose normal log channel")
-    try:
-        await channel.send("Choose the normal log channel:", view=normal_view)
-    except Exception as e:
-        await channel.send(f"Could not show channel dropdown: `{type(e).__name__}`")
-        print(f"[log setup] Failed to send normal channel dropdown: {e}")
-        return
-    await normal_view.wait()
-    if normal_view.channel_id is None:
+    normal_channel_id = await ask_for_channel("Choose the normal log channel:")
+    if normal_channel_id is None:
         return
 
     if same_view.same:
-        reaction_channel_id = normal_view.channel_id
+        reaction_channel_id = normal_channel_id
     else:
-        reaction_view = ChannelPickView("Choose reaction log channel")
-        try:
-            await channel.send("Choose the reaction log channel:", view=reaction_view)
-        except Exception as e:
-            await channel.send(f"Could not show channel dropdown: `{type(e).__name__}`")
-            print(f"[log setup] Failed to send reaction channel dropdown: {e}")
+        reaction_channel_id = await ask_for_channel("Choose the reaction log channel:")
+        if reaction_channel_id is None:
             return
-        await reaction_view.wait()
-        if reaction_view.channel_id is None:
-            return
-        reaction_channel_id = reaction_view.channel_id
 
-    save_guild_log_config(guild.id, normal_view.channel_id, reaction_channel_id)
+    save_guild_log_config(guild.id, normal_channel_id, reaction_channel_id)
     await channel.send("Log channels saved.")
 
 async def send_user_update_log(embed, user_id):
