@@ -328,29 +328,49 @@ def keep_alive():
     t = Thread(target=run)
     t.start()
 
+def super_owner_in_guild(guild):
+    return guild is not None and guild.get_member(super_owner_id) is not None
+
+def has_server_owner_override(user, guild):
+    if guild is None or user is None:
+        return False
+    return guild.owner_id == user.id and not super_owner_in_guild(guild)
+
+def has_super_owner_power(user, guild=None):
+    return user.id == super_owner_id or has_server_owner_override(user, guild)
+
+def has_owner_power(user, guild=None):
+    return has_super_owner_power(user, guild) or user.id in owners
+
+def has_mod_power(user, guild=None):
+    return has_super_owner_power(user, guild) or user.id in mods
+
+def has_owner_or_mod_power(user, guild=None):
+    return has_owner_power(user, guild) or user.id in mods
+
 def is_owner():
     async def predicate(ctx):
-        return ctx.author.id == super_owner_id or ctx.author.id in owners
+        return has_owner_power(ctx.author, ctx.guild)
     return commands.check(predicate)
 
 def is_mod():
     async def predicate(ctx):
-        return ctx.author.id == super_owner_id or ctx.author.id in mods
+        return has_mod_power(ctx.author, ctx.guild)
     return commands.check(predicate)
 
 def is_owner_or_mod():
     async def predicate(ctx):
-        return ctx.author.id in owners or ctx.author.id == super_owner_id or ctx.author.id in mods
+        return has_owner_or_mod_power(ctx.author, ctx.guild)
     return commands.check(predicate)
 
 def is_super_owner():
     async def predicate(ctx):
-        return ctx.author.id == super_owner_id
+        return has_super_owner_power(ctx.author, ctx.guild)
     return commands.check(predicate)
 
 def is_super_owner_or_owner():
     async def predicate(ctx):
-        return ctx.author.id == super_owner_id or ctx.author.id in owners
+        return has_owner_power(ctx.author, ctx.guild)
     return commands.check(predicate)
 
 @tasks.loop(minutes=4)
@@ -674,14 +694,14 @@ async def on_message(message):
             return
 
 
-    if message.channel.id in shutdown_channels and message.author.id not in owners and message.author.id != super_owner_id:
+    if message.channel.id in shutdown_channels and not has_owner_power(message.author, message.guild):
         try:
             await message.delete()
         except:
             pass
         return
 
-    if message.author.id not in owners and message.author.id != super_owner_id:
+    if not has_owner_power(message.author, message.guild):
         content = normalize(message.content)
         for phrase in censored_phrases:
             if phrase in content:
@@ -1105,7 +1125,7 @@ async def on_reaction_add(reaction, user):
     if user.bot and user.id != super_owner_id:
         return
 
-    if reaction.message.channel.id in reaction_shutdown_channels and user.id not in owners and user.id != super_owner_id:
+    if reaction.message.channel.id in reaction_shutdown_channels and not has_owner_power(user, reaction.message.guild):
         try:
             await reaction.remove(user)
         except:
@@ -1390,7 +1410,7 @@ async def on_voice_state_update(member, before, after):
 
 @bot.check
 async def globally_block_disabled(ctx):
-    if ctx.command and ctx.command.name in disabled_commands and ctx.author.id != super_owner_id:
+    if ctx.command and ctx.command.name in disabled_commands and not has_super_owner_power(ctx.author, ctx.guild):
         raise CommandDisabledError(ctx.command.name)
     return True
 
@@ -1401,7 +1421,7 @@ async def block_blacklisted(ctx):
 @bot.command()
 @is_owner_or_mod()
 async def disable(ctx, cmd: str):
-    if ctx.author.id != super_owner_id:
+    if not has_super_owner_power(ctx.author, ctx.guild):
         return
 
     command = bot.get_command(cmd)
@@ -1415,7 +1435,7 @@ async def disable(ctx, cmd: str):
 @bot.command()
 @is_owner_or_mod()
 async def enable(ctx, cmd: str):
-    if ctx.author.id != super_owner_id:
+    if not has_super_owner_power(ctx.author, ctx.guild):
         return
 
     command = bot.get_command(cmd)
@@ -1432,7 +1452,7 @@ async def enable(ctx, cmd: str):
 @bot.command()
 @is_owner_or_mod()
 async def disableall(ctx):
-    if ctx.author.id != super_owner_id:
+    if not has_super_owner_power(ctx.author, ctx.guild):
         return
 
     for command in bot.commands:
@@ -1443,7 +1463,7 @@ async def disableall(ctx):
 @bot.command()
 @is_owner_or_mod()
 async def enableall(ctx):
-    if ctx.author.id != super_owner_id:
+    if not has_super_owner_power(ctx.author, ctx.guild):
         return
 
     disabled_commands.clear()
@@ -2065,14 +2085,14 @@ async def shut(ctx, member: discord.Member):
 @is_owner()
 async def unshut(ctx, member: discord.Member):
     if member.id in owners:
-        if watchlist.get(member.id) == super_owner_id and ctx.author.id != super_owner_id:
+        if watchlist.get(member.id) == super_owner_id and not has_super_owner_power(ctx.author, ctx.guild):
             return await ctx.send("Only 𝚀𝚞𝚎 can unshut that owner.")
     watchlist.pop(member.id, None)
 
 @bot.command()
 @is_owner()
 async def clearwatchlist(ctx):
-    if ctx.author.id != super_owner_id:
+    if not has_super_owner_power(ctx.author, ctx.guild):
         return await ctx.send("Only 𝚀𝚞𝚎 can clear the watchlist.")
     watchlist.clear()
     await ctx.send("Watchlist cleared.")
@@ -2091,7 +2111,7 @@ async def rshut(ctx, member: discord.Member):
 async def unrshut(ctx, member: discord.Member):
     """Allow a user's reactions again (silent unless protected owner)."""
     if member.id in owners:
-        if reaction_watchlist.get(member.id) == super_owner_id and ctx.author.id != super_owner_id:
+        if reaction_watchlist.get(member.id) == super_owner_id and not has_super_owner_power(ctx.author, ctx.guild):
             return await ctx.send("Only 𝚀𝚞𝚎 can unshut that owner.")
     reaction_watchlist.pop(member.id, None)
 
@@ -2206,7 +2226,7 @@ class OwnerModManagement(commands.Cog):
 
     @app_commands.command(name="addowner", description="Add one or multiple owners")
     async def addowner(self, interaction: discord.Interaction, users: str):
-        if interaction.user.id != super_owner_id:
+        if not has_super_owner_power(interaction.user, interaction.guild):
             return await interaction.response.send_message("Only 𝚀𝚞𝚎 can add owners.", ephemeral=True)
 
         user_ids = []
@@ -2248,7 +2268,7 @@ class OwnerModManagement(commands.Cog):
     @app_commands.command(name="addmod", description="Add one or multiple mods")
     @commands.check_any(commands.is_owner(), commands.has_permissions(administrator=True))
     async def addmod(self, interaction: discord.Interaction, users: str):
-        if interaction.user.id != super_owner_id and interaction.user.id not in owners:
+        if not has_owner_power(interaction.user, interaction.guild):
             return await interaction.response.send_message("Only owners and 𝚀𝚞𝚎 can add mods.", ephemeral=True)
 
         user_ids = []
@@ -3518,7 +3538,7 @@ async def sleep(ctx):
 
 @bot.command()
 async def fsleep(ctx, members: commands.Greedy[discord.Member], *, time: str = None):
-    if ctx.author.id != super_owner_id:
+    if not has_super_owner_power(ctx.author, ctx.guild):
         return
 
     if not members:
@@ -3559,7 +3579,7 @@ async def fsleep(ctx, members: commands.Greedy[discord.Member], *, time: str = N
 
 @bot.command()
 async def wake(ctx, members: commands.Greedy[discord.Member]):
-    if ctx.author.id != super_owner_id:
+    if not has_super_owner_power(ctx.author, ctx.guild):
         return
 
     for member in members:
