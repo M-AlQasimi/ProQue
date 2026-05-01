@@ -533,17 +533,57 @@ async def roulette(ctx, amount: str, color: str = None):
         await ctx.send(f"⏳ Chill for **{cd:.1f}s** before roulette again.")
         return
 
-    if not color:
-        await ctx.send("❌ Use `.roulette all <red|black|green>` or `.roulette <amount> <red|black|green>`")
-        return
-
     parsed = parse_amount(amount, ctx.author.id, ctx.guild)
     if parsed is None:
         await ctx.send("❌ Use `.roulette all <red|black|green>` or `.roulette <amount> <red|black|green>`")
         return
 
     amount = parsed
-    color = color.lower()
+    if not color:
+        class RouletteColorView(discord.ui.View):
+            def __init__(self):
+                super().__init__(timeout=30)
+                self.color = None
+
+            async def interaction_check(self, interaction):
+                return interaction.user.id == ctx.author.id
+
+            async def choose(self, interaction, selected_color):
+                self.color = selected_color
+                for item in self.children:
+                    item.disabled = True
+                await interaction.response.edit_message(
+                    content=f"🎡 Roulette color: **{selected_color.upper()}**",
+                    view=self
+                )
+                self.stop()
+
+            @discord.ui.button(label="Red", style=discord.ButtonStyle.danger)
+            async def red(self, interaction, button):
+                await self.choose(interaction, "red")
+
+            @discord.ui.button(label="Black", style=discord.ButtonStyle.secondary)
+            async def black(self, interaction, button):
+                await self.choose(interaction, "black")
+
+            @discord.ui.button(label="Green", style=discord.ButtonStyle.success)
+            async def green(self, interaction, button):
+                await self.choose(interaction, "green")
+
+            @discord.ui.button(label="Random", style=discord.ButtonStyle.primary)
+            async def random_color(self, interaction, button):
+                await self.choose(interaction, random.choice(["red", "black", "green"]))
+
+        color_view = RouletteColorView()
+        color_msg = await ctx.send("🎡 Pick a roulette color:", view=color_view)
+        await color_view.wait()
+        if color_view.color is None:
+            await color_msg.edit(content="⏰ Roulette cancelled.", view=None)
+            return
+        color = color_view.color
+    else:
+        color = color.lower()
+
     if color not in ['red', 'black', 'green']:
         await ctx.send("❌ Use `.roulette all <red|black|green>` or `.roulette <amount> <red|black|green>`")
         return
