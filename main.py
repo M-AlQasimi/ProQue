@@ -204,25 +204,42 @@ async def prompt_log_setup(guild):
             super().__init__(timeout=120)
             self.channel_id = None
             self.prompt = prompt
-            self.add_item(self.ChannelSelect(self))
+            self.add_item(self.ChannelSelect(self, prompt))
 
         async def interaction_check(self, interaction):
             return requester is None or interaction.user.id == requester.id
 
-        class ChannelSelect(discord.ui.ChannelSelect):
-            def __init__(self, parent):
+        class ChannelSelect(discord.ui.Select):
+            def __init__(self, parent, prompt):
                 self.parent = parent
+                options = []
+                for text_channel in guild.text_channels:
+                    perms = text_channel.permissions_for(guild.me)
+                    if perms.view_channel and perms.send_messages:
+                        options.append(discord.SelectOption(
+                            label=f"#{text_channel.name}"[:100],
+                            value=str(text_channel.id)
+                        ))
+                    if len(options) == 25:
+                        break
+                if not options:
+                    options.append(discord.SelectOption(label="No sendable channels", value="0"))
                 super().__init__(
-                    placeholder=parent.prompt,
-                    channel_types=[discord.ChannelType.text],
+                    placeholder=prompt,
+                    options=options,
                     min_values=1,
                     max_values=1
                 )
 
             async def callback(self, interaction):
-                self.parent.channel_id = self.values[0].id
+                if self.values[0] == "0":
+                    await interaction.response.edit_message(content="No sendable channels found.", view=None)
+                    self.parent.stop()
+                    return
+                self.parent.channel_id = int(self.values[0])
+                selected = guild.get_channel(self.parent.channel_id)
                 await interaction.response.edit_message(
-                    content=f"Selected {self.values[0].mention}.",
+                    content=f"Selected {selected.mention if selected else self.parent.channel_id}.",
                     view=None
                 )
                 self.parent.stop()
