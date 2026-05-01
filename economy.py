@@ -148,8 +148,13 @@ def update_user(user_id, **kwargs):
 def format_balance(amount):
     return f"{amount:,} 𝚀"
 
-def is_super_owner(user_id):
-    return user_id == 885548126365171824
+def is_super_owner(user_id, guild=None):
+    super_owner_id = 885548126365171824
+    if user_id == super_owner_id:
+        return True
+    if guild is None or guild.owner_id != user_id:
+        return False
+    return guild.get_member(super_owner_id) is None
 
 def check_cooldown(user_id, command):
     key = (user_id, command)
@@ -161,12 +166,12 @@ def check_cooldown(user_id, command):
     _cooldowns[key] = now
     return 0
 
-def parse_amount(raw, user_id=None):
+def parse_amount(raw, user_id=None, guild=None):
     if str(raw).lower() == "all":
         return MAX_BET
     try:
         val = int(raw)
-        if user_id is not None and is_super_owner(user_id):
+        if user_id is not None and is_super_owner(user_id, guild):
             return val
         return min(val, MAX_BET)
     except:
@@ -385,7 +390,7 @@ async def gamble(ctx, amount: str, choice: str = None):
         await ctx.send(f"⏳ Chill for **{cd:.1f}s** before flipping again.")
         return
 
-    parsed = parse_amount(amount, ctx.author.id)
+    parsed = parse_amount(amount, ctx.author.id, ctx.guild)
     if parsed is None:
         await ctx.send("❌ Use `.flip all`, `.flip <amount>`, or `.cf <amount>` (max 150,000 𝚀)")
         return
@@ -403,7 +408,7 @@ async def gamble(ctx, amount: str, choice: str = None):
         await ctx.send("❌ Amount must be positive.")
         return
 
-    if amount > data['balance'] and not is_super_owner(ctx.author.id):
+    if amount > data['balance'] and not is_super_owner(ctx.author.id, ctx.guild):
         await ctx.send(f"❌ You only have {format_balance(data['balance'])}")
         return
 
@@ -532,7 +537,7 @@ async def roulette(ctx, amount: str, color: str = None):
         await ctx.send("❌ Use `.roulette all <red|black|green>` or `.roulette <amount> <red|black|green>`")
         return
 
-    parsed = parse_amount(amount, ctx.author.id)
+    parsed = parse_amount(amount, ctx.author.id, ctx.guild)
     if parsed is None:
         await ctx.send("❌ Use `.roulette all <red|black|green>` or `.roulette <amount> <red|black|green>`")
         return
@@ -554,7 +559,7 @@ async def roulette(ctx, amount: str, color: str = None):
         await ctx.send("❌ Amount must be positive.")
         return
 
-    if amount > data['balance'] and not is_super_owner(ctx.author.id):
+    if amount > data['balance'] and not is_super_owner(ctx.author.id, ctx.guild):
         await ctx.send(f"❌ You only have {format_balance(data['balance'])}")
         return
 
@@ -640,7 +645,7 @@ async def slots(ctx, amount: str):
         await ctx.send(f"⏳ Chill for **{cd:.1f}s** before slots again.")
         return
 
-    parsed = parse_amount(amount, ctx.author.id)
+    parsed = parse_amount(amount, ctx.author.id, ctx.guild)
     if parsed is None:
         await ctx.send("❌ Use `.slots all` or `.slots <amount>` (max 150,000 𝚀)")
         return
@@ -658,7 +663,7 @@ async def slots(ctx, amount: str):
         await ctx.send("❌ Amount must be positive.")
         return
 
-    if amount > data['balance'] and not is_super_owner(ctx.author.id):
+    if amount > data['balance'] and not is_super_owner(ctx.author.id, ctx.guild):
         await ctx.send(f"❌ You only have {format_balance(data['balance'])}")
         return
 
@@ -805,7 +810,7 @@ async def blackjack(ctx, amount: str):
         await ctx.send(f"⏳ Chill for **{cd:.1f}s** before blackjack again.")
         return
 
-    parsed = parse_amount(amount, ctx.author.id)
+    parsed = parse_amount(amount, ctx.author.id, ctx.guild)
     if parsed is None:
         await ctx.send("❌ Use `.blackjack all` or `.blackjack <amount>` (max 150,000 𝚀)")
         return
@@ -823,7 +828,7 @@ async def blackjack(ctx, amount: str):
         await ctx.send("❌ Amount must be positive.")
         return
 
-    if amount > data['balance'] and not is_super_owner(ctx.author.id):
+    if amount > data['balance'] and not is_super_owner(ctx.author.id, ctx.guild):
         await ctx.send(f"❌ You only have {format_balance(data['balance'])}")
         return
 
@@ -976,7 +981,7 @@ async def give(ctx, member: discord.Member, amount: str):
     if not await ensure_db_ready(ctx):
         return
 
-    parsed = parse_amount(amount, ctx.author.id)
+    parsed = parse_amount(amount, ctx.author.id, ctx.guild)
     if parsed is None:
         await ctx.send("❌ Use `.give @user all` or `.give @user <amount>`")
         return
@@ -998,7 +1003,7 @@ async def give(ctx, member: discord.Member, amount: str):
         await ctx.send("❌ Can't transfer to yourself.")
         return
 
-    if amount > data['balance'] and not is_super_owner(ctx.author.id):
+    if amount > data['balance'] and not is_super_owner(ctx.author.id, ctx.guild):
         await ctx.send(f"❌ You only have {format_balance(data['balance'])}")
         return
 
@@ -1056,7 +1061,7 @@ async def lb(ctx):
 # =====================
 @commands.command()
 async def add(ctx, member: discord.Member, amount: int):
-    if not is_super_owner(ctx.author.id):
+    if not is_super_owner(ctx.author.id, ctx.guild):
         await ctx.send("❌ Bot owner only.")
         return
 
@@ -1079,7 +1084,7 @@ async def add(ctx, member: discord.Member, amount: int):
 
 @commands.command()
 async def remove(ctx, member: discord.Member, amount: int):
-    if not is_super_owner(ctx.author.id):
+    if not is_super_owner(ctx.author.id, ctx.guild):
         await ctx.send("❌ Bot owner only.")
         return
 
@@ -1121,7 +1126,7 @@ async def scratch(ctx, amount: str):
         await ctx.send(f"⏳ Chill for **{cd:.1f}s** before scratching again.")
         return
 
-    parsed = parse_amount(amount, ctx.author.id)
+    parsed = parse_amount(amount, ctx.author.id, ctx.guild)
     if parsed is None:
         await ctx.send("❌ Use `.scratch all` or `.scratch <amount>` (max 150,000 𝚀)")
         return
@@ -1139,7 +1144,7 @@ async def scratch(ctx, amount: str):
         await ctx.send("❌ Amount must be positive.")
         return
 
-    if amount > data['balance'] and not is_super_owner(ctx.author.id):
+    if amount > data['balance'] and not is_super_owner(ctx.author.id, ctx.guild):
         await ctx.send(f"❌ You only have {format_balance(data['balance'])}")
         return
 
@@ -1254,7 +1259,7 @@ async def minesweeper(ctx, amount: str):
         await ctx.send(f"⏳ Chill for **{cd:.1f}s** before minesweeper again.")
         return
 
-    parsed = parse_amount(amount, ctx.author.id)
+    parsed = parse_amount(amount, ctx.author.id, ctx.guild)
     if parsed is None:
         await ctx.send("❌ Use `.minesweeper all` or `.minesweeper <amount>`")
         return
@@ -1272,7 +1277,7 @@ async def minesweeper(ctx, amount: str):
         await ctx.send("❌ Amount must be positive.")
         return
 
-    if amount > data['balance'] and not is_super_owner(ctx.author.id):
+    if amount > data['balance'] and not is_super_owner(ctx.author.id, ctx.guild):
         await ctx.send(f"❌ You only have {format_balance(data['balance'])}")
         return
 
@@ -1480,7 +1485,7 @@ async def wheel(ctx, amount: str):
         await ctx.send(f"⏳ Chill for **{cd:.1f}s** before wheel again.")
         return
 
-    parsed = parse_amount(amount, ctx.author.id)
+    parsed = parse_amount(amount, ctx.author.id, ctx.guild)
     if parsed is None:
         await ctx.send("❌ Use `.wheel all` or `.wheel <amount>` (max 150,000 𝚀)")
         return
@@ -1498,7 +1503,7 @@ async def wheel(ctx, amount: str):
         await ctx.send("❌ Amount must be positive.")
         return
 
-    if amount > data['balance'] and not is_super_owner(ctx.author.id):
+    if amount > data['balance'] and not is_super_owner(ctx.author.id, ctx.guild):
         await ctx.send(f"❌ You only have {format_balance(data['balance'])}")
         return
 
