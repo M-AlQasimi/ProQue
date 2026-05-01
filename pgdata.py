@@ -784,10 +784,12 @@ def _ensure_ready():
 def load_guild_log_config(guild_id):
     _ensure_ready()
     if not pg_ready:
+        print(f"Guild log config unavailable: PostgreSQL not ready for guild {guild_id}.")
         return None
     try:
         conn = pg_conn()
         if conn is None:
+            print(f"Guild log config unavailable: connection failed for guild {guild_id}.")
             return None
         cur = conn.cursor()
         cur.execute(
@@ -804,6 +806,7 @@ def load_guild_log_config(guild_id):
             "reaction_log_channel_id": int(row[1])
         }
     except Exception:
+        print(f"Guild log config load failed for guild {guild_id}.")
         return None
 
 def save_guild_log_config(guild_id, log_channel_id, reaction_log_channel_id):

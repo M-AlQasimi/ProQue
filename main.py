@@ -173,29 +173,75 @@ def get_log_channel_id(guild_id, key):
 
 async def send_log(embed, guild=None):
     try:
-        channel_id = get_log_channel_id(guild.id, "log_channel_id") if guild else log_channel_id
-        if not channel_id:
+        if guild is None:
+            print("Log skipped: missing guild context.")
             return
+
+        channel_id = get_log_channel_id(guild.id, "log_channel_id")
+        if not channel_id:
+            print(f"Log skipped: no normal log channel saved for guild {guild.id}.")
+            return
+
         channel = bot.get_channel(channel_id)
         if channel is None:
             try:
                 channel = await bot.fetch_channel(channel_id)
             except Exception as e:
-                print(f"Could not fetch channel: {e}")
+                print(f"Log skipped: could not fetch normal log channel {channel_id} for guild {guild.id}: {e}")
                 return
+
+        if getattr(channel, "guild", None) is None or channel.guild.id != guild.id:
+            print(f"Log skipped: saved normal log channel {channel_id} is not in guild {guild.id}.")
+            return
+
+        bot_member = guild.get_member(bot.user.id) or guild.me
+        perms = channel.permissions_for(bot_member)
+        if not perms.view_channel or not perms.send_messages:
+            print(f"Log skipped: missing send/view permission in normal log channel {channel_id}.")
+            return
+        if not perms.embed_links:
+            print(f"Log skipped: missing Embed Links permission in normal log channel {channel_id}.")
+            return
+
         await channel.send(embed=embed)
     except Exception as e:
-        print(f"Failed to send log: {e}")
+        print(f"Failed to send log for guild {guild.id if guild else 'unknown'}: {type(e).__name__} - {e}")
 
 async def send_rlog(embed, guild=None):
-    channel_id = get_log_channel_id(guild.id, "reaction_log_channel_id") if guild else rlog_channel_id
-    if not channel_id:
-        return
-    channel = bot.get_channel(channel_id)
-    if channel:
+    try:
+        if guild is None:
+            print("Reaction log skipped: missing guild context.")
+            return
+
+        channel_id = get_log_channel_id(guild.id, "reaction_log_channel_id")
+        if not channel_id:
+            print(f"Reaction log skipped: no reaction log channel saved for guild {guild.id}.")
+            return
+
+        channel = bot.get_channel(channel_id)
+        if channel is None:
+            try:
+                channel = await bot.fetch_channel(channel_id)
+            except Exception as e:
+                print(f"Reaction log skipped: could not fetch channel {channel_id} for guild {guild.id}: {e}")
+                return
+
+        if getattr(channel, "guild", None) is None or channel.guild.id != guild.id:
+            print(f"Reaction log skipped: saved channel {channel_id} is not in guild {guild.id}.")
+            return
+
+        bot_member = guild.get_member(bot.user.id) or guild.me
+        perms = channel.permissions_for(bot_member)
+        if not perms.view_channel or not perms.send_messages:
+            print(f"Reaction log skipped: missing send/view permission in channel {channel_id}.")
+            return
+        if not perms.embed_links:
+            print(f"Reaction log skipped: missing Embed Links permission in channel {channel_id}.")
+            return
+
         await channel.send(embed=embed)
-    else:
-        print("Reaction log channel not found.")
+    except Exception as e:
+        print(f"Failed to send reaction log for guild {guild.id if guild else 'unknown'}: {type(e).__name__} - {e}")
 
 def first_sendable_text_channel(guild):
     for channel in guild.text_channels:
@@ -536,6 +582,12 @@ async def on_member_unban(guild, user):
 async def on_guild_join(guild):
     print(f"Joined server: {guild.name} ({guild.id})")
     await prompt_log_setup(guild)
+
+@bot.command()
+@is_owner()
+async def setlogs(ctx):
+    await ctx.send("Starting log setup.")
+    await prompt_log_setup(ctx.guild)
 
 @bot.event
 async def on_guild_remove(guild):
