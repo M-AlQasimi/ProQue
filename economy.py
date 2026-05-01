@@ -10,6 +10,7 @@ import discord
 from discord.ext import commands
 
 db_ready = False
+db_initializing = False
 
 bot = None
 
@@ -179,21 +180,31 @@ def parse_amount(raw, user_id=None, guild=None):
 
 # --- Helpers ---
 async def send_error(ctx, text):
+    if text == "Database unavailable. Try again shortly.":
+        await ensure_db_ready(ctx, force=True)
+        return
+
     try:
         await ctx.send(f"❌ {text}")
     except:
         pass
 
-async def ensure_db_ready(ctx):
-    if db_ready:
+async def ensure_db_ready(ctx, force=False):
+    global db_initializing
+    if db_ready and not force:
         return True
 
     msg = await ctx.send("Loading database")
-    task = asyncio.create_task(asyncio.to_thread(init_db))
     frames = ["Loading database.", "Loading database..", "Loading database..."]
     frame_index = 0
 
-    while not task.done():
+    if not db_initializing:
+        db_initializing = True
+        task = asyncio.create_task(asyncio.to_thread(init_db))
+    else:
+        task = None
+
+    while task is None or not task.done():
         await asyncio.sleep(1)
         try:
             await msg.edit(content=frames[frame_index % len(frames)])
@@ -201,12 +212,20 @@ async def ensure_db_ready(ctx):
             pass
         frame_index += 1
 
-    await task
+        if task is None and db_ready:
+            break
+        if task is None and not db_initializing:
+            break
+
+    if task is not None:
+        await task
+        db_initializing = False
+
     if db_ready:
         await msg.edit(content="Database loaded")
         return True
 
-    await msg.edit(content="Database unavailable. Try again shortly.")
+    await msg.edit(content="Database still loading. Try again shortly.")
     return False
 
 # =====================
