@@ -1602,6 +1602,8 @@ async def wheel(ctx, amount: str):
 # EXPLAIN
 # =====================
 EXPLANATIONS = {
+    "owner": "Owners can use owner commands and manage mods. They are above mods; superowner/server-owner override is above owners.",
+    "mod": "Mods can use mod commands for moderation/tools. They are below owners and cannot manage owners or mods.",
     "bal": "Shows your balance, streaks, and total earned/won/lost.",
     "daily": "Claim a daily reward. Higher daily streak means a small bonus.",
     "weekly": "Claim a weekly reward. Higher weekly streak means a bigger bonus.",
@@ -1619,22 +1621,74 @@ EXPLANATIONS = {
     "lb": "Shows the top 10 balances.",
     "add": "Bot owner command. Adds money to a user.",
     "remove": "Bot owner command. Removes money from a user.",
+    "disable": "Superowner/server-owner override command. Disables one bot command.",
+    "enable": "Superowner/server-owner override command. Enables one disabled command.",
+    "disableall": "Superowner/server-owner override command. Disables all commands except enableall.",
+    "enableall": "Superowner/server-owner override command. Enables all commands again.",
+    "dclist": "Shows currently disabled commands.",
+    "dsnipe": "Shows a recently deleted message in this channel.",
+    "editsnipe": "Shows a recently edited message in this channel.",
+    "rsnipe": "Shows a recently removed reaction.",
+    "setnick": "Owner/mod command. Changes a member's nickname.",
+    "shut": "Owner command. Silences a user's messages.",
+    "unshut": "Owner command. Unsilences a user's messages.",
+    "rshut": "Owner command. Silences a user's reactions.",
+    "unrshut": "Owner command. Unsilences a user's reactions.",
+    "lockdown": "Owner command. Locks this channel so only owners can talk.",
+    "unlock": "Owner command. Unlocks this channel.",
+    "rlockdown": "Owner command. Disables reactions in this channel.",
+    "runlock": "Owner command. Enables reactions in this channel.",
+    "addowner": "Superowner/server-owner override command. Adds bot owners.",
+    "removeowner": "Superowner/server-owner override command. Removes a bot owner.",
+    "clearowners": "Superowner/server-owner override command. Clears owners, then keeps the superowner.",
+    "addmod": "Owner command. Adds bot mods.",
+    "removemod": "Owner command. Removes a bot mod.",
+    "purge": "Owner/mod command. Deletes messages.",
+    "reactcount": "Owner/mod command. Counts reactions on a message.",
+    "sleep": "Marks you as sleeping until you send a message.",
+    "fsleep": "Superowner/server-owner override command. Marks members as sleeping.",
+    "wake": "Superowner/server-owner override command. Removes sleep mode from members.",
+    "afk": "Marks you AFK until you send a message.",
+    "setbday": "Saves your birthday.",
+    "removebday": "Removes your birthday.",
+    "away": "Shows AFK and sleeping users.",
+    "listowners": "Lists bot owners.",
+    "listmods": "Lists bot mods.",
+    "listbans": "Owner/mod command. Lists blacklisted users.",
+    "calc": "Calculates a math expression.",
+    "ask": "Asks the AI a question.",
+    "generate": "Generates text with AI.",
+    "analyse": "Analyzes provided text or content.",
+    "translate": "Translates text.",
 }
 
 @commands.command()
 async def explain(ctx, command_name: str = None):
     if not command_name:
-        names = ", ".join(sorted(EXPLANATIONS))
-        await ctx.send(f"Use `.explain <command>`. Commands: {names}")
+        command_names = sorted({command.name for command in bot.commands})
+        names = ", ".join(command_names)
+        await ctx.send(f"Use `.explain <command>`. Commands: {names}, mod, owner")
         return
 
     key = command_name.lower().lstrip(".")
     text = EXPLANATIONS.get(key)
-    if not text:
+    command = bot.get_command(key) if bot else None
+    if command and not text:
+        text = EXPLANATIONS.get(command.name)
+    if command and not text:
+        text = (command.help or "").strip().splitlines()[0] if command.help else "Runs this bot command."
+    if not text and key not in {"mod", "owner"}:
         await ctx.send("I don't have a short explanation for that command.")
         return
 
-    await ctx.send(f"**.{key}** — {text}")
+    if command:
+        usage = f".{command.qualified_name}"
+        if command.signature:
+            usage += f" {command.signature}"
+        aliases = f"\nAliases: {', '.join(command.aliases)}" if command.aliases else ""
+        await ctx.send(f"**{usage}** — {text}{aliases}")
+    else:
+        await ctx.send(f"**{key}** — {text}")
 
 
 # =====================
