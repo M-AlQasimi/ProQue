@@ -22,6 +22,7 @@ from io import BytesIO
 from threading import Thread
 from economy import (
     award_chat_xp as economy_award_chat_xp,
+    build_profile_embed as economy_build_profile_embed,
     ensure_db_ready as economy_ensure_db_ready,
     format_balance as economy_format_balance,
     get_user as economy_get_user,
@@ -542,7 +543,7 @@ async def on_ready():
     try:
         await economy_setup(bot, send_log)
         economy_command_names = [
-            "bal", "profile", "shop", "buy", "cooldowns", "richest", "poorest",
+            "bal", "profile", "shop", "cooldowns", "richest", "poorest",
             "daily", "weekly", "monthly", "cf", "roulette", "slots",
             "blackjack", "scratch", "ms", "wheel", "give", "lb",
             "add", "remove", "explain"
@@ -1003,8 +1004,9 @@ async def on_message(message):
                 xp_result = None
             if xp_result and xp_result["levels_gained"] > 0:
                 await message.channel.send(
-                    f"🎉 {message.author.mention} reached **level {xp_result['level']}** "
+                    f"🎉 <@{message.author.id}> reached **level {xp_result['level']}** "
                     f"and earned **{economy_format_balance(xp_result['reward'])}**!",
+                    embed=economy_build_profile_embed(message.author, economy_get_user(message.author.id)),
                     allowed_mentions=discord.AllowedMentions.none()
                 )
 
@@ -1048,7 +1050,7 @@ async def on_command_error(ctx, error):
 
 HELP_CATEGORIES = {
     "Economy": [
-        "bal", "profile", "daily", "weekly", "monthly", "cooldowns", "shop", "buy",
+        "bal", "profile", "daily", "weekly", "monthly", "cooldowns", "shop",
         "cf", "roulette", "slots", "blackjack", "scratch", "ms", "wheel",
         "give", "lb", "richest", "poorest",
     ],
@@ -2656,13 +2658,13 @@ async def addowner(ctx, *users: discord.User):
         save_owner_ids(scoped_id(ctx.guild), owner_ids)
     
     if len(added) == 1:
-        await ctx.send(f"{added[0].mention} has been added as an owner.")
+        await ctx.send(f"<@{added[0].id}> has been added as an owner.", allowed_mentions=discord.AllowedMentions.none())
     elif len(added) > 1:
-        mentions = ", ".join(u.mention for u in added)
-        await ctx.send(f"{mentions} have been added as owners.")
+        mentions = ", ".join(f"<@{u.id}>" for u in added)
+        await ctx.send(f"{mentions} have been added as owners.", allowed_mentions=discord.AllowedMentions.none())
 
     for user in already:
-        await ctx.send(f"{user.mention} is already an owner.")
+        await ctx.send(f"<@{user.id}> is already an owner.", allowed_mentions=discord.AllowedMentions.none())
 
 @bot.command()
 @is_super_owner()
@@ -2672,9 +2674,9 @@ async def removeowner(ctx, user: discord.User):
     if user.id in owner_ids:
         owner_ids.remove(user.id)
         save_owner_ids(scoped_id(ctx.guild), owner_ids)
-        await ctx.send(f"{user.mention} has been removed from owners.")
+        await ctx.send(f"<@{user.id}> has been removed from owners.", allowed_mentions=discord.AllowedMentions.none())
     else:
-        await ctx.send(f"{user.mention} is not an owner.")
+        await ctx.send(f"<@{user.id}> is not an owner.", allowed_mentions=discord.AllowedMentions.none())
 
 @bot.command()
 @is_super_owner()
@@ -2702,13 +2704,13 @@ async def addmod(ctx, *users: discord.User):
         save_mod_ids(scoped_id(ctx.guild), mod_ids)
     
     if len(added) == 1:
-        await ctx.send(f"{added[0].mention} has been added as a mod.")
+        await ctx.send(f"<@{added[0].id}> has been added as a mod.", allowed_mentions=discord.AllowedMentions.none())
     elif len(added) > 1:
-        mentions = ", ".join(u.mention for u in added)
-        await ctx.send(f"{mentions} have been added as mods.")
+        mentions = ", ".join(f"<@{u.id}>" for u in added)
+        await ctx.send(f"{mentions} have been added as mods.", allowed_mentions=discord.AllowedMentions.none())
 
     for user in already:
-        await ctx.send(f"{user.mention} is already a mod.")
+        await ctx.send(f"<@{user.id}> is already a mod.", allowed_mentions=discord.AllowedMentions.none())
 
 @bot.command()
 @is_super_owner_or_owner()
@@ -2718,9 +2720,9 @@ async def removemod(ctx, user: discord.User):
     if user.id in mod_ids:
         mod_ids.remove(user.id)
         save_mod_ids(scoped_id(ctx.guild), mod_ids)
-        await ctx.send(f"{user.mention} has been removed from mods.")
+        await ctx.send(f"<@{user.id}> has been removed from mods.", allowed_mentions=discord.AllowedMentions.none())
     else:
-        await ctx.send(f"{user.mention} is not a mod.")
+        await ctx.send(f"<@{user.id}> is not a mod.", allowed_mentions=discord.AllowedMentions.none())
 
 class OwnerModManagement(commands.Cog):
     def __init__(self, bot):
@@ -3549,7 +3551,7 @@ async def aban(ctx, target):
         user = await commands.UserConverter().convert(ctx, target)
         ids.add(user.id)
         save_autoban_ids(scoped_id(ctx.guild), ids)
-        await ctx.send(f"**{user.name}** added to the autoban list.")
+        await ctx.send(f"<@{user.id}> added to the autoban list.", allowed_mentions=discord.AllowedMentions.none())
     except:
         try:
             user_id = int(target)
@@ -3568,7 +3570,7 @@ async def raban(ctx, target):
         ids.discard(user.id)
         save_autoban_ids(scoped_id(ctx.guild), ids)
         await ctx.send(
-           f"<@{user.id}> (**{user.name}**) removed from autoban list.",
+           f"<@{user.id}> removed from autoban list.",
             allowed_mentions=discord.AllowedMentions.none()
         )
     except:
@@ -3590,7 +3592,7 @@ async def abanlist(ctx):
     for uid in ids:
         member = ctx.guild.get_member(uid)
         if member:
-            results.append(f"<@{uid}> (**{member.name}**)")
+            results.append(f"<@{uid}>")
         else:
             results.append(f"User ID: {uid}")
     await ctx.send("Autoban List:\n" + "\n".join(results), allowed_mentions=discord.AllowedMentions.none())

@@ -26,17 +26,50 @@ SHOP_ITEMS = {
     "lucky_charm": {
         "name": "Lucky Charm",
         "cost": 500_000,
-        "description": "+1% gambling payout on wins.",
+        "max_qty": 10,
+        "description": "+1% gambling payout on wins per charm.",
+    },
+    "xp_tonic": {
+        "name": "XP Tonic",
+        "cost": 350_000,
+        "max_qty": 5,
+        "description": "+5% chat XP per tonic.",
+    },
+    "queso_magnet": {
+        "name": "Queso Magnet",
+        "cost": 900_000,
+        "max_qty": 5,
+        "description": "+5% level-up queso rewards per magnet.",
+    },
+    "daily_spice": {
+        "name": "Daily Spice",
+        "cost": 250_000,
+        "max_qty": 10,
+        "description": "+2% daily, weekly, and monthly claim rewards per spice.",
+    },
+    "streak_polish": {
+        "name": "Streak Polish",
+        "cost": 650_000,
+        "max_qty": 8,
+        "description": "+0.5% gambling payout per polish. Stacks with Lucky Charm.",
     },
     "gold_badge": {
         "name": "Gold Badge",
         "cost": 1_000_000,
+        "max_qty": 1,
         "description": "A profile badge for people with taste and dangerous levels of queso.",
     },
     "high_roller": {
         "name": "High Roller Title",
         "cost": 2_500_000,
+        "max_qty": 1,
         "description": "A profile title shown on `.profile`.",
+    },
+    "velvet_frame": {
+        "name": "Velvet Profile Frame",
+        "cost": 1_750_000,
+        "max_qty": 1,
+        "description": "Adds a velvet profile flair on `.profile`.",
     },
 }
 
@@ -188,7 +221,7 @@ def award_chat_xp(user_id):
         if (now - last_xp).total_seconds() < CHAT_XP_COOLDOWN_SECS:
             return None
 
-    gained_xp = random.randint(15, 25)
+    gained_xp = max(1, int(random.randint(15, 25) * xp_multiplier(data)))
     level = data.get("level") or 1
     xp = (data.get("xp") or 0) + gained_xp
     messages_sent = (data.get("messages_sent") or 0) + 1
@@ -199,7 +232,7 @@ def award_chat_xp(user_id):
         xp -= xp_needed_for_level(level)
         level += 1
         levels_gained += 1
-        reward += level_reward_for(level)
+        reward += int(level_reward_for(level) * level_reward_multiplier(data))
 
     updates = {
         "xp": xp,
@@ -232,16 +265,79 @@ def level_reward_for(level):
 def user_inventory(data):
     return list(data.get("inventory") or [])
 
+def item_count(data, item_id):
+    return user_inventory(data).count(item_id)
+
 def has_item(data, item_id):
-    return item_id in user_inventory(data)
+    return item_count(data, item_id) > 0
+
+def item_bonus(data, item_id, per_item, max_qty=None):
+    qty = item_count(data, item_id)
+    if max_qty is not None:
+        qty = min(qty, max_qty)
+    return qty * per_item
 
 def payout_multiplier(data, streak):
-    item_bonus = 0.01 if has_item(data, "lucky_charm") else 0
-    return 1 + (streak * STREAK_MULTIPLIER) + item_bonus
+    return (
+        1
+        + (streak * STREAK_MULTIPLIER)
+        + item_bonus(data, "lucky_charm", 0.01, 10)
+        + item_bonus(data, "streak_polish", 0.005, 8)
+    )
 
 def payout_multiplier_after_win(data, new_streak):
-    item_bonus = 0.01 if has_item(data, "lucky_charm") else 0
-    return 1 + (new_streak * STREAK_MULTIPLIER) + item_bonus
+    return (
+        1
+        + (new_streak * STREAK_MULTIPLIER)
+        + item_bonus(data, "lucky_charm", 0.01, 10)
+        + item_bonus(data, "streak_polish", 0.005, 8)
+    )
+
+def xp_multiplier(data):
+    return 1 + item_bonus(data, "xp_tonic", 0.05, 5)
+
+def level_reward_multiplier(data):
+    return 1 + item_bonus(data, "queso_magnet", 0.05, 5)
+
+def claim_reward_multiplier(data):
+    return 1 + item_bonus(data, "daily_spice", 0.02, 10)
+
+def owned_item_lines(data):
+    inventory = user_inventory(data)
+    lines = []
+    for item_id, item in SHOP_ITEMS.items():
+        qty = inventory.count(item_id)
+        if qty:
+            suffix = f" x{qty}" if item.get("max_qty", 1) > 1 else ""
+            lines.append(f"{item['name']}{suffix}")
+    return lines
+
+def user_mention(user_id):
+    return f"<@{user_id}>"
+
+def build_profile_embed(user, data):
+    level = data.get("level") or 1
+    xp = data.get("xp") or 0
+    needed = xp_needed_for_level(level)
+    items = owned_item_lines(data)
+    title = "High Roller" if has_item(data, "high_roller") else "Queso Collector"
+    if has_item(data, "velvet_frame"):
+        title = f"Velvet {title}"
+    net = (data.get("total_won") or 0) - (data.get("total_lost") or 0)
+
+    embed = discord.Embed(
+        title="Profile",
+        description=f"{user_mention(user.id)}\n**{title}**",
+        color=discord.Color.gold()
+    )
+    embed.set_thumbnail(url=user.display_avatar.url)
+    embed.add_field(name="Balance", value=format_balance(data["balance"]), inline=True)
+    embed.add_field(name="Level", value=f"{level}", inline=True)
+    embed.add_field(name="XP", value=f"{xp:,}/{needed:,}", inline=True)
+    embed.add_field(name="Messages", value=f"{data.get('messages_sent') or 0:,}", inline=True)
+    embed.add_field(name="Net Gambling", value=format_balance(net), inline=True)
+    embed.add_field(name="Items", value=", ".join(items) if items else "None", inline=False)
+    return embed
 
 def format_duration(seconds):
     seconds = max(0, int(seconds))
@@ -397,7 +493,8 @@ async def bal(ctx, member: discord.Member = None):
             streak_lines += f"\n`{game}` {streak} wins → ×{mult:.2f} payout"
 
     embed = discord.Embed(
-        title=f"{user.name}'s Balance",
+        title="Balance",
+        description=user_mention(user.id),
         color=discord.Color.gold()
     )
     embed.add_field(name="Balance", value=format_balance(data['balance']), inline=False)
@@ -410,7 +507,7 @@ async def bal(ctx, member: discord.Member = None):
     embed.add_field(name="Total Won", value=format_balance(data['total_won']), inline=True)
     embed.add_field(name="Total Lost", value=format_balance(data['total_lost']), inline=True)
 
-    await ctx.send(embed=embed)
+    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
 @commands.command(aliases=["prof"])
 async def profile(ctx, member: discord.Member = None):
@@ -424,88 +521,144 @@ async def profile(ctx, member: discord.Member = None):
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
 
-    level = data.get("level") or 1
-    xp = data.get("xp") or 0
-    needed = xp_needed_for_level(level)
-    inventory = user_inventory(data)
-    badges = []
-    if "gold_badge" in inventory:
-        badges.append("Gold Badge")
-    if "high_roller" in inventory:
-        badges.append("High Roller")
-    if "lucky_charm" in inventory:
-        badges.append("Lucky Charm")
+    await ctx.send(embed=build_profile_embed(user, data), allowed_mentions=discord.AllowedMentions.none())
 
-    title = "High Roller" if "high_roller" in inventory else "Queso Collector"
-    net = (data.get("total_won") or 0) - (data.get("total_lost") or 0)
-    embed = discord.Embed(
-        title=f"{user.name}'s Profile",
-        description=f"**{title}**",
-        color=discord.Color.gold()
-    )
-    embed.set_thumbnail(url=user.display_avatar.url)
-    embed.add_field(name="Balance", value=format_balance(data["balance"]), inline=True)
-    embed.add_field(name="Level", value=f"{level}", inline=True)
-    embed.add_field(name="XP", value=f"{xp:,}/{needed:,}", inline=True)
-    embed.add_field(name="Messages", value=f"{data.get('messages_sent') or 0:,}", inline=True)
-    embed.add_field(name="Net Gambling", value=format_balance(net), inline=True)
-    embed.add_field(name="Items", value=", ".join(badges) if badges else "None", inline=False)
-    await ctx.send(embed=embed)
-
-@commands.command(aliases=["store"])
+@commands.command()
 async def shop(ctx):
     if not await ensure_db_ready(ctx):
         return
 
-    embed = discord.Embed(
-        title="Queso Shop",
-        description="Use `.buy <item>` to purchase an item.",
-        color=discord.Color.gold()
-    )
-    for item_id, item in SHOP_ITEMS.items():
-        embed.add_field(
-            name=f"{item['name']} (`{item_id}`)",
-            value=f"Cost: **{format_balance(item['cost'])}**\n{item['description']}",
-            inline=False
+    def catalog_embed(selected_item_id=None):
+        try:
+            data = get_user(ctx.author.id)
+        except Exception:
+            data = {"balance": 0, "inventory": []}
+
+        embed = discord.Embed(
+            title="Queso Shop",
+            description=(
+                f"{user_mention(ctx.author.id)}\n"
+                f"Balance: **{format_balance(data['balance'])}**\n"
+                "Select an item below, then press Buy."
+            ),
+            color=discord.Color.gold()
         )
-    await ctx.send(embed=embed)
+        for item_id, item in SHOP_ITEMS.items():
+            owned = item_count(data, item_id)
+            max_qty = item.get("max_qty", 1)
+            owned_text = f"{owned}/{max_qty}" if max_qty > 1 else ("owned" if owned else "not owned")
+            marker = "→ " if item_id == selected_item_id else ""
+            embed.add_field(
+                name=f"{marker}{item['name']} - {format_balance(item['cost'])}",
+                value=f"{item['description']}\nOwned: **{owned_text}**",
+                inline=False
+            )
+        return embed
 
-@commands.command()
-async def buy(ctx, *, item_id: str = None):
-    if not await ensure_db_ready(ctx):
-        return
+    class ShopQuantityModal(discord.ui.Modal):
+        def __init__(self, item_id):
+            super().__init__(title=f"Buy {SHOP_ITEMS[item_id]['name']}")
+            self.item_id = item_id
+            self.quantity = discord.ui.TextInput(
+                label="Quantity",
+                placeholder="Example: 1",
+                default="1",
+                min_length=1,
+                max_length=6
+            )
+            self.add_item(self.quantity)
 
-    if not item_id:
-        await ctx.send("❌ Use `.buy <item>`. See `.shop` for item IDs.")
-        return
+        async def on_submit(self, interaction):
+            raw_quantity = str(self.quantity.value).strip()
+            if not raw_quantity.isdigit():
+                await interaction.response.send_message("❌ Quantity must be a positive whole number.", ephemeral=True)
+                return
 
-    item_id = re.sub(r"[\s-]+", "_", item_id.strip().casefold())
-    item = SHOP_ITEMS.get(item_id)
-    if not item:
-        await ctx.send("❌ Unknown item. See `.shop` for item IDs.")
-        return
+            quantity = int(raw_quantity)
+            if quantity <= 0:
+                await interaction.response.send_message("❌ Quantity must be positive.", ephemeral=True)
+                return
 
-    try:
-        data = get_user(ctx.author.id)
-        inventory = user_inventory(data)
-        if item_id in inventory:
-            await ctx.send("❌ You already own that item.")
-            return
-        if data["balance"] < item["cost"]:
-            await ctx.send(f"❌ You need {format_balance(item['cost'])}, but you only have {format_balance(data['balance'])}.")
-            return
+            item = SHOP_ITEMS[self.item_id]
+            try:
+                data = get_user(interaction.user.id)
+                inventory = user_inventory(data)
+                owned = inventory.count(self.item_id)
+                max_qty = item.get("max_qty", 1)
+                remaining_allowed = max_qty - owned
+                if remaining_allowed <= 0:
+                    await interaction.response.send_message(f"❌ You already own the max amount of **{item['name']}**.", ephemeral=True)
+                    return
+                if quantity > remaining_allowed:
+                    await interaction.response.send_message(
+                        f"❌ You can only buy **{remaining_allowed}** more **{item['name']}**.",
+                        ephemeral=True
+                    )
+                    return
 
-        inventory.append(item_id)
-        update_user(
-            ctx.author.id,
-            balance=data["balance"] - item["cost"],
-            inventory=inventory
-        )
-    except Exception:
-        await send_error(ctx, "Database unavailable. Try again shortly.")
-        return
+                total_cost = item["cost"] * quantity
+                if data["balance"] < total_cost:
+                    affordable = data["balance"] // item["cost"]
+                    await interaction.response.send_message(
+                        f"❌ That costs **{format_balance(total_cost)}**. You can afford **{affordable}**.",
+                        ephemeral=True
+                    )
+                    return
 
-    await ctx.send(f"✅ Bought **{item['name']}** for **{format_balance(item['cost'])}**.")
+                inventory.extend([self.item_id] * quantity)
+                new_balance = data["balance"] - total_cost
+                update_user(interaction.user.id, balance=new_balance, inventory=inventory)
+            except Exception:
+                await interaction.response.send_message("❌ Database unavailable. Try again shortly.", ephemeral=True)
+                return
+
+            await interaction.response.send_message(
+                f"✅ Bought **{quantity}x {item['name']}** for **{format_balance(total_cost)}**.\n"
+                f"New Balance: **{format_balance(new_balance)}**",
+                ephemeral=True
+            )
+
+    class ShopView(discord.ui.View):
+        def __init__(self):
+            super().__init__(timeout=120)
+            self.selected_item_id = next(iter(SHOP_ITEMS))
+            options = [
+                discord.SelectOption(
+                    label=item["name"],
+                    value=item_id,
+                    description=f"{format_balance(item['cost'])} | max {item.get('max_qty', 1)}"
+                )
+                for item_id, item in SHOP_ITEMS.items()
+            ]
+            self.item_select = discord.ui.Select(
+                placeholder="Choose an item",
+                options=options,
+                min_values=1,
+                max_values=1
+            )
+            self.item_select.callback = self.select_item
+            self.add_item(self.item_select)
+
+        async def interaction_check(self, interaction):
+            if interaction.user.id != ctx.author.id:
+                await interaction.response.send_message("Open your own shop with `.shop`.", ephemeral=True)
+                return False
+            return True
+
+        async def select_item(self, interaction):
+            self.selected_item_id = self.item_select.values[0]
+            await interaction.response.edit_message(
+                embed=catalog_embed(self.selected_item_id),
+                view=self,
+                allowed_mentions=discord.AllowedMentions.none()
+            )
+
+        @discord.ui.button(label="Buy", style=discord.ButtonStyle.success)
+        async def buy_button(self, interaction, button):
+            await interaction.response.send_modal(ShopQuantityModal(self.selected_item_id))
+
+    view = ShopView()
+    await ctx.send(embed=catalog_embed(view.selected_item_id), view=view, allowed_mentions=discord.AllowedMentions.none())
 
 @commands.command(aliases=["cd", "cooldown"])
 async def cooldowns(ctx):
@@ -545,13 +698,8 @@ async def send_balance_rank(ctx, order, title):
 
     embed = discord.Embed(title=title, color=discord.Color.gold())
     for i, row in enumerate(rows, 1):
-        try:
-            user = await ctx.bot.fetch_user(row["user_id"])
-            name = user.name
-        except Exception:
-            name = f"User {row['user_id']}"
-        embed.add_field(name=f"{i}. {name}", value=format_balance(row["balance"]), inline=False)
-    await ctx.send(embed=embed)
+        embed.add_field(name=f"{i}. {user_mention(row['user_id'])}", value=format_balance(row["balance"]), inline=False)
+    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
 @commands.command()
 async def richest(ctx):
@@ -592,6 +740,7 @@ async def daily(ctx):
     base_reward = random.randint(10_000, 15_000)
     streak_bonus = min(max(streak - 1, 0) * 10, 200)
     reward = base_reward + streak_bonus
+    reward = int(reward * claim_reward_multiplier(data))
 
     try:
         update_user(
@@ -634,6 +783,7 @@ async def weekly(ctx):
     base_reward = random.randint(20_000, 30_000)
     streak_bonus = min(max(streak - 1, 0) * 50, 500)
     reward = base_reward + streak_bonus
+    reward = int(reward * claim_reward_multiplier(data))
 
     try:
         update_user(
@@ -676,6 +826,7 @@ async def monthly(ctx):
     base_reward = random.randint(40_000, 60_000)
     streak_bonus = min(max(streak - 1, 0) * 500, 5000)
     reward = base_reward + streak_bonus
+    reward = int(reward * claim_reward_multiplier(data))
 
     try:
         update_user(
@@ -1395,13 +1546,14 @@ async def give(ctx, member: discord.Member, amount: str):
         return
 
     await ctx.send(
-        f"💸 You gave **{format_balance(amount)}** to **{member.name}**\n"
+        f"💸 You gave **{format_balance(amount)}** to **{user_mention(member.id)}**\n"
         f"Your Balance: **{format_balance(old_sender_balance)}** → **{format_balance(new_sender_balance)}**\n"
-        f"{member.name}'s Balance: **{format_balance(old_receiver_balance)}** → **{format_balance(new_receiver_balance)}**"
+        f"{user_mention(member.id)}'s Balance: **{format_balance(old_receiver_balance)}** → **{format_balance(new_receiver_balance)}**",
+        allowed_mentions=discord.AllowedMentions.none()
     )
     if is_super_owner(ctx.author.id, ctx.guild):
         await send_economy_log(ctx, "Economy Transfer", [
-            ("Recipient", f"{member} ({member.id})", False),
+            ("Recipient", f"{user_mention(member.id)} ({member.id})", False),
             ("Amount", format_balance(amount), True),
             ("Sender Balance", f"{format_balance(old_sender_balance)} → {format_balance(new_sender_balance)}", False),
             ("Recipient Balance", f"{format_balance(old_receiver_balance)} → {format_balance(new_receiver_balance)}", False),
@@ -1432,19 +1584,13 @@ async def lb(ctx):
     )
 
     for i, row in enumerate(rows, 1):
-        try:
-            user = await ctx.bot.fetch_user(row['user_id'])
-            name = user.name
-        except:
-            name = f"User {row['user_id']}"
-
         embed.add_field(
-            name=f"{i}. {name}",
+            name=f"{i}. {user_mention(row['user_id'])}",
             value=format_balance(row['balance']),
             inline=False
         )
 
-    await ctx.send(embed=embed)
+    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
 # =====================
 # ADD / REMOVE (OWNER)
@@ -1476,11 +1622,12 @@ async def add(ctx, member: discord.Member, amount: int):
         return
 
     await ctx.send(
-        f"✅ Added **{format_balance(amount)}** to **{member.name}**\n"
-        f"Balance: **{format_balance(old_balance)}** → **{format_balance(new_balance)}**"
+        f"✅ Added **{format_balance(amount)}** to **{user_mention(member.id)}**\n"
+        f"Balance: **{format_balance(old_balance)}** → **{format_balance(new_balance)}**",
+        allowed_mentions=discord.AllowedMentions.none()
     )
     await send_economy_log(ctx, "Economy Add", [
-        ("Target", f"{member} ({member.id})", False),
+        ("Target", f"{user_mention(member.id)} ({member.id})", False),
         ("Amount", format_balance(amount), True),
         ("Balance", f"{format_balance(old_balance)} → {format_balance(new_balance)}", False),
     ], color=discord.Color.green())
@@ -1515,11 +1662,12 @@ async def remove(ctx, member: discord.Member, amount: str):
         return
 
     await ctx.send(
-        f"✅ Removed **{format_balance(amount)}** from **{member.name}**\n"
-        f"Balance: **{format_balance(old_balance)}** → **{format_balance(new_balance)}**"
+        f"✅ Removed **{format_balance(amount)}** from **{user_mention(member.id)}**\n"
+        f"Balance: **{format_balance(old_balance)}** → **{format_balance(new_balance)}**",
+        allowed_mentions=discord.AllowedMentions.none()
     )
     await send_economy_log(ctx, "Economy Remove", [
-        ("Target", f"{member} ({member.id})", False),
+        ("Target", f"{user_mention(member.id)} ({member.id})", False),
         ("Amount", format_balance(amount), True),
         ("Balance", f"{format_balance(old_balance)} → {format_balance(new_balance)}", False),
     ], color=discord.Color.red())
@@ -2055,7 +2203,6 @@ EXPLANATIONS = {
     "balance": "Shows your balance, streaks, and total earned/won/lost.",
     "profile": "Shows your level, XP, balance, stats, and owned items.",
     "shop": "Shows purchasable economy items.",
-    "buy": "Buys an item from the shop.",
     "cooldowns": "Shows claim and gambling cooldowns.",
     "richest": "Shows the top 10 richest users.",
     "poorest": "Shows the 10 lowest balances.",
@@ -2121,7 +2268,7 @@ EXPLANATIONS = {
 DETAILED_EXPLANATIONS = {
     "daily": f"Gives a reward once every 24 hours. Base reward is 10,000-15,000 {CURRENCY_EMOJI}. Your daily streak adds a small bonus after day 1.",
     "profile": f"Shows level, current XP toward the next level, balance, net gambling result, message count, and shop items. Chat XP can level you up and level rewards start at {format_balance(LEVEL_REWARD_BASE)}.",
-    "shop": "Items available: Lucky Charm gives +1% gambling payout, Gold Badge appears on your profile, and High Roller Title changes your profile title.",
+    "shop": "Opens an interactive shop. Select an item, press Buy, then enter the quantity. The bot checks your balance, item limit, and total price before purchasing.",
     "cooldowns": "Shows daily, weekly, monthly, and active gambling command cooldowns in one place.",
     "richest": "Shows the top 10 balances from the economy table.",
     "poorest": "Shows the lowest 10 balances from the economy table.",
@@ -2197,7 +2344,7 @@ async def setup(bot_ref, log_callback=None):
     print(f"Economy db_ready = {db_ready}")
 
     economy_commands = [
-        bal, profile, shop, buy, cooldowns, richest, poorest,
+        bal, profile, shop, cooldowns, richest, poorest,
         daily, weekly, monthly, gamble, roulette, slots, blackjack,
         scratch, minesweeper, wheel, give, lb, add, remove, explain
     ]
