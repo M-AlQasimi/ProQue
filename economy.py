@@ -167,9 +167,14 @@ def check_cooldown(user_id, command):
     _cooldowns[key] = now
     return 0
 
-def parse_amount(raw, user_id=None, guild=None):
+def parse_amount(raw, user_id=None, guild=None, balance=None):
     if str(raw).lower() == "all":
-        return MAX_BET
+        if balance is None:
+            return MAX_BET
+        balance = max(0, int(balance))
+        if user_id is not None and is_super_owner(user_id, guild):
+            return balance
+        return min(balance, MAX_BET)
     try:
         val = int(raw)
         if user_id is not None and is_super_owner(user_id, guild):
@@ -409,12 +414,6 @@ async def gamble(ctx, amount: str, choice: str = None):
         await ctx.send(f"⏳ Chill for **{cd:.1f}s** before flipping again.")
         return
 
-    parsed = parse_amount(amount, ctx.author.id, ctx.guild)
-    if parsed is None:
-        await ctx.send("❌ Use `.flip all`, `.flip <amount>`, or `.cf <amount>` (max 150,000 𝚀)")
-        return
-
-    amount = parsed
     user_id = ctx.author.id
 
     try:
@@ -422,6 +421,13 @@ async def gamble(ctx, amount: str, choice: str = None):
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
+
+    parsed = parse_amount(amount, ctx.author.id, ctx.guild, data['balance'])
+    if parsed is None:
+        await ctx.send("❌ Use `.flip all`, `.flip <amount>`, or `.cf <amount>` (max 150,000 𝚀)")
+        return
+
+    amount = parsed
 
     if amount <= 0:
         await ctx.send("❌ Amount must be positive.")
@@ -499,10 +505,11 @@ async def gamble(ctx, amount: str, choice: str = None):
 
     try:
         if win:
-            winnings = int(amount * mult)
+            winnings = int(amount * mult * 2)
+            new_balance = data['balance'] + winnings - amount
             update_user(
                 user_id,
-                balance=data['balance'] + winnings - amount,
+                balance=new_balance,
                 gamble_streak=streak + 1,
                 total_won=data['total_won'] + winnings - amount
             )
@@ -514,13 +521,14 @@ async def gamble(ctx, amount: str, choice: str = None):
                 f"Pick: **{chosen_side}**\n"
                 f">>> 🟢 **{coin_result} — YOU WIN!**\n"
                 f"Prize: **{format_balance(winnings)}**{streak_msg}\n"
-                f"New Balance: **{format_balance(data['balance'] + winnings - amount)}**"
+                f"New Balance: **{format_balance(new_balance)}**"
                 )
             )
         else:
+            new_balance = max(0, data['balance'] - amount)
             update_user(
                 user_id,
-                balance=data['balance'] - amount,
+                balance=new_balance,
                 gamble_streak=0,
                 total_lost=data['total_lost'] + amount
             )
@@ -531,7 +539,7 @@ async def gamble(ctx, amount: str, choice: str = None):
                 f"Pick: **{chosen_side}**\n"
                 f">>> 🔴 **{coin_result} — YOU LOSE**\n"
                 f"Lost: **{format_balance(amount)}**\n"
-                f"Balance: **{format_balance(data['balance'] - amount)}**\n"
+                f"New Balance: **{format_balance(new_balance)}**\n"
                 f"Streak reset."
                 )
             )
@@ -552,7 +560,14 @@ async def roulette(ctx, amount: str, color: str = None):
         await ctx.send(f"⏳ Chill for **{cd:.1f}s** before roulette again.")
         return
 
-    parsed = parse_amount(amount, ctx.author.id, ctx.guild)
+    user_id = ctx.author.id
+    try:
+        data = get_user(user_id)
+    except Exception:
+        await send_error(ctx, "Database unavailable. Try again shortly.")
+        return
+
+    parsed = parse_amount(amount, ctx.author.id, ctx.guild, data['balance'])
     if parsed is None:
         await ctx.send("❌ Use `.roulette all <red|black|green>` or `.roulette <amount> <red|black|green>`")
         return
@@ -607,13 +622,6 @@ async def roulette(ctx, amount: str, color: str = None):
         await ctx.send("❌ Use `.roulette all <red|black|green>` or `.roulette <amount> <red|black|green>`")
         return
 
-    user_id = ctx.author.id
-    try:
-        data = get_user(user_id)
-    except Exception:
-        await send_error(ctx, "Database unavailable. Try again shortly.")
-        return
-
     if amount <= 0:
         await ctx.send("❌ Amount must be positive.")
         return
@@ -649,9 +657,10 @@ async def roulette(ctx, amount: str, color: str = None):
     try:
         if result == color:
             winnings = int(amount * mult * multipliers[color])
+            new_balance = data['balance'] + winnings - amount
             update_user(
                 user_id,
-                balance=data['balance'] + winnings - amount,
+                balance=new_balance,
                 roulette_streak=streak + 1,
                 total_won=data['total_won'] + winnings - amount
             )
@@ -665,13 +674,14 @@ async def roulette(ctx, amount: str, color: str = None):
                 f">>> 🟢 **{color.upper()}!**\n"
                 f"Multiplier: ×{mult * multipliers[color]:.2f}\n"
                 f"Won: **{format_balance(winnings)}**{streak_msg}\n"
-                f"New Balance: **{format_balance(data['balance'] + winnings - amount)}**"
+                f"New Balance: **{format_balance(new_balance)}**"
                 )
             )
         else:
+            new_balance = max(0, data['balance'] - amount)
             update_user(
                 user_id,
-                balance=data['balance'] - amount,
+                balance=new_balance,
                 roulette_streak=0,
                 total_lost=data['total_lost'] + amount
             )
@@ -683,7 +693,7 @@ async def roulette(ctx, amount: str, color: str = None):
                 f"─────────────────\n"
                 f">>> {emoji_map[result]} **{result.upper()}!**\n"
                 f"Lost: **{format_balance(amount)}**\n"
-                f"Balance: **{format_balance(data['balance'] - amount)}**\n"
+                f"New Balance: **{format_balance(new_balance)}**\n"
                 f"Streak reset."
                 )
             )
@@ -704,12 +714,6 @@ async def slots(ctx, amount: str):
         await ctx.send(f"⏳ Chill for **{cd:.1f}s** before slots again.")
         return
 
-    parsed = parse_amount(amount, ctx.author.id, ctx.guild)
-    if parsed is None:
-        await ctx.send("❌ Use `.slots all` or `.slots <amount>` (max 150,000 𝚀)")
-        return
-
-    amount = parsed
     user_id = ctx.author.id
 
     try:
@@ -717,6 +721,13 @@ async def slots(ctx, amount: str):
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
+
+    parsed = parse_amount(amount, ctx.author.id, ctx.guild, data['balance'])
+    if parsed is None:
+        await ctx.send("❌ Use `.slots all` or `.slots <amount>` (max 150,000 𝚀)")
+        return
+
+    amount = parsed
 
     if amount <= 0:
         await ctx.send("❌ Amount must be positive.")
@@ -769,9 +780,10 @@ async def slots(ctx, amount: str):
         if r1 == r2 == r3:
             multiplier = (emojis.index(r1) + 1) * 3
             winnings = int(amount * mult * multiplier)
+            new_balance = data['balance'] + winnings - amount
             update_user(
                 user_id,
-                balance=data['balance'] + winnings - amount,
+                balance=new_balance,
                 slots_streak=streak + 1,
                 total_won=data['total_won'] + winnings - amount
             )
@@ -784,14 +796,15 @@ async def slots(ctx, amount: str):
                     f"─────────────────\n"
                     f">>> 🌟 **JACKPOT!** ×{multiplier}\n"
                     f"Won: **{format_balance(winnings)}**{streak_msg}\n"
-                    f"New Balance: **{format_balance(data['balance'] + winnings - amount)}**"
+                    f"New Balance: **{format_balance(new_balance)}**"
                 )
             )
         elif r1 == r2 or r2 == r3 or r1 == r3:
-            winnings = int(amount * mult)
+            winnings = int(amount * mult * 2)
+            new_balance = data['balance'] + winnings - amount
             update_user(
                 user_id,
-                balance=data['balance'] + winnings - amount,
+                balance=new_balance,
                 slots_streak=streak + 1,
                 total_won=data['total_won'] + winnings - amount
             )
@@ -802,15 +815,16 @@ async def slots(ctx, amount: str):
                     f"─────────────────\n"
                     f"| {r1} | {r2} | {r3} |\n"
                     f"─────────────────\n"
-                    f">>> ✨ **SMALL WIN!** ×1\n"
+                    f">>> ✨ **SMALL WIN!** ×2\n"
                     f"Won: **{format_balance(winnings)}**{streak_msg}\n"
-                    f"New Balance: **{format_balance(data['balance'] + winnings - amount)}**"
+                    f"New Balance: **{format_balance(new_balance)}**"
                 )
             )
         else:
+            new_balance = max(0, data['balance'] - amount)
             update_user(
                 user_id,
-                balance=data['balance'] - amount,
+                balance=new_balance,
                 slots_streak=0,
                 total_lost=data['total_lost'] + amount
             )
@@ -822,7 +836,7 @@ async def slots(ctx, amount: str):
                     f"─────────────────\n"
                     f">>> 💸 **NO MATCH**\n"
                     f"Lost: **{format_balance(amount)}**\n"
-                    f"Balance: **{format_balance(data['balance'] - amount)}**\n"
+                    f"New Balance: **{format_balance(new_balance)}**\n"
                     f"Streak reset."
                 )
             )
@@ -869,12 +883,6 @@ async def blackjack(ctx, amount: str):
         await ctx.send(f"⏳ Chill for **{cd:.1f}s** before blackjack again.")
         return
 
-    parsed = parse_amount(amount, ctx.author.id, ctx.guild)
-    if parsed is None:
-        await ctx.send("❌ Use `.blackjack all` or `.blackjack <amount>` (max 150,000 𝚀)")
-        return
-
-    amount = parsed
     user_id = ctx.author.id
 
     try:
@@ -882,6 +890,13 @@ async def blackjack(ctx, amount: str):
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
+
+    parsed = parse_amount(amount, ctx.author.id, ctx.guild, data['balance'])
+    if parsed is None:
+        await ctx.send("❌ Use `.blackjack all` or `.blackjack <amount>` (max 150,000 𝚀)")
+        return
+
+    amount = parsed
 
     if amount <= 0:
         await ctx.send("❌ Amount must be positive.")
@@ -926,9 +941,10 @@ async def blackjack(ctx, amount: str):
                     )
                 )
             else:
+                new_balance = max(0, data['balance'] + amount_delta)
                 update_user(
                     user_id,
-                    balance=data['balance'] + amount_delta,
+                    balance=new_balance,
                     blackjack_streak=0,
                     total_lost=data['total_lost'] + abs(amount_delta)
                 )
@@ -941,7 +957,7 @@ async def blackjack(ctx, amount: str):
                         f"─────────────────\n"
                         f">>> 🔴 **{win_type}**\n"
                         f"Lost: **{format_balance(abs(amount_delta))}**\n"
-                        f"Balance: **{format_balance(data['balance'] + amount_delta)}**\n"
+                        f"New Balance: **{format_balance(new_balance)}**\n"
                         f"Streak reset."
                     )
                 )
@@ -1040,12 +1056,6 @@ async def give(ctx, member: discord.Member, amount: str):
     if not await ensure_db_ready(ctx):
         return
 
-    parsed = parse_amount(amount, ctx.author.id, ctx.guild)
-    if parsed is None:
-        await ctx.send("❌ Use `.give @user all` or `.give @user <amount>`")
-        return
-
-    amount = parsed
     user_id = ctx.author.id
 
     try:
@@ -1053,6 +1063,13 @@ async def give(ctx, member: discord.Member, amount: str):
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
+
+    parsed = parse_amount(amount, ctx.author.id, ctx.guild, data['balance'])
+    if parsed is None:
+        await ctx.send("❌ Use `.give @user all` or `.give @user <amount>`")
+        return
+
+    amount = parsed
 
     if amount <= 0:
         await ctx.send("❌ Amount must be positive.")
@@ -1067,7 +1084,7 @@ async def give(ctx, member: discord.Member, amount: str):
         return
 
     try:
-        update_user(user_id, balance=data['balance'] - amount)
+        update_user(user_id, balance=max(0, data['balance'] - amount))
         receiver_data = get_user(member.id)
         update_user(member.id, balance=receiver_data['balance'] + amount)
     except Exception:
@@ -1145,7 +1162,7 @@ async def add(ctx, member: discord.Member, amount: int):
     await ctx.send(f"✅ Added **{format_balance(amount)}** to **{member.name}**")
 
 @commands.command()
-async def remove(ctx, member: discord.Member, amount: int):
+async def remove(ctx, member: discord.Member, amount: str):
     if not await ensure_db_ready(ctx):
         return
 
@@ -1153,14 +1170,20 @@ async def remove(ctx, member: discord.Member, amount: int):
         await ctx.send("❌ Bot owner only.")
         return
 
-    if amount <= 0:
-        await ctx.send("❌ Amount must be positive.")
-        return
-
     try:
         target_data = get_user(member.id)
+        if str(amount).lower() == "all":
+            amount = target_data['balance']
+        else:
+            amount = int(amount)
+        if amount <= 0:
+            await ctx.send("❌ Amount must be positive.")
+            return
         new_balance = max(0, target_data['balance'] - amount)
         update_user(member.id, balance=new_balance)
+    except ValueError:
+        await ctx.send("❌ Use `.remove @user all` or `.remove @user <amount>`")
+        return
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
@@ -1191,12 +1214,6 @@ async def scratch(ctx, amount: str):
         await ctx.send(f"⏳ Chill for **{cd:.1f}s** before scratching again.")
         return
 
-    parsed = parse_amount(amount, ctx.author.id, ctx.guild)
-    if parsed is None:
-        await ctx.send("❌ Use `.scratch all` or `.scratch <amount>` (max 150,000 𝚀)")
-        return
-
-    amount = parsed
     user_id = ctx.author.id
 
     try:
@@ -1204,6 +1221,13 @@ async def scratch(ctx, amount: str):
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
+
+    parsed = parse_amount(amount, ctx.author.id, ctx.guild, data['balance'])
+    if parsed is None:
+        await ctx.send("❌ Use `.scratch all` or `.scratch <amount>` (max 150,000 𝚀)")
+        return
+
+    amount = parsed
 
     if amount <= 0:
         await ctx.send("❌ Amount must be positive.")
@@ -1257,9 +1281,10 @@ async def scratch(ctx, amount: str):
     try:
         if multiplier > 0:
             winnings = int(amount * mult * multiplier)
+            new_balance = data['balance'] + winnings - amount
             update_user(
                 user_id,
-                balance=data['balance'] + winnings - amount,
+                balance=new_balance,
                 scratch_streak=streak + 1,
                 total_won=data['total_won'] + winnings - amount
             )
@@ -1273,13 +1298,14 @@ async def scratch(ctx, amount: str):
                     f">>> ✨ **{match_count}/5 {win_symbol} matched!**\n"
                     f"Multiplier: ×{multiplier}  |  Streak bonus: ×{mult:.2f}\n"
                     f"Won: **{format_balance(winnings)}**{streak_msg}\n"
-                    f"New Balance: **{format_balance(data['balance'] + winnings - amount)}**"
+                    f"New Balance: **{format_balance(new_balance)}**"
                 )
             )
         else:
+            new_balance = max(0, data['balance'] - amount)
             update_user(
                 user_id,
-                balance=data['balance'] - amount,
+                balance=new_balance,
                 scratch_streak=0,
                 total_lost=data['total_lost'] + amount
             )
@@ -1291,7 +1317,7 @@ async def scratch(ctx, amount: str):
                     f"─────────────────\n"
                     f">>> 💸 **{match_count}/5 matched** — no prize\n"
                     f"Lost: **{format_balance(amount)}**\n"
-                    f"Balance: **{format_balance(data['balance'] - amount)}**\n"
+                    f"New Balance: **{format_balance(new_balance)}**\n"
                     f"Streak reset."
                 )
             )
@@ -1324,12 +1350,6 @@ async def minesweeper(ctx, amount: str):
         await ctx.send(f"⏳ Chill for **{cd:.1f}s** before minesweeper again.")
         return
 
-    parsed = parse_amount(amount, ctx.author.id, ctx.guild)
-    if parsed is None:
-        await ctx.send("❌ Use `.minesweeper all` or `.minesweeper <amount>`")
-        return
-
-    amount = parsed
     user_id = ctx.author.id
 
     try:
@@ -1337,6 +1357,13 @@ async def minesweeper(ctx, amount: str):
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
+
+    parsed = parse_amount(amount, ctx.author.id, ctx.guild, data['balance'])
+    if parsed is None:
+        await ctx.send("❌ Use `.minesweeper all` or `.minesweeper <amount>`")
+        return
+
+    amount = parsed
 
     if amount <= 0:
         await ctx.send("❌ Amount must be positive.")
@@ -1384,7 +1411,7 @@ async def minesweeper(ctx, amount: str):
         return
 
     rows = cols = size_view.grid
-    bomb_count = max(1, min(rows * cols - 2, (rows * cols) // 3))
+    bomb_count = {3: 1, 4: 3, 5: 5}.get(rows, max(1, rows - 2))
 
     total_cells = rows * cols
     safe_cells = total_cells - bomb_count
@@ -1452,17 +1479,22 @@ async def minesweeper(ctx, amount: str):
             if cell == 'bomb':
                 game_over = True
                 game_won = False
+                new_balance = max(0, data['balance'] - amount)
                 # Reveal all
                 for r in range(rows):
                     for c in range(cols):
                         revealed[r][c] = True
-                new_content = render_board()
+                new_content = (
+                    render_board() +
+                    f"\nLost: **{format_balance(amount)}**\n"
+                    f"New Balance: **{format_balance(new_balance)}**"
+                )
                 self.view.clear_items()
                 await interaction.response.edit_message(content=new_content, view=self.view)
                 try:
                     update_user(
                         user_id,
-                        balance=data['balance'] - amount,
+                        balance=new_balance,
                         total_lost=data['total_lost'] + amount
                     )
                 except:
@@ -1477,13 +1509,18 @@ async def minesweeper(ctx, amount: str):
                 game_over = True
                 game_won = True
                 winnings = int(amount * multiplier)
-                new_content = render_board()
+                new_balance = data['balance'] + winnings - amount
+                new_content = (
+                    render_board() +
+                    f"\nWon: **{format_balance(winnings)}**\n"
+                    f"New Balance: **{format_balance(new_balance)}**"
+                )
                 self.view.clear_items()
                 await interaction.response.edit_message(content=new_content, view=self.view)
                 try:
                     update_user(
                         user_id,
-                        balance=data['balance'] + winnings - amount,
+                        balance=new_balance,
                         total_won=data['total_won'] + winnings - amount
                     )
                 except:
@@ -1510,10 +1547,15 @@ async def minesweeper(ctx, amount: str):
                 game_over = True
                 game_won = False
                 self.clear_items()
-                content = render_board() + f"\n> ⏰ Timed out! Lost **{format_balance(amount)}**"
+                new_balance = max(0, data['balance'] - amount)
+                content = (
+                    render_board() +
+                    f"\n> ⏰ Timed out! Lost **{format_balance(amount)}**\n"
+                    f"New Balance: **{format_balance(new_balance)}**"
+                )
                 try:
                     await self.message.edit(content=content, view=self)
-                    update_user(user_id, balance=data['balance'] - amount, total_lost=data['total_lost'] + amount)
+                    update_user(user_id, balance=new_balance, total_lost=data['total_lost'] + amount)
                 except:
                     pass
 
@@ -1550,12 +1592,6 @@ async def wheel(ctx, amount: str):
         await ctx.send(f"⏳ Chill for **{cd:.1f}s** before wheel again.")
         return
 
-    parsed = parse_amount(amount, ctx.author.id, ctx.guild)
-    if parsed is None:
-        await ctx.send("❌ Use `.wheel all` or `.wheel <amount>` (max 150,000 𝚀)")
-        return
-
-    amount = parsed
     user_id = ctx.author.id
 
     try:
@@ -1563,6 +1599,13 @@ async def wheel(ctx, amount: str):
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
+
+    parsed = parse_amount(amount, ctx.author.id, ctx.guild, data['balance'])
+    if parsed is None:
+        await ctx.send("❌ Use `.wheel all` or `.wheel <amount>` (max 150,000 𝚀)")
+        return
+
+    amount = parsed
 
     if amount <= 0:
         await ctx.send("❌ Amount must be positive.")
@@ -1624,9 +1667,10 @@ async def wheel(ctx, amount: str):
             winnings = int(amount * mult * mult_val)
             if winnings > amount or (mult_val > 1 and winnings > 0):
                 # Win
+                new_balance = data['balance'] + winnings - amount
                 update_user(
                     user_id,
-                    balance=data['balance'] + winnings - amount,
+                    balance=new_balance,
                     wheel_streak=streak + 1,
                     total_won=data['total_won'] + winnings - amount
                 )
@@ -1638,24 +1682,25 @@ async def wheel(ctx, amount: str):
                     f">>> **{emoji} {label}!**\n"
                     f"Multiplier: ×{mult * mult_val:.2f} (base ×{mult_val}, streak ×{mult:.2f})\n"
                     f"Won: **{format_balance(winnings)}**{streak_msg}\n"
-                    f"New Balance: **{format_balance(data['balance'] + winnings - amount)}**"
+                    f"New Balance: **{format_balance(new_balance)}**"
                     )
                 )
             else:
-                # Lose (×0.5)
+                loss_amount = amount - winnings
+                new_balance = max(0, data['balance'] - loss_amount)
                 update_user(
                     user_id,
-                    balance=data['balance'] - amount,
+                    balance=new_balance,
                     wheel_streak=0,
-                    total_lost=data['total_lost'] + amount
+                    total_lost=data['total_lost'] + loss_amount
                 )
                 await msg.edit(
                     content=(
                         render_wheel(spinning=False, offset=final_offset, landed_idx=segment_idx) +
                         "\n" +
                     f">>> **{emoji} {label}**\n"
-                    f"Lost: **{format_balance(amount)}**\n"
-                    f"Balance: **{format_balance(data['balance'] - amount)}**\n"
+                    f"Lost: **{format_balance(loss_amount)}**\n"
+                    f"New Balance: **{format_balance(new_balance)}**\n"
                     f"Streak reset."
                     )
                 )
