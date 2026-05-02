@@ -543,7 +543,7 @@ async def on_ready():
     try:
         await economy_setup(bot, send_log)
         economy_command_names = [
-            "bal", "profile", "quests", "shop", "cooldowns", "transactions", "richest", "poorest", "lottery", "editlottery", "lotterystats", "buytick",
+            "bal", "profile", "quests", "shop", "cooldowns", "transactions", "richest", "poorest", "lottery", "editlottery", "stoplottery", "lotterystats", "buytick",
             "daily", "weekly", "monthly", "cf", "roulette", "slots",
             "blackjack", "scratch", "ms", "wheel", "give", "lb",
             "add", "remove", "explain"
@@ -1050,7 +1050,7 @@ async def on_command_error(ctx, error):
 
 HELP_CATEGORIES = {
     "Economy": [
-        "bal", "profile", "quests", "daily", "weekly", "monthly", "cooldowns", "transactions", "shop", "lottery", "editlottery", "lotterystats", "buytick",
+        "bal", "profile", "quests", "daily", "weekly", "monthly", "cooldowns", "transactions", "shop", "lottery", "editlottery", "stoplottery", "lotterystats", "buytick",
         "cf", "roulette", "slots", "blackjack", "scratch", "ms", "wheel",
         "give", "lb", "richest", "poorest",
     ],

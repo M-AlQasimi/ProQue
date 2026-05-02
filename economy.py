@@ -533,6 +533,15 @@ def reset_lottery_round(guild_id, next_draw):
     cur.close()
     conn.close()
 
+def delete_lottery_config(guild_id):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM lottery_tickets WHERE guild_id = %s", (guild_id,))
+    cur.execute("DELETE FROM lottery_config WHERE guild_id = %s", (guild_id,))
+    conn.commit()
+    cur.close()
+    conn.close()
+
 def set_lottery_role(guild_id, role_id):
     update_lottery_config(guild_id, role_id=role_id)
 
@@ -1454,6 +1463,56 @@ async def editlottery(ctx, setting: str = None, *, value: str = None):
     await ctx.send(f"✅ {message}", allowed_mentions=discord.AllowedMentions.none())
 
 @commands.command()
+async def stoplottery(ctx):
+    if ctx.guild is None:
+        await ctx.send("❌ Lottery stopping only works in servers.")
+        return
+    if not await ensure_db_ready(ctx):
+        return
+    if not has_economy_owner_power(ctx.author.id, ctx.guild):
+        await ctx.send("❌ Server owner only.")
+        return
+
+    config = get_lottery_config(ctx.guild.id)
+    if config is None:
+        await ctx.send("Lottery is not set up in this server.")
+        return
+
+    rows = lottery_ticket_rows(ctx.guild.id)
+    total_tickets = sum(row["tickets"] for row in rows)
+    pot = int(config.get("pot") or 0)
+    role_deleted = False
+    role_note = "No participant role was saved."
+
+    role_id = config.get("role_id")
+    if role_id:
+        role = ctx.guild.get_role(role_id)
+        if role:
+            try:
+                await role.delete(reason=f"Lottery stopped by {ctx.author.id}")
+                role_deleted = True
+                role_note = "Participant role deleted."
+            except Exception:
+                role_note = "Participant role could not be deleted, so it was left alone."
+        else:
+            role_note = "Participant role was already gone."
+
+    try:
+        delete_lottery_config(ctx.guild.id)
+    except Exception:
+        await send_error(ctx, "Database unavailable. Try again shortly.")
+        return
+
+    await ctx.send(
+        "✅ Lottery stopped for this server.\n"
+        f"Cleared Prize Pot: **{format_balance(pot)}**\n"
+        f"Cleared Tickets: **{total_tickets:,}** from **{len(rows):,}** players\n"
+        f"{'✅' if role_deleted else 'ℹ️'} {role_note}\n"
+        "The lottery channel/thread/messages were left in place.",
+        allowed_mentions=discord.AllowedMentions.none()
+    )
+
+@commands.command()
 async def lotterystats(ctx):
     if ctx.guild is None:
         await ctx.send("❌ Lottery stats only work in servers.")
@@ -1542,7 +1601,8 @@ async def buytick(ctx, amount: str = "1"):
         if data["balance"] < total_cost:
             await ctx.send(f"❌ You need {format_balance(total_cost)}, but you only have {format_balance(data['balance'])}.")
             return
-        update_user(ctx.author.id, balance=data["balance"] - total_cost)
+        new_balance = data["balance"] - total_cost
+        update_user(ctx.author.id, balance=new_balance)
         add_lottery_tickets(ctx.guild.id, ctx.author.id, tickets, pot_add)
         log_transaction(ctx.author.id, "lottery_tickets", -total_cost, f"{tickets} tickets; {burned} burned")
         await assign_lottery_role(ctx.guild, ctx.author.id, config.get("role_id"))
@@ -1553,7 +1613,8 @@ async def buytick(ctx, amount: str = "1"):
     await ctx.send(
         f"🎟️ {user_mention(ctx.author.id)} bought **{tickets}** lottery tickets for **{format_balance(total_cost)}**.\n"
         f"Prize Pot +**{format_balance(pot_add)}** | Burned **{format_balance(burned)}**\n"
-        f"Current Prize: **{format_balance(config['pot'] + pot_add)}**",
+        f"Current Prize: **{format_balance(config['pot'] + pot_add)}**\n"
+        f"New Balance: **{format_balance(new_balance)}**",
         allowed_mentions=discord.AllowedMentions.none()
     )
 
@@ -3172,7 +3233,8 @@ async def wheel(ctx, amount: str):
                     render_wheel(spinning=False, offset=final_offset, landed_idx=segment_idx) +
                     "\n" +
                 f">>> ⚪ **{label}**\n"
-                f"Nothing lost, nothing won."
+                f"Nothing lost, nothing won.\n"
+                f"New Balance: **{format_balance(data['balance'])}**"
                 )
             )
         else:
@@ -3236,6 +3298,7 @@ EXPLANATIONS = {
     "transactions": "Shows recent economy transactions. Use `.transactions` or `.transactions @user`.",
     "lottery": "Shows lottery status. First server run sets channel and draw period. Prize is the current pot.",
     "editlottery": "Server-owner command. Edits lottery price, duration, house cut, or channel.",
+    "stoplottery": "Server-owner command. Stops this server's lottery and clears its tickets/config.",
     "lotterystats": "Shows lottery prize, tickets, players, next draw, and top ticket holders.",
     "buytick": "Buys lottery tickets in the ticket thread. Use `.buytick <amount>`.",
     "richest": "Shows the top 10 richest users.",
@@ -3308,6 +3371,7 @@ DETAILED_EXPLANATIONS = {
     "transactions": "Shows recent money movement including shop purchases, quest rewards, level rewards, transfer tax, owner changes, and lottery activity.",
     "lottery": f"Server lottery. First run asks the server owner for a channel and draw period, locks the channel, creates a ticket thread, and posts pinned instructions. The prize is the full current pot. Tickets cost {format_balance(LOTTERY_TICKET_COST)} and {int(LOTTERY_HOUSE_CUT * 100)}% is burned as a money sink.",
     "editlottery": "Server-owner command. Use `.editlottery price 250000`, `.editlottery duration 12h`, `.editlottery cut 5`, or `.editlottery channel #lottery`. Duration resets the next draw timer. Channel creates and prepares a new ticket thread. Updates ping the lottery participant role.",
+    "stoplottery": "Server-owner command. Use `.stoplottery` to remove the lottery setup for this server, clear the current pot/tickets, and delete the participant role if the bot can. It leaves channels, threads, and messages alone.",
     "lotterystats": "Shows the current lottery prize pot, total ticket count, number of players, participant role, next draw time, configured channels, and the top 10 ticket holders with their approximate odds.",
     "buytick": f"Buys tickets for the configured server lottery. Use `.buytick <amount>` in the lottery ticket thread. Each ticket costs {format_balance(LOTTERY_TICKET_COST)}. The prize is the full current lottery pot; every ticket is one entry.",
     "richest": "Shows the top 10 balances from the economy table.",
@@ -3384,7 +3448,7 @@ async def setup(bot_ref, log_callback=None):
     print(f"Economy db_ready = {db_ready}")
 
     economy_commands = [
-        bal, profile, quests, shop, cooldowns, transactions, richest, poorest, lottery, editlottery, lotterystats, buytick,
+        bal, profile, quests, shop, cooldowns, transactions, richest, poorest, lottery, editlottery, stoplottery, lotterystats, buytick,
         daily, weekly, monthly, gamble, roulette, slots, blackjack,
         scratch, minesweeper, wheel, give, lb, add, remove, explain
     ]
