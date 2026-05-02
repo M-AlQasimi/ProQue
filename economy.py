@@ -1789,6 +1789,23 @@ EXPLANATIONS = {
     "translate": "Translates text.",
 }
 
+DETAILED_EXPLANATIONS = {
+    "daily": "Gives a reward once every 24 hours. Base reward is 10,000-15,000 𝚀. Your daily streak adds a small bonus after day 1.",
+    "weekly": "Gives a reward once every 7 days. Base reward is 20,000-30,000 𝚀. Your weekly streak adds a bonus after week 1.",
+    "monthly": "Gives a reward once every 30 days. Base reward is 40,000-60,000 𝚀. Your monthly streak adds a bigger bonus after month 1.",
+    "flip": "Pick heads or tails with `.flip <amount> h`, `.flip <amount> t`, `.cf <amount> heads`, or `.cf <amount> tails`. If you do not pick, the bot asks you. Winning pays ×2 before streak bonus, so betting 100 wins 200 total and gives +100 profit. Losing removes the bet. Consecutive flip wins add +1.5% payout each win and reset on loss.",
+    "roulette": "Pick red, black, green, or use the button menu if you leave the color blank. Red and black pay ×2. Green pays ×10 because it is rarer. The bet is removed from the payout result, so a 100 bet on red winning gives 200 total and +100 profit. Consecutive roulette wins add +1.5% payout each win and reset on loss.",
+    "slots": "The bot spins 3 reels. Three matching symbols are a jackpot and pay based on the symbol: earlier symbols pay less, rarer symbols pay more. Two matching symbols are a small win and pay ×2. No match loses the bet. Consecutive slots wins add +1.5% payout each win and reset on loss.",
+    "blackjack": "You get cards against the dealer and use Hit or Stand buttons. Try to get closer to 21 than the dealer without going over. A normal win pays +1x your bet as profit. Losing removes the bet. A push changes nothing. Consecutive blackjack wins add +1.5% payout each win and reset on loss.",
+    "scratch": "The ticket reveals 5 symbols one by one. Matching enough symbols wins a prize: 3 or 4 matches pay ×2, and 5 matches pay ×8. Fewer matches loses the bet. Consecutive scratch wins add +1.5% payout each win and reset on loss.",
+    "minesweeper": "Choose 3x3, 4x4, or 5x5, then reveal tiles. 3x3 has 1 bomb, 4x4 has 3 bombs, and 5x5 has 5 bombs. Reveal every safe tile to win. Each safe reveal raises the final multiplier by +0.15. Hitting a bomb or timing out loses the bet.",
+    "ms": "Same as `.minesweeper`.",
+    "wheel": "The wheel lands on a segment. ×2, ×3, and ×5 are wins. ×1 gives your stake back, ×0.5 loses half the bet, and BLANK changes nothing. Consecutive wheel wins add +1.5% payout each win and reset on loss or partial loss.",
+    "give": "Moves quesos from you to another user. Normal users can only give what they have. Superowner can use `.give @user all` to give all their own quesos. The message shows both old and new balances.",
+    "add": "Superowner/server-owner override command. Adds new quesos to a user without taking them from anyone. It does not support `all`. The message shows the user's old and new balance.",
+    "remove": "Superowner/server-owner override command. Removes quesos from a user. `.remove @user all` removes their full balance. The balance cannot go below 0, and the message shows old and new balance.",
+}
+
 @commands.command()
 async def explain(ctx, command_name: str = None):
     if not command_name:
@@ -1807,6 +1824,11 @@ async def explain(ctx, command_name: str = None):
     if not text and key not in {"mod", "owner"}:
         await ctx.send("I don't have a short explanation for that command.")
         return
+    detail = DETAILED_EXPLANATIONS.get(key)
+    if command and not detail:
+        detail = DETAILED_EXPLANATIONS.get(command.name)
+    if detail:
+        text = f"{text}\n\nDetails: {detail}"
 
     if command:
         usage = f".{command.qualified_name}"
