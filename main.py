@@ -20,7 +20,14 @@ from discord.ui import Button, Modal, Select, TextInput, View
 from flask import Flask
 from io import BytesIO
 from threading import Thread
-from economy import setup as economy_setup
+from economy import (
+    ensure_db_ready as economy_ensure_db_ready,
+    format_balance as economy_format_balance,
+    get_user as economy_get_user,
+    parse_amount as economy_parse_amount,
+    setup as economy_setup,
+    update_user as economy_update_user,
+)
 from pgdata import (
     load_afk_users as pg_load_afk_users,
     load_active_polls,
@@ -86,6 +93,7 @@ def get_prefix(bot, message):
     return commands.when_mentioned_or('.')(bot, message)
 
 bot = MyBot(command_prefix=get_prefix, intents=intents)
+bot.remove_command("help")
 print(f"Bot is starting with intents: {bot.intents}")
 
 log_channel_id = None
@@ -105,6 +113,7 @@ censored_phrases = load_censored_phrases()
 watchlist = load_watchlist()
 reaction_watchlist = load_reaction_watchlist()
 c4_games = {}
+ttt_games = {}
 edited_snipes = {}
 deleted_snipes = {}
 removed_reactions = {}
@@ -970,6 +979,42 @@ async def on_command_error(ctx, error):
             await ctx.send(f"Error: `{error}`")
         else:
             await ctx.send("You can't use that heh")
+
+@bot.command(name="help")
+async def help_command(ctx, command_name: str = None):
+    if command_name:
+        command = bot.get_command(command_name.lower().lstrip("."))
+        if not command:
+            return await ctx.send("Command not found.")
+
+        usage = f".{command.qualified_name}"
+        if command.signature:
+            usage += f" {command.signature}"
+        aliases = f"\nAliases: {', '.join(command.aliases)}" if command.aliases else ""
+        description = (command.help or "").strip().splitlines()[0] if command.help else "No extra help available."
+        return await ctx.send(f"**{usage}**\n{description}{aliases}")
+
+    command_names = sorted({command.name for command in bot.commands if not command.hidden})
+    chunks = []
+    current = ""
+    for name in command_names:
+        entry = f"`.{name}` "
+        if len(current) + len(entry) > 900:
+            chunks.append(current.strip())
+            current = entry
+        else:
+            current += entry
+    if current:
+        chunks.append(current.strip())
+
+    embed = discord.Embed(
+        title="Help",
+        description="Use `.help <command>` for usage, or `.explain <command>` for detailed command explanations.",
+        color=discord.Color.blurple()
+    )
+    for index, chunk in enumerate(chunks, 1):
+        embed.add_field(name=f"Commands {index}", value=chunk, inline=False)
+    await ctx.send(embed=embed)
 
 @bot.event
 async def on_message_delete(message):
@@ -1964,18 +2009,20 @@ class TicTacToeButton(Button):
 
         winner = check_winner(board)
         if winner:
+            payout_text = await settle_game_bet(game, interaction.user)
+            await disable_all_buttons(game["view"])
             await game["msg"].edit(
-                content=f"🎉 <@{interaction.user.id}> wins!",
+                content=f"🎉 <@{interaction.user.id}> wins!{payout_text}",
                 view=game["view"],
                 allowed_mentions=discord.AllowedMentions.none()
             )
-            await disable_all_buttons(game["view"])
             del ttt_games[interaction.channel.id]
             return
 
         if all(cell != '⬜' for row in board for cell in row):
-            await game["msg"].edit(content="It's a draw!", view=game["view"])
+            payout_text = await settle_game_bet(game, None)
             await disable_all_buttons(game["view"])
+            await game["msg"].edit(content=f"It's a draw!{payout_text}", view=game["view"])
             del ttt_games[interaction.channel.id]
             return
 
@@ -2004,6 +2051,105 @@ def check_winner(board):
 async def disable_all_buttons(view):
     for item in view.children:
         item.disabled = True
+
+class GameBetView(View):
+    def __init__(self, ctx):
+        super().__init__(timeout=30)
+        self.ctx = ctx
+        self.choice = None
+
+    async def interaction_check(self, interaction):
+        return interaction.user.id == self.ctx.author.id
+
+    @discord.ui.button(label="Yes", style=discord.ButtonStyle.success)
+    async def yes(self, interaction: discord.Interaction, button: Button):
+        self.choice = True
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(content="Bet enabled. Type the amount now.", view=self)
+        self.stop()
+
+    @discord.ui.button(label="No", style=discord.ButtonStyle.secondary)
+    async def no(self, interaction: discord.Interaction, button: Button):
+        self.choice = False
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(content="No bet. Starting game.", view=self)
+        self.stop()
+
+async def ask_game_bet(ctx, opponent, game_name):
+    view = GameBetView(ctx)
+    msg = await ctx.send(f"Play **{game_name}** with a bet?", view=view)
+    await view.wait()
+
+    if view.choice is None:
+        await msg.edit(content="Bet choice timed out. Game canceled.", view=None)
+        return None
+    if view.choice is False:
+        return 0
+
+    def check(message):
+        return message.author.id == ctx.author.id and message.channel.id == ctx.channel.id
+
+    try:
+        amount_msg = await bot.wait_for("message", check=check, timeout=30)
+    except asyncio.TimeoutError:
+        await ctx.send("Bet amount timed out. Game canceled.")
+        return None
+
+    if not await economy_ensure_db_ready(ctx):
+        return None
+
+    try:
+        author_data = economy_get_user(ctx.author.id)
+        opponent_data = economy_get_user(opponent.id)
+    except Exception:
+        await ctx.send("Database unavailable. Try again shortly.")
+        return None
+
+    amount = economy_parse_amount(amount_msg.content.strip(), ctx.author.id, ctx.guild, author_data["balance"])
+    if amount is None or amount <= 0:
+        await ctx.send("Invalid bet amount. Game canceled.")
+        return None
+    if amount > author_data["balance"]:
+        await ctx.send(f"You only have {economy_format_balance(author_data['balance'])}. Game canceled.")
+        return None
+    if amount > opponent_data["balance"]:
+        await ctx.send(f"{opponent.display_name} only has {economy_format_balance(opponent_data['balance'])}. Game canceled.")
+        return None
+
+    return amount
+
+def game_bet_line(game):
+    amount = game.get("bet_amount", 0)
+    if amount <= 0:
+        return ""
+    return f"\nBet: **{economy_format_balance(amount)}** each"
+
+async def settle_game_bet(game, winner):
+    amount = game.get("bet_amount", 0)
+    if amount <= 0:
+        return ""
+    if winner is None:
+        return f"\nBet: **{economy_format_balance(amount)}** each. Draw: no quesos moved."
+
+    loser = game["players"][1] if winner.id == game["players"][0].id else game["players"][0]
+    try:
+        winner_data = economy_get_user(winner.id)
+        loser_data = economy_get_user(loser.id)
+        payout = min(amount, loser_data["balance"])
+        economy_update_user(winner.id, balance=winner_data["balance"] + payout)
+        economy_update_user(loser.id, balance=max(0, loser_data["balance"] - payout))
+    except Exception:
+        return "\nBet payout failed: database unavailable."
+
+    note = "" if payout == amount else "\nLoser did not have the full bet anymore, so only their remaining balance was paid."
+    return (
+        f"\nBet paid: **{economy_format_balance(payout)}**"
+        f"\nWinner: **{economy_format_balance(winner_data['balance'])}** → **{economy_format_balance(winner_data['balance'] + payout)}**"
+        f"\nLoser: **{economy_format_balance(loser_data['balance'])}** → **{economy_format_balance(max(0, loser_data['balance'] - payout))}**"
+        f"{note}"
+    )
 
 class AcceptView(View):
     def __init__(self, ctx, opponent):
@@ -2054,16 +2200,21 @@ async def ttt(ctx, opponent: discord.Member):
     if not view.accepted:
         return
 
+    bet_amount = await ask_game_bet(ctx, opponent, "Tic Tac Toe")
+    if bet_amount is None:
+        return
+
     board = [['⬜'] * 3 for _ in range(3)]
     game_view = TicTacToeView()
-    msg = await ctx.send("Game started!", view=game_view)
+    msg = await ctx.send(f"Game started!{game_bet_line({'bet_amount': bet_amount})}", view=game_view)
     game = {
         "players": [ctx.author, opponent],
         "turn": 0,
         "board": board,
         "view": game_view,
         "msg": msg,
-        "timeout_task": None
+        "timeout_task": None,
+        "bet_amount": bet_amount
     }
     ttt_games[ctx.channel.id] = game
 
@@ -2078,19 +2229,20 @@ async def update_turn(game, channel):
         nonlocal time_left
         while time_left > 0:
             await game["msg"].edit(
-                content=f"<@{current.id}>, it's your turn! ({time_left}s)",
+                content=f"<@{current.id}>, it's your turn! ({time_left}s){game_bet_line(game)}",
                 view=game["view"],
                 allowed_mentions=discord.AllowedMentions.none()
             )
             await asyncio.sleep(1)
             time_left -= 1
 
+        payout_text = await settle_game_bet(game, opponent)
+        await disable_all_buttons(game["view"])
         await game["msg"].edit(
-            content=f"⏱️ <@{current.id}> took too long.\n🎉 <@{opponent.id}> wins by timeout!",
+            content=f"⏱️ <@{current.id}> took too long.\n🎉 <@{opponent.id}> wins by timeout!{payout_text}",
             view=game["view"],
             allowed_mentions=discord.AllowedMentions.none()
         )
-        await disable_all_buttons(game["view"])
         del ttt_games[channel.id]
 
     game["timeout_task"] = asyncio.create_task(countdown())
@@ -2121,18 +2273,23 @@ class Connect4Button(Button):
 
             if check_c4_winner(board, piece):
                 render = render_board(board, game["turn"])
-                await interaction.message.edit(
-                    content=f"{render}\n\n🎉 <@{interaction.user.id}> wins!",
-                    view=Connect4View()
+                payout_text = await settle_game_bet(game, interaction.user)
+                await disable_all_buttons(game["view"])
+                await interaction.response.edit_message(
+                    content=f"{render}\n\n🎉 <@{interaction.user.id}> wins!{payout_text}",
+                    view=game["view"],
+                    allowed_mentions=discord.AllowedMentions.none()
                 )
                 del c4_games[interaction.channel.id]
                 return
 
             if all(cell != " " for row in board for cell in row):
                 render = render_board(board, game["turn"])
-                await interaction.message.edit(
-                    content=f"{render}\n\nIt's a draw!",
-                    view=Connect4View()
+                payout_text = await settle_game_bet(game, None)
+                await disable_all_buttons(game["view"])
+                await interaction.response.edit_message(
+                    content=f"{render}\n\nIt's a draw!{payout_text}",
+                    view=game["view"]
                 )
                 del c4_games[interaction.channel.id]
                 return
@@ -2143,7 +2300,7 @@ class Connect4Button(Button):
             game["view"] = Connect4View()
 
             render = render_board(board, game["turn"])
-            await interaction.message.edit(content=render, view=game["view"])
+            await interaction.response.edit_message(content=render, view=game["view"])
             await update_c4_turn(game, interaction.channel)
 
         except Exception as e:
@@ -2182,6 +2339,7 @@ def check_c4_winner(board, piece):
 
 async def update_c4_turn(game, channel):
     current = game["players"][game["turn"]]
+    opponent = game["players"][1 - game["turn"]]
     msg = game["msg"]
     board = game["board"]
     time_left = 30
@@ -2191,15 +2349,19 @@ async def update_c4_turn(game, channel):
         try:
             while time_left > 0:
                 await msg.edit(
-                    content=f"{render_board(board, game['turn'])}\n\n<@{current.id}>, it's your turn! ({time_left}s)",
-                    view=game["view"]
+                    content=f"{render_board(board, game['turn'])}\n\n<@{current.id}>, it's your turn! ({time_left}s){game_bet_line(game)}",
+                    view=game["view"],
+                    allowed_mentions=discord.AllowedMentions.none()
                 )
                 await asyncio.sleep(1)
                 time_left -= 1
 
+            payout_text = await settle_game_bet(game, opponent)
+            await disable_all_buttons(game["view"])
             await msg.edit(
-                content=f"{render_board(board, game['turn'])}\n\n⏱️ <@{current.id}> took too long. Game over!",
-                view=game["view"]
+                content=f"{render_board(board, game['turn'])}\n\n⏱️ <@{current.id}> took too long.\n🎉 <@{opponent.id}> wins by timeout!{payout_text}",
+                view=game["view"],
+                allowed_mentions=discord.AllowedMentions.none()
             )
             del c4_games[channel.id]
         except Exception as e:
@@ -2234,10 +2396,14 @@ async def c4(ctx, opponent: discord.Member):
     if not view.accepted:
         return
 
+    bet_amount = await ask_game_bet(ctx, opponent, "Connect 4")
+    if bet_amount is None:
+        return
+
     board = [[" "] * 7 for _ in range(6)]
     render = render_board(board, 0)
     game_view = Connect4View()
-    msg = await ctx.send(render, view=game_view)
+    msg = await ctx.send(f"{render}{game_bet_line({'bet_amount': bet_amount})}", view=game_view)
 
     game = {
         "players": [ctx.author, opponent],
@@ -2245,7 +2411,8 @@ async def c4(ctx, opponent: discord.Member):
         "board": board,
         "view": game_view,
         "msg": msg,
-        "timeout_task": None
+        "timeout_task": None,
+        "bet_amount": bet_amount
     }
     c4_games[ctx.channel.id] = game
     await update_c4_turn(game, ctx.channel)
@@ -2909,15 +3076,38 @@ async def steal(ctx):
             
 @bot.command()
 @is_owner()
-async def send(ctx, channel_id: int = None, *, msg=None):
-    await ctx.message.delete()
+async def send(ctx, target=None, *, msg=None):
+    try:
+        await ctx.message.delete()
+    except discord.HTTPException:
+        pass
     attachments = ctx.message.attachments
 
     target_channel = ctx.channel
-    if channel_id:
-        target_channel = bot.get_channel(channel_id) or await bot.fetch_channel(channel_id)
-        if not target_channel:
-            return await ctx.send("Channel not found.", delete_after=5)
+    if target:
+        raw_target = target.strip()
+        channel = None
+        channel_lookup = raw_target
+        if raw_target.startswith("<#") and raw_target.endswith(">"):
+            channel_lookup = raw_target[2:-1]
+
+        if channel_lookup.isdigit():
+            try:
+                channel = bot.get_channel(int(channel_lookup)) or await bot.fetch_channel(int(channel_lookup))
+            except Exception:
+                channel = None
+            if channel is None:
+                return await ctx.send("Channel not found.", delete_after=5)
+        else:
+            try:
+                channel = await commands.TextChannelConverter().convert(ctx, raw_target)
+            except commands.BadArgument:
+                channel = None
+
+        if channel is not None:
+            target_channel = channel
+        else:
+            msg = f"{target} {msg}".strip() if msg else target
 
     if not msg and not attachments:
         return await ctx.send("Provide a message or attachment to send.", delete_after=5)
