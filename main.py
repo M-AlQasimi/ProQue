@@ -89,10 +89,10 @@ class MyBot(commands.Bot):
         
 intents = discord.Intents.all()
 def get_prefix(bot, message):
-    """Support dot commands."""
-    return commands.when_mentioned_or('.')(bot, message)
+    """Support mentions, dot commands, and bare command names."""
+    return commands.when_mentioned_or('.', '')(bot, message)
 
-bot = MyBot(command_prefix=get_prefix, intents=intents)
+bot = MyBot(command_prefix=get_prefix, intents=intents, case_insensitive=True)
 bot.remove_command("help")
 print(f"Bot is starting with intents: {bot.intents}")
 
@@ -127,6 +127,21 @@ monthly_cooldown = {}
 class CommandDisabledError(commands.CheckFailure):
     def __init__(self, command_name):
         self.command_name = command_name
+
+def get_command_case_insensitive(command_name):
+    if not command_name:
+        return None
+    key = command_name.lstrip(".").casefold()
+    return next(
+        (
+            command
+            for command in bot.walk_commands()
+            if command.qualified_name.casefold() == key
+            or command.name.casefold() == key
+            or key in {alias.casefold() for alias in command.aliases}
+        ),
+        None
+    )
 
 def scoped_id(guild):
     return guild.id if guild else 0
@@ -972,7 +987,7 @@ async def on_message(message):
         except:
             pass
 
-    await bot.process_commands(message)
+    # Commands are invoked at the top of this handler after one shared context lookup.
 
 @bot.event
 async def on_command_error(ctx, error):
@@ -1013,7 +1028,7 @@ async def on_command_error(ctx, error):
 @bot.command(name="help")
 async def help_command(ctx, command_name: str = None):
     if command_name:
-        command = bot.get_command(command_name.lower().lstrip("."))
+        command = get_command_case_insensitive(command_name)
         if not command:
             return await ctx.send("Command not found.")
 
@@ -1704,7 +1719,7 @@ async def disable(ctx, cmd: str):
     if not has_super_owner_power(ctx.author, ctx.guild):
         return
 
-    command = bot.get_command(cmd)
+    command = get_command_case_insensitive(cmd)
     if not command:
         await ctx.send("Command not found.")
         return
@@ -1720,7 +1735,7 @@ async def enable(ctx, cmd: str):
     if not has_super_owner_power(ctx.author, ctx.guild):
         return
 
-    command = bot.get_command(cmd)
+    command = get_command_case_insensitive(cmd)
     if not command:
         await ctx.send("Command not found.")
         return
@@ -3430,7 +3445,7 @@ async def epoll(ctx):
 @bot.command()
 @is_owner_or_mod()
 async def giveaway(ctx, time: str, *, prize: str):
-    match = re.match(r"(\d+)([smhdw])", time)
+    match = re.match(r"(\d+)([smhdw])", time.casefold())
     if not match:
         return await ctx.send("Invalid time format. Use s/m/h/d/w.")
     amount, unit = int(match[1]), match[2]

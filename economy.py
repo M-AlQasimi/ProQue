@@ -1836,9 +1836,18 @@ async def explain(ctx, command_name: str = None):
         await ctx.send(f"Use `.explain <command>`. Commands: {names}, mod, owner")
         return
 
-    key = command_name.lower().lstrip(".")
+    key = command_name.casefold().lstrip(".")
     text = EXPLANATIONS.get(key)
-    command = bot.get_command(key) if bot else None
+    command = next(
+        (
+            command
+            for command in bot.walk_commands()
+            if command.qualified_name.casefold() == key
+            or command.name.casefold() == key
+            or key in {alias.casefold() for alias in command.aliases}
+        ),
+        None
+    ) if bot else None
     if command and not text:
         text = EXPLANATIONS.get(command.name)
     if command and not text:
