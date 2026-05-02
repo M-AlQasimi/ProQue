@@ -172,8 +172,6 @@ def parse_amount(raw, user_id=None, guild=None, balance=None):
         if balance is None:
             return MAX_BET
         balance = max(0, int(balance))
-        if user_id is not None and is_super_owner(user_id, guild):
-            return balance
         return min(balance, MAX_BET)
     try:
         val = int(raw)
@@ -299,8 +297,8 @@ async def daily(ctx):
             return
 
     streak = data['daily_streak'] + 1
-    base_reward = random.randint(100, 500)
-    streak_bonus = min(streak * 10, 200)
+    base_reward = random.randint(10_000, 15_000)
+    streak_bonus = min(max(streak - 1, 0) * 10, 200)
     reward = base_reward + streak_bonus
 
     try:
@@ -341,8 +339,8 @@ async def weekly(ctx):
             return
 
     streak = data['weekly_streak'] + 1
-    base_reward = random.randint(1000, 3000)
-    streak_bonus = min(streak * 50, 500)
+    base_reward = random.randint(20_000, 30_000)
+    streak_bonus = min(max(streak - 1, 0) * 50, 500)
     reward = base_reward + streak_bonus
 
     try:
@@ -383,8 +381,8 @@ async def monthly(ctx):
             return
 
     streak = data['monthly_streak'] + 1
-    base_reward = random.randint(10000, 25000)
-    streak_bonus = min(streak * 500, 5000)
+    base_reward = random.randint(40_000, 60_000)
+    streak_bonus = min(max(streak - 1, 0) * 500, 5000)
     reward = base_reward + streak_bonus
 
     try:
@@ -1064,12 +1062,14 @@ async def give(ctx, member: discord.Member, amount: str):
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
 
-    parsed = parse_amount(amount, ctx.author.id, ctx.guild, data['balance'])
-    if parsed is None:
-        await ctx.send("❌ Use `.give @user all` or `.give @user <amount>`")
-        return
-
-    amount = parsed
+    if str(amount).lower() == "all" and is_super_owner(ctx.author.id, ctx.guild):
+        amount = max(0, int(data['balance']))
+    else:
+        parsed = parse_amount(amount, ctx.author.id, ctx.guild, data['balance'])
+        if parsed is None:
+            await ctx.send("❌ Use `.give @user all` or `.give @user <amount>`")
+            return
+        amount = parsed
 
     if amount <= 0:
         await ctx.send("❌ Amount must be positive.")
@@ -1084,14 +1084,22 @@ async def give(ctx, member: discord.Member, amount: str):
         return
 
     try:
-        update_user(user_id, balance=max(0, data['balance'] - amount))
+        old_sender_balance = data['balance']
+        new_sender_balance = max(0, old_sender_balance - amount)
+        update_user(user_id, balance=new_sender_balance)
         receiver_data = get_user(member.id)
-        update_user(member.id, balance=receiver_data['balance'] + amount)
+        old_receiver_balance = receiver_data['balance']
+        new_receiver_balance = old_receiver_balance + amount
+        update_user(member.id, balance=new_receiver_balance)
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
 
-    await ctx.send(f"💸 You gave **{format_balance(amount)}** to **{member.name}**")
+    await ctx.send(
+        f"💸 You gave **{format_balance(amount)}** to **{member.name}**\n"
+        f"Your Balance: **{format_balance(old_sender_balance)}** → **{format_balance(new_sender_balance)}**\n"
+        f"{member.name}'s Balance: **{format_balance(old_receiver_balance)}** → **{format_balance(new_receiver_balance)}**"
+    )
 
 # =====================
 # LEADERBOARD
@@ -1150,16 +1158,21 @@ async def add(ctx, member: discord.Member, amount: int):
 
     try:
         target_data = get_user(member.id)
+        old_balance = target_data['balance']
         update_user(
             member.id,
-            balance=target_data['balance'] + amount,
+            balance=old_balance + amount,
             total_earned=target_data['total_earned'] + amount
         )
+        new_balance = old_balance + amount
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
 
-    await ctx.send(f"✅ Added **{format_balance(amount)}** to **{member.name}**")
+    await ctx.send(
+        f"✅ Added **{format_balance(amount)}** to **{member.name}**\n"
+        f"Balance: **{format_balance(old_balance)}** → **{format_balance(new_balance)}**"
+    )
 
 @commands.command()
 async def remove(ctx, member: discord.Member, amount: str):
@@ -1172,14 +1185,15 @@ async def remove(ctx, member: discord.Member, amount: str):
 
     try:
         target_data = get_user(member.id)
+        old_balance = target_data['balance']
         if str(amount).lower() == "all":
-            amount = target_data['balance']
+            amount = old_balance
         else:
             amount = int(amount)
         if amount <= 0:
             await ctx.send("❌ Amount must be positive.")
             return
-        new_balance = max(0, target_data['balance'] - amount)
+        new_balance = max(0, old_balance - amount)
         update_user(member.id, balance=new_balance)
     except ValueError:
         await ctx.send("❌ Use `.remove @user all` or `.remove @user <amount>`")
@@ -1188,7 +1202,10 @@ async def remove(ctx, member: discord.Member, amount: str):
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
 
-    await ctx.send(f"✅ Removed **{format_balance(amount)}** from **{member.name}**")
+    await ctx.send(
+        f"✅ Removed **{format_balance(amount)}** from **{member.name}**\n"
+        f"Balance: **{format_balance(old_balance)}** → **{format_balance(new_balance)}**"
+    )
 
 # =====================
 # SCRATCH CARD
