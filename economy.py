@@ -313,6 +313,42 @@ def log_transaction(user_id, kind, amount, note=""):
     except Exception as e:
         print(f"Transaction log failed: {type(e).__name__} - {e}")
 
+def bulk_add_users(user_ids, amount, actor_id, note):
+    unique_ids = sorted(set(int(user_id) for user_id in user_ids))
+    if not unique_ids:
+        return 0
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO economy (user_id, balance)
+        SELECT user_id, 0 FROM unnest(%s::bigint[]) AS user_id
+        ON CONFLICT (user_id) DO NOTHING
+        """,
+        (unique_ids,)
+    )
+    cur.execute(
+        """
+        UPDATE economy
+        SET balance = balance + %s,
+            total_earned = total_earned + %s
+        WHERE user_id = ANY(%s::bigint[])
+        """,
+        (amount, amount, unique_ids)
+    )
+    cur.execute(
+        """
+        INSERT INTO economy_transactions (user_id, kind, amount, note)
+        SELECT user_id, 'owner_add', %s, %s FROM unnest(%s::bigint[]) AS user_id
+        """,
+        (amount, f"Bulk by {actor_id}: {note}", unique_ids)
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+    return len(unique_ids)
+
 def get_recent_transactions(user_id, limit=10):
     conn = get_db_connection()
     cur = conn.cursor()
@@ -466,6 +502,7 @@ def reset_lottery_round(guild_id, next_draw):
 def lottery_instructions(period_seconds):
     return (
         "🎟️ **Lottery Tickets**\n"
+        "Prize: **the full current pot** goes to one winner each draw.\n"
         f"Buy tickets with `.buytick <amount>` in this thread.\n"
         f"Each ticket costs **{format_balance(LOTTERY_TICKET_COST)}**.\n"
         f"**{int(LOTTERY_HOUSE_CUT * 100)}%** of ticket sales is burned and the rest goes into the pot.\n"
@@ -484,7 +521,7 @@ async def prepare_lottery_channel(guild, channel, period_seconds):
     except Exception as e:
         print(f"Lottery channel lock skipped: {type(e).__name__} - {e}")
 
-    starter = await channel.send("🎟️ Lottery is open. Buy tickets in the thread below.")
+    starter = await channel.send("🎟️ Lottery is open. Prize: **the current pot**. Buy tickets in the thread below.")
     thread = await starter.create_thread(name="buy tickets here")
     info = await thread.send(lottery_instructions(period_seconds))
     try:
@@ -1173,6 +1210,7 @@ async def lottery(ctx, action: str = None, amount: str = None):
         save_lottery_config(ctx.guild.id, channel.id, period_seconds, next_draw, thread_id=thread.id)
         await ctx.send(
             f"✅ Lottery set for {channel.mention}. Draws every **{format_duration(period_seconds)}**.\n"
+            f"Prize: **the current pot**. Starting pot: **{format_balance(0)}**.\n"
             f"Tickets cost **{format_balance(LOTTERY_TICKET_COST)}**. Use `.buytick <amount>` in <#{thread.id}>.",
             allowed_mentions=discord.AllowedMentions.none()
         )
@@ -1197,12 +1235,20 @@ async def lottery(ctx, action: str = None, amount: str = None):
     channel = ctx.guild.get_channel(config["channel_id"])
     embed = discord.Embed(title="Lottery", color=discord.Color.gold())
     embed.add_field(name="Channel", value=channel.mention if channel else f"`{config['channel_id']}`", inline=False)
-    embed.add_field(name="Pot", value=format_balance(config["pot"]), inline=True)
+    embed.add_field(name="Prize / Current Pot", value=format_balance(config["pot"]), inline=True)
     embed.add_field(name="Tickets", value=f"{total_tickets:,}", inline=True)
     embed.add_field(name="Next Draw", value=f"<t:{int(next_draw.timestamp())}:R>", inline=True)
     thread_value = f"<#{config['thread_id']}>" if config.get("thread_id") else "ticket thread not saved"
     embed.add_field(name="Ticket Thread", value=thread_value, inline=False)
-    embed.add_field(name="Buy", value=f"`.buytick <amount>` - {format_balance(LOTTERY_TICKET_COST)} each", inline=False)
+    embed.add_field(
+        name="How It Works",
+        value=(
+            f"Buy with `.buytick <amount>` in the ticket thread.\n"
+            f"Each ticket costs **{format_balance(LOTTERY_TICKET_COST)}**.\n"
+            f"One winner gets the full pot; each ticket is one entry."
+        ),
+        inline=False
+    )
     await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
 @commands.command()
@@ -1248,7 +1294,8 @@ async def buytick(ctx, amount: str = "1"):
 
     await ctx.send(
         f"🎟️ {user_mention(ctx.author.id)} bought **{tickets}** lottery tickets for **{format_balance(total_cost)}**.\n"
-        f"Pot +**{format_balance(pot_add)}** | Burned **{format_balance(burned)}**",
+        f"Prize Pot +**{format_balance(pot_add)}** | Burned **{format_balance(burned)}**\n"
+        f"Current Prize: **{format_balance(config['pot'] + pot_add)}**",
         allowed_mentions=discord.AllowedMentions.none()
     )
 
@@ -1288,7 +1335,7 @@ async def process_lottery_draw(config):
 
     if channel:
         await channel.send(
-            f"🎉 Lottery winner: {user_mention(winner_id)} won **{format_balance(pot)}**!\n"
+            f"🎉 Lottery winner: {user_mention(winner_id)} won the prize: **{format_balance(pot)}**!\n"
             f"Next draw: <t:{int(next_draw.timestamp())}:R>",
             allowed_mentions=discord.AllowedMentions.none()
         )
@@ -2242,7 +2289,7 @@ async def lb(ctx):
 # ADD / REMOVE (OWNER)
 # =====================
 @commands.command()
-async def add(ctx, member: discord.Member, amount: int):
+async def add(ctx, target: str, amount: int):
     if not await ensure_db_ready(ctx):
         return
 
@@ -2252,6 +2299,72 @@ async def add(ctx, member: discord.Member, amount: int):
 
     if amount <= 0:
         await ctx.send("❌ Amount must be positive.")
+        return
+
+    target_key = target.strip()
+    is_everyone = target_key in {"@everyone", "@here"} or target_key == str(ctx.guild.default_role.id) if ctx.guild else False
+    role = None
+    member = None
+
+    if ctx.guild and is_everyone:
+        if ctx.author.id != 885548126365171824:
+            await ctx.send("❌ Bulk `.add @everyone` is superowner only.")
+            return
+        members = list(ctx.guild.members)
+        try:
+            count = bulk_add_users([m.id for m in members], amount, ctx.author.id, "@everyone")
+        except Exception:
+            await send_error(ctx, "Database unavailable. Try again shortly.")
+            return
+
+        await ctx.send(
+            f"✅ Added **{format_balance(amount)}** to **{count}** server members.",
+            allowed_mentions=discord.AllowedMentions.none()
+        )
+        await send_economy_log(ctx, "Economy Bulk Add", [
+            ("Target", "@everyone", False),
+            ("Recipients", f"{count:,}", True),
+            ("Amount Each", format_balance(amount), True),
+            ("Total Created", format_balance(amount * count), True),
+        ], color=discord.Color.green())
+        return
+
+    if ctx.guild:
+        try:
+            role = await commands.RoleConverter().convert(ctx, target_key)
+        except commands.BadArgument:
+            role = None
+
+    if role is not None:
+        if ctx.author.id != 885548126365171824:
+            await ctx.send("❌ Bulk `.add @role` is superowner only.")
+            return
+        members = list(role.members)
+        if not members:
+            await ctx.send("❌ That role has no members.")
+            return
+        try:
+            count = bulk_add_users([m.id for m in members], amount, ctx.author.id, f"role {role.id}")
+        except Exception:
+            await send_error(ctx, "Database unavailable. Try again shortly.")
+            return
+
+        await ctx.send(
+            f"✅ Added **{format_balance(amount)}** to **{count}** members with **{role.name}**.",
+            allowed_mentions=discord.AllowedMentions.none()
+        )
+        await send_economy_log(ctx, "Economy Bulk Add", [
+            ("Target", f"{role.mention} ({role.id})", False),
+            ("Recipients", f"{count:,}", True),
+            ("Amount Each", format_balance(amount), True),
+            ("Total Created", format_balance(amount * count), True),
+        ], color=discord.Color.green())
+        return
+
+    try:
+        member = await commands.MemberConverter().convert(ctx, target_key)
+    except commands.BadArgument:
+        await ctx.send("❌ Use `.add @user <amount>`, `.add @role <amount>`, or `.add @everyone <amount>`.")
         return
 
     try:
@@ -2847,15 +2960,15 @@ async def wheel(ctx, amount: str):
 EXPLANATIONS = {
     "owner": "Owners can use owner commands and manage mods. They are above mods; superowner/server-owner override is above owners.",
     "mod": "Mods can use mod commands for moderation/tools. They are below owners and cannot manage owners or mods.",
-    "bal": "Shows your balance, streaks, and total earned/won/lost.",
-    "balance": "Shows your balance, streaks, and total earned/won/lost.",
-    "profile": "Shows your level, XP, balance, stats, and owned items.",
-    "quests": "Shows main quests and random daily, weekly, and monthly quests.",
-    "shop": "Shows purchasable economy items.",
-    "cooldowns": "Shows claim and gambling cooldowns.",
-    "transactions": "Shows recent economy transactions.",
-    "lottery": "Shows lottery status, setup, and ticket buying.",
-    "buytick": "Buys lottery tickets in the lottery ticket thread.",
+    "bal": "Shows balance, streaks, and total earned/won/lost. Use `.bal` or `.bal @user`.",
+    "balance": "Alias for `.bal`. Shows balance, streaks, and total earned/won/lost.",
+    "profile": "Shows level, XP, balance, stats, and owned items. Use `.profile` or `.profile @user`.",
+    "quests": "Opens your quests UI with main, daily, weekly, and monthly quests plus claim/refresh buttons.",
+    "shop": "Opens the categorized shop UI. Select an item, press Buy, then enter quantity.",
+    "cooldowns": "Shows daily, weekly, monthly, and gambling cooldowns. Use `.cooldowns` or `.cd`.",
+    "transactions": "Shows recent economy transactions. Use `.transactions` or `.transactions @user`.",
+    "lottery": "Shows lottery status. First server run sets channel and draw period. Prize is the current pot.",
+    "buytick": "Buys lottery tickets in the ticket thread. Use `.buytick <amount>`.",
     "richest": "Shows the top 10 richest users.",
     "poorest": "Shows the 10 lowest balances.",
     "daily": "Claim a daily reward. Higher daily streak means a small bonus.",
@@ -2871,11 +2984,11 @@ EXPLANATIONS = {
     "minesweeper": "Pick a grid size, reveal safe tiles, avoid bombs.",
     "minesweepeer": "Pick a grid size, reveal safe tiles, avoid bombs.",
     "wheel": "Spin the wheel for a multiplier or blank result.",
-    "give": "Transfer your money to another user.",
+    "give": "Transfers quesos to another user. Normal transfers burn 3% tax.",
     "lb": "Shows the top 10 balances.",
     "leaderboard": "Shows the top 10 balances.",
-    "add": "Bot owner command. Adds money to a user.",
-    "remove": "Bot owner command. Removes money from a user.",
+    "add": "Owner command. Adds quesos to a user. Superowner can bulk add to @everyone or a role.",
+    "remove": "Owner command. Removes quesos from a user.",
     "disable": "Superowner/server-owner override command. Disables one bot command.",
     "enable": "Superowner/server-owner override command. Enables one disabled command.",
     "disableall": "Superowner/server-owner override command. Disables all commands except enableall.",
@@ -2924,8 +3037,8 @@ DETAILED_EXPLANATIONS = {
     "shop": "Opens an interactive categorized shop. Select an item, press Buy, then enter the quantity. The bot checks your balance, item limit, and total price before purchasing.",
     "cooldowns": "Shows daily, weekly, monthly, and active gambling command cooldowns in one place.",
     "transactions": "Shows recent money movement including shop purchases, quest rewards, level rewards, transfer tax, owner changes, and lottery activity.",
-    "lottery": f"Server lottery. First run asks the server owner for a channel and draw period, locks the channel, creates a ticket thread, and posts pinned instructions. Tickets cost {format_balance(LOTTERY_TICKET_COST)} and {int(LOTTERY_HOUSE_CUT * 100)}% is burned as a money sink.",
-    "buytick": f"Buys tickets for the configured server lottery. Use `.buytick <amount>` in the lottery ticket thread. Each ticket costs {format_balance(LOTTERY_TICKET_COST)}.",
+    "lottery": f"Server lottery. First run asks the server owner for a channel and draw period, locks the channel, creates a ticket thread, and posts pinned instructions. The prize is the full current pot. Tickets cost {format_balance(LOTTERY_TICKET_COST)} and {int(LOTTERY_HOUSE_CUT * 100)}% is burned as a money sink.",
+    "buytick": f"Buys tickets for the configured server lottery. Use `.buytick <amount>` in the lottery ticket thread. Each ticket costs {format_balance(LOTTERY_TICKET_COST)}. The prize is the full current lottery pot; every ticket is one entry.",
     "richest": "Shows the top 10 balances from the economy table.",
     "poorest": "Shows the lowest 10 balances from the economy table.",
     "weekly": f"Gives a reward once every 7 days. Base reward is 20,000-30,000 {CURRENCY_EMOJI}. Your weekly streak adds a bonus after week 1.",
@@ -2940,9 +3053,9 @@ DETAILED_EXPLANATIONS = {
     "minesweeper": "Choose 3x3, 4x4, or 5x5, then reveal tiles. 3x3 has 1 bomb, 4x4 has 3 bombs, and 5x5 has 5 bombs. Reveal every safe tile to win. Each safe reveal raises the final multiplier by +0.15. Hitting a bomb or timing out loses the bet.",
     "minesweepeer": "Choose 3x3, 4x4, or 5x5, then reveal tiles. 3x3 has 1 bomb, 4x4 has 3 bombs, and 5x5 has 5 bombs. Reveal every safe tile to win. Each safe reveal raises the final multiplier by +0.15. Hitting a bomb or timing out loses the bet.",
     "wheel": "The wheel lands on a segment. ×2, ×3, and ×5 are wins. ×1 gives your stake back, ×0.5 loses half the bet, and BLANK changes nothing. Consecutive wheel wins add +1.5% payout each win and reset on loss or partial loss.",
-    "give": "Moves quesos from you to another user. Normal users can only give what they have. Superowner can use `.give @user all` to give all their own quesos. The message shows both old and new balances.",
-    "add": "Superowner/server-owner override command. Adds new quesos to a user without taking them from anyone. It does not support `all`. The message shows the user's old and new balance.",
-    "remove": "Superowner/server-owner override command. Removes quesos from a user. `.remove @user all` removes their full balance. The balance cannot go below 0, and the message shows old and new balance.",
+    "give": f"Moves quesos from you to another user. Normal transfers burn {int(TRANSFER_TAX_RATE * 100)}% as tax. Owner-power users can use `.give @user all`. The message shows sent amount, tax, received amount, and balances.",
+    "add": "Owner command. `.add @user <amount>` adds new quesos to one user. Superowner can use `.add @everyone <amount>` or `.add @role <amount>` to add that amount to every server member or every member with that role. It does not support `all`.",
+    "remove": "Owner command. Removes quesos from a user. `.remove @user all` removes their full balance. The balance cannot go below 0, and the message shows old and new balance.",
 }
 
 @commands.command()
