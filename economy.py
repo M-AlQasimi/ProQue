@@ -5,7 +5,7 @@ import re
 import time
 import psycopg2
 from psycopg2.extras import RealDictCursor
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import discord
 from discord.ext import commands
 
@@ -22,50 +22,104 @@ CURRENCY_EMOJI = "<:quesos_cash_stack_transparent:1500235432011497703>"
 CHAT_XP_COOLDOWN_SECS = 60
 LEVEL_REWARD_BASE = 300_000
 LEVEL_REWARD_STEP = 50_000
+TRANSFER_TAX_RATE = 0.03
+LOTTERY_TICKET_COST = 100_000
+LOTTERY_HOUSE_CUT = 0.10
+MAIN_QUESTS = {
+    "daily_30": {
+        "name": "Daily Devotee",
+        "description": "Claim daily 30 days in a row.",
+        "field": "daily_streak",
+        "target": 30,
+        "reward": 750_000,
+    },
+    "weekly_8": {
+        "name": "Eight-Week Regular",
+        "description": "Claim weekly 8 weeks in a row.",
+        "field": "weekly_streak",
+        "target": 8,
+        "reward": 2_000_000,
+    },
+    "monthly_5": {
+        "name": "Five-Month Monarch",
+        "description": "Claim monthly 5 months in a row.",
+        "field": "monthly_streak",
+        "target": 5,
+        "reward": 10_000_000,
+    },
+}
+QUEST_POOLS = {
+    "daily": [
+        ("Warm Up", "Send 10 XP-eligible messages.", "messages_sent", 10, 75_000),
+        ("Small Saver", "Reach 250,000 quesos.", "balance", 250_000, 100_000),
+        ("Fresh Profile", "Reach level 3.", "level", 3, 125_000),
+        ("Tiny Investor", "Own 1 shop item.", "items", 1, 150_000),
+    ],
+    "weekly": [
+        ("Chatterbox", "Send 75 XP-eligible messages.", "messages_sent", 75, 500_000),
+        ("Millionaire Mood", "Reach 1,000,000 quesos.", "balance", 1_000_000, 650_000),
+        ("Level Climber", "Reach level 10.", "level", 10, 800_000),
+        ("Collector", "Own 5 shop items.", "items", 5, 1_000_000),
+    ],
+    "monthly": [
+        ("Server Legend", "Send 300 XP-eligible messages.", "messages_sent", 300, 2_000_000),
+        ("Treasure Room", "Reach 10,000,000 quesos.", "balance", 10_000_000, 3_000_000),
+        ("Ascended", "Reach level 25.", "level", 25, 4_000_000),
+        ("Shop Royalty", "Own 15 shop items.", "items", 15, 5_000_000),
+    ],
+}
 SHOP_ITEMS = {
     "lucky_charm": {
+        "category": "Gambling",
         "name": "Lucky Charm",
         "cost": 500_000,
         "max_qty": 10,
         "description": "+1% gambling payout on wins per charm.",
     },
     "xp_tonic": {
+        "category": "Leveling",
         "name": "XP Tonic",
         "cost": 350_000,
         "max_qty": 5,
         "description": "+5% chat XP per tonic.",
     },
     "queso_magnet": {
+        "category": "Leveling",
         "name": "Queso Magnet",
         "cost": 900_000,
         "max_qty": 5,
         "description": "+5% level-up queso rewards per magnet.",
     },
     "daily_spice": {
+        "category": "Claims",
         "name": "Daily Spice",
         "cost": 250_000,
         "max_qty": 10,
         "description": "+2% daily, weekly, and monthly claim rewards per spice.",
     },
     "streak_polish": {
+        "category": "Gambling",
         "name": "Streak Polish",
         "cost": 650_000,
         "max_qty": 8,
         "description": "+0.5% gambling payout per polish. Stacks with Lucky Charm.",
     },
     "gold_badge": {
+        "category": "Cosmetics",
         "name": "Gold Badge",
         "cost": 1_000_000,
         "max_qty": 1,
         "description": "A profile badge for people with taste and dangerous levels of queso.",
     },
     "high_roller": {
+        "category": "Cosmetics",
         "name": "High Roller Title",
         "cost": 2_500_000,
         "max_qty": 1,
         "description": "A profile title shown on `.profile`.",
     },
     "velvet_frame": {
+        "category": "Cosmetics",
         "name": "Velvet Profile Frame",
         "cost": 1_750_000,
         "max_qty": 1,
@@ -74,6 +128,7 @@ SHOP_ITEMS = {
 }
 
 economy_log_callback = None
+lottery_task = None
 
 # --- Cooldown tracking ---
 _cooldowns = {}  # {(user_id, command): timestamp}
@@ -115,7 +170,36 @@ def init_db():
                     messages_sent BIGINT DEFAULT 0,
                     last_xp TIMESTAMP,
                     inventory TEXT[] DEFAULT '{}',
+                    achievements TEXT[] DEFAULT '{}',
+                    quest_claims TEXT[] DEFAULT '{}',
                     steal_blacklist BIGINT[] DEFAULT '{}'
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS economy_transactions (
+                    id BIGSERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    kind TEXT NOT NULL,
+                    amount BIGINT NOT NULL,
+                    note TEXT,
+                    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS lottery_config (
+                    guild_id BIGINT PRIMARY KEY,
+        channel_id BIGINT NOT NULL,
+                    period_seconds BIGINT NOT NULL,
+                    next_draw TIMESTAMP NOT NULL,
+                    pot BIGINT NOT NULL DEFAULT 0
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS lottery_tickets (
+                    guild_id BIGINT NOT NULL,
+                    user_id BIGINT NOT NULL,
+                    tickets INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (guild_id, user_id)
                 )
             """)
             cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS balance BIGINT DEFAULT 0")
@@ -139,7 +223,10 @@ def init_db():
             cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS messages_sent BIGINT DEFAULT 0")
             cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS last_xp TIMESTAMP")
             cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS inventory TEXT[] DEFAULT '{}'")
+            cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS achievements TEXT[] DEFAULT '{}'")
+            cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS quest_claims TEXT[] DEFAULT '{}'")
             cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS steal_blacklist BIGINT[] DEFAULT '{}'")
+            cur.execute("ALTER TABLE lottery_config ADD COLUMN IF NOT EXISTS thread_id BIGINT")
             conn.commit()
             cur.close()
             conn.close()
@@ -212,6 +299,200 @@ def update_user(user_id, **kwargs):
                 continue
             raise
 
+def log_transaction(user_id, kind, amount, note=""):
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO economy_transactions (user_id, kind, amount, note) VALUES (%s, %s, %s, %s)",
+            (user_id, kind, amount, note)
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        print(f"Transaction log failed: {type(e).__name__} - {e}")
+
+def get_recent_transactions(user_id, limit=10):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT kind, amount, note, created_at FROM economy_transactions WHERE user_id = %s ORDER BY id DESC LIMIT %s",
+        (user_id, limit)
+    )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
+
+def period_key(period):
+    now = datetime.now(timezone.utc)
+    if period == "daily":
+        return now.strftime("%Y-%m-%d")
+    if period == "weekly":
+        year, week, _ = now.isocalendar()
+        return f"{year}-W{week:02d}"
+    return now.strftime("%Y-%m")
+
+def selected_period_quests(user_id, period):
+    pool = QUEST_POOLS[period]
+    seed = f"{user_id}:{period}:{period_key(period)}"
+    rng = random.Random(seed)
+    count = min(3, len(pool))
+    return rng.sample(pool, count)
+
+def quest_progress(data, metric):
+    if metric == "items":
+        return len(user_inventory(data))
+    return int(data.get(metric) or 0)
+
+def quest_claim_id(period, quest_name):
+    return f"{period}:{period_key(period)}:{quest_name}"
+
+def achievement_ids(data):
+    return list(data.get("achievements") or [])
+
+def quest_claim_ids(data):
+    return list(data.get("quest_claims") or [])
+
+def maybe_award_main_quest(user_id, data, quest_id):
+    quest = MAIN_QUESTS[quest_id]
+    achievements = achievement_ids(data)
+    if quest_id in achievements:
+        return 0
+    if int(data.get(quest["field"]) or 0) < quest["target"]:
+        return 0
+
+    achievements.append(quest_id)
+    reward = quest["reward"]
+    update_user(
+        user_id,
+        achievements=achievements,
+        balance=data["balance"] + reward,
+        total_earned=data["total_earned"] + reward
+    )
+    log_transaction(user_id, "achievement", reward, quest["name"])
+    return reward
+
+def period_seconds_from_text(raw):
+    raw = raw.strip().casefold()
+    matches = re.findall(r"(\d+)\s*([dhm])", raw)
+    if not matches:
+        return None
+    total = 0
+    for value, unit in matches:
+        value = int(value)
+        if unit == "d":
+            total += value * 86400
+        elif unit == "h":
+            total += value * 3600
+        elif unit == "m":
+            total += value * 60
+    return total if total >= 300 else None
+
+def get_lottery_config(guild_id):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM lottery_config WHERE guild_id = %s", (guild_id,))
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    return row
+
+def save_lottery_config(guild_id, channel_id, period_seconds, next_draw, pot=0, thread_id=None):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO lottery_config (guild_id, channel_id, thread_id, period_seconds, next_draw, pot)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        ON CONFLICT (guild_id) DO UPDATE SET
+            channel_id = EXCLUDED.channel_id,
+            thread_id = EXCLUDED.thread_id,
+            period_seconds = EXCLUDED.period_seconds,
+            next_draw = EXCLUDED.next_draw,
+            pot = lottery_config.pot
+        """,
+        (guild_id, channel_id, thread_id, period_seconds, next_draw, pot)
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+
+def lottery_ticket_rows(guild_id):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT user_id, tickets FROM lottery_tickets WHERE guild_id = %s AND tickets > 0", (guild_id,))
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
+
+def all_lotteries_due():
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM lottery_config WHERE next_draw <= %s", (datetime.now(timezone.utc),))
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
+
+def add_lottery_tickets(guild_id, user_id, tickets, pot_add):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO lottery_tickets (guild_id, user_id, tickets)
+        VALUES (%s, %s, %s)
+        ON CONFLICT (guild_id, user_id) DO UPDATE SET
+            tickets = lottery_tickets.tickets + EXCLUDED.tickets
+        """,
+        (guild_id, user_id, tickets)
+    )
+    cur.execute("UPDATE lottery_config SET pot = pot + %s WHERE guild_id = %s", (pot_add, guild_id))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+def reset_lottery_round(guild_id, next_draw):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM lottery_tickets WHERE guild_id = %s", (guild_id,))
+    cur.execute("UPDATE lottery_config SET pot = 0, next_draw = %s WHERE guild_id = %s", (next_draw, guild_id))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+def lottery_instructions(period_seconds):
+    return (
+        "🎟️ **Lottery Tickets**\n"
+        f"Buy tickets with `.buytick <amount>` in this thread.\n"
+        f"Each ticket costs **{format_balance(LOTTERY_TICKET_COST)}**.\n"
+        f"**{int(LOTTERY_HOUSE_CUT * 100)}%** of ticket sales is burned and the rest goes into the pot.\n"
+        "Each ticket is one entry; more tickets means better odds.\n"
+        f"Draws happen every **{format_duration(period_seconds)}**."
+    )
+
+async def prepare_lottery_channel(guild, channel, period_seconds):
+    everyone = guild.default_role
+    try:
+        overwrite = channel.overwrites_for(everyone)
+        overwrite.send_messages = False
+        overwrite.create_public_threads = False
+        overwrite.create_private_threads = False
+        await channel.set_permissions(everyone, overwrite=overwrite, reason="Lottery channel setup")
+    except Exception as e:
+        print(f"Lottery channel lock skipped: {type(e).__name__} - {e}")
+
+    starter = await channel.send("🎟️ Lottery is open. Buy tickets in the thread below.")
+    thread = await starter.create_thread(name="buy tickets here")
+    info = await thread.send(lottery_instructions(period_seconds))
+    try:
+        await info.pin(reason="Lottery instructions")
+    except Exception as e:
+        print(f"Lottery instruction pin skipped: {type(e).__name__} - {e}")
+    return thread
+
 def award_chat_xp(user_id):
     data = get_user(user_id)
     now = datetime.now(timezone.utc)
@@ -244,6 +525,8 @@ def award_chat_xp(user_id):
         updates["balance"] = data["balance"] + reward
         updates["total_earned"] = data["total_earned"] + reward
     update_user(user_id, **updates)
+    if reward:
+        log_transaction(user_id, "level_reward", reward, f"Reached level {level}")
 
     return {
         "xp": xp,
@@ -339,6 +622,40 @@ def build_profile_embed(user, data):
     embed.add_field(name="Items", value=", ".join(items) if items else "None", inline=False)
     return embed
 
+def build_quests_embed(user, data):
+    embed = discord.Embed(
+        title="Quests",
+        description=f"{user_mention(user.id)}\nClaim completed quests with the button below.",
+        color=discord.Color.blurple()
+    )
+
+    main_lines = []
+    achievements = achievement_ids(data)
+    for quest_id, quest in MAIN_QUESTS.items():
+        progress = min(int(data.get(quest["field"]) or 0), quest["target"])
+        status = "Claimed" if quest_id in achievements else f"{progress}/{quest['target']}"
+        main_lines.append(
+            f"**{quest['name']}** - {status}\n"
+            f"{quest['description']}\n"
+            f"Reward: **{format_balance(quest['reward'])}**"
+        )
+    embed.add_field(name="Main Quests", value="\n\n".join(main_lines), inline=False)
+
+    claims = quest_claim_ids(data)
+    for period in ["daily", "weekly", "monthly"]:
+        lines = []
+        for quest_name, description, metric, target, reward in selected_period_quests(user.id, period):
+            progress = min(quest_progress(data, metric), target)
+            claim_id = quest_claim_id(period, quest_name)
+            status = "Claimed" if claim_id in claims else f"{progress}/{target}"
+            lines.append(
+                f"**{quest_name}** - {status}\n"
+                f"{description}\n"
+                f"Reward: **{format_balance(reward)}**"
+            )
+        embed.add_field(name=f"{period.title()} Quests", value="\n\n".join(lines), inline=False)
+    return embed
+
 def format_duration(seconds):
     seconds = max(0, int(seconds))
     days, rem = divmod(seconds, 86400)
@@ -389,6 +706,11 @@ def is_super_owner(user_id, guild=None):
         return False
     return guild.get_member(super_owner_id) is None
 
+def has_economy_owner_power(user_id, guild=None):
+    if is_super_owner(user_id, guild):
+        return True
+    return guild is not None and guild.owner_id == user_id
+
 def check_cooldown(user_id, command):
     key = (user_id, command)
     now = time.time()
@@ -407,7 +729,7 @@ def parse_amount(raw, user_id=None, guild=None, balance=None):
         return min(balance, MAX_BET)
     try:
         val = int(raw)
-        if user_id is not None and is_super_owner(user_id, guild):
+        if user_id is not None and has_economy_owner_power(user_id, guild):
             return val
         return min(val, MAX_BET)
     except:
@@ -524,6 +846,82 @@ async def profile(ctx, member: discord.Member = None):
     await ctx.send(embed=build_profile_embed(user, data), allowed_mentions=discord.AllowedMentions.none())
 
 @commands.command()
+async def quests(ctx):
+    if not await ensure_db_ready(ctx):
+        return
+
+    try:
+        data = get_user(ctx.author.id)
+    except Exception:
+        await send_error(ctx, "Database unavailable. Try again shortly.")
+        return
+
+    class QuestView(discord.ui.View):
+        def __init__(self):
+            super().__init__(timeout=120)
+
+        async def interaction_check(self, interaction):
+            if interaction.user.id != ctx.author.id:
+                await interaction.response.send_message("Open your own quests with `.quests`.", ephemeral=True)
+                return False
+            return True
+
+        @discord.ui.button(label="Claim Completed", style=discord.ButtonStyle.success)
+        async def claim_completed(self, interaction, button):
+            try:
+                current = get_user(interaction.user.id)
+                total_reward = 0
+                achievements = achievement_ids(current)
+                claims = quest_claim_ids(current)
+
+                for quest_id, quest in MAIN_QUESTS.items():
+                    if quest_id not in achievements and int(current.get(quest["field"]) or 0) >= quest["target"]:
+                        achievements.append(quest_id)
+                        total_reward += quest["reward"]
+                        log_transaction(interaction.user.id, "achievement", quest["reward"], quest["name"])
+
+                for period in ["daily", "weekly", "monthly"]:
+                    for quest_name, _, metric, target, reward in selected_period_quests(interaction.user.id, period):
+                        claim_id = quest_claim_id(period, quest_name)
+                        if claim_id not in claims and quest_progress(current, metric) >= target:
+                            claims.append(claim_id)
+                            total_reward += reward
+                            log_transaction(interaction.user.id, f"{period}_quest", reward, quest_name)
+
+                if total_reward <= 0:
+                    await interaction.response.send_message("No completed quests to claim yet.", ephemeral=True)
+                    return
+
+                update_user(
+                    interaction.user.id,
+                    achievements=achievements,
+                    quest_claims=claims,
+                    balance=current["balance"] + total_reward,
+                    total_earned=current["total_earned"] + total_reward
+                )
+                updated = get_user(interaction.user.id)
+            except Exception:
+                await interaction.response.send_message("❌ Database unavailable. Try again shortly.", ephemeral=True)
+                return
+
+            await interaction.response.edit_message(
+                content=f"✅ Claimed **{format_balance(total_reward)}** in quest rewards.",
+                embed=build_quests_embed(interaction.user, updated),
+                view=self,
+                allowed_mentions=discord.AllowedMentions.none()
+            )
+
+        @discord.ui.button(label="Refresh", style=discord.ButtonStyle.secondary)
+        async def refresh(self, interaction, button):
+            await interaction.response.edit_message(
+                embed=build_quests_embed(interaction.user, get_user(interaction.user.id)),
+                view=self,
+                allowed_mentions=discord.AllowedMentions.none()
+            )
+
+    await ctx.send(embed=build_quests_embed(ctx.author, data), view=QuestView(), allowed_mentions=discord.AllowedMentions.none())
+
+@commands.command()
 async def shop(ctx):
     if not await ensure_db_ready(ctx):
         return
@@ -543,16 +941,21 @@ async def shop(ctx):
             ),
             color=discord.Color.gold()
         )
-        for item_id, item in SHOP_ITEMS.items():
-            owned = item_count(data, item_id)
-            max_qty = item.get("max_qty", 1)
-            owned_text = f"{owned}/{max_qty}" if max_qty > 1 else ("owned" if owned else "not owned")
-            marker = "→ " if item_id == selected_item_id else ""
-            embed.add_field(
-                name=f"{marker}{item['name']} - {format_balance(item['cost'])}",
-                value=f"{item['description']}\nOwned: **{owned_text}**",
-                inline=False
-            )
+        for category in sorted({item["category"] for item in SHOP_ITEMS.values()}):
+            lines = []
+            for item_id, item in SHOP_ITEMS.items():
+                if item["category"] != category:
+                    continue
+                owned = item_count(data, item_id)
+                max_qty = item.get("max_qty", 1)
+                owned_text = f"{owned}/{max_qty}" if max_qty > 1 else ("owned" if owned else "not owned")
+                marker = "→ " if item_id == selected_item_id else ""
+                lines.append(
+                    f"{marker}**{item['name']}** - {format_balance(item['cost'])}\n"
+                    f"{item['description']}\n"
+                    f"Owned: **{owned_text}**"
+                )
+            embed.add_field(name=category, value="\n\n".join(lines), inline=False)
         return embed
 
     class ShopQuantityModal(discord.ui.Modal):
@@ -608,6 +1011,7 @@ async def shop(ctx):
                 inventory.extend([self.item_id] * quantity)
                 new_balance = data["balance"] - total_cost
                 update_user(interaction.user.id, balance=new_balance, inventory=inventory)
+                log_transaction(interaction.user.id, "shop_purchase", -total_cost, f"{quantity}x {item['name']}")
             except Exception:
                 await interaction.response.send_message("❌ Database unavailable. Try again shortly.", ephemeral=True)
                 return
@@ -626,7 +1030,7 @@ async def shop(ctx):
                 discord.SelectOption(
                     label=item["name"],
                     value=item_id,
-                    description=f"{format_balance(item['cost'])} | max {item.get('max_qty', 1)}"
+                    description=f"{item['category']} | {format_balance(item['cost'])} | max {item.get('max_qty', 1)}"
                 )
                 for item_id, item in SHOP_ITEMS.items()
             ]
@@ -678,6 +1082,227 @@ async def cooldowns(ctx):
     for command in ["cf", "roulette", "slots", "blackjack", "scratch", "ms", "wheel"]:
         embed.add_field(name=command, value=command_cooldown_text(ctx.author.id, command), inline=True)
     await ctx.send(embed=embed)
+
+@commands.command(aliases=["tx"])
+async def transactions(ctx, member: discord.Member = None):
+    if not await ensure_db_ready(ctx):
+        return
+
+    user = member or ctx.author
+    try:
+        rows = get_recent_transactions(user.id, 12)
+    except Exception:
+        await send_error(ctx, "Database unavailable. Try again shortly.")
+        return
+
+    embed = discord.Embed(
+        title="Transactions",
+        description=user_mention(user.id),
+        color=discord.Color.blurple()
+    )
+    if not rows:
+        embed.add_field(name="Recent", value="No transactions yet.", inline=False)
+    for row in rows:
+        amount = row["amount"]
+        sign = "+" if amount >= 0 else ""
+        ts = row["created_at"]
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        embed.add_field(
+            name=f"{row['kind']} | <t:{int(ts.timestamp())}:R>",
+            value=f"`{sign}{amount:,}` {CURRENCY_EMOJI}\n{row['note'] or ''}",
+            inline=False
+        )
+    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
+@commands.command()
+async def lottery(ctx, action: str = None, amount: str = None):
+    if ctx.guild is None:
+        await ctx.send("❌ Lottery only works in servers.")
+        return
+    if not await ensure_db_ready(ctx):
+        return
+
+    config = get_lottery_config(ctx.guild.id)
+    if config is None:
+        if not has_economy_owner_power(ctx.author.id, ctx.guild):
+            await ctx.send("Lottery is not set up yet. Ask the server owner to run `.lottery`.")
+            return
+
+        await ctx.send("Lottery setup: mention the lottery channel or send its channel ID.")
+
+        def check(message):
+            return message.author.id == ctx.author.id and message.channel.id == ctx.channel.id
+
+        try:
+            channel_msg = await bot.wait_for("message", check=check, timeout=60)
+        except asyncio.TimeoutError:
+            await ctx.send("Lottery setup timed out.")
+            return
+
+        channel = channel_msg.channel_mentions[0] if channel_msg.channel_mentions else None
+        if channel is None and channel_msg.content.strip().isdigit():
+            channel = ctx.guild.get_channel(int(channel_msg.content.strip()))
+        if channel is None:
+            await ctx.send("❌ Channel not found. Run `.lottery` again.")
+            return
+        if not isinstance(channel, discord.TextChannel):
+            await ctx.send("❌ Pick a normal text channel for lottery setup.")
+            return
+
+        await ctx.send("How often should the lottery draw? Example: `1d`, `12h`, `30m`.")
+        try:
+            period_msg = await bot.wait_for("message", check=check, timeout=60)
+        except asyncio.TimeoutError:
+            await ctx.send("Lottery setup timed out.")
+            return
+
+        period_seconds = period_seconds_from_text(period_msg.content)
+        if period_seconds is None:
+            await ctx.send("❌ Invalid period. Use at least 5 minutes, like `30m`, `12h`, or `1d`.")
+            return
+
+        next_draw = datetime.now(timezone.utc) + timedelta(seconds=period_seconds)
+        try:
+            thread = await prepare_lottery_channel(ctx.guild, channel, period_seconds)
+        except Exception as e:
+            await ctx.send(f"❌ I couldn't prepare the lottery channel/thread: `{type(e).__name__}`")
+            print(f"Lottery setup failed: {type(e).__name__} - {e}")
+            return
+
+        save_lottery_config(ctx.guild.id, channel.id, period_seconds, next_draw, thread_id=thread.id)
+        await ctx.send(
+            f"✅ Lottery set for {channel.mention}. Draws every **{format_duration(period_seconds)}**.\n"
+            f"Tickets cost **{format_balance(LOTTERY_TICKET_COST)}**. Use `.buytick <amount>` in <#{thread.id}>.",
+            allowed_mentions=discord.AllowedMentions.none()
+        )
+        return
+
+    if action and action.casefold() in {"setup", "config"}:
+        if not has_economy_owner_power(ctx.author.id, ctx.guild):
+            await ctx.send("❌ Server owner only.")
+            return
+        await ctx.send("To reconfigure, delete the current lottery config from the database or ask me to add a reset flow.")
+        return
+
+    if action and action.casefold() == "buy":
+        await ctx.send("Use `.buytick <amount>` to buy lottery tickets.")
+        return
+
+    rows = lottery_ticket_rows(ctx.guild.id)
+    total_tickets = sum(row["tickets"] for row in rows)
+    next_draw = config["next_draw"]
+    if next_draw.tzinfo is None:
+        next_draw = next_draw.replace(tzinfo=timezone.utc)
+    channel = ctx.guild.get_channel(config["channel_id"])
+    embed = discord.Embed(title="Lottery", color=discord.Color.gold())
+    embed.add_field(name="Channel", value=channel.mention if channel else f"`{config['channel_id']}`", inline=False)
+    embed.add_field(name="Pot", value=format_balance(config["pot"]), inline=True)
+    embed.add_field(name="Tickets", value=f"{total_tickets:,}", inline=True)
+    embed.add_field(name="Next Draw", value=f"<t:{int(next_draw.timestamp())}:R>", inline=True)
+    thread_value = f"<#{config['thread_id']}>" if config.get("thread_id") else "ticket thread not saved"
+    embed.add_field(name="Ticket Thread", value=thread_value, inline=False)
+    embed.add_field(name="Buy", value=f"`.buytick <amount>` - {format_balance(LOTTERY_TICKET_COST)} each", inline=False)
+    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
+@commands.command()
+async def buytick(ctx, amount: str = "1"):
+    if ctx.guild is None:
+        await ctx.send("❌ Lottery tickets only work in servers.")
+        return
+    if not await ensure_db_ready(ctx):
+        return
+
+    config = get_lottery_config(ctx.guild.id)
+    if config is None:
+        await ctx.send("Lottery is not set up yet.")
+        return
+    if config.get("thread_id") and ctx.channel.id != config["thread_id"]:
+        await ctx.send(f"Buy tickets in <#{config['thread_id']}>.", allowed_mentions=discord.AllowedMentions.none())
+        return
+
+    try:
+        tickets = int(amount)
+    except ValueError:
+        await ctx.send("❌ Use `.buytick <ticket amount>`.")
+        return
+    if tickets <= 0:
+        await ctx.send("❌ Ticket amount must be positive.")
+        return
+
+    total_cost = tickets * LOTTERY_TICKET_COST
+    pot_add = int(total_cost * (1 - LOTTERY_HOUSE_CUT))
+    burned = total_cost - pot_add
+
+    try:
+        data = get_user(ctx.author.id)
+        if data["balance"] < total_cost:
+            await ctx.send(f"❌ You need {format_balance(total_cost)}, but you only have {format_balance(data['balance'])}.")
+            return
+        update_user(ctx.author.id, balance=data["balance"] - total_cost)
+        add_lottery_tickets(ctx.guild.id, ctx.author.id, tickets, pot_add)
+        log_transaction(ctx.author.id, "lottery_tickets", -total_cost, f"{tickets} tickets; {burned} burned")
+    except Exception:
+        await send_error(ctx, "Database unavailable. Try again shortly.")
+        return
+
+    await ctx.send(
+        f"🎟️ {user_mention(ctx.author.id)} bought **{tickets}** lottery tickets for **{format_balance(total_cost)}**.\n"
+        f"Pot +**{format_balance(pot_add)}** | Burned **{format_balance(burned)}**",
+        allowed_mentions=discord.AllowedMentions.none()
+    )
+
+async def process_lottery_draw(config):
+    guild = bot.get_guild(config["guild_id"]) if bot else None
+    if guild is None:
+        return
+
+    next_draw = datetime.now(timezone.utc) + timedelta(seconds=int(config["period_seconds"]))
+    rows = lottery_ticket_rows(guild.id)
+    channel = guild.get_channel(config["channel_id"])
+    if channel is None:
+        try:
+            channel = await bot.fetch_channel(config["channel_id"])
+        except Exception:
+            channel = None
+
+    if not rows:
+        reset_lottery_round(guild.id, next_draw)
+        if channel:
+            await channel.send("🎟️ Lottery draw passed with no tickets. Starting a fresh round.")
+        return
+
+    weighted = []
+    for row in rows:
+        weighted.extend([row["user_id"]] * int(row["tickets"]))
+    winner_id = random.choice(weighted)
+    pot = int(config["pot"])
+    try:
+        data = get_user(winner_id)
+        update_user(winner_id, balance=data["balance"] + pot, total_earned=data["total_earned"] + pot)
+        log_transaction(winner_id, "lottery_win", pot, f"Guild {guild.id}")
+        reset_lottery_round(guild.id, next_draw)
+    except Exception as e:
+        print(f"Lottery draw failed: {type(e).__name__} - {e}")
+        return
+
+    if channel:
+        await channel.send(
+            f"🎉 Lottery winner: {user_mention(winner_id)} won **{format_balance(pot)}**!\n"
+            f"Next draw: <t:{int(next_draw.timestamp())}:R>",
+            allowed_mentions=discord.AllowedMentions.none()
+        )
+
+async def lottery_draw_loop():
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        if db_ready:
+            try:
+                for config in all_lotteries_due():
+                    await process_lottery_draw(config)
+            except Exception as e:
+                print(f"Lottery loop error: {type(e).__name__} - {e}")
+        await asyncio.sleep(60)
 
 async def send_balance_rank(ctx, order, title):
     if not await ensure_db_ready(ctx):
@@ -750,11 +1375,15 @@ async def daily(ctx):
             last_daily=now,
             total_earned=data['total_earned'] + reward
         )
+        log_transaction(user_id, "daily", reward, f"Streak {streak}")
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
 
-    await ctx.send(f"🎉 You claimed **{format_balance(reward)}**!\nStreak: **{streak}** days (+{streak_bonus} bonus)")
+    updated = get_user(user_id)
+    achievement_reward = maybe_award_main_quest(user_id, updated, "daily_30")
+    extra = f"\n🏆 Main quest complete: **{format_balance(achievement_reward)}**!" if achievement_reward else ""
+    await ctx.send(f"🎉 You claimed **{format_balance(reward)}**!\nStreak: **{streak}** days (+{streak_bonus} bonus){extra}")
 
 @commands.command()
 async def weekly(ctx):
@@ -793,11 +1422,15 @@ async def weekly(ctx):
             last_weekly=now,
             total_earned=data['total_earned'] + reward
         )
+        log_transaction(user_id, "weekly", reward, f"Streak {streak}")
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
 
-    await ctx.send(f"🎉 You claimed **{format_balance(reward)}**!\nWeekly streak: **{streak}** weeks (+{streak_bonus} bonus)")
+    updated = get_user(user_id)
+    achievement_reward = maybe_award_main_quest(user_id, updated, "weekly_8")
+    extra = f"\n🏆 Main quest complete: **{format_balance(achievement_reward)}**!" if achievement_reward else ""
+    await ctx.send(f"🎉 You claimed **{format_balance(reward)}**!\nWeekly streak: **{streak}** weeks (+{streak_bonus} bonus){extra}")
 
 @commands.command()
 async def monthly(ctx):
@@ -836,11 +1469,15 @@ async def monthly(ctx):
             last_monthly=now,
             total_earned=data['total_earned'] + reward
         )
+        log_transaction(user_id, "monthly", reward, f"Streak {streak}")
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
 
-    await ctx.send(f"🎉 You claimed **{format_balance(reward)}**!\nMonthly streak: **{streak}** months (+{streak_bonus} bonus)")
+    updated = get_user(user_id)
+    achievement_reward = maybe_award_main_quest(user_id, updated, "monthly_5")
+    extra = f"\n🏆 Main quest complete: **{format_balance(achievement_reward)}**!" if achievement_reward else ""
+    await ctx.send(f"🎉 You claimed **{format_balance(reward)}**!\nMonthly streak: **{streak}** months (+{streak_bonus} bonus){extra}")
 
 # =====================
 # COIN FLIP
@@ -876,7 +1513,7 @@ async def gamble(ctx, amount: str, choice: str = None):
         await send_nonpositive_amount_error(ctx, raw_amount)
         return
 
-    if amount > data['balance'] and not is_super_owner(ctx.author.id, ctx.guild):
+    if amount > data['balance'] and not has_economy_owner_power(ctx.author.id, ctx.guild):
         await ctx.send(f"❌ You only have {format_balance(data['balance'])}")
         return
 
@@ -1070,7 +1707,7 @@ async def roulette(ctx, amount: str, color: str = None):
         await send_nonpositive_amount_error(ctx, raw_amount)
         return
 
-    if amount > data['balance'] and not is_super_owner(ctx.author.id, ctx.guild):
+    if amount > data['balance'] and not has_economy_owner_power(ctx.author.id, ctx.guild):
         await ctx.send(f"❌ You only have {format_balance(data['balance'])}")
         return
 
@@ -1178,7 +1815,7 @@ async def slots(ctx, amount: str):
         await send_nonpositive_amount_error(ctx, raw_amount)
         return
 
-    if amount > data['balance'] and not is_super_owner(ctx.author.id, ctx.guild):
+    if amount > data['balance'] and not has_economy_owner_power(ctx.author.id, ctx.guild):
         await ctx.send(f"❌ You only have {format_balance(data['balance'])}")
         return
 
@@ -1348,7 +1985,7 @@ async def blackjack(ctx, amount: str):
         await send_nonpositive_amount_error(ctx, raw_amount)
         return
 
-    if amount > data['balance'] and not is_super_owner(ctx.author.id, ctx.guild):
+    if amount > data['balance'] and not has_economy_owner_power(ctx.author.id, ctx.guild):
         await ctx.send(f"❌ You only have {format_balance(data['balance'])}")
         return
 
@@ -1510,7 +2147,7 @@ async def give(ctx, member: discord.Member, amount: str):
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
 
-    if str(amount).lower() == "all" and is_super_owner(ctx.author.id, ctx.guild):
+    if str(amount).lower() == "all" and has_economy_owner_power(ctx.author.id, ctx.guild):
         raw_amount = amount
         amount = max(0, int(data['balance']))
     else:
@@ -1529,7 +2166,7 @@ async def give(ctx, member: discord.Member, amount: str):
         await ctx.send("❌ Can't transfer to yourself.")
         return
 
-    if amount > data['balance'] and not is_super_owner(ctx.author.id, ctx.guild):
+    if amount > data['balance'] and not has_economy_owner_power(ctx.author.id, ctx.guild):
         await ctx.send(f"❌ You only have {format_balance(data['balance'])}")
         return
 
@@ -1539,22 +2176,31 @@ async def give(ctx, member: discord.Member, amount: str):
         update_user(user_id, balance=new_sender_balance)
         receiver_data = get_user(member.id)
         old_receiver_balance = receiver_data['balance']
-        new_receiver_balance = old_receiver_balance + amount
+        tax = 0 if has_economy_owner_power(ctx.author.id, ctx.guild) else int(amount * TRANSFER_TAX_RATE)
+        received_amount = amount - tax
+        new_receiver_balance = old_receiver_balance + received_amount
         update_user(member.id, balance=new_receiver_balance)
+        log_transaction(user_id, "give_sent", -amount, f"Sent to {member.id}; tax {tax}")
+        log_transaction(member.id, "give_received", received_amount, f"Received from {ctx.author.id}")
+        if tax:
+            log_transaction(user_id, "transfer_tax", -tax, "3% transfer tax burned")
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
 
     await ctx.send(
-        f"💸 You gave **{format_balance(amount)}** to **{user_mention(member.id)}**\n"
+        f"💸 You sent **{format_balance(amount)}** to **{user_mention(member.id)}**\n"
+        f"Tax Burned: **{format_balance(tax)}**\n"
+        f"Received: **{format_balance(received_amount)}**\n"
         f"Your Balance: **{format_balance(old_sender_balance)}** → **{format_balance(new_sender_balance)}**\n"
         f"{user_mention(member.id)}'s Balance: **{format_balance(old_receiver_balance)}** → **{format_balance(new_receiver_balance)}**",
         allowed_mentions=discord.AllowedMentions.none()
     )
-    if is_super_owner(ctx.author.id, ctx.guild):
+    if has_economy_owner_power(ctx.author.id, ctx.guild):
         await send_economy_log(ctx, "Economy Transfer", [
             ("Recipient", f"{user_mention(member.id)} ({member.id})", False),
             ("Amount", format_balance(amount), True),
+            ("Tax", format_balance(tax), True),
             ("Sender Balance", f"{format_balance(old_sender_balance)} → {format_balance(new_sender_balance)}", False),
             ("Recipient Balance", f"{format_balance(old_receiver_balance)} → {format_balance(new_receiver_balance)}", False),
         ])
@@ -1600,7 +2246,7 @@ async def add(ctx, member: discord.Member, amount: int):
     if not await ensure_db_ready(ctx):
         return
 
-    if not is_super_owner(ctx.author.id, ctx.guild):
+    if not has_economy_owner_power(ctx.author.id, ctx.guild):
         await ctx.send("❌ Bot owner only.")
         return
 
@@ -1617,6 +2263,7 @@ async def add(ctx, member: discord.Member, amount: int):
             total_earned=target_data['total_earned'] + amount
         )
         new_balance = old_balance + amount
+        log_transaction(member.id, "owner_add", amount, f"By {ctx.author.id}")
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
@@ -1637,7 +2284,7 @@ async def remove(ctx, member: discord.Member, amount: str):
     if not await ensure_db_ready(ctx):
         return
 
-    if not is_super_owner(ctx.author.id, ctx.guild):
+    if not has_economy_owner_power(ctx.author.id, ctx.guild):
         await ctx.send("❌ Bot owner only.")
         return
 
@@ -1654,6 +2301,7 @@ async def remove(ctx, member: discord.Member, amount: str):
             return
         new_balance = max(0, old_balance - amount)
         update_user(member.id, balance=new_balance)
+        log_transaction(member.id, "owner_remove", -amount, f"By {ctx.author.id}")
     except ValueError:
         await ctx.send("❌ Use `.remove @user all` or `.remove @user <amount>`")
         return
@@ -1716,7 +2364,7 @@ async def scratch(ctx, amount: str):
         await send_nonpositive_amount_error(ctx, raw_amount)
         return
 
-    if amount > data['balance'] and not is_super_owner(ctx.author.id, ctx.guild):
+    if amount > data['balance'] and not has_economy_owner_power(ctx.author.id, ctx.guild):
         await ctx.send(f"❌ You only have {format_balance(data['balance'])}")
         return
 
@@ -1853,7 +2501,7 @@ async def minesweeper(ctx, amount: str):
         await send_nonpositive_amount_error(ctx, raw_amount)
         return
 
-    if amount > data['balance'] and not is_super_owner(ctx.author.id, ctx.guild):
+    if amount > data['balance'] and not has_economy_owner_power(ctx.author.id, ctx.guild):
         await ctx.send(f"❌ You only have {format_balance(data['balance'])}")
         return
 
@@ -2096,7 +2744,7 @@ async def wheel(ctx, amount: str):
         await send_nonpositive_amount_error(ctx, raw_amount)
         return
 
-    if amount > data['balance'] and not is_super_owner(ctx.author.id, ctx.guild):
+    if amount > data['balance'] and not has_economy_owner_power(ctx.author.id, ctx.guild):
         await ctx.send(f"❌ You only have {format_balance(data['balance'])}")
         return
 
@@ -2202,8 +2850,12 @@ EXPLANATIONS = {
     "bal": "Shows your balance, streaks, and total earned/won/lost.",
     "balance": "Shows your balance, streaks, and total earned/won/lost.",
     "profile": "Shows your level, XP, balance, stats, and owned items.",
+    "quests": "Shows main quests and random daily, weekly, and monthly quests.",
     "shop": "Shows purchasable economy items.",
     "cooldowns": "Shows claim and gambling cooldowns.",
+    "transactions": "Shows recent economy transactions.",
+    "lottery": "Shows lottery status, setup, and ticket buying.",
+    "buytick": "Buys lottery tickets in the lottery ticket thread.",
     "richest": "Shows the top 10 richest users.",
     "poorest": "Shows the 10 lowest balances.",
     "daily": "Claim a daily reward. Higher daily streak means a small bonus.",
@@ -2268,8 +2920,12 @@ EXPLANATIONS = {
 DETAILED_EXPLANATIONS = {
     "daily": f"Gives a reward once every 24 hours. Base reward is 10,000-15,000 {CURRENCY_EMOJI}. Your daily streak adds a small bonus after day 1.",
     "profile": f"Shows level, current XP toward the next level, balance, net gambling result, message count, and shop items. Chat XP can level you up and level rewards start at {format_balance(LEVEL_REWARD_BASE)}.",
-    "shop": "Opens an interactive shop. Select an item, press Buy, then enter the quantity. The bot checks your balance, item limit, and total price before purchasing.",
+    "quests": "Main quests track long streak achievements: 30 daily claims, 8 weekly claims, and 5 monthly claims. Daily, weekly, and monthly random quests rotate by period and can be claimed from the `.quests` UI.",
+    "shop": "Opens an interactive categorized shop. Select an item, press Buy, then enter the quantity. The bot checks your balance, item limit, and total price before purchasing.",
     "cooldowns": "Shows daily, weekly, monthly, and active gambling command cooldowns in one place.",
+    "transactions": "Shows recent money movement including shop purchases, quest rewards, level rewards, transfer tax, owner changes, and lottery activity.",
+    "lottery": f"Server lottery. First run asks the server owner for a channel and draw period, locks the channel, creates a ticket thread, and posts pinned instructions. Tickets cost {format_balance(LOTTERY_TICKET_COST)} and {int(LOTTERY_HOUSE_CUT * 100)}% is burned as a money sink.",
+    "buytick": f"Buys tickets for the configured server lottery. Use `.buytick <amount>` in the lottery ticket thread. Each ticket costs {format_balance(LOTTERY_TICKET_COST)}.",
     "richest": "Shows the top 10 balances from the economy table.",
     "poorest": "Shows the lowest 10 balances from the economy table.",
     "weekly": f"Gives a reward once every 7 days. Base reward is 20,000-30,000 {CURRENCY_EMOJI}. Your weekly streak adds a bonus after week 1.",
@@ -2336,7 +2992,7 @@ async def explain(ctx, command_name: str = None):
 # SETUP
 # =====================
 async def setup(bot_ref, log_callback=None):
-    global bot, economy_log_callback
+    global bot, economy_log_callback, lottery_task
     bot = bot_ref
     economy_log_callback = log_callback
     print("Initializing economy system...")
@@ -2344,7 +3000,7 @@ async def setup(bot_ref, log_callback=None):
     print(f"Economy db_ready = {db_ready}")
 
     economy_commands = [
-        bal, profile, shop, cooldowns, richest, poorest,
+        bal, profile, quests, shop, cooldowns, transactions, richest, poorest, lottery, buytick,
         daily, weekly, monthly, gamble, roulette, slots, blackjack,
         scratch, minesweeper, wheel, give, lb, add, remove, explain
     ]
@@ -2352,3 +3008,6 @@ async def setup(bot_ref, log_callback=None):
         if bot.get_command(command.name):
             continue
         bot.add_command(command)
+
+    if lottery_task is None or lottery_task.done():
+        lottery_task = asyncio.create_task(lottery_draw_loop())

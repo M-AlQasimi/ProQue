@@ -496,7 +496,7 @@ def has_super_owner_power(user, guild=None):
     return user.id == super_owner_id or has_server_owner_override(user, guild)
 
 def has_owner_power(user, guild=None):
-    return has_super_owner_power(user, guild) or user.id in guild_owners(guild)
+    return has_super_owner_power(user, guild) or (guild is not None and guild.owner_id == user.id) or user.id in guild_owners(guild)
 
 def has_mod_power(user, guild=None):
     return has_super_owner_power(user, guild) or user.id in guild_mods(guild)
@@ -543,7 +543,7 @@ async def on_ready():
     try:
         await economy_setup(bot, send_log)
         economy_command_names = [
-            "bal", "profile", "shop", "cooldowns", "richest", "poorest",
+            "bal", "profile", "quests", "shop", "cooldowns", "transactions", "richest", "poorest", "lottery", "buytick",
             "daily", "weekly", "monthly", "cf", "roulette", "slots",
             "blackjack", "scratch", "ms", "wheel", "give", "lb",
             "add", "remove", "explain"
@@ -1050,7 +1050,7 @@ async def on_command_error(ctx, error):
 
 HELP_CATEGORIES = {
     "Economy": [
-        "bal", "profile", "daily", "weekly", "monthly", "cooldowns", "shop",
+        "bal", "profile", "quests", "daily", "weekly", "monthly", "cooldowns", "transactions", "shop", "lottery", "buytick",
         "cf", "roulette", "slots", "blackjack", "scratch", "ms", "wheel",
         "give", "lb", "richest", "poorest",
     ],
@@ -1778,7 +1778,7 @@ async def block_blacklisted(ctx):
 @bot.command()
 @is_owner_or_mod()
 async def disable(ctx, cmd: str):
-    if not has_super_owner_power(ctx.author, ctx.guild):
+    if not has_owner_power(ctx.author, ctx.guild):
         return
 
     command = get_command_case_insensitive(cmd)
@@ -1794,7 +1794,7 @@ async def disable(ctx, cmd: str):
 @bot.command()
 @is_owner_or_mod()
 async def enable(ctx, cmd: str):
-    if not has_super_owner_power(ctx.author, ctx.guild):
+    if not has_owner_power(ctx.author, ctx.guild):
         return
 
     command = get_command_case_insensitive(cmd)
@@ -1813,7 +1813,7 @@ async def enable(ctx, cmd: str):
 @bot.command()
 @is_owner_or_mod()
 async def disableall(ctx):
-    if not has_super_owner_power(ctx.author, ctx.guild):
+    if not has_owner_power(ctx.author, ctx.guild):
         return
 
     for command in bot.commands:
@@ -1825,7 +1825,7 @@ async def disableall(ctx):
 @bot.command()
 @is_owner_or_mod()
 async def enableall(ctx):
-    if not has_super_owner_power(ctx.author, ctx.guild):
+    if not has_owner_power(ctx.author, ctx.guild):
         return
 
     guild_disabled_commands(ctx.guild).clear()
