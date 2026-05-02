@@ -18,6 +18,7 @@ bot = None
 MAX_BET = 150_000
 COOLDOWN_SECS = 5
 STREAK_MULTIPLIER = 0.015  # 1.5% per consecutive win
+CURRENCY_EMOJI = "<:quesos_cash_stack_transparent:1500235432011497703>"
 
 # --- Cooldown tracking ---
 _cooldowns = {}  # {(user_id, command): timestamp}
@@ -147,7 +148,7 @@ def update_user(user_id, **kwargs):
             raise
 
 def format_balance(amount):
-    return f"{amount:,} 𝚀"
+    return f"{amount:,} {CURRENCY_EMOJI}"
 
 def is_super_owner(user_id, guild=None):
     super_owner_id = 885548126365171824
@@ -183,7 +184,7 @@ def parse_amount(raw, user_id=None, guild=None, balance=None):
 
 async def send_nonpositive_amount_error(ctx, raw_amount):
     if str(raw_amount).lower() == "all":
-        await ctx.send("❌ You don't have any 𝚀 to use.")
+        await ctx.send(f"❌ You don't have any {CURRENCY_EMOJI} to use.")
         return
 
     await ctx.send("❌ Amount must be positive.")
@@ -431,7 +432,7 @@ async def gamble(ctx, amount: str, choice: str = None):
     raw_amount = amount
     parsed = parse_amount(amount, ctx.author.id, ctx.guild, data['balance'])
     if parsed is None:
-        await ctx.send("❌ Use `.cf all`, `.cf <amount>`, or `.flip <amount>` (max 150,000 𝚀)")
+        await ctx.send(f"❌ Use `.cf all`, `.cf <amount>`, or `.flip <amount>` (max 150,000 {CURRENCY_EMOJI})")
         return
 
     amount = parsed
@@ -733,7 +734,7 @@ async def slots(ctx, amount: str):
     raw_amount = amount
     parsed = parse_amount(amount, ctx.author.id, ctx.guild, data['balance'])
     if parsed is None:
-        await ctx.send("❌ Use `.slots all` or `.slots <amount>` (max 150,000 𝚀)")
+        await ctx.send(f"❌ Use `.slots all` or `.slots <amount>` (max 150,000 {CURRENCY_EMOJI})")
         return
 
     amount = parsed
@@ -903,7 +904,7 @@ async def blackjack(ctx, amount: str):
     raw_amount = amount
     parsed = parse_amount(amount, ctx.author.id, ctx.guild, data['balance'])
     if parsed is None:
-        await ctx.send("❌ Use `.blackjack all` or `.blackjack <amount>` (max 150,000 𝚀)")
+        await ctx.send(f"❌ Use `.blackjack all` or `.blackjack <amount>` (max 150,000 {CURRENCY_EMOJI})")
         return
 
     amount = parsed
@@ -1257,7 +1258,7 @@ async def scratch(ctx, amount: str):
     raw_amount = amount
     parsed = parse_amount(amount, ctx.author.id, ctx.guild, data['balance'])
     if parsed is None:
-        await ctx.send("❌ Use `.scratch all` or `.scratch <amount>` (max 150,000 𝚀)")
+        await ctx.send(f"❌ Use `.scratch all` or `.scratch <amount>` (max 150,000 {CURRENCY_EMOJI})")
         return
 
     amount = parsed
@@ -1637,7 +1638,7 @@ async def wheel(ctx, amount: str):
     raw_amount = amount
     parsed = parse_amount(amount, ctx.author.id, ctx.guild, data['balance'])
     if parsed is None:
-        await ctx.send("❌ Use `.wheel all` or `.wheel <amount>` (max 150,000 𝚀)")
+        await ctx.send(f"❌ Use `.wheel all` or `.wheel <amount>` (max 150,000 {CURRENCY_EMOJI})")
         return
 
     amount = parsed
@@ -1809,9 +1810,9 @@ EXPLANATIONS = {
 }
 
 DETAILED_EXPLANATIONS = {
-    "daily": "Gives a reward once every 24 hours. Base reward is 10,000-15,000 𝚀. Your daily streak adds a small bonus after day 1.",
-    "weekly": "Gives a reward once every 7 days. Base reward is 20,000-30,000 𝚀. Your weekly streak adds a bonus after week 1.",
-    "monthly": "Gives a reward once every 30 days. Base reward is 40,000-60,000 𝚀. Your monthly streak adds a bigger bonus after month 1.",
+    "daily": f"Gives a reward once every 24 hours. Base reward is 10,000-15,000 {CURRENCY_EMOJI}. Your daily streak adds a small bonus after day 1.",
+    "weekly": f"Gives a reward once every 7 days. Base reward is 20,000-30,000 {CURRENCY_EMOJI}. Your weekly streak adds a bonus after week 1.",
+    "monthly": f"Gives a reward once every 30 days. Base reward is 40,000-60,000 {CURRENCY_EMOJI}. Your monthly streak adds a bigger bonus after month 1.",
     "cf": "Pick heads or tails with `.cf <amount> h`, `.cf <amount> t`, `.flip <amount> heads`, or `.flip <amount> tails`. If you do not pick, the bot asks you. Winning pays ×2 before streak bonus, so betting 100 wins 200 total and gives +100 profit. Losing removes the bet. Consecutive coinflip wins add +1.5% payout each win and reset on loss.",
     "flip": "Pick heads or tails with `.cf <amount> h`, `.cf <amount> t`, `.flip <amount> heads`, or `.flip <amount> tails`. If you do not pick, the bot asks you. Winning pays ×2 before streak bonus, so betting 100 wins 200 total and gives +100 profit. Losing removes the bet. Consecutive coinflip wins add +1.5% payout each win and reset on loss.",
     "roulette": "Pick red, black, green, or use the button menu if you leave the color blank. Red and black pay ×2. Green pays ×10 because it is rarer. The bet is removed from the payout result, so a 100 bet on red winning gives 200 total and +100 profit. Consecutive roulette wins add +1.5% payout each win and reset on loss.",
