@@ -440,6 +440,18 @@ async def safe_send(destination, *args, **kwargs):
     last_message_time = asyncio.get_event_loop().time()
     return await destination.send(*args, **kwargs)
 
+async def safe_add_reaction(message, emoji):
+    try:
+        await message.add_reaction(emoji)
+    except discord.HTTPException:
+        pass
+
+async def safe_remove_reaction(message, emoji, member):
+    try:
+        await message.remove_reaction(emoji, member)
+    except discord.HTTPException:
+        pass
+
 def run():
     app.run(host='0.0.0.0', port=8080)
 
@@ -505,7 +517,13 @@ async def on_ready():
     # Load economy cog
     try:
         await economy_setup(bot)
-        print("Economy system loaded")
+        economy_command_names = [
+            "bal", "daily", "weekly", "monthly", "flip", "roulette", "slots",
+            "blackjack", "scratch", "minesweeper", "wheel", "give", "lb",
+            "add", "remove", "explain"
+        ]
+        loaded_economy_commands = [name for name in economy_command_names if bot.get_command(name)]
+        print(f"Economy system loaded ({len(loaded_economy_commands)}/{len(economy_command_names)} commands)")
     except Exception as e:
         print(f"Economy system not loaded: {e}")
     await restore_persistent_runtime_state()
@@ -1954,12 +1972,12 @@ async def testlog(ctx):
 async def userinfo(ctx, member: discord.Member = None):
     member = member or ctx.author
     embed = discord.Embed(title="User Info", color=0x3498db)
-    embed.set_thumbnail(url=member.avatar.url)
+    embed.set_thumbnail(url=member.display_avatar.url)
     embed.add_field(name="Username", value=str(member), inline=True)
     embed.add_field(name="ID", value=member.id, inline=True)
     embed.add_field(
         name="Joined Server",
-        value=member.joined_at.strftime("%d %b %Y • %H:%M UTC"),
+        value=member.joined_at.strftime("%d %b %Y • %H:%M UTC") if member.joined_at else "Unknown",
         inline=False
     )
     embed.add_field(
@@ -1980,7 +1998,7 @@ async def userinfo(ctx, member: discord.Member = None):
 @bot.command()
 async def pfp(ctx, member: discord.Member = None):
     member = member or ctx.author
-    await ctx.send(member.avatar.url)
+    await ctx.send(member.display_avatar.url)
 
 class TicTacToeButton(Button):
     def __init__(self, row, col):
@@ -2016,14 +2034,14 @@ class TicTacToeButton(Button):
                 view=game["view"],
                 allowed_mentions=discord.AllowedMentions.none()
             )
-            del ttt_games[interaction.channel.id]
+            ttt_games.pop(interaction.channel.id, None)
             return
 
         if all(cell != '⬜' for row in board for cell in row):
             payout_text = await settle_game_bet(game, None)
             await disable_all_buttons(game["view"])
             await game["msg"].edit(content=f"It's a draw!{payout_text}", view=game["view"])
-            del ttt_games[interaction.channel.id]
+            ttt_games.pop(interaction.channel.id, None)
             return
 
         game["turn"] = 1 - game["turn"]
@@ -2243,7 +2261,7 @@ async def update_turn(game, channel):
             view=game["view"],
             allowed_mentions=discord.AllowedMentions.none()
         )
-        del ttt_games[channel.id]
+        ttt_games.pop(channel.id, None)
 
     game["timeout_task"] = asyncio.create_task(countdown())
 
@@ -2280,7 +2298,7 @@ class Connect4Button(Button):
                     view=game["view"],
                     allowed_mentions=discord.AllowedMentions.none()
                 )
-                del c4_games[interaction.channel.id]
+                c4_games.pop(interaction.channel.id, None)
                 return
 
             if all(cell != " " for row in board for cell in row):
@@ -2291,7 +2309,7 @@ class Connect4Button(Button):
                     content=f"{render}\n\nIt's a draw!{payout_text}",
                     view=game["view"]
                 )
-                del c4_games[interaction.channel.id]
+                c4_games.pop(interaction.channel.id, None)
                 return
 
             game["turn"] = 1 - game["turn"]
@@ -2363,7 +2381,7 @@ async def update_c4_turn(game, channel):
                 view=game["view"],
                 allowed_mentions=discord.AllowedMentions.none()
             )
-            del c4_games[channel.id]
+            c4_games.pop(channel.id, None)
         except Exception as e:
             print("Error in countdown:", e)
 
@@ -2421,7 +2439,7 @@ async def c4(ctx, opponent: discord.Member):
 @is_owner_or_mod()
 async def endttt(ctx):
     if ctx.channel.id in ttt_games:
-        del ttt_games[ctx.channel.id]
+        ttt_games.pop(ctx.channel.id, None)
         await ctx.send("Tic-Tac-Toe game ended.")
     else:
         await ctx.send("No Tic-Tac-Toe game is currently active in this channel.")
@@ -3167,6 +3185,9 @@ async def reply(ctx, message_id: int, *, text=None):
 
 @bot.command()
 async def poll(ctx, *, args):
+    if ctx.guild is None:
+        return await ctx.send("Polls can only be used in a server.")
+
     parts = [p.strip() for p in args.split("|")]
     question = parts[0]
     time_str = parts[1] if len(parts) >= 2 else None
@@ -3401,7 +3422,7 @@ async def giveaway(ctx, time: str, *, prize: str):
     embed.set_footer(text=f"Ends in {time}")
     msg = await ctx.send(embed=embed)
     await msg.add_reaction("🎉")
-    end_time = datetime.now(timezone.utc) + datetime.timedelta(seconds=seconds)
+    end_time = datetime.now(timezone.utc) + timedelta(seconds=seconds)
     while seconds > 0:
         if seconds <= 60:
             embed.set_footer(text=f"Ends in {seconds}s")
@@ -3553,6 +3574,9 @@ async def timer_countdown(ctx, message, end_time, time_str, title, owner_id):
 
 @bot.command()
 async def timer(ctx, *, args: str):
+    if ctx.guild is None:
+        return await ctx.send("Timers can only be used in a server.")
+
     args = args.strip()
     if not args:
         return await ctx.send("Invalid format. Use `.timer 10m` or `.timer 10m Title here`")
@@ -3781,7 +3805,7 @@ async def ctimer(ctx):
 @bot.command()
 async def alarm(ctx, date: str):
     try:
-        alarm_time = datetime.strptime(date, "%d/%m/%Y")
+        alarm_time = datetime.strptime(date, "%d/%m/%Y").replace(tzinfo=timezone.utc)
     except ValueError:
         return await ctx.send("Invalid date format. Use DD/MM/YYYY.")
     
@@ -4329,7 +4353,7 @@ async def ask_command(ctx, *, question: str):
     if not GROQ_API_KEY:
         return await ctx.send("API not configured. Set GROQ_API_KEY.")
     
-    await ctx.message.add_reaction("⏳")
+    await safe_add_reaction(ctx.message, "⏳")
 
     headers = {
         "Authorization": f"Bearer {GROQ_API_KEY}",
@@ -4350,7 +4374,7 @@ async def ask_command(ctx, *, question: str):
         async with aiohttp.ClientSession() as session:
             async with session.post("https://api.groq.com/openai/v1/chat/completions", json=payload, headers=headers) as resp:
                 if resp.status != 200:
-                    await ctx.message.remove_reaction("⏳", bot.user)
+                    await safe_remove_reaction(ctx.message, "⏳", bot.user)
                     return await ctx.send(f"Error: {resp.status}")
 
                 data = await resp.json()
@@ -4359,11 +4383,11 @@ async def ask_command(ctx, *, question: str):
                 if len(answer) > 1900:
                     answer = answer[:1897] + "..."
 
-                await ctx.message.remove_reaction("⏳", bot.user)
+                await safe_remove_reaction(ctx.message, "⏳", bot.user)
                 await ctx.send(answer)
 
     except Exception as e:
-        await ctx.message.remove_reaction("⏳", bot.user)
+        await safe_remove_reaction(ctx.message, "⏳", bot.user)
         await ctx.send(f"Error: {str(e)[:100]}")
 
 @bot.command(name="generate")
@@ -4372,7 +4396,7 @@ async def generate_command(ctx, *, prompt: str):
     if not CLOUDFLARE_API_KEY or not CLOUDFLARE_ACCOUNT_ID:
         return await ctx.send("API not configured. Set CLOUDFLARE_API_KEY and CLOUDFLARE_ACCOUNT_ID.")
     
-    await ctx.message.add_reaction("⏳")
+    await safe_add_reaction(ctx.message, "⏳")
 
     url = f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/run/@cf/black-forest-labs/flux-1-schnell"
 
@@ -4389,7 +4413,7 @@ async def generate_command(ctx, *, prompt: str):
         async with aiohttp.ClientSession() as session:
             async with session.post(url, json=payload, headers=headers) as resp:
                 if resp.status != 200:
-                    await ctx.message.remove_reaction("⏳", bot.user)
+                    await safe_remove_reaction(ctx.message, "⏳", bot.user)
                     return await ctx.send(f"Error: {resp.status}")
 
                 data = await resp.json()
@@ -4400,11 +4424,11 @@ async def generate_command(ctx, *, prompt: str):
                 image_bytes = base64.b64decode(image_data)
                 file = discord.File(BytesIO(image_bytes), filename="generated.png")
 
-                await ctx.message.remove_reaction("⏳", bot.user)
+                await safe_remove_reaction(ctx.message, "⏳", bot.user)
                 await ctx.send(file=file)
 
     except Exception as e:
-        await ctx.message.remove_reaction("⏳", bot.user)
+        await safe_remove_reaction(ctx.message, "⏳", bot.user)
         await ctx.send(f"Error: {str(e)[:100]}")
 
 
@@ -4439,7 +4463,7 @@ async def analyse_command(ctx):
     if not CLOUDFLARE_API_KEY or not CLOUDFLARE_ACCOUNT_ID:
         return await ctx.send("API not configured.")
     
-    await ctx.message.add_reaction("⏳")
+    await safe_add_reaction(ctx.message, "⏳")
     
     url = f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/run/@cf/meta/llama-3.2-90b-vision-instruct"
     
@@ -4460,7 +4484,7 @@ async def analyse_command(ctx):
         async with aiohttp.ClientSession() as session:
             async with session.post(url, json=payload, headers=headers) as resp:
                 if resp.status != 200:
-                    await ctx.message.remove_reaction("⏳", bot.user)
+                    await safe_remove_reaction(ctx.message, "⏳", bot.user)
                     return await ctx.send(f"Error: {resp.status}")
                 
                 data = await resp.json()
@@ -4469,10 +4493,10 @@ async def analyse_command(ctx):
                 if len(result) > 1900:
                     result = result[:1897] + "..."
                 
-                await ctx.message.remove_reaction("⏳", bot.user)
+                await safe_remove_reaction(ctx.message, "⏳", bot.user)
                 await ctx.send(result)
     except Exception as e:
-        await ctx.message.remove_reaction("⏳", bot.user)
+        await safe_remove_reaction(ctx.message, "⏳", bot.user)
         await ctx.send(f"Error: {str(e)[:100]}")
 
 # === TRANSLATE COMMAND ===
@@ -4491,7 +4515,7 @@ async def translate_command(ctx, *, args: str = None):
     else:
         return await ctx.send("Reply to a message or provide text: `.translate [text]`")
     
-    await ctx.message.add_reaction("⏳")
+    await safe_add_reaction(ctx.message, "⏳")
     
     try:
         # MyMemory auto-detect: use "auto" as source
@@ -4500,12 +4524,12 @@ async def translate_command(ctx, *, args: str = None):
             url_detect = f"https://api.mymemory.translated.net/get?q={text}&langpair=auto|en"
             async with session.get(url_detect) as resp:
                 if resp.status != 200:
-                    await ctx.message.remove_reaction("⏳", bot.user)
+                    await safe_remove_reaction(ctx.message, "⏳", bot.user)
                     return await ctx.send(f"Error: {resp.status}")
                 
                 data = await resp.json()
                 if data.get("responseStatus") != 200:
-                    await ctx.message.remove_reaction("⏳", bot.user)
+                    await safe_remove_reaction(ctx.message, "⏳", bot.user)
                     return await ctx.send(f"Error: {data.get('responseDetails', 'Translation failed')}")
                 
                 # MyMemory returns detected language in responseData
@@ -4518,11 +4542,11 @@ async def translate_command(ctx, *, args: str = None):
                 else:
                     response = f"**Detected: {detected_lang.upper()} → English**\n{result}"
                 
-                await ctx.message.remove_reaction("⏳", bot.user)
+                await safe_remove_reaction(ctx.message, "⏳", bot.user)
                 await ctx.send(response)
             
     except Exception as e:
-        await ctx.message.remove_reaction("⏳", bot.user)
+        await safe_remove_reaction(ctx.message, "⏳", bot.user)
         await ctx.send(f"Error: {str(e)[:100]}")
 
 # === RUN BOT ===

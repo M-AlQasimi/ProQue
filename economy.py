@@ -1855,4 +1855,6 @@ async def setup(bot_ref):
         scratch, minesweeper, wheel, give, lb, add, remove, explain
     ]
     for command in economy_commands:
+        if bot.get_command(command.name):
+            continue
         bot.add_command(command)
