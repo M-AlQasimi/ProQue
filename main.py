@@ -790,6 +790,15 @@ async def on_message(message):
     if message.author.bot:
         return
 
+    ctx = await bot.get_context(message)
+    if ctx.valid:
+        print(
+            f"Command received: {ctx.command} by {message.author} "
+            f"({message.author.id}) in guild {message.guild.id if message.guild else 'DM'}"
+        )
+        await bot.invoke(ctx)
+        return
+
     # AI mention handling
     content = message.content.strip()
     is_mention = message.mentions and any(u.id == bot.user.id for u in message.mentions)
@@ -836,11 +845,6 @@ async def on_message(message):
             except Exception as e:
                 await message.channel.send(f"Error: {str(e)[:100]}")
             return
-
-    ctx = await bot.get_context(message)
-    if ctx.valid:
-        await bot.invoke(ctx)
-        return
 
     if message.channel.id in guild_shutdown_channels(message.guild) and not has_owner_power(message.author, message.guild):
         try:
@@ -975,24 +979,30 @@ async def on_message(message):
 @bot.event
 async def on_command_error(ctx, error):
     if isinstance(error, commands.CommandNotFound):
+        print(f"Command not found: {ctx.message.content} by {ctx.author} ({ctx.author.id})")
         return
 
     elif isinstance(error, CommandDisabledError):
+        print(f"Command disabled: {error.command_name} for {ctx.author} ({ctx.author.id})")
         await ctx.send(f"**{error.command_name}** is disabled.")
 
     elif isinstance(error, commands.CheckFailure):
+        print(f"Command check failed: {ctx.command} for {ctx.author} ({ctx.author.id}) - {type(error).__name__}: {error}")
         if ctx.author.id in guild_blacklisted_users(ctx.guild):
             await ctx.send("LMAO you're blocked you can't use ts 😭✌🏻")
         else:
             await ctx.send("You can't use that heh")
 
     elif isinstance(error, commands.MissingPermissions):
+        print(f"Command missing permissions: {ctx.command} for {ctx.author} ({ctx.author.id}) - {error}")
         await ctx.send("You don’t have permission to do that.")
 
     elif isinstance(error, commands.MissingRequiredArgument):
+        print(f"Command missing argument: {ctx.command} for {ctx.author} ({ctx.author.id}) - {error}")
         await ctx.send("Missing required argument.")
 
     elif isinstance(error, commands.BadArgument):
+        print(f"Command bad argument: {ctx.command} for {ctx.author} ({ctx.author.id}) - {error}")
         await ctx.send("Invalid input. Check your arguments.")
 
     else:
@@ -1687,13 +1697,19 @@ async def on_voice_state_update(member, before, after):
 
 @bot.check
 async def globally_block_disabled(ctx):
-    if ctx.command and ctx.command.name in guild_disabled_commands(ctx.guild) and not has_super_owner_power(ctx.author, ctx.guild):
+    disabled = guild_disabled_commands(ctx.guild)
+    if ctx.command and ctx.command.name in disabled and not has_super_owner_power(ctx.author, ctx.guild):
+        print(f"Disabled command blocked: {ctx.command.name} for {ctx.author} ({ctx.author.id}); disabled={sorted(disabled)}")
         raise CommandDisabledError(ctx.command.name)
     return True
 
 @bot.check
 async def block_blacklisted(ctx):
-    return ctx.author.id not in guild_blacklisted_users(ctx.guild)
+    blocked = guild_blacklisted_users(ctx.guild)
+    if ctx.author.id in blocked:
+        print(f"Blacklisted user blocked: {ctx.author} ({ctx.author.id}) in guild {ctx.guild.id if ctx.guild else 'DM'}")
+        return False
+    return True
 
 @bot.command()
 @is_owner_or_mod()
