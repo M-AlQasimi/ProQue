@@ -402,12 +402,13 @@ async def monthly(ctx):
 # =====================
 # COIN FLIP
 # =====================
-@commands.command(name="flip", aliases=["cf"])
+@commands.command(name="cf", aliases=["flip"])
 async def gamble(ctx, amount: str, choice: str = None):
+    """Coin flip. Use `.cf <amount> h/t`, `.cf <amount> heads/tails`, or `.cf <amount>`."""
     if not await ensure_db_ready(ctx):
         return
 
-    cd = check_cooldown(ctx.author.id, "flip")
+    cd = check_cooldown(ctx.author.id, "cf")
     if cd > 0:
         await ctx.send(f"⏳ Chill for **{cd:.1f}s** before flipping again.")
         return
@@ -422,7 +423,7 @@ async def gamble(ctx, amount: str, choice: str = None):
 
     parsed = parse_amount(amount, ctx.author.id, ctx.guild, data['balance'])
     if parsed is None:
-        await ctx.send("❌ Use `.flip all`, `.flip <amount>`, or `.cf <amount>` (max 150,000 𝚀)")
+        await ctx.send("❌ Use `.cf all`, `.cf <amount>`, or `.flip <amount>` (max 150,000 𝚀)")
         return
 
     amount = parsed
@@ -1356,13 +1357,13 @@ GRID_EMOJIS = {
     'cursor': '🟨',
 }
 
-@commands.command(aliases=["ms"])
+@commands.command(name="ms", aliases=["minesweeper", "minesweepeer"])
 async def minesweeper(ctx, amount: str):
-    """Play minesweeper. Use `.minesweeper all` or `.minesweeper 500`."""
+    """Play minesweeper. Use `.ms all` or `.ms 500`."""
     if not await ensure_db_ready(ctx):
         return
 
-    cd = check_cooldown(ctx.author.id, "minesweeper")
+    cd = check_cooldown(ctx.author.id, "ms")
     if cd > 0:
         await ctx.send(f"⏳ Chill for **{cd:.1f}s** before minesweeper again.")
         return
@@ -1377,7 +1378,7 @@ async def minesweeper(ctx, amount: str):
 
     parsed = parse_amount(amount, ctx.author.id, ctx.guild, data['balance'])
     if parsed is None:
-        await ctx.send("❌ Use `.minesweeper all` or `.minesweeper <amount>`")
+        await ctx.send("❌ Use `.ms all` or `.ms <amount>`")
         return
 
     amount = parsed
@@ -1735,14 +1736,15 @@ EXPLANATIONS = {
     "daily": "Claim a daily reward. Higher daily streak means a small bonus.",
     "weekly": "Claim a weekly reward. Higher weekly streak means a bigger bonus.",
     "monthly": "Claim a monthly reward. Higher monthly streak means a bigger bonus.",
-    "flip": "Bet on heads or tails. Use `.flip <amount> h` or `.flip <amount> tails`.",
-    "cf": "Alias for `.flip`.",
+    "cf": "Bet on heads or tails. Use `.cf <amount> h` or `.cf <amount> tails`.",
+    "flip": "Bet on heads or tails. Use `.cf <amount> h` or `.cf <amount> tails`.",
     "roulette": "Bet on red, black, or green. Matching color wins.",
     "slots": "Slot machine. Matching reels pay out; three matching reels pay more.",
     "blackjack": "Blackjack with Hit and Stand buttons. Beat the dealer without busting.",
     "scratch": "Scratch card. More matching symbols means a better payout.",
+    "ms": "Pick a grid size, reveal safe tiles, avoid bombs.",
     "minesweeper": "Pick a grid size, reveal safe tiles, avoid bombs.",
-    "ms": "Alias for `.minesweeper`.",
+    "minesweepeer": "Pick a grid size, reveal safe tiles, avoid bombs.",
     "wheel": "Spin the wheel for a multiplier or blank result.",
     "give": "Transfer your money to another user.",
     "lb": "Shows the top 10 balances.",
@@ -1793,13 +1795,15 @@ DETAILED_EXPLANATIONS = {
     "daily": "Gives a reward once every 24 hours. Base reward is 10,000-15,000 𝚀. Your daily streak adds a small bonus after day 1.",
     "weekly": "Gives a reward once every 7 days. Base reward is 20,000-30,000 𝚀. Your weekly streak adds a bonus after week 1.",
     "monthly": "Gives a reward once every 30 days. Base reward is 40,000-60,000 𝚀. Your monthly streak adds a bigger bonus after month 1.",
-    "flip": "Pick heads or tails with `.flip <amount> h`, `.flip <amount> t`, `.cf <amount> heads`, or `.cf <amount> tails`. If you do not pick, the bot asks you. Winning pays ×2 before streak bonus, so betting 100 wins 200 total and gives +100 profit. Losing removes the bet. Consecutive flip wins add +1.5% payout each win and reset on loss.",
+    "cf": "Pick heads or tails with `.cf <amount> h`, `.cf <amount> t`, `.flip <amount> heads`, or `.flip <amount> tails`. If you do not pick, the bot asks you. Winning pays ×2 before streak bonus, so betting 100 wins 200 total and gives +100 profit. Losing removes the bet. Consecutive coinflip wins add +1.5% payout each win and reset on loss.",
+    "flip": "Pick heads or tails with `.cf <amount> h`, `.cf <amount> t`, `.flip <amount> heads`, or `.flip <amount> tails`. If you do not pick, the bot asks you. Winning pays ×2 before streak bonus, so betting 100 wins 200 total and gives +100 profit. Losing removes the bet. Consecutive coinflip wins add +1.5% payout each win and reset on loss.",
     "roulette": "Pick red, black, green, or use the button menu if you leave the color blank. Red and black pay ×2. Green pays ×10 because it is rarer. The bet is removed from the payout result, so a 100 bet on red winning gives 200 total and +100 profit. Consecutive roulette wins add +1.5% payout each win and reset on loss.",
     "slots": "The bot spins 3 reels. Three matching symbols are a jackpot and pay based on the symbol: earlier symbols pay less, rarer symbols pay more. Two matching symbols are a small win and pay ×2. No match loses the bet. Consecutive slots wins add +1.5% payout each win and reset on loss.",
     "blackjack": "You get cards against the dealer and use Hit or Stand buttons. Try to get closer to 21 than the dealer without going over. A normal win pays +1x your bet as profit. Losing removes the bet. A push changes nothing. Consecutive blackjack wins add +1.5% payout each win and reset on loss.",
     "scratch": "The ticket reveals 5 symbols one by one. Matching enough symbols wins a prize: 3 or 4 matches pay ×2, and 5 matches pay ×8. Fewer matches loses the bet. Consecutive scratch wins add +1.5% payout each win and reset on loss.",
+    "ms": "Choose 3x3, 4x4, or 5x5, then reveal tiles. 3x3 has 1 bomb, 4x4 has 3 bombs, and 5x5 has 5 bombs. Reveal every safe tile to win. Each safe reveal raises the final multiplier by +0.15. Hitting a bomb or timing out loses the bet.",
     "minesweeper": "Choose 3x3, 4x4, or 5x5, then reveal tiles. 3x3 has 1 bomb, 4x4 has 3 bombs, and 5x5 has 5 bombs. Reveal every safe tile to win. Each safe reveal raises the final multiplier by +0.15. Hitting a bomb or timing out loses the bet.",
-    "ms": "Same as `.minesweeper`.",
+    "minesweepeer": "Choose 3x3, 4x4, or 5x5, then reveal tiles. 3x3 has 1 bomb, 4x4 has 3 bombs, and 5x5 has 5 bombs. Reveal every safe tile to win. Each safe reveal raises the final multiplier by +0.15. Hitting a bomb or timing out loses the bet.",
     "wheel": "The wheel lands on a segment. ×2, ×3, and ×5 are wins. ×1 gives your stake back, ×0.5 loses half the bet, and BLANK changes nothing. Consecutive wheel wins add +1.5% payout each win and reset on loss or partial loss.",
     "give": "Moves quesos from you to another user. Normal users can only give what they have. Superowner can use `.give @user all` to give all their own quesos. The message shows both old and new balances.",
     "add": "Superowner/server-owner override command. Adds new quesos to a user without taking them from anyone. It does not support `all`. The message shows the user's old and new balance.",

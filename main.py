@@ -518,8 +518,8 @@ async def on_ready():
     try:
         await economy_setup(bot)
         economy_command_names = [
-            "bal", "daily", "weekly", "monthly", "flip", "roulette", "slots",
-            "blackjack", "scratch", "minesweeper", "wheel", "give", "lb",
+            "bal", "daily", "weekly", "monthly", "cf", "roulette", "slots",
+            "blackjack", "scratch", "ms", "wheel", "give", "lb",
             "add", "remove", "explain"
         ]
         loaded_economy_commands = [name for name in economy_command_names if bot.get_command(name)]
