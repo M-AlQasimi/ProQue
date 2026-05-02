@@ -129,12 +129,32 @@ SHOP_ITEMS = {
 
 economy_log_callback = None
 lottery_task = None
+db_keepalive_task = None
 
 # --- Cooldown tracking ---
 _cooldowns = {}  # {(user_id, command): timestamp}
 
 def get_db_connection():
     return psycopg2.connect(os.getenv("DATABASE_URL"), cursor_factory=RealDictCursor, connect_timeout=5)
+
+def ping_db():
+    global db_ready
+    if not os.getenv("DATABASE_URL"):
+        return False
+
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT 1")
+        cur.fetchone()
+        cur.close()
+        conn.close()
+        db_ready = True
+        return True
+    except Exception as e:
+        db_ready = False
+        print(f"Database keep-alive failed: {type(e).__name__} - {e}")
+        return False
 
 def init_db():
     global db_ready
@@ -1678,6 +1698,15 @@ async def lottery_draw_loop():
             except Exception as e:
                 print(f"Lottery loop error: {type(e).__name__} - {e}")
         await asyncio.sleep(60)
+
+async def db_keepalive_loop():
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        try:
+            await asyncio.to_thread(ping_db)
+        except Exception as e:
+            print(f"Database keep-alive loop error: {type(e).__name__} - {e}")
+        await asyncio.sleep(240)
 
 async def send_balance_rank(ctx, order, title):
     if not await ensure_db_ready(ctx):
@@ -3440,7 +3469,7 @@ async def explain(ctx, command_name: str = None):
 # SETUP
 # =====================
 async def setup(bot_ref, log_callback=None):
-    global bot, economy_log_callback, lottery_task
+    global bot, economy_log_callback, lottery_task, db_keepalive_task
     bot = bot_ref
     economy_log_callback = log_callback
     print("Initializing economy system...")
@@ -3459,3 +3488,5 @@ async def setup(bot_ref, log_callback=None):
 
     if lottery_task is None or lottery_task.done():
         lottery_task = asyncio.create_task(lottery_draw_loop())
+    if db_keepalive_task is None or db_keepalive_task.done():
+        db_keepalive_task = asyncio.create_task(db_keepalive_loop())
