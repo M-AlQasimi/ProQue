@@ -837,6 +837,10 @@ async def on_message(message):
                 await message.channel.send(f"Error: {str(e)[:100]}")
             return
 
+    ctx = await bot.get_context(message)
+    if ctx.valid:
+        await bot.invoke(ctx)
+        return
 
     if message.channel.id in guild_shutdown_channels(message.guild) and not has_owner_power(message.author, message.guild):
         try:
@@ -1012,26 +1016,37 @@ async def help_command(ctx, command_name: str = None):
         description = (command.help or "").strip().splitlines()[0] if command.help else "No extra help available."
         return await ctx.send(f"**{usage}**\n{description}{aliases}")
 
-    command_names = sorted({command.name for command in bot.commands if not command.hidden})
-    chunks = []
-    current = ""
-    for name in command_names:
-        entry = f"`.{name}` "
-        if len(current) + len(entry) > 900:
-            chunks.append(current.strip())
-            current = entry
-        else:
-            current += entry
-    if current:
-        chunks.append(current.strip())
-
     embed = discord.Embed(
-        title="Help",
-        description="Use `.help <command>` for usage, or `.explain <command>` for detailed command explanations.",
+        title="ProQue Help",
+        description="Use `.help <command>` for usage. Use `.explain <command>` for detailed explanations.",
         color=discord.Color.blurple()
     )
-    for index, chunk in enumerate(chunks, 1):
-        embed.add_field(name=f"Commands {index}", value=chunk, inline=False)
+
+    categories = {
+        "Economy": ["bal", "daily", "weekly", "monthly", "cf", "roulette", "slots", "blackjack", "scratch", "ms", "wheel", "give", "lb"],
+        "Games": ["ttt", "c4", "q", "picker"],
+        "Utility": ["help", "explain", "userinfo", "pfp", "calc", "define", "timer", "ctimer", "alarm", "poll", "epoll", "translate"],
+        "AI": ["ask", "generate", "analyse"],
+        "Server Tools": ["dsnipe", "esnipe", "rsnipe", "rolesinfo", "roleinfo", "purge", "rpurge", "reactcount", "steal"],
+        "Status": ["afk", "sleep", "wake", "away", "setbday", "removebday"],
+        "Admin": ["setlogs", "disable", "enable", "disableall", "enableall", "dclist", "addowner", "removeowner", "addmod", "removemod", "add", "remove"],
+    }
+
+    shown = set()
+    for category, names in categories.items():
+        existing = []
+        for name in names:
+            command = bot.get_command(name)
+            if command and not command.hidden:
+                existing.append(f"`.{name}`")
+                shown.add(command.name)
+        if existing:
+            embed.add_field(name=category, value=" ".join(existing), inline=False)
+
+    other = sorted(command.name for command in bot.commands if not command.hidden and command.name not in shown)
+    if other:
+        embed.add_field(name="Other", value=" ".join(f"`.{name}`" for name in other[:30]), inline=False)
+
     await ctx.send(embed=embed)
 
 @bot.event
