@@ -188,10 +188,14 @@ def init_db():
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS lottery_config (
                     guild_id BIGINT PRIMARY KEY,
-        channel_id BIGINT NOT NULL,
+                    channel_id BIGINT NOT NULL,
+                    thread_id BIGINT,
+                    role_id BIGINT,
                     period_seconds BIGINT NOT NULL,
                     next_draw TIMESTAMP NOT NULL,
-                    pot BIGINT NOT NULL DEFAULT 0
+                    pot BIGINT NOT NULL DEFAULT 0,
+                    ticket_cost BIGINT NOT NULL DEFAULT 100000,
+                    house_cut DOUBLE PRECISION NOT NULL DEFAULT 0.10
                 )
             """)
             cur.execute("""
@@ -227,6 +231,9 @@ def init_db():
             cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS quest_claims TEXT[] DEFAULT '{}'")
             cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS steal_blacklist BIGINT[] DEFAULT '{}'")
             cur.execute("ALTER TABLE lottery_config ADD COLUMN IF NOT EXISTS thread_id BIGINT")
+            cur.execute("ALTER TABLE lottery_config ADD COLUMN IF NOT EXISTS role_id BIGINT")
+            cur.execute("ALTER TABLE lottery_config ADD COLUMN IF NOT EXISTS ticket_cost BIGINT NOT NULL DEFAULT 100000")
+            cur.execute("ALTER TABLE lottery_config ADD COLUMN IF NOT EXISTS house_cut DOUBLE PRECISION NOT NULL DEFAULT 0.10")
             conn.commit()
             cur.close()
             conn.close()
@@ -435,22 +442,49 @@ def get_lottery_config(guild_id):
     conn.close()
     return row
 
-def save_lottery_config(guild_id, channel_id, period_seconds, next_draw, pot=0, thread_id=None):
+def lottery_ticket_cost(config):
+    return int(config.get("ticket_cost") or LOTTERY_TICKET_COST)
+
+def lottery_house_cut(config):
+    return float(config.get("house_cut") if config.get("house_cut") is not None else LOTTERY_HOUSE_CUT)
+
+def save_lottery_config(guild_id, channel_id, period_seconds, next_draw, pot=0, thread_id=None, role_id=None, ticket_cost=None, house_cut=None):
+    ticket_cost = ticket_cost if ticket_cost is not None else LOTTERY_TICKET_COST
+    house_cut = house_cut if house_cut is not None else LOTTERY_HOUSE_CUT
     conn = get_db_connection()
     cur = conn.cursor()
     cur.execute(
         """
-        INSERT INTO lottery_config (guild_id, channel_id, thread_id, period_seconds, next_draw, pot)
-        VALUES (%s, %s, %s, %s, %s, %s)
+        INSERT INTO lottery_config (guild_id, channel_id, thread_id, role_id, period_seconds, next_draw, pot, ticket_cost, house_cut)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (guild_id) DO UPDATE SET
             channel_id = EXCLUDED.channel_id,
             thread_id = EXCLUDED.thread_id,
+            role_id = EXCLUDED.role_id,
             period_seconds = EXCLUDED.period_seconds,
             next_draw = EXCLUDED.next_draw,
+            ticket_cost = EXCLUDED.ticket_cost,
+            house_cut = EXCLUDED.house_cut,
             pot = lottery_config.pot
         """,
-        (guild_id, channel_id, thread_id, period_seconds, next_draw, pot)
+        (guild_id, channel_id, thread_id, role_id, period_seconds, next_draw, pot, ticket_cost, house_cut)
     )
+    conn.commit()
+    cur.close()
+    conn.close()
+
+def update_lottery_config(guild_id, **kwargs):
+    if not kwargs:
+        return
+    conn = get_db_connection()
+    cur = conn.cursor()
+    set_clauses = []
+    values = []
+    for key, value in kwargs.items():
+        set_clauses.append(f"{key} = %s")
+        values.append(value)
+    values.append(guild_id)
+    cur.execute(f"UPDATE lottery_config SET {', '.join(set_clauses)} WHERE guild_id = %s", values)
     conn.commit()
     cur.close()
     conn.close()
@@ -499,18 +533,22 @@ def reset_lottery_round(guild_id, next_draw):
     cur.close()
     conn.close()
 
-def lottery_instructions(period_seconds):
+def set_lottery_role(guild_id, role_id):
+    update_lottery_config(guild_id, role_id=role_id)
+
+def lottery_instructions(period_seconds, ticket_cost=LOTTERY_TICKET_COST, house_cut=LOTTERY_HOUSE_CUT):
     return (
         "🎟️ **Lottery Tickets**\n"
         "Prize: **the full current pot** goes to one winner each draw.\n"
         f"Buy tickets with `.buytick <amount>` in this thread.\n"
-        f"Each ticket costs **{format_balance(LOTTERY_TICKET_COST)}**.\n"
-        f"**{int(LOTTERY_HOUSE_CUT * 100)}%** of ticket sales is burned and the rest goes into the pot.\n"
+        f"Each ticket costs **{format_balance(ticket_cost)}**.\n"
+        f"**{house_cut * 100:.1f}%** of ticket sales is burned and the rest goes into the pot.\n"
         "Each ticket is one entry; more tickets means better odds.\n"
+        "At least **5 unique players** must join or the draw restarts with no winner.\n"
         f"Draws happen every **{format_duration(period_seconds)}**."
     )
 
-async def prepare_lottery_channel(guild, channel, period_seconds):
+async def prepare_lottery_channel(guild, channel, period_seconds, ticket_cost=LOTTERY_TICKET_COST, house_cut=LOTTERY_HOUSE_CUT):
     everyone = guild.default_role
     try:
         overwrite = channel.overwrites_for(everyone)
@@ -523,12 +561,61 @@ async def prepare_lottery_channel(guild, channel, period_seconds):
 
     starter = await channel.send("🎟️ Lottery is open. Prize: **the current pot**. Buy tickets in the thread below.")
     thread = await starter.create_thread(name="buy tickets here")
-    info = await thread.send(lottery_instructions(period_seconds))
+    info = await thread.send(lottery_instructions(period_seconds, ticket_cost, house_cut))
     try:
         await info.pin(reason="Lottery instructions")
     except Exception as e:
         print(f"Lottery instruction pin skipped: {type(e).__name__} - {e}")
     return thread
+
+async def recreate_lottery_role(guild, old_role_id=None):
+    if old_role_id:
+        old_role = guild.get_role(old_role_id)
+        if old_role:
+            try:
+                await old_role.delete(reason="New lottery round")
+            except Exception as e:
+                print(f"Lottery old role delete skipped: {type(e).__name__} - {e}")
+
+    try:
+        return await guild.create_role(
+            name="Lottery Participants",
+            mentionable=True,
+            reason="Lottery participant ping role"
+        )
+    except Exception as e:
+        print(f"Lottery role create failed: {type(e).__name__} - {e}")
+        return None
+
+async def assign_lottery_role(guild, user_id, role_id):
+    if not role_id:
+        return
+    member = guild.get_member(user_id)
+    role = guild.get_role(role_id)
+    if not member or not role:
+        return
+    try:
+        await member.add_roles(role, reason="Bought lottery tickets")
+    except Exception as e:
+        print(f"Lottery role assign skipped: {type(e).__name__} - {e}")
+
+def lottery_role_mention(config):
+    return f"<@&{config['role_id']}>" if config.get("role_id") else ""
+
+async def announce_lottery_update(guild, config, message):
+    channel = guild.get_channel(config["channel_id"]) if guild else None
+    if channel is None and bot:
+        try:
+            channel = await bot.fetch_channel(config["channel_id"])
+        except Exception:
+            channel = None
+    if not channel:
+        return
+    role_mention = lottery_role_mention(config)
+    await channel.send(
+        f"{role_mention} 🎟️ **Lottery Update**\n{message}".strip(),
+        allowed_mentions=discord.AllowedMentions(roles=True)
+    )
 
 def award_chat_xp(user_id):
     data = get_user(user_id)
@@ -1201,17 +1288,19 @@ async def lottery(ctx, action: str = None, amount: str = None):
 
         next_draw = datetime.now(timezone.utc) + timedelta(seconds=period_seconds)
         try:
-            thread = await prepare_lottery_channel(ctx.guild, channel, period_seconds)
+            thread = await prepare_lottery_channel(ctx.guild, channel, period_seconds, LOTTERY_TICKET_COST, LOTTERY_HOUSE_CUT)
+            role = await recreate_lottery_role(ctx.guild)
         except Exception as e:
             await ctx.send(f"❌ I couldn't prepare the lottery channel/thread: `{type(e).__name__}`")
             print(f"Lottery setup failed: {type(e).__name__} - {e}")
             return
 
-        save_lottery_config(ctx.guild.id, channel.id, period_seconds, next_draw, thread_id=thread.id)
+        save_lottery_config(ctx.guild.id, channel.id, period_seconds, next_draw, thread_id=thread.id, role_id=role.id if role else None)
         await ctx.send(
             f"✅ Lottery set for {channel.mention}. Draws every **{format_duration(period_seconds)}**.\n"
             f"Prize: **the current pot**. Starting pot: **{format_balance(0)}**.\n"
-            f"Tickets cost **{format_balance(LOTTERY_TICKET_COST)}**. Use `.buytick <amount>` in <#{thread.id}>.",
+            f"Tickets cost **{format_balance(LOTTERY_TICKET_COST)}**. House cut: **{LOTTERY_HOUSE_CUT * 100:.1f}%**.\n"
+            f"Use `.buytick <amount>` in <#{thread.id}>.",
             allowed_mentions=discord.AllowedMentions.none()
         )
         return
@@ -1229,6 +1318,8 @@ async def lottery(ctx, action: str = None, amount: str = None):
 
     rows = lottery_ticket_rows(ctx.guild.id)
     total_tickets = sum(row["tickets"] for row in rows)
+    ticket_cost = lottery_ticket_cost(config)
+    house_cut = lottery_house_cut(config)
     next_draw = config["next_draw"]
     if next_draw.tzinfo is None:
         next_draw = next_draw.replace(tzinfo=timezone.utc)
@@ -1237,16 +1328,180 @@ async def lottery(ctx, action: str = None, amount: str = None):
     embed.add_field(name="Channel", value=channel.mention if channel else f"`{config['channel_id']}`", inline=False)
     embed.add_field(name="Prize / Current Pot", value=format_balance(config["pot"]), inline=True)
     embed.add_field(name="Tickets", value=f"{total_tickets:,}", inline=True)
+    embed.add_field(name="Players", value=f"{len(rows):,}/5 minimum", inline=True)
     embed.add_field(name="Next Draw", value=f"<t:{int(next_draw.timestamp())}:R>", inline=True)
     thread_value = f"<#{config['thread_id']}>" if config.get("thread_id") else "ticket thread not saved"
     embed.add_field(name="Ticket Thread", value=thread_value, inline=False)
+    if config.get("role_id"):
+        embed.add_field(name="Participant Role", value=f"<@&{config['role_id']}>", inline=True)
     embed.add_field(
         name="How It Works",
         value=(
             f"Buy with `.buytick <amount>` in the ticket thread.\n"
-            f"Each ticket costs **{format_balance(LOTTERY_TICKET_COST)}**.\n"
-            f"One winner gets the full pot; each ticket is one entry."
+            f"Each ticket costs **{format_balance(ticket_cost)}**.\n"
+            f"House cut: **{house_cut * 100:.1f}%** burned.\n"
+            f"One winner gets the full pot; each ticket is one entry.\n"
+            "At least **5 unique players** must join or the round restarts with no winner."
         ),
+        inline=False
+    )
+    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
+@commands.command()
+async def editlottery(ctx, setting: str = None, *, value: str = None):
+    if ctx.guild is None:
+        await ctx.send("❌ Lottery editing only works in servers.")
+        return
+    if not await ensure_db_ready(ctx):
+        return
+    if not has_economy_owner_power(ctx.author.id, ctx.guild):
+        await ctx.send("❌ Server owner only.")
+        return
+
+    config = get_lottery_config(ctx.guild.id)
+    if config is None:
+        await ctx.send("Lottery is not set up yet. Run `.lottery` first.")
+        return
+
+    if not setting or not value:
+        await ctx.send(
+            "Use `.editlottery <setting> <value>`.\n"
+            "Settings: `price`, `duration`, `cut`, `channel`.\n"
+            "Examples: `.editlottery price 250000`, `.editlottery duration 12h`, `.editlottery cut 5`, `.editlottery channel #lottery`"
+        )
+        return
+
+    setting = setting.casefold()
+    updates = {}
+    message = ""
+
+    if setting in {"price", "ticket", "ticketprice"}:
+        parsed = parse_amount(value, ctx.author.id, ctx.guild, None)
+        if parsed is None or parsed <= 0:
+            await ctx.send("❌ Ticket price must be a positive number.")
+            return
+        updates["ticket_cost"] = parsed
+        message = f"Ticket price set to **{format_balance(parsed)}**."
+
+    elif setting in {"duration", "period", "time"}:
+        seconds = period_seconds_from_text(value)
+        if seconds is None:
+            await ctx.send("❌ Invalid duration. Use at least 5 minutes, like `30m`, `12h`, or `1d`.")
+            return
+        updates["period_seconds"] = seconds
+        updates["next_draw"] = datetime.now(timezone.utc) + timedelta(seconds=seconds)
+        message = f"Lottery duration set to **{format_duration(seconds)}**. Next draw was reset."
+
+    elif setting in {"cut", "housecut", "tax", "burn"}:
+        try:
+            cut_percent = float(value.strip().replace("%", ""))
+        except ValueError:
+            await ctx.send("❌ House cut must be a number from 0 to 90.")
+            return
+        if cut_percent < 0 or cut_percent > 90:
+            await ctx.send("❌ House cut must be from 0 to 90.")
+            return
+        updates["house_cut"] = cut_percent / 100
+        message = f"House cut set to **{cut_percent:.1f}%**."
+
+    elif setting in {"channel", "chan"}:
+        channel = ctx.message.channel_mentions[0] if ctx.message.channel_mentions else None
+        if channel is None and value.strip().isdigit():
+            channel = ctx.guild.get_channel(int(value.strip()))
+        if channel is None or not isinstance(channel, discord.TextChannel):
+            await ctx.send("❌ Mention a normal text channel or send its channel ID.")
+            return
+        try:
+            thread = await prepare_lottery_channel(
+                ctx.guild,
+                channel,
+                int(config["period_seconds"]),
+                lottery_ticket_cost(config),
+                lottery_house_cut(config)
+            )
+        except Exception as e:
+            await ctx.send(f"❌ I couldn't prepare that channel/thread: `{type(e).__name__}`")
+            return
+        updates["channel_id"] = channel.id
+        updates["thread_id"] = thread.id
+        message = f"Lottery channel moved to {channel.mention}; ticket thread is <#{thread.id}>."
+
+    else:
+        await ctx.send("❌ Unknown setting. Use `price`, `duration`, `cut`, or `channel`.")
+        return
+
+    try:
+        update_lottery_config(ctx.guild.id, **updates)
+    except Exception:
+        await send_error(ctx, "Database unavailable. Try again shortly.")
+        return
+
+    updated = get_lottery_config(ctx.guild.id)
+    if updated and updated.get("thread_id") and setting not in {"channel", "chan"}:
+        try:
+            thread = ctx.guild.get_thread(updated["thread_id"]) or await bot.fetch_channel(updated["thread_id"])
+            await thread.send(lottery_instructions(
+                int(updated["period_seconds"]),
+                lottery_ticket_cost(updated),
+                lottery_house_cut(updated)
+            ))
+        except Exception as e:
+            print(f"Lottery instruction refresh skipped: {type(e).__name__} - {e}")
+
+    if updated:
+        await announce_lottery_update(ctx.guild, updated, message)
+
+    await ctx.send(f"✅ {message}", allowed_mentions=discord.AllowedMentions.none())
+
+@commands.command()
+async def lotterystats(ctx):
+    if ctx.guild is None:
+        await ctx.send("❌ Lottery stats only work in servers.")
+        return
+    if not await ensure_db_ready(ctx):
+        return
+
+    config = get_lottery_config(ctx.guild.id)
+    if config is None:
+        await ctx.send("Lottery is not set up yet.")
+        return
+
+    rows = sorted(lottery_ticket_rows(ctx.guild.id), key=lambda row: row["tickets"], reverse=True)
+    total_tickets = sum(row["tickets"] for row in rows)
+    unique_players = len(rows)
+    ticket_cost = lottery_ticket_cost(config)
+    house_cut = lottery_house_cut(config)
+    next_draw = config["next_draw"]
+    if next_draw.tzinfo is None:
+        next_draw = next_draw.replace(tzinfo=timezone.utc)
+
+    channel = ctx.guild.get_channel(config["channel_id"])
+    thread_value = f"<#{config['thread_id']}>" if config.get("thread_id") else "ticket thread not saved"
+
+    embed = discord.Embed(title="Lottery Stats", color=discord.Color.gold())
+    embed.add_field(name="Prize / Current Pot", value=format_balance(config["pot"]), inline=True)
+    embed.add_field(name="Total Tickets", value=f"{total_tickets:,}", inline=True)
+    embed.add_field(name="Players", value=f"{unique_players:,}", inline=True)
+    embed.add_field(name="Ticket Price", value=format_balance(ticket_cost), inline=True)
+    embed.add_field(name="House Cut", value=f"{house_cut * 100:.1f}%", inline=True)
+    if config.get("role_id"):
+        embed.add_field(name="Participant Role", value=f"<@&{config['role_id']}>", inline=True)
+    embed.add_field(name="Next Draw", value=f"<t:{int(next_draw.timestamp())}:R>", inline=True)
+    embed.add_field(name="Lottery Channel", value=channel.mention if channel else f"`{config['channel_id']}`", inline=True)
+    embed.add_field(name="Ticket Thread", value=thread_value, inline=True)
+
+    if rows:
+        leaders = []
+        for index, row in enumerate(rows[:10], 1):
+            odds = (row["tickets"] / total_tickets * 100) if total_tickets else 0
+            leaders.append(f"{index}. {user_mention(row['user_id'])} - **{row['tickets']:,}** tickets ({odds:.1f}%)")
+        embed.add_field(name="Top Ticket Holders", value="\n".join(leaders), inline=False)
+    else:
+        embed.add_field(name="Top Ticket Holders", value="No tickets bought this round.", inline=False)
+
+    embed.add_field(
+        name="How To Enter",
+        value=f"Use `.buytick <amount>` in {thread_value}. Each ticket costs **{format_balance(ticket_cost)}**.",
         inline=False
     )
     await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
@@ -1276,8 +1531,10 @@ async def buytick(ctx, amount: str = "1"):
         await ctx.send("❌ Ticket amount must be positive.")
         return
 
-    total_cost = tickets * LOTTERY_TICKET_COST
-    pot_add = int(total_cost * (1 - LOTTERY_HOUSE_CUT))
+    ticket_cost = lottery_ticket_cost(config)
+    house_cut = lottery_house_cut(config)
+    total_cost = tickets * ticket_cost
+    pot_add = int(total_cost * (1 - house_cut))
     burned = total_cost - pot_add
 
     try:
@@ -1288,6 +1545,7 @@ async def buytick(ctx, amount: str = "1"):
         update_user(ctx.author.id, balance=data["balance"] - total_cost)
         add_lottery_tickets(ctx.guild.id, ctx.author.id, tickets, pot_add)
         log_transaction(ctx.author.id, "lottery_tickets", -total_cost, f"{tickets} tickets; {burned} burned")
+        await assign_lottery_role(ctx.guild, ctx.author.id, config.get("role_id"))
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
@@ -1313,10 +1571,16 @@ async def process_lottery_draw(config):
         except Exception:
             channel = None
 
-    if not rows:
+    unique_players = len(rows)
+    if unique_players < 5:
         reset_lottery_round(guild.id, next_draw)
+        role = await recreate_lottery_role(guild, config.get("role_id"))
+        set_lottery_role(guild.id, role.id if role else None)
         if channel:
-            await channel.send("🎟️ Lottery draw passed with no tickets. Starting a fresh round.")
+            await channel.send(
+                f"🎟️ Lottery draw cancelled: **{unique_players}/5** players joined.\n"
+                "No winner this round. The lottery has restarted with a fresh participant role."
+            )
         return
 
     weighted = []
@@ -1329,6 +1593,8 @@ async def process_lottery_draw(config):
         update_user(winner_id, balance=data["balance"] + pot, total_earned=data["total_earned"] + pot)
         log_transaction(winner_id, "lottery_win", pot, f"Guild {guild.id}")
         reset_lottery_round(guild.id, next_draw)
+        role = await recreate_lottery_role(guild, config.get("role_id"))
+        set_lottery_role(guild.id, role.id if role else None)
     except Exception as e:
         print(f"Lottery draw failed: {type(e).__name__} - {e}")
         return
@@ -1336,7 +1602,8 @@ async def process_lottery_draw(config):
     if channel:
         await channel.send(
             f"🎉 Lottery winner: {user_mention(winner_id)} won the prize: **{format_balance(pot)}**!\n"
-            f"Next draw: <t:{int(next_draw.timestamp())}:R>",
+            f"Next draw: <t:{int(next_draw.timestamp())}:R>\n"
+            "A fresh participant role has been created for the new round.",
             allowed_mentions=discord.AllowedMentions.none()
         )
 
@@ -2968,6 +3235,8 @@ EXPLANATIONS = {
     "cooldowns": "Shows daily, weekly, monthly, and gambling cooldowns. Use `.cooldowns` or `.cd`.",
     "transactions": "Shows recent economy transactions. Use `.transactions` or `.transactions @user`.",
     "lottery": "Shows lottery status. First server run sets channel and draw period. Prize is the current pot.",
+    "editlottery": "Server-owner command. Edits lottery price, duration, house cut, or channel.",
+    "lotterystats": "Shows lottery prize, tickets, players, next draw, and top ticket holders.",
     "buytick": "Buys lottery tickets in the ticket thread. Use `.buytick <amount>`.",
     "richest": "Shows the top 10 richest users.",
     "poorest": "Shows the 10 lowest balances.",
@@ -3038,6 +3307,8 @@ DETAILED_EXPLANATIONS = {
     "cooldowns": "Shows daily, weekly, monthly, and active gambling command cooldowns in one place.",
     "transactions": "Shows recent money movement including shop purchases, quest rewards, level rewards, transfer tax, owner changes, and lottery activity.",
     "lottery": f"Server lottery. First run asks the server owner for a channel and draw period, locks the channel, creates a ticket thread, and posts pinned instructions. The prize is the full current pot. Tickets cost {format_balance(LOTTERY_TICKET_COST)} and {int(LOTTERY_HOUSE_CUT * 100)}% is burned as a money sink.",
+    "editlottery": "Server-owner command. Use `.editlottery price 250000`, `.editlottery duration 12h`, `.editlottery cut 5`, or `.editlottery channel #lottery`. Duration resets the next draw timer. Channel creates and prepares a new ticket thread. Updates ping the lottery participant role.",
+    "lotterystats": "Shows the current lottery prize pot, total ticket count, number of players, participant role, next draw time, configured channels, and the top 10 ticket holders with their approximate odds.",
     "buytick": f"Buys tickets for the configured server lottery. Use `.buytick <amount>` in the lottery ticket thread. Each ticket costs {format_balance(LOTTERY_TICKET_COST)}. The prize is the full current lottery pot; every ticket is one entry.",
     "richest": "Shows the top 10 balances from the economy table.",
     "poorest": "Shows the lowest 10 balances from the economy table.",
@@ -3113,7 +3384,7 @@ async def setup(bot_ref, log_callback=None):
     print(f"Economy db_ready = {db_ready}")
 
     economy_commands = [
-        bal, profile, quests, shop, cooldowns, transactions, richest, poorest, lottery, buytick,
+        bal, profile, quests, shop, cooldowns, transactions, richest, poorest, lottery, editlottery, lotterystats, buytick,
         daily, weekly, monthly, gamble, roulette, slots, blackjack,
         scratch, minesweeper, wheel, give, lb, add, remove, explain
     ]
