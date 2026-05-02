@@ -180,6 +180,11 @@ def get_log_channel_id(guild_id, key):
         return None
     return config.get(key)
 
+def guild_log_label(guild):
+    if guild is None:
+        return "unknown server"
+    return f"{guild.name} ({guild.id})"
+
 async def send_log(embed, guild=None):
     try:
         if guild is None:
@@ -213,6 +218,7 @@ async def send_log(embed, guild=None):
             return
 
         await channel.send(embed=embed)
+        print(f"Sending log: {embed.title} | Server: {guild_log_label(guild)}")
     except Exception as e:
         print(f"Failed to send log for guild {guild.id if guild else 'unknown'}: {type(e).__name__} - {e}")
 
@@ -249,6 +255,7 @@ async def send_rlog(embed, guild=None):
             return
 
         await channel.send(embed=embed)
+        print(f"Sending reaction log: {embed.title} | Server: {guild_log_label(guild)}")
     except Exception as e:
         print(f"Failed to send reaction log for guild {guild.id if guild else 'unknown'}: {type(e).__name__} - {e}")
 
@@ -564,7 +571,6 @@ async def on_member_join(member):
     )
     embed.add_field(name="User", value=f"{member} ({member.id})", inline=False)
     embed.timestamp = datetime.now(timezone.utc)
-    print(f"Sending log for {member} ({member.id})")
     await send_log(embed, member.guild)
 
 @bot.event
@@ -579,7 +585,6 @@ async def on_member_ban(guild, user):
             embed.add_field(name="Banned by", value=f"{entry.user} ({entry.user.id})", inline=False)
             embed.add_field(name="Reason", value=entry.reason or "No reason provided", inline=False)
             embed.timestamp = datetime.now(timezone.utc)
-            print("Sending log:", embed.title)
             try:
                 await send_log(embed, guild)
             except Exception as e:
@@ -598,7 +603,6 @@ async def on_member_unban(guild, user):
             embed.add_field(name="Unbanned by", value=f"{entry.user} ({entry.user.id})", inline=False)
             embed.add_field(name="Reason", value=entry.reason or "No reason provided", inline=False)
             embed.timestamp = datetime.now(timezone.utc)
-            print("Sending log:", embed.title)
             try:
                 await send_log(embed, guild)
             except Exception as e:
@@ -634,7 +638,6 @@ async def on_guild_channel_create(channel):
             break
 
     embed.timestamp = datetime.now(timezone.utc)
-    print("Sending log:", embed.title)
     try:
         await send_log(embed, channel.guild)
     except Exception as e:
@@ -654,7 +657,6 @@ async def on_guild_channel_delete(channel):
             break
 
     embed.timestamp = datetime.now(timezone.utc)
-    print("Sending log:", embed.title)
     try:
         await send_log(embed, channel.guild)
     except Exception as e:
@@ -674,7 +676,6 @@ async def on_guild_role_create(role):
             break
 
     embed.timestamp = datetime.now(timezone.utc)
-    print("Sending log:", embed.title)
     try:
         await send_log(embed, role.guild)
     except Exception as e:
@@ -694,7 +695,6 @@ async def on_guild_role_delete(role):
             break
 
     embed.timestamp = datetime.now(timezone.utc)
-    print("Sending log:", embed.title)
     try:
         await send_log(embed, role.guild)
     except Exception as e:
@@ -735,7 +735,6 @@ async def on_guild_role_update(before, after):
             break
 
     embed.timestamp = datetime.now(timezone.utc)
-    print("Sending log:", embed.title)
     try:
         await send_log(embed, after.guild)
     except Exception as e:
@@ -779,7 +778,6 @@ async def on_guild_update(before, after):
     if embed and entry:
         embed.add_field(name="By", value=f"{entry.user} ({entry.user.id})", inline=False)
         embed.timestamp = datetime.now(timezone.utc)
-        print("Sending log:", embed.title)
         try:
             await send_log(embed, guild)
         except Exception as e:
@@ -1126,12 +1124,10 @@ async def on_message_delete(message):
             ghost_embed.set_footer(text="Ghost Ping Log")
             ghost_embed.timestamp = message.created_at
 
-            print("Sending log:", ghost_embed.title)
             await send_log(ghost_embed, message.guild)
         except Exception as e:
             print(f"[Ghost Ping Log Error] {e}")
 
-    print("Sending log:", embed.title)
     try:
         await send_log(embed, message.guild)
     except Exception as e:
@@ -1224,7 +1220,6 @@ async def on_message_edit(before, after):
         embed.add_field(name="Channel", value=channel_value, inline=False)
         embed.timestamp = datetime.now(timezone.utc)
 
-        print("Sending log:", embed.title)
         try:
             await send_log(embed, before.guild)
         except Exception as e:
@@ -1401,7 +1396,6 @@ async def on_reaction_remove(reaction, user):
     embed.add_field(name="Channel", value=msg.channel.mention, inline=False)
     embed.timestamp = datetime.now(timezone.utc)
 
-    print("Sending log:", embed.title)
     try:
         await send_rlog(embed, msg.guild)
     except Exception as e:
@@ -1481,7 +1475,6 @@ async def on_raw_reaction_clear(payload):
     embed.set_footer(text=f"Message ID: {message.id}")
     embed.timestamp = datetime.now(timezone.utc)
 
-    print("Sending log: All reactions removed")
     try:
         await send_rlog(embed, message.guild)
     except Exception as e:
@@ -1603,7 +1596,6 @@ async def on_user_update(before, after):
         embed.add_field(name="Before", value=before.name, inline=True)
         embed.add_field(name="After", value=after.name, inline=True)
         embed.timestamp = datetime.now(timezone.utc)
-        print("Sending log:", embed.title)
         try:
             await send_user_update_log(embed, after.id)
         except Exception as e:
@@ -1615,7 +1607,6 @@ async def on_user_update(before, after):
         embed.add_field(name="Before", value=before.discriminator, inline=True)
         embed.add_field(name="After", value=after.discriminator, inline=True)
         embed.timestamp = datetime.now(timezone.utc)
-        print("Sending log:", embed.title)
         try:
             await send_user_update_log(embed, after.id)
         except Exception as e:
@@ -1627,7 +1618,6 @@ async def on_user_update(before, after):
         embed.set_thumbnail(url=before.avatar.url if before.avatar else discord.Embed.Empty)
         embed.set_image(url=after.avatar.url if after.avatar else discord.Embed.Empty)
         embed.timestamp = datetime.now(timezone.utc)
-        print("Sending log:", embed.title)
         try:
             await send_user_update_log(embed, after.id)
         except Exception as e:
@@ -1646,7 +1636,6 @@ async def on_member_remove(member):
             embed.add_field(name="User", value=f"{member} ({member.id})", inline=False)
             embed.add_field(name="Kicked by", value=f"{entry.user} ({entry.user.id})", inline=False)
             embed.add_field(name="Reason", value=entry.reason or "No reason provided", inline=False)
-            print("Sending log:", embed.title)
             try:
                 await send_log(embed, guild)
             except Exception as e:
@@ -1659,7 +1648,6 @@ async def on_member_remove(member):
     )
     embed.timestamp = datetime.now(timezone.utc)
     embed.add_field(name="User", value=f"{member} ({member.id})", inline=False)
-    print("Sending log:", embed.title)
     try:
         await send_log(embed, guild)
     except Exception as e:
@@ -1689,7 +1677,6 @@ async def on_voice_state_update(member, before, after):
         )
         embed.set_author(name=f"{member} ({member.id})", icon_url=member.display_avatar.url)
         embed.timestamp = datetime.now(timezone.utc)
-        print("Sending log:", embed.title)
         try:
             await send_log(embed, member.guild)
         except Exception as e:
