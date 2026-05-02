@@ -19,6 +19,28 @@ MAX_BET = 150_000
 COOLDOWN_SECS = 5
 STREAK_MULTIPLIER = 0.015  # 1.5% per consecutive win
 CURRENCY_EMOJI = "<:quesos_cash_stack_transparent:1500235432011497703>"
+CHAT_XP_COOLDOWN_SECS = 60
+LEVEL_REWARD_BASE = 300_000
+LEVEL_REWARD_STEP = 50_000
+SHOP_ITEMS = {
+    "lucky_charm": {
+        "name": "Lucky Charm",
+        "cost": 500_000,
+        "description": "+1% gambling payout on wins.",
+    },
+    "gold_badge": {
+        "name": "Gold Badge",
+        "cost": 1_000_000,
+        "description": "A profile badge for people with taste and dangerous levels of queso.",
+    },
+    "high_roller": {
+        "name": "High Roller Title",
+        "cost": 2_500_000,
+        "description": "A profile title shown on `.profile`.",
+    },
+}
+
+economy_log_callback = None
 
 # --- Cooldown tracking ---
 _cooldowns = {}  # {(user_id, command): timestamp}
@@ -55,6 +77,11 @@ def init_db():
                     blackjack_streak INTEGER DEFAULT 0,
                     scratch_streak INTEGER DEFAULT 0,
                     wheel_streak INTEGER DEFAULT 0,
+                    level INTEGER DEFAULT 1,
+                    xp BIGINT DEFAULT 0,
+                    messages_sent BIGINT DEFAULT 0,
+                    last_xp TIMESTAMP,
+                    inventory TEXT[] DEFAULT '{}',
                     steal_blacklist BIGINT[] DEFAULT '{}'
                 )
             """)
@@ -74,6 +101,11 @@ def init_db():
             cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS blackjack_streak INTEGER DEFAULT 0")
             cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS scratch_streak INTEGER DEFAULT 0")
             cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS wheel_streak INTEGER DEFAULT 0")
+            cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS level INTEGER DEFAULT 1")
+            cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS xp BIGINT DEFAULT 0")
+            cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS messages_sent BIGINT DEFAULT 0")
+            cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS last_xp TIMESTAMP")
+            cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS inventory TEXT[] DEFAULT '{}'")
             cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS steal_blacklist BIGINT[] DEFAULT '{}'")
             conn.commit()
             cur.close()
@@ -147,8 +179,111 @@ def update_user(user_id, **kwargs):
                 continue
             raise
 
+def award_chat_xp(user_id):
+    data = get_user(user_id)
+    now = datetime.now(timezone.utc)
+    last_xp = data.get("last_xp")
+    if last_xp:
+        last_xp = last_xp.replace(tzinfo=timezone.utc) if last_xp.tzinfo is None else last_xp
+        if (now - last_xp).total_seconds() < CHAT_XP_COOLDOWN_SECS:
+            return None
+
+    gained_xp = random.randint(15, 25)
+    level = data.get("level") or 1
+    xp = (data.get("xp") or 0) + gained_xp
+    messages_sent = (data.get("messages_sent") or 0) + 1
+    levels_gained = 0
+    reward = 0
+
+    while xp >= xp_needed_for_level(level):
+        xp -= xp_needed_for_level(level)
+        level += 1
+        levels_gained += 1
+        reward += level_reward_for(level)
+
+    updates = {
+        "xp": xp,
+        "level": level,
+        "messages_sent": messages_sent,
+        "last_xp": now,
+    }
+    if reward:
+        updates["balance"] = data["balance"] + reward
+        updates["total_earned"] = data["total_earned"] + reward
+    update_user(user_id, **updates)
+
+    return {
+        "xp": xp,
+        "xp_gained": gained_xp,
+        "level": level,
+        "levels_gained": levels_gained,
+        "reward": reward,
+    }
+
 def format_balance(amount):
     return f"{amount:,} {CURRENCY_EMOJI}"
+
+def xp_needed_for_level(level):
+    return 100 + max(level - 1, 0) * 75
+
+def level_reward_for(level):
+    return LEVEL_REWARD_BASE + max(level - 2, 0) * LEVEL_REWARD_STEP
+
+def user_inventory(data):
+    return list(data.get("inventory") or [])
+
+def has_item(data, item_id):
+    return item_id in user_inventory(data)
+
+def payout_multiplier(data, streak):
+    item_bonus = 0.01 if has_item(data, "lucky_charm") else 0
+    return 1 + (streak * STREAK_MULTIPLIER) + item_bonus
+
+def payout_multiplier_after_win(data, new_streak):
+    item_bonus = 0.01 if has_item(data, "lucky_charm") else 0
+    return 1 + (new_streak * STREAK_MULTIPLIER) + item_bonus
+
+def format_duration(seconds):
+    seconds = max(0, int(seconds))
+    days, rem = divmod(seconds, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes, secs = divmod(rem, 60)
+    parts = []
+    if days:
+        parts.append(f"{days}d")
+    if hours:
+        parts.append(f"{hours}h")
+    if minutes:
+        parts.append(f"{minutes}m")
+    if secs and not parts:
+        parts.append(f"{secs}s")
+    return " ".join(parts) or "ready"
+
+def claim_cooldown_text(last_claim, cooldown_seconds):
+    if not last_claim:
+        return "Ready"
+    last_claim = last_claim.replace(tzinfo=timezone.utc) if last_claim.tzinfo is None else last_claim
+    remaining = cooldown_seconds - (datetime.now(timezone.utc) - last_claim).total_seconds()
+    return "Ready" if remaining <= 0 else format_duration(remaining)
+
+def command_cooldown_text(user_id, command):
+    last_used = _cooldowns.get((user_id, command))
+    if not last_used:
+        return "Ready"
+    remaining = COOLDOWN_SECS - (time.time() - last_used)
+    return "Ready" if remaining <= 0 else format_duration(remaining)
+
+async def send_economy_log(ctx, title, fields, color=discord.Color.gold()):
+    if economy_log_callback is None:
+        return
+    embed = discord.Embed(title=title, color=color, timestamp=datetime.now(timezone.utc))
+    embed.add_field(name="By", value=f"{ctx.author} ({ctx.author.id})", inline=False)
+    for name, value, inline in fields:
+        embed.add_field(name=name, value=value, inline=inline)
+    try:
+        await economy_log_callback(embed, ctx.guild)
+    except Exception as e:
+        print(f"Economy log failed: {type(e).__name__} - {e}")
 
 def is_super_owner(user_id, guild=None):
     super_owner_id = 885548126365171824
@@ -242,7 +377,7 @@ async def ensure_db_ready(ctx, force=False):
 # =====================
 # BALANCE + STREAKS
 # =====================
-@commands.command()
+@commands.command(aliases=["balance", "wallet"])
 async def bal(ctx, member: discord.Member = None):
     if not await ensure_db_ready(ctx):
         return
@@ -258,7 +393,7 @@ async def bal(ctx, member: discord.Member = None):
     for game, streak in [("gamble", data.get("gamble_streak", 0)), ("roulette", data.get("roulette_streak", 0)),
                           ("slots", data.get("slots_streak", 0)), ("blackjack", data.get("blackjack_streak", 0))]:
         if streak > 1:
-            mult = 1 + (streak * STREAK_MULTIPLIER)
+            mult = payout_multiplier(data, streak)
             streak_lines += f"\n`{game}` {streak} wins → ×{mult:.2f} payout"
 
     embed = discord.Embed(
@@ -276,6 +411,155 @@ async def bal(ctx, member: discord.Member = None):
     embed.add_field(name="Total Lost", value=format_balance(data['total_lost']), inline=True)
 
     await ctx.send(embed=embed)
+
+@commands.command(aliases=["prof"])
+async def profile(ctx, member: discord.Member = None):
+    if not await ensure_db_ready(ctx):
+        return
+
+    user = member or ctx.author
+    try:
+        data = get_user(user.id)
+    except Exception:
+        await send_error(ctx, "Database unavailable. Try again shortly.")
+        return
+
+    level = data.get("level") or 1
+    xp = data.get("xp") or 0
+    needed = xp_needed_for_level(level)
+    inventory = user_inventory(data)
+    badges = []
+    if "gold_badge" in inventory:
+        badges.append("Gold Badge")
+    if "high_roller" in inventory:
+        badges.append("High Roller")
+    if "lucky_charm" in inventory:
+        badges.append("Lucky Charm")
+
+    title = "High Roller" if "high_roller" in inventory else "Queso Collector"
+    net = (data.get("total_won") or 0) - (data.get("total_lost") or 0)
+    embed = discord.Embed(
+        title=f"{user.name}'s Profile",
+        description=f"**{title}**",
+        color=discord.Color.gold()
+    )
+    embed.set_thumbnail(url=user.display_avatar.url)
+    embed.add_field(name="Balance", value=format_balance(data["balance"]), inline=True)
+    embed.add_field(name="Level", value=f"{level}", inline=True)
+    embed.add_field(name="XP", value=f"{xp:,}/{needed:,}", inline=True)
+    embed.add_field(name="Messages", value=f"{data.get('messages_sent') or 0:,}", inline=True)
+    embed.add_field(name="Net Gambling", value=format_balance(net), inline=True)
+    embed.add_field(name="Items", value=", ".join(badges) if badges else "None", inline=False)
+    await ctx.send(embed=embed)
+
+@commands.command(aliases=["store"])
+async def shop(ctx):
+    if not await ensure_db_ready(ctx):
+        return
+
+    embed = discord.Embed(
+        title="Queso Shop",
+        description="Use `.buy <item>` to purchase an item.",
+        color=discord.Color.gold()
+    )
+    for item_id, item in SHOP_ITEMS.items():
+        embed.add_field(
+            name=f"{item['name']} (`{item_id}`)",
+            value=f"Cost: **{format_balance(item['cost'])}**\n{item['description']}",
+            inline=False
+        )
+    await ctx.send(embed=embed)
+
+@commands.command()
+async def buy(ctx, *, item_id: str = None):
+    if not await ensure_db_ready(ctx):
+        return
+
+    if not item_id:
+        await ctx.send("❌ Use `.buy <item>`. See `.shop` for item IDs.")
+        return
+
+    item_id = re.sub(r"[\s-]+", "_", item_id.strip().casefold())
+    item = SHOP_ITEMS.get(item_id)
+    if not item:
+        await ctx.send("❌ Unknown item. See `.shop` for item IDs.")
+        return
+
+    try:
+        data = get_user(ctx.author.id)
+        inventory = user_inventory(data)
+        if item_id in inventory:
+            await ctx.send("❌ You already own that item.")
+            return
+        if data["balance"] < item["cost"]:
+            await ctx.send(f"❌ You need {format_balance(item['cost'])}, but you only have {format_balance(data['balance'])}.")
+            return
+
+        inventory.append(item_id)
+        update_user(
+            ctx.author.id,
+            balance=data["balance"] - item["cost"],
+            inventory=inventory
+        )
+    except Exception:
+        await send_error(ctx, "Database unavailable. Try again shortly.")
+        return
+
+    await ctx.send(f"✅ Bought **{item['name']}** for **{format_balance(item['cost'])}**.")
+
+@commands.command(aliases=["cd", "cooldown"])
+async def cooldowns(ctx):
+    if not await ensure_db_ready(ctx):
+        return
+
+    try:
+        data = get_user(ctx.author.id)
+    except Exception:
+        await send_error(ctx, "Database unavailable. Try again shortly.")
+        return
+
+    embed = discord.Embed(title="Cooldowns", color=discord.Color.blurple())
+    embed.add_field(name="Daily", value=claim_cooldown_text(data.get("last_daily"), 86400), inline=True)
+    embed.add_field(name="Weekly", value=claim_cooldown_text(data.get("last_weekly"), 604800), inline=True)
+    embed.add_field(name="Monthly", value=claim_cooldown_text(data.get("last_monthly"), 2592000), inline=True)
+    for command in ["cf", "roulette", "slots", "blackjack", "scratch", "ms", "wheel"]:
+        embed.add_field(name=command, value=command_cooldown_text(ctx.author.id, command), inline=True)
+    await ctx.send(embed=embed)
+
+async def send_balance_rank(ctx, order, title):
+    if not await ensure_db_ready(ctx):
+        return
+
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute(
+            f"SELECT user_id, balance FROM economy ORDER BY balance {order}, user_id ASC LIMIT 10"
+        )
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+    except Exception:
+        await send_error(ctx, "Database unavailable. Try again shortly.")
+        return
+
+    embed = discord.Embed(title=title, color=discord.Color.gold())
+    for i, row in enumerate(rows, 1):
+        try:
+            user = await ctx.bot.fetch_user(row["user_id"])
+            name = user.name
+        except Exception:
+            name = f"User {row['user_id']}"
+        embed.add_field(name=f"{i}. {name}", value=format_balance(row["balance"]), inline=False)
+    await ctx.send(embed=embed)
+
+@commands.command()
+async def richest(ctx):
+    await send_balance_rank(ctx, "DESC", "Richest Users")
+
+@commands.command()
+async def poorest(ctx):
+    await send_balance_rank(ctx, "ASC", "Poorest Users")
 
 # =====================
 # DAILY / WEEKLY / MONTHLY
@@ -410,7 +694,7 @@ async def monthly(ctx):
 # =====================
 # COIN FLIP
 # =====================
-@commands.command(name="cf", aliases=["flip"])
+@commands.command(name="cf", aliases=["flip", "coinflip"])
 async def gamble(ctx, amount: str, choice: str = None):
     """Coin flip. Use `.cf <amount> h/t`, `.cf <amount> heads/tails`, or `.cf <amount>`."""
     if not await ensure_db_ready(ctx):
@@ -491,7 +775,7 @@ async def gamble(ctx, amount: str, choice: str = None):
         chosen_side = choice_view.choice
 
     streak = data.get('gamble_streak', 0)
-    mult = 1 + (streak * STREAK_MULTIPLIER)
+    mult = payout_multiplier(data, streak)
     coin_result = random.choice(["HEADS", "TAILS"])
     win = coin_result == chosen_side
     flip_msg = await ctx.send(
@@ -521,7 +805,7 @@ async def gamble(ctx, amount: str, choice: str = None):
                 gamble_streak=streak + 1,
                 total_won=data['total_won'] + winnings - amount
             )
-            streak_msg = f" 🔥 {streak + 1} in a row! ×{1 + ((streak + 1) * STREAK_MULTIPLIER):.2f} payout" if streak > 0 else ""
+            streak_msg = f" 🔥 {streak + 1} in a row! ×{payout_multiplier_after_win(data, streak + 1):.2f} payout" if streak > 0 else ""
             await flip_msg.edit(
                 content=(
                 f"🪙 **COIN FLIP**\n"
@@ -558,7 +842,7 @@ async def gamble(ctx, amount: str, choice: str = None):
 # =====================
 # ROULETTE
 # =====================
-@commands.command()
+@commands.command(aliases=["roul", "rl"])
 async def roulette(ctx, amount: str, color: str = None):
     if not await ensure_db_ready(ctx):
         return
@@ -644,7 +928,7 @@ async def roulette(ctx, amount: str, color: str = None):
     multipliers = {'red': 2, 'black': 2, 'green': 10}
     emoji_map = {'red': '🔴', 'black': '⚫', 'green': '🟢'}
     streak = data.get('roulette_streak', 0)
-    mult = 1 + (streak * STREAK_MULTIPLIER)
+    mult = payout_multiplier(data, streak)
     roulette_msg = await ctx.send(
         f"🎡 **ROULETTE**\n"
         f"─────────────────\n"
@@ -673,7 +957,7 @@ async def roulette(ctx, amount: str, color: str = None):
                 roulette_streak=streak + 1,
                 total_won=data['total_won'] + winnings - amount
             )
-            streak_msg = f" 🔥 {streak + 1} in a row! ×{1 + ((streak + 1) * STREAK_MULTIPLIER):.2f} payout" if streak > 0 else ""
+            streak_msg = f" 🔥 {streak + 1} in a row! ×{payout_multiplier_after_win(data, streak + 1):.2f} payout" if streak > 0 else ""
             await roulette_msg.edit(
                 content=(
                 f"🎡 **ROULETTE**\n"
@@ -713,7 +997,7 @@ async def roulette(ctx, amount: str, color: str = None):
 # =====================
 # SLOTS
 # =====================
-@commands.command()
+@commands.command(aliases=["slot"])
 async def slots(ctx, amount: str):
     if not await ensure_db_ready(ctx):
         return
@@ -784,7 +1068,7 @@ async def slots(ctx, amount: str):
 
     result = f"{r1} {r2} {r3}"
     streak = data.get('slots_streak', 0)
-    mult = 1 + (streak * STREAK_MULTIPLIER)
+    mult = payout_multiplier(data, streak)
 
     try:
         if r1 == r2 == r3:
@@ -797,7 +1081,7 @@ async def slots(ctx, amount: str):
                 slots_streak=streak + 1,
                 total_won=data['total_won'] + winnings - amount
             )
-            streak_msg = f" 🔥 {streak + 1} in a row! ×{1 + ((streak + 1) * STREAK_MULTIPLIER):.2f} payout" if streak > 0 else ""
+            streak_msg = f" 🔥 {streak + 1} in a row! ×{payout_multiplier_after_win(data, streak + 1):.2f} payout" if streak > 0 else ""
             await slots_msg.edit(
                 content=(
                     f"🎰 **RESULTS**\n"
@@ -818,7 +1102,7 @@ async def slots(ctx, amount: str):
                 slots_streak=streak + 1,
                 total_won=data['total_won'] + winnings - amount
             )
-            streak_msg = f" 🔥 {streak + 1} in a row! ×{1 + ((streak + 1) * STREAK_MULTIPLIER):.2f} payout" if streak > 0 else ""
+            streak_msg = f" 🔥 {streak + 1} in a row! ×{payout_multiplier_after_win(data, streak + 1):.2f} payout" if streak > 0 else ""
             await slots_msg.edit(
                 content=(
                     f"🎰 **RESULTS**\n"
@@ -883,7 +1167,7 @@ def hand_value(hand):
 def format_hand(hand):
     return '  '.join(f"[{c[0]}{c[1]}]" for c in hand)
 
-@commands.command()
+@commands.command(aliases=["bj"])
 async def blackjack(ctx, amount: str):
     if not await ensure_db_ready(ctx):
         return
@@ -926,7 +1210,7 @@ async def blackjack(ctx, amount: str):
     dealer_val = hand_value(dealer_hand)
 
     streak = data.get('blackjack_streak', 0)
-    mult = 1 + (streak * STREAK_MULTIPLIER)
+    mult = payout_multiplier(data, streak)
 
     async def final_outcome(player_final, dealer_final, win_type, amount_delta, new_streak):
         try:
@@ -938,7 +1222,7 @@ async def blackjack(ctx, amount: str):
                     blackjack_streak=new_streak,
                     total_won=data['total_won'] + winnings
                 )
-                streak_msg = f" 🔥 {new_streak} in a row! ×{1 + (new_streak * STREAK_MULTIPLIER):.2f} payout" if new_streak > 1 else ""
+                streak_msg = f" 🔥 {new_streak} in a row! ×{payout_multiplier_after_win(data, new_streak):.2f} payout" if new_streak > 1 else ""
                 await msg.edit(
                     content=(
                         f"🃏 **BLACKJACK**\n"
@@ -1062,7 +1346,7 @@ async def blackjack(ctx, amount: str):
 # =====================
 # GIVE
 # =====================
-@commands.command()
+@commands.command(aliases=["pay"])
 async def give(ctx, member: discord.Member, amount: str):
     if not await ensure_db_ready(ctx):
         return
@@ -1115,11 +1399,18 @@ async def give(ctx, member: discord.Member, amount: str):
         f"Your Balance: **{format_balance(old_sender_balance)}** → **{format_balance(new_sender_balance)}**\n"
         f"{member.name}'s Balance: **{format_balance(old_receiver_balance)}** → **{format_balance(new_receiver_balance)}**"
     )
+    if is_super_owner(ctx.author.id, ctx.guild):
+        await send_economy_log(ctx, "Economy Transfer", [
+            ("Recipient", f"{member} ({member.id})", False),
+            ("Amount", format_balance(amount), True),
+            ("Sender Balance", f"{format_balance(old_sender_balance)} → {format_balance(new_sender_balance)}", False),
+            ("Recipient Balance", f"{format_balance(old_receiver_balance)} → {format_balance(new_receiver_balance)}", False),
+        ])
 
 # =====================
 # LEADERBOARD
 # =====================
-@commands.command(name="lb")
+@commands.command(name="lb", aliases=["leaderboard", "rank"])
 async def lb(ctx):
     if not await ensure_db_ready(ctx):
         return
@@ -1188,6 +1479,11 @@ async def add(ctx, member: discord.Member, amount: int):
         f"✅ Added **{format_balance(amount)}** to **{member.name}**\n"
         f"Balance: **{format_balance(old_balance)}** → **{format_balance(new_balance)}**"
     )
+    await send_economy_log(ctx, "Economy Add", [
+        ("Target", f"{member} ({member.id})", False),
+        ("Amount", format_balance(amount), True),
+        ("Balance", f"{format_balance(old_balance)} → {format_balance(new_balance)}", False),
+    ], color=discord.Color.green())
 
 @commands.command()
 async def remove(ctx, member: discord.Member, amount: str):
@@ -1222,6 +1518,11 @@ async def remove(ctx, member: discord.Member, amount: str):
         f"✅ Removed **{format_balance(amount)}** from **{member.name}**\n"
         f"Balance: **{format_balance(old_balance)}** → **{format_balance(new_balance)}**"
     )
+    await send_economy_log(ctx, "Economy Remove", [
+        ("Target", f"{member} ({member.id})", False),
+        ("Amount", format_balance(amount), True),
+        ("Balance", f"{format_balance(old_balance)} → {format_balance(new_balance)}", False),
+    ], color=discord.Color.red())
 
 # =====================
 # SCRATCH CARD
@@ -1237,7 +1538,7 @@ SCRATCH_TIERS = [
 ]
 SCRATCH_SYMBOLS = ['💎', '⭐', '🔮', '🌙', '🔥']
 
-@commands.command()
+@commands.command(aliases=["scratchcard"])
 async def scratch(ctx, amount: str):
     if not await ensure_db_ready(ctx):
         return
@@ -1310,7 +1611,7 @@ async def scratch(ctx, amount: str):
 
     await asyncio.sleep(0.4)
     streak = data.get('scratch_streak', 0)
-    mult = 1 + (streak * STREAK_MULTIPLIER)
+    mult = payout_multiplier(data, streak)
 
     try:
         if multiplier > 0:
@@ -1322,7 +1623,7 @@ async def scratch(ctx, amount: str):
                 scratch_streak=streak + 1,
                 total_won=data['total_won'] + winnings - amount
             )
-            streak_msg = f" 🔥 {streak + 1} streak! ×{1 + ((streak + 1) * STREAK_MULTIPLIER):.2f}" if streak > 0 else ""
+            streak_msg = f" 🔥 {streak + 1} streak! ×{payout_multiplier_after_win(data, streak + 1):.2f}" if streak > 0 else ""
             await msg.edit(
                 content=(
                     f"🎫 **SCRATCH CARD — WIN!**\n"
@@ -1617,7 +1918,7 @@ WHEEL_SEGMENTS = [
 ]
 WHEEL_WEIGHTS = [15, 25, 25, 15, 10, 5, 3, 2]  # sum = 100
 
-@commands.command()
+@commands.command(aliases=["spin"])
 async def wheel(ctx, amount: str):
     if not await ensure_db_ready(ctx):
         return
@@ -1685,7 +1986,7 @@ async def wheel(ctx, amount: str):
 
     # Resolve
     streak = data.get('wheel_streak', 0)
-    mult = 1 + (streak * STREAK_MULTIPLIER)
+    mult = payout_multiplier(data, streak)
 
     try:
         if label == 'BLANK':
@@ -1710,7 +2011,7 @@ async def wheel(ctx, amount: str):
                     wheel_streak=streak + 1,
                     total_won=data['total_won'] + winnings - amount
                 )
-                streak_msg = f" 🔥 {streak + 1} in a row! ×{1 + ((streak + 1) * STREAK_MULTIPLIER):.2f}" if streak > 0 else ""
+                streak_msg = f" 🔥 {streak + 1} in a row! ×{payout_multiplier_after_win(data, streak + 1):.2f}" if streak > 0 else ""
                 await msg.edit(
                     content=(
                         render_wheel(spinning=False, offset=final_offset, landed_idx=segment_idx) +
@@ -1751,6 +2052,13 @@ EXPLANATIONS = {
     "owner": "Owners can use owner commands and manage mods. They are above mods; superowner/server-owner override is above owners.",
     "mod": "Mods can use mod commands for moderation/tools. They are below owners and cannot manage owners or mods.",
     "bal": "Shows your balance, streaks, and total earned/won/lost.",
+    "balance": "Shows your balance, streaks, and total earned/won/lost.",
+    "profile": "Shows your level, XP, balance, stats, and owned items.",
+    "shop": "Shows purchasable economy items.",
+    "buy": "Buys an item from the shop.",
+    "cooldowns": "Shows claim and gambling cooldowns.",
+    "richest": "Shows the top 10 richest users.",
+    "poorest": "Shows the 10 lowest balances.",
     "daily": "Claim a daily reward. Higher daily streak means a small bonus.",
     "weekly": "Claim a weekly reward. Higher weekly streak means a bigger bonus.",
     "monthly": "Claim a monthly reward. Higher monthly streak means a bigger bonus.",
@@ -1766,6 +2074,7 @@ EXPLANATIONS = {
     "wheel": "Spin the wheel for a multiplier or blank result.",
     "give": "Transfer your money to another user.",
     "lb": "Shows the top 10 balances.",
+    "leaderboard": "Shows the top 10 balances.",
     "add": "Bot owner command. Adds money to a user.",
     "remove": "Bot owner command. Removes money from a user.",
     "disable": "Superowner/server-owner override command. Disables one bot command.",
@@ -1811,6 +2120,11 @@ EXPLANATIONS = {
 
 DETAILED_EXPLANATIONS = {
     "daily": f"Gives a reward once every 24 hours. Base reward is 10,000-15,000 {CURRENCY_EMOJI}. Your daily streak adds a small bonus after day 1.",
+    "profile": f"Shows level, current XP toward the next level, balance, net gambling result, message count, and shop items. Chat XP can level you up and level rewards start at {format_balance(LEVEL_REWARD_BASE)}.",
+    "shop": "Items available: Lucky Charm gives +1% gambling payout, Gold Badge appears on your profile, and High Roller Title changes your profile title.",
+    "cooldowns": "Shows daily, weekly, monthly, and active gambling command cooldowns in one place.",
+    "richest": "Shows the top 10 balances from the economy table.",
+    "poorest": "Shows the lowest 10 balances from the economy table.",
     "weekly": f"Gives a reward once every 7 days. Base reward is 20,000-30,000 {CURRENCY_EMOJI}. Your weekly streak adds a bonus after week 1.",
     "monthly": f"Gives a reward once every 30 days. Base reward is 40,000-60,000 {CURRENCY_EMOJI}. Your monthly streak adds a bigger bonus after month 1.",
     "cf": "Pick heads or tails with `.cf <amount> h`, `.cf <amount> t`, `.flip <amount> heads`, or `.flip <amount> tails`. If you do not pick, the bot asks you. Winning pays ×2 before streak bonus, so betting 100 wins 200 total and gives +100 profit. Losing removes the bet. Consecutive coinflip wins add +1.5% payout each win and reset on loss.",
@@ -1874,15 +2188,17 @@ async def explain(ctx, command_name: str = None):
 # =====================
 # SETUP
 # =====================
-async def setup(bot_ref):
-    global bot
+async def setup(bot_ref, log_callback=None):
+    global bot, economy_log_callback
     bot = bot_ref
+    economy_log_callback = log_callback
     print("Initializing economy system...")
     init_db()
     print(f"Economy db_ready = {db_ready}")
 
     economy_commands = [
-        bal, daily, weekly, monthly, gamble, roulette, slots, blackjack,
+        bal, profile, shop, buy, cooldowns, richest, poorest,
+        daily, weekly, monthly, gamble, roulette, slots, blackjack,
         scratch, minesweeper, wheel, give, lb, add, remove, explain
     ]
     for command in economy_commands:

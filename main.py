@@ -21,6 +21,7 @@ from flask import Flask
 from io import BytesIO
 from threading import Thread
 from economy import (
+    award_chat_xp as economy_award_chat_xp,
     ensure_db_ready as economy_ensure_db_ready,
     format_balance as economy_format_balance,
     get_user as economy_get_user,
@@ -123,6 +124,7 @@ user_mentions = {}
 daily_cooldown = {}
 weekly_cooldown = {}
 monthly_cooldown = {}
+chat_xp_memory = {}
 
 class CommandDisabledError(commands.CheckFailure):
     def __init__(self, command_name):
@@ -538,9 +540,10 @@ async def on_ready():
     asyncio.create_task(birthday_check_loop())
     # Load economy cog
     try:
-        await economy_setup(bot)
+        await economy_setup(bot, send_log)
         economy_command_names = [
-            "bal", "daily", "weekly", "monthly", "cf", "roulette", "slots",
+            "bal", "profile", "shop", "buy", "cooldowns", "richest", "poorest",
+            "daily", "weekly", "monthly", "cf", "roulette", "slots",
             "blackjack", "scratch", "ms", "wheel", "give", "lb",
             "add", "remove", "explain"
         ]
@@ -986,6 +989,24 @@ async def on_message(message):
             await message.delete()
         except:
             pass
+        return
+
+    if message.guild and message.author.id not in guild_blacklisted_users(message.guild):
+        now_ts = time.time()
+        last_xp = chat_xp_memory.get(message.author.id, 0)
+        if now_ts - last_xp >= 60:
+            chat_xp_memory[message.author.id] = now_ts
+            try:
+                xp_result = economy_award_chat_xp(message.author.id)
+            except Exception as e:
+                print(f"Chat XP skipped for {message.author.id}: {type(e).__name__} - {e}")
+                xp_result = None
+            if xp_result and xp_result["levels_gained"] > 0:
+                await message.channel.send(
+                    f"🎉 {message.author.mention} reached **level {xp_result['level']}** "
+                    f"and earned **{economy_format_balance(xp_result['reward'])}**!",
+                    allowed_mentions=discord.AllowedMentions.none()
+                )
 
     # Commands are invoked at the top of this handler after one shared context lookup.
 
@@ -1025,6 +1046,76 @@ async def on_command_error(ctx, error):
         else:
             await ctx.send("You can't use that heh")
 
+HELP_CATEGORIES = {
+    "Economy": [
+        "bal", "profile", "daily", "weekly", "monthly", "cooldowns", "shop", "buy",
+        "cf", "roulette", "slots", "blackjack", "scratch", "ms", "wheel",
+        "give", "lb", "richest", "poorest",
+    ],
+    "Games": ["ttt", "c4", "q", "picker"],
+    "Utility": ["help", "explain", "userinfo", "pfp", "calc", "define", "timer", "ctimer", "alarm", "poll", "epoll", "translate"],
+    "AI": ["ask", "generate", "analyse"],
+    "Server Tools": ["dsnipe", "esnipe", "rsnipe", "rolesinfo", "roleinfo", "purge", "rpurge", "steal"],
+    "Status": ["afk", "sleep", "wake", "away", "setbday", "removebday"],
+    "Admin": ["setlogs", "disable", "enable", "disableall", "enableall", "dclist", "addowner", "removeowner", "addmod", "removemod", "add", "remove"],
+}
+
+def render_help_embed(category_name=None):
+    if category_name:
+        names = HELP_CATEGORIES.get(category_name, [])
+        embed = discord.Embed(
+            title=f"ProQue Help: {category_name}",
+            description="Use `.help <command>` for usage or `.explain <command>` for details.",
+            color=discord.Color.blurple()
+        )
+        commands_text = []
+        for name in names:
+            command = get_command_case_insensitive(name)
+            if command and not command.hidden:
+                commands_text.append(f"`.{command.name}`")
+        embed.description += "\n\n" + (" ".join(commands_text) if commands_text else "No commands loaded for this category.")
+        return embed
+
+    embed = discord.Embed(
+        title="ProQue Help",
+        description="Pick a category below, or use `.help <command>`.",
+        color=discord.Color.blurple()
+    )
+    for category, names in HELP_CATEGORIES.items():
+        loaded = [name for name in names if get_command_case_insensitive(name)]
+        if loaded:
+            embed.add_field(name=category, value=f"{len(loaded)} commands", inline=True)
+    return embed
+
+class HelpCategoryButton(Button):
+    def __init__(self, category_name):
+        super().__init__(label=category_name, style=discord.ButtonStyle.secondary)
+        self.category_name = category_name
+
+    async def callback(self, interaction: discord.Interaction):
+        view = self.view
+        if interaction.user.id != view.author_id:
+            return await interaction.response.send_message("Use your own help menu.", ephemeral=True)
+        await interaction.response.edit_message(embed=render_help_embed(self.category_name), view=view)
+
+class HelpHomeButton(Button):
+    def __init__(self):
+        super().__init__(label="Home", style=discord.ButtonStyle.primary)
+
+    async def callback(self, interaction: discord.Interaction):
+        view = self.view
+        if interaction.user.id != view.author_id:
+            return await interaction.response.send_message("Use your own help menu.", ephemeral=True)
+        await interaction.response.edit_message(embed=render_help_embed(), view=view)
+
+class HelpView(View):
+    def __init__(self, author_id):
+        super().__init__(timeout=120)
+        self.author_id = author_id
+        self.add_item(HelpHomeButton())
+        for category in HELP_CATEGORIES:
+            self.add_item(HelpCategoryButton(category))
+
 @bot.command(name="help")
 async def help_command(ctx, command_name: str = None):
     if command_name:
@@ -1039,38 +1130,7 @@ async def help_command(ctx, command_name: str = None):
         description = (command.help or "").strip().splitlines()[0] if command.help else "No extra help available."
         return await ctx.send(f"**{usage}**\n{description}{aliases}")
 
-    embed = discord.Embed(
-        title="ProQue Help",
-        description="Use `.help <command>` for usage. Use `.explain <command>` for detailed explanations.",
-        color=discord.Color.blurple()
-    )
-
-    categories = {
-        "Economy": ["bal", "daily", "weekly", "monthly", "cf", "roulette", "slots", "blackjack", "scratch", "ms", "wheel", "give", "lb"],
-        "Games": ["ttt", "c4", "q", "picker"],
-        "Utility": ["help", "explain", "userinfo", "pfp", "calc", "define", "timer", "ctimer", "alarm", "poll", "epoll", "translate"],
-        "AI": ["ask", "generate", "analyse"],
-        "Server Tools": ["dsnipe", "esnipe", "rsnipe", "rolesinfo", "roleinfo", "purge", "rpurge", "reactcount", "steal"],
-        "Status": ["afk", "sleep", "wake", "away", "setbday", "removebday"],
-        "Admin": ["setlogs", "disable", "enable", "disableall", "enableall", "dclist", "addowner", "removeowner", "addmod", "removemod", "add", "remove"],
-    }
-
-    shown = set()
-    for category, names in categories.items():
-        existing = []
-        for name in names:
-            command = bot.get_command(name)
-            if command and not command.hidden:
-                existing.append(f"`.{name}`")
-                shown.add(command.name)
-        if existing:
-            embed.add_field(name=category, value=" ".join(existing), inline=False)
-
-    other = sorted(command.name for command in bot.commands if not command.hidden and command.name not in shown)
-    if other:
-        embed.add_field(name="Other", value=" ".join(f"`.{name}`" for name in other[:30]), inline=False)
-
-    await ctx.send(embed=embed)
+    await ctx.send(embed=render_help_embed(), view=HelpView(ctx.author.id))
 
 @bot.event
 async def on_message_delete(message):
