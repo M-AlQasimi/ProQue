@@ -51,6 +51,40 @@ Q_VELVET_FRAME = "<:QVelvetFrame:1500502979306852484>"
 Q_TICKET_CHARM = "<:QTicketCharm:1500502975746146356>"
 Q_COOLDOWN_CLOCK = "<:QCooldownClock:1500502940107149403>"
 Q_ROYAL_CROWN = "<:QRoyalCrown:1500502964048232570>"
+Q_ACCEPT = "<:QAccept:1500516711114477709>"
+Q_ALARM = "<:QAlarm:1500516713094054008>"
+Q_ATTACHMENT = "<:QAttachment:1500516714641887402>"
+Q_BELL = "<:QBell:1500516716344639618>"
+Q_BIRTHDAY = "<:QBirthday:1500516717976097004>"
+Q_BOOK = "<:QBook:1500516719771385926>"
+Q_BROOM = "<:QBroom:1500516722170396772>"
+Q_CARDS = "<:QCards:1500516723860701395>"
+Q_CONFETTI = "<:QConfetti:1500516725618118736>"
+Q_CONNECT_WHITE = "<:QConnectWhite:1500516729384603708>"
+Q_CONNECT_BLACK = "<:QConnectBlack:1500516727547498706>"
+Q_EDIT = "<:QEdit:1500516736942866653>"
+Q_GAME_O = "<:QGameO:1500516742865227778>"
+Q_GAME_TIMEOUT = "<:QGameTimeout:1500516745088077864>"
+Q_GAME_WIN = "<:QGameWin:1500516747369910302>"
+Q_GAME_X = "<:QGameX:1500516749781504041>"
+Q_GIFT = "<:QGift:1500516751467872326>"
+Q_HAMMER = "<:QHammer:1500516755301335161>"
+Q_IMAGE = "<:QImage:1500516761097863348>"
+Q_LOCK = "<:QLock:1500516764369424454>"
+Q_PERMISSIONS = "<:QPermissions:1500516773475123412>"
+Q_POLL = "<:QPoll:1500516775182336050>"
+Q_REACTION = "<:QReaction:1500516779355668573>"
+Q_REJECT = "<:QReject:1500516781931106344>"
+Q_ROLES = "<:QRoles:1500516783570948330>"
+Q_SLEEP = "<:QSleep:1500516788926939220>"
+Q_STREAK_FIRE = "<:QStreakFire:1500516793020711035>"
+Q_TARGET = "<:QTarget:1500516799710761021>"
+Q_THINKING = "<:QThinking:1500516802008973505>"
+Q_TIMEOUT = "<:QTimeout:1500516806119522610>"
+Q_TRASH = "<:QTrash:1500516810909290716>"
+Q_USER_EDIT = "<:QUserEdit:1500516813119946992>"
+Q_VOICE = "<:QVoice:1500516816701886535>"
+Q_WARNING = "<:QWarning:1500516819604209704>"
 CHAT_XP_COOLDOWN_SECS = 60
 LEVEL_REWARD_BASE = 300_000
 LEVEL_REWARD_STEP = 50_000
@@ -287,6 +321,8 @@ def init_db():
                     guild_id BIGINT NOT NULL,
                     user_id BIGINT NOT NULL,
                     tickets INTEGER NOT NULL DEFAULT 0,
+                    spent BIGINT NOT NULL DEFAULT 0,
+                    pot_add BIGINT NOT NULL DEFAULT 0,
                     PRIMARY KEY (guild_id, user_id)
                 )
             """)
@@ -318,6 +354,8 @@ def init_db():
             cur.execute("ALTER TABLE lottery_config ADD COLUMN IF NOT EXISTS role_id BIGINT")
             cur.execute("ALTER TABLE lottery_config ADD COLUMN IF NOT EXISTS ticket_cost BIGINT NOT NULL DEFAULT 100000")
             cur.execute("ALTER TABLE lottery_config ADD COLUMN IF NOT EXISTS house_cut DOUBLE PRECISION NOT NULL DEFAULT 0.10")
+            cur.execute("ALTER TABLE lottery_tickets ADD COLUMN IF NOT EXISTS spent BIGINT NOT NULL DEFAULT 0")
+            cur.execute("ALTER TABLE lottery_tickets ADD COLUMN IF NOT EXISTS pot_add BIGINT NOT NULL DEFAULT 0")
             conn.commit()
             cur.close()
             conn.close()
@@ -576,7 +614,7 @@ def update_lottery_config(guild_id, **kwargs):
 def lottery_ticket_rows(guild_id):
     conn = get_db_connection()
     cur = conn.cursor()
-    cur.execute("SELECT user_id, tickets FROM lottery_tickets WHERE guild_id = %s AND tickets > 0", (guild_id,))
+    cur.execute("SELECT user_id, tickets, spent, pot_add FROM lottery_tickets WHERE guild_id = %s AND tickets > 0", (guild_id,))
     rows = cur.fetchall()
     cur.close()
     conn.close()
@@ -591,17 +629,19 @@ def all_lotteries_due():
     conn.close()
     return rows
 
-def add_lottery_tickets(guild_id, user_id, tickets, pot_add):
+def add_lottery_tickets(guild_id, user_id, tickets, pot_add, spent):
     conn = get_db_connection()
     cur = conn.cursor()
     cur.execute(
         """
-        INSERT INTO lottery_tickets (guild_id, user_id, tickets)
-        VALUES (%s, %s, %s)
+        INSERT INTO lottery_tickets (guild_id, user_id, tickets, spent, pot_add)
+        VALUES (%s, %s, %s, %s, %s)
         ON CONFLICT (guild_id, user_id) DO UPDATE SET
-            tickets = lottery_tickets.tickets + EXCLUDED.tickets
+            tickets = lottery_tickets.tickets + EXCLUDED.tickets,
+            spent = lottery_tickets.spent + EXCLUDED.spent,
+            pot_add = lottery_tickets.pot_add + EXCLUDED.pot_add
         """,
-        (guild_id, user_id, tickets)
+        (guild_id, user_id, tickets, spent, pot_add)
     )
     cur.execute("UPDATE lottery_config SET pot = pot + %s WHERE guild_id = %s", (pot_add, guild_id))
     conn.commit()
@@ -616,6 +656,42 @@ def reset_lottery_round(guild_id, next_draw):
     conn.commit()
     cur.close()
     conn.close()
+
+def refund_lottery_round(guild_id, rows, ticket_cost=None):
+    refunds = []
+    fallback_ticket_cost = ticket_cost or LOTTERY_TICKET_COST
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        for row in rows:
+            user_id = int(row["user_id"])
+            spent = int(row.get("spent") or 0)
+            if spent <= 0:
+                spent = int(row.get("tickets") or 0) * int(fallback_ticket_cost)
+            if spent <= 0:
+                continue
+            cur.execute(
+                """
+                INSERT INTO economy (user_id, balance)
+                VALUES (%s, %s)
+                ON CONFLICT (user_id) DO UPDATE SET
+                    balance = economy.balance + EXCLUDED.balance
+                """,
+                (user_id, spent)
+            )
+            cur.execute(
+                """
+                INSERT INTO economy_transactions (user_id, kind, amount, note)
+                VALUES (%s, %s, %s, %s)
+                """,
+                (user_id, "lottery_refund", spent, f"Guild {guild_id}; minimum players not met")
+            )
+            refunds.append((user_id, spent))
+        conn.commit()
+    finally:
+        cur.close()
+        conn.close()
+    return refunds
 
 def delete_lottery_config(guild_id):
     conn = get_db_connection()
@@ -927,7 +1003,7 @@ async def send_economy_log(ctx, title, fields, color=discord.Color.gold()):
     if economy_log_callback is None:
         return
     embed = discord.Embed(title=title, color=color, timestamp=datetime.now(timezone.utc))
-    embed.add_field(name="By", value=f"{ctx.author} ({ctx.author.id})", inline=False)
+    embed.add_field(name="By", value=f"<@{ctx.author.id}> ({ctx.author.id})", inline=False)
     for name, value, inline in fields:
         embed.add_field(name=name, value=value, inline=inline)
     try:
@@ -1620,7 +1696,7 @@ async def stoplottery(ctx):
         f"{Q_SUCCESS} Lottery stopped for this server.\n"
         f"Cleared Prize Pot: **{format_balance(pot)}**\n"
         f"Cleared {Q_TICKET} Tickets: **{total_tickets:,}** from **{len(rows):,}** players\n"
-        f"{Q_SUCCESS if role_deleted else 'ℹ️'} {role_note}\n"
+        f"{Q_SUCCESS if role_deleted else Q_WARNING} {role_note}\n"
         "The lottery channel/thread/messages were left in place.",
         allowed_mentions=discord.AllowedMentions.none()
     )
@@ -1718,7 +1794,7 @@ async def buytick(ctx, amount: str = "1"):
         total_entries = tickets + bonus_tickets
         new_balance = data["balance"] - total_cost
         update_user(ctx.author.id, balance=new_balance)
-        add_lottery_tickets(ctx.guild.id, ctx.author.id, total_entries, pot_add)
+        add_lottery_tickets(ctx.guild.id, ctx.author.id, total_entries, pot_add, total_cost)
         log_transaction(ctx.author.id, "lottery_tickets", -total_cost, f"{tickets} tickets; {bonus_tickets} bonus; {burned} burned")
         await assign_lottery_role(ctx.guild, ctx.author.id, config.get("role_id"))
     except Exception:
@@ -1750,13 +1826,26 @@ async def process_lottery_draw(config):
 
     unique_players = len(rows)
     if unique_players < 5:
+        ticket_cost = lottery_ticket_cost(config)
+        refunds = refund_lottery_round(guild.id, rows, ticket_cost)
+        refunded_total = sum(amount for _, amount in refunds)
         reset_lottery_round(guild.id, next_draw)
         role = await recreate_lottery_role(guild, config.get("role_id"))
         set_lottery_role(guild.id, role.id if role else None)
         if channel:
+            refund_lines = [
+                f"- {user_mention(user_id)} refunded **{format_balance(amount)}**"
+                for user_id, amount in refunds[:10]
+            ]
+            extra = "\n".join(refund_lines) if refund_lines else "No paid tickets needed a refund."
+            if len(refunds) > 10:
+                extra += f"\n...and **{len(refunds) - 10}** more refunds."
             await channel.send(
                 f"{QOIN_CHEST} Lottery draw cancelled: **{unique_players}/5** players joined.\n"
-                "No winner this round. The lottery has restarted with a fresh participant role."
+                f"{Q_TICKET} Refunded **{format_balance(refunded_total)}** across **{len(refunds)}** users.\n"
+                f"{extra}\n"
+                "No winner this round. The lottery has restarted with a fresh participant role.",
+                allowed_mentions=discord.AllowedMentions.none()
             )
         return
 
@@ -1778,7 +1867,7 @@ async def process_lottery_draw(config):
 
     if channel:
         await channel.send(
-            f"🎉 Lottery winner: {user_mention(winner_id)} won the prize: **{format_balance(pot)}**!\n"
+            f"{Q_CONFETTI} Lottery winner: {user_mention(winner_id)} won the prize: **{format_balance(pot)}**!\n"
             f"Next draw: <t:{int(next_draw.timestamp())}:R>\n"
             "A fresh participant role has been created for the new round.",
             allowed_mentions=discord.AllowedMentions.none()
@@ -2093,7 +2182,7 @@ async def gamble(ctx, amount: str, choice: str = None):
                 gamble_streak=streak + 1,
                 total_won=data['total_won'] + winnings - amount
             )
-            streak_msg = f" 🔥 {streak + 1} in a row! ×{payout_multiplier_after_win(data, streak + 1):.2f} payout" if streak > 0 else ""
+            streak_msg = f" {Q_STREAK_FIRE} {streak + 1} in a row! ×{payout_multiplier_after_win(data, streak + 1):.2f} payout" if streak > 0 else ""
             await flip_msg.edit(
                 content=(
                 f"{Q_FLIP} **COIN FLIP**\n"
@@ -2220,7 +2309,7 @@ async def roulette(ctx, amount: str, color: str = None):
     roulette_msg = await ctx.send(
         f"{Q_WHEEL_SPIN} **ROULETTE**\n"
         f"─────────────────\n"
-        f"🎯 Pick: **{emoji_map[color]} {color.upper()}**\n"
+        f"{Q_TARGET} Pick: **{emoji_map[color]} {color.upper()}**\n"
         f"`[ spinning... ]`"
     )
     spin_frames = ["🔴 ⚫ 🟢", "⚫ 🟢 🔴", "🟢 🔴 ⚫", "⚫ 🔴 ⚫"]
@@ -2230,7 +2319,7 @@ async def roulette(ctx, amount: str, color: str = None):
             content=(
                 f"{Q_WHEEL_SPIN} **ROULETTE**\n"
                 f"─────────────────\n"
-                f"🎯 Pick: **{emoji_map[color]} {color.upper()}**\n"
+                f"{Q_TARGET} Pick: **{emoji_map[color]} {color.upper()}**\n"
                 f"`[ {frame} ]`"
             )
         )
@@ -2245,12 +2334,12 @@ async def roulette(ctx, amount: str, color: str = None):
                 roulette_streak=streak + 1,
                 total_won=data['total_won'] + winnings - amount
             )
-            streak_msg = f" 🔥 {streak + 1} in a row! ×{payout_multiplier_after_win(data, streak + 1):.2f} payout" if streak > 0 else ""
+            streak_msg = f" {Q_STREAK_FIRE} {streak + 1} in a row! ×{payout_multiplier_after_win(data, streak + 1):.2f} payout" if streak > 0 else ""
             await roulette_msg.edit(
                 content=(
                 f"{Q_WHEEL} **ROULETTE**\n"
                 f"─────────────────\n"
-                f"🎯 You picked: **{emoji_map[color]} {color.upper()}**\n"
+                f"{Q_TARGET} You picked: **{emoji_map[color]} {color.upper()}**\n"
                 f"─────────────────\n"
                 f">>> {Q_SUCCESS} **{color.upper()}!**\n"
                 f"Multiplier: ×{mult * multipliers[color]:.2f}\n"
@@ -2270,7 +2359,7 @@ async def roulette(ctx, amount: str, color: str = None):
                 content=(
                 f"{Q_WHEEL} **ROULETTE**\n"
                 f"─────────────────\n"
-                f"🎯 You picked: **{emoji_map[color]} {color.upper()}**\n"
+                f"{Q_TARGET} You picked: **{emoji_map[color]} {color.upper()}**\n"
                 f"─────────────────\n"
                 f">>> {emoji_map[result]} **{result.upper()}!**\n"
                 f"Lost: **{format_balance(amount)}**\n"
@@ -2369,7 +2458,7 @@ async def slots(ctx, amount: str):
                 slots_streak=streak + 1,
                 total_won=data['total_won'] + winnings - amount
             )
-            streak_msg = f" 🔥 {streak + 1} in a row! ×{payout_multiplier_after_win(data, streak + 1):.2f} payout" if streak > 0 else ""
+            streak_msg = f" {Q_STREAK_FIRE} {streak + 1} in a row! ×{payout_multiplier_after_win(data, streak + 1):.2f} payout" if streak > 0 else ""
             await slots_msg.edit(
                 content=(
                     f"{Q_SLOTS} **RESULTS**\n"
@@ -2390,7 +2479,7 @@ async def slots(ctx, amount: str):
                 slots_streak=streak + 1,
                 total_won=data['total_won'] + winnings - amount
             )
-            streak_msg = f" 🔥 {streak + 1} in a row! ×{payout_multiplier_after_win(data, streak + 1):.2f} payout" if streak > 0 else ""
+            streak_msg = f" {Q_STREAK_FIRE} {streak + 1} in a row! ×{payout_multiplier_after_win(data, streak + 1):.2f} payout" if streak > 0 else ""
             await slots_msg.edit(
                 content=(
                     f"{Q_SLOTS} **RESULTS**\n"
@@ -2510,10 +2599,10 @@ async def blackjack(ctx, amount: str):
                     blackjack_streak=new_streak,
                     total_won=data['total_won'] + winnings
                 )
-                streak_msg = f" 🔥 {new_streak} in a row! ×{payout_multiplier_after_win(data, new_streak):.2f} payout" if new_streak > 1 else ""
+                streak_msg = f" {Q_STREAK_FIRE} {new_streak} in a row! ×{payout_multiplier_after_win(data, new_streak):.2f} payout" if new_streak > 1 else ""
                 await msg.edit(
                     content=(
-                        f"🃏 **BLACKJACK**\n"
+                        f"{Q_CARDS} **BLACKJACK**\n"
                         f"─────────────────\n"
                         f"**Your hand:** {format_hand(player_hand)}  →  **{player_final}**\n"
                         f"**Dealer:**     {format_hand(dealer_hand)}  →  **{dealer_final}**\n"
@@ -2533,7 +2622,7 @@ async def blackjack(ctx, amount: str):
                 )
                 await msg.edit(
                     content=(
-                        f"🃏 **BLACKJACK**\n"
+                        f"{Q_CARDS} **BLACKJACK**\n"
                         f"─────────────────\n"
                         f"**Your hand:** {format_hand(player_hand)}  →  **{player_final}**\n"
                         f"**Dealer:**     {format_hand(dealer_hand)}  →  **{dealer_final}**\n"
@@ -2590,7 +2679,7 @@ async def blackjack(ctx, amount: str):
             else:
                 await interaction.response.edit_message(
                     content=(
-                        f"🃏 **BLACKJACK**\n"
+                        f"{Q_CARDS} **BLACKJACK**\n"
                         f"─────────────────\n"
                         f"**Your hand:** {format_hand(player_hand)}  →  **{player_val}**\n"
                         f"**Dealer:**     [{dealer_hand[0][0]}{dealer_hand[0][1]}]  [?]\n"
@@ -2623,7 +2712,7 @@ async def blackjack(ctx, amount: str):
                 await final_outcome(player_val, dealer_val, "Push", 0, streak)
 
     msg = await ctx.send(
-        f"🃏 **BLACKJACK**\n"
+        f"{Q_CARDS} **BLACKJACK**\n"
         f"─────────────────\n"
         f"**Your hand:** {format_hand(player_hand)}  →  **{player_val}**\n"
         f"**Dealer:**     [{dealer_hand[0][0]}{dealer_hand[0][1]}]  [?]\n"
@@ -2985,7 +3074,7 @@ async def scratch(ctx, amount: str):
                 scratch_streak=streak + 1,
                 total_won=data['total_won'] + winnings - amount
             )
-            streak_msg = f" 🔥 {streak + 1} streak! ×{payout_multiplier_after_win(data, streak + 1):.2f}" if streak > 0 else ""
+            streak_msg = f" {Q_STREAK_FIRE} {streak + 1} streak! ×{payout_multiplier_after_win(data, streak + 1):.2f}" if streak > 0 else ""
             await msg.edit(
                 content=(
                     f"{QOIN_CHEST} **SCRATCH CARD — WIN!**\n"
@@ -3374,7 +3463,7 @@ async def wheel(ctx, amount: str):
                     wheel_streak=streak + 1,
                     total_won=data['total_won'] + winnings - amount
                 )
-                streak_msg = f" 🔥 {streak + 1} in a row! ×{payout_multiplier_after_win(data, streak + 1):.2f}" if streak > 0 else ""
+                streak_msg = f" {Q_STREAK_FIRE} {streak + 1} in a row! ×{payout_multiplier_after_win(data, streak + 1):.2f}" if streak > 0 else ""
                 await msg.edit(
                     content=(
                         render_wheel(spinning=False, offset=final_offset, landed_idx=segment_idx) +
@@ -3485,6 +3574,9 @@ EXPLANATIONS = {
     "generate": "Generates text with AI.",
     "analyse": "Analyzes provided text or content.",
     "translate": "Translates text.",
+    "econhelp": "Shows economy commands, aliases, and short explanations.",
+    "economyhelp": "Alias for `.econhelp`. Shows economy commands, aliases, and short explanations.",
+    "ehelp": "Alias for `.econhelp`. Shows economy commands, aliases, and short explanations.",
 }
 
 DETAILED_EXPLANATIONS = {
@@ -3517,6 +3609,45 @@ DETAILED_EXPLANATIONS = {
     "add": "Owner command. `.add @user <amount>` adds new quesos to one user. Superowner can use `.add @everyone <amount>` or `.add @role <amount>` to add that amount to every server member or every member with that role. It does not support `all`.",
     "remove": "Owner command. Removes quesos from a user. `.remove @user all` removes their full balance. The balance cannot go below 0, and the message shows old and new balance.",
 }
+
+ECONHELP_COMMANDS = [
+    ("Core", ["bal", "profile", "quests", "shop", "cooldowns", "transactions", "richest", "poorest", "lb"]),
+    ("Claims", ["daily", "weekly", "monthly"]),
+    ("Lottery", ["lottery", "buytick", "lotterystats", "editlottery", "stoplottery"]),
+    ("Gambling", ["cf", "roulette", "slots", "blackjack", "scratch", "ms", "wheel"]),
+    ("Transfers", ["give"]),
+    ("Owner Economy", ["add", "remove"]),
+    ("Help", ["econhelp", "explain"]),
+]
+
+def command_help_line(command_name):
+    command = bot.get_command(command_name) if bot else None
+    usage_name = command.qualified_name if command else command_name
+    aliases = command.aliases if command else []
+    alias_text = f" aliases: `{', '.join(aliases)}`" if aliases else ""
+    text = EXPLANATIONS.get(command_name)
+    if command and not text:
+        text = EXPLANATIONS.get(command.name)
+    if not text:
+        text = (command.help or "").strip().splitlines()[0] if command and command.help else "Runs this economy command."
+    return f"`.{usage_name}`{alias_text}\n{text}"
+
+@commands.command(name="econhelp", aliases=["economyhelp", "ehelp"])
+async def econhelp(ctx):
+    """Shows economy commands, aliases, and short explanations."""
+    embed = discord.Embed(
+        title=f"{Q_BOOK} Economy Help",
+        description=(
+            "Economy commands only. Use `.explain <command>` for detailed help, "
+            "or `.help` for the full bot command list if it is enabled."
+        ),
+        color=discord.Color.gold()
+    )
+    for category, commands_ in ECONHELP_COMMANDS:
+        lines = [command_help_line(command_name) for command_name in commands_]
+        embed.add_field(name=category, value="\n\n".join(lines), inline=False)
+    embed.set_footer(text="Tip: examples: .explain lottery, .explain shop, .explain cf")
+    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
 @commands.command()
 async def explain(ctx, command_name: str = None):
@@ -3575,7 +3706,7 @@ async def setup(bot_ref, log_callback=None):
     economy_commands = [
         bal, profile, quests, shop, cooldowns, transactions, richest, poorest, lottery, editlottery, stoplottery, lotterystats, buytick,
         daily, weekly, monthly, gamble, roulette, slots, blackjack,
-        scratch, minesweeper, wheel, give, lb, add, remove, explain
+        scratch, minesweeper, wheel, give, lb, add, remove, econhelp, explain
     ]
     for command in economy_commands:
         if bot.get_command(command.name):

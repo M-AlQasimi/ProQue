@@ -529,6 +529,343 @@ def qroyal_crown():
     return c
 
 
+def qbirthday():
+    c = Canvas()
+    c.rect(31, 60, 66, 38, BLUE, outline=BLUE_DARK, width=4)
+    c.rect(27, 50, 74, 17, ICE, outline=BLUE_DARK, width=3)
+    for x in [42, 64, 86]:
+        c.rect(x - 3, 31, 6, 19, GOLD, outline=BLUE_DARK, width=1.5)
+        c.poly([(x, 23), (x - 5, 33), (x + 5, 33)], RED, outline=BLUE_DARK, width=1)
+    c.text_q(64, 79, 24, ICE)
+    c.sparkle(98, 36, 6)
+    return c
+
+
+def qhammer():
+    c = Canvas()
+    c.rect(36, 27, 48, 20, SILVER, outline=BLUE_DARK, width=3)
+    c.rect(75, 33, 21, 12, BLUE_MID, outline=BLUE_DARK, width=2)
+    c.line(54, 47, 89, 98, BLUE, 9)
+    c.line(58, 50, 93, 101, ICE, 3)
+    coin(c, 38, 86, 13)
+    c.sparkle(95, 30, 6)
+    return c
+
+
+def qtrash():
+    c = Canvas()
+    c.rect(39, 43, 50, 57, BLUE_MID, outline=BLUE_DARK, width=4)
+    c.rect(34, 34, 60, 12, SILVER, outline=BLUE_DARK, width=3)
+    c.rect(53, 24, 22, 10, ICE, outline=BLUE_DARK, width=2)
+    for x in [52, 64, 76]:
+        c.line(x, 52, x, 91, CYAN, 2)
+    c.sparkle(96, 36, 6)
+    return c
+
+
+def qedit():
+    c = Canvas()
+    c.rect(31, 31, 55, 66, ICE, outline=BLUE_DARK, width=4)
+    c.line(45, 51, 73, 51, BLUE_MID, 3)
+    c.line(45, 64, 68, 64, BLUE_MID, 3)
+    c.line(45, 77, 61, 77, BLUE_MID, 3)
+    c.line(70, 88, 101, 57, GOLD, 8)
+    c.line(74, 91, 104, 61, ICE, 3)
+    c.poly([(98, 51), (108, 61), (102, 67), (92, 57)], RED, outline=BLUE_DARK, width=1.5)
+    return c
+
+
+def qimage():
+    c = Canvas()
+    c.rect(25, 32, 78, 64, ICE, outline=BLUE_DARK, width=4)
+    c.circle(82, 50, 8, GOLD, outline=BLUE_DARK, width=2)
+    c.poly([(31, 88), (52, 61), (67, 78), (77, 66), (98, 89)], BLUE, outline=BLUE_DARK, width=2)
+    c.sparkle(99, 32, 6)
+    return c
+
+
+def qlock():
+    c = Canvas()
+    c.rect(34, 57, 60, 42, BLUE_MID, outline=BLUE_DARK, width=4)
+    c.ellipse(64, 58, 25, 31, TRANSPARENT, outline=SILVER, width=7)
+    c.circle(64, 76, 8, GOLD, outline=BLUE_DARK, width=2)
+    c.line(64, 82, 64, 92, GOLD, 4)
+    c.sparkle(95, 37, 6)
+    return c
+
+
+def qwarning():
+    c = Canvas()
+    c.poly([(64, 22), (108, 101), (20, 101)], GOLD, outline=BLUE_DARK, width=5)
+    c.line(64, 48, 64, 75, NAVY, 7)
+    c.circle(64, 88, 5, NAVY)
+    c.sparkle(99, 39, 5)
+    return c
+
+
+def qbroom():
+    c = Canvas()
+    c.line(34, 24, 88, 91, BLUE, 8)
+    c.line(38, 24, 92, 91, ICE, 2)
+    c.poly([(76, 75), (107, 91), (86, 111), (63, 88)], GOLD, outline=BLUE_DARK, width=3)
+    for x in [75, 83, 91, 99]:
+        c.line(x, 88, x - 13, 105, BLUE_DARK, 1.5)
+    c.sparkle(95, 40, 6)
+    return c
+
+
+def qattachment():
+    c = Canvas()
+    c.ellipse(63, 67, 31, 41, TRANSPARENT, outline=BLUE, width=8)
+    c.ellipse(70, 66, 18, 27, TRANSPARENT, outline=ICE, width=5)
+    c.line(78, 45, 53, 79, BLUE_DARK, 5)
+    c.line(81, 46, 56, 80, CYAN, 2)
+    c.sparkle(95, 35, 6)
+    return c
+
+
+def qpoll():
+    c = Canvas()
+    c.rect(28, 27, 72, 74, ICE, outline=BLUE_DARK, width=4)
+    for y, w, col in [(48, 44, BLUE), (65, 57, CYAN), (82, 31, GOLD)]:
+        c.rect(40, y, w, 9, col, outline=BLUE_DARK, width=1.5)
+    c.text_q(64, 34, 13, BLUE_MID)
+    c.sparkle(96, 36, 6)
+    return c
+
+
+def qreaction():
+    c = Canvas()
+    c.circle(64, 63, 39, ICE, outline=BLUE_DARK, width=4)
+    c.circle(50, 56, 5, BLUE_DARK)
+    c.circle(78, 56, 5, BLUE_DARK)
+    c.ellipse(64, 74, 18, 10, TRANSPARENT, outline=BLUE_MID, width=4)
+    c.poly([(88, 86), (105, 101), (81, 98)], BLUE, outline=BLUE_DARK, width=2)
+    c.sparkle(96, 34, 6)
+    return c
+
+
+def qtimeout():
+    c = qtimer(-math.pi / 2)
+    c.poly([(78, 83), (103, 108), (109, 102), (84, 77)], RED, outline=BLUE_DARK, width=2)
+    c.poly([(103, 77), (78, 102), (84, 108), (109, 83)], RED, outline=BLUE_DARK, width=2)
+    return c
+
+
+def quser_edit():
+    c = Canvas()
+    c.circle(54, 48, 18, ICE, outline=BLUE_DARK, width=3)
+    c.ellipse(54, 84, 31, 23, BLUE, outline=BLUE_DARK, width=3)
+    c.line(75, 91, 104, 62, GOLD, 7)
+    c.line(78, 94, 107, 65, ICE, 2)
+    c.sparkle(96, 35, 6)
+    return c
+
+
+def qroles():
+    c = Canvas()
+    c.circle(48, 53, 20, BLUE, outline=BLUE_DARK, width=3)
+    c.circle(78, 53, 20, PURPLE, outline=BLUE_DARK, width=3)
+    c.ellipse(63, 88, 43, 23, ICE, outline=BLUE_DARK, width=3)
+    c.text_q(64, 86, 20, BLUE_MID)
+    c.sparkle(97, 35, 6)
+    return c
+
+
+def qvoice():
+    c = Canvas()
+    c.rect(43, 26, 30, 58, BLUE, outline=BLUE_DARK, width=4)
+    c.ellipse(58, 84, 25, 13, BLUE, outline=BLUE_DARK, width=3)
+    c.line(58, 84, 58, 103, BLUE_DARK, 5)
+    for r in [24, 34, 44]:
+        c.ellipse(75, 60, r, r, TRANSPARENT, outline=CYAN, width=2)
+    c.sparkle(96, 34, 6)
+    return c
+
+
+def qpermissions():
+    c = Canvas()
+    c.poly([(64, 21), (100, 37), (94, 83), (64, 107), (34, 83), (28, 37)], BLUE_MID, outline=BLUE_DARK, width=4)
+    c.line(45, 65, 59, 81, ICE, 7)
+    c.line(59, 81, 86, 49, ICE, 7)
+    c.text_q(64, 52, 20, CYAN)
+    return c
+
+
+def qaccept():
+    c = Canvas()
+    c.circle(64, 64, 43, GREEN, outline=BLUE_DARK, width=5)
+    c.line(39, 65, 56, 82, ICE, 9)
+    c.line(56, 82, 91, 43, ICE, 9)
+    c.sparkle(96, 34, 6)
+    return c
+
+
+def qreject():
+    c = Canvas()
+    c.circle(64, 64, 43, RED, outline=BLUE_DARK, width=5)
+    c.line(41, 41, 87, 87, ICE, 9)
+    c.line(87, 41, 41, 87, ICE, 9)
+    c.sparkle(96, 34, 6)
+    return c
+
+
+def qgame_win():
+    c = Canvas()
+    c.poly([(64, 21), (72, 47), (100, 47), (77, 63), (87, 94), (64, 75), (41, 94), (51, 63), (28, 47), (56, 47)], GOLD, outline=BLUE_DARK, width=4)
+    coin(c, 64, 63, 18)
+    c.sparkle(100, 33, 7)
+    return c
+
+
+def qgame_timeout():
+    c = qtimeout()
+    c.poly([(35, 96), (64, 70), (93, 96)], GOLD, outline=BLUE_DARK, width=3)
+    c.sparkle(95, 34, 6)
+    return c
+
+
+def qgame_x():
+    c = Canvas()
+    c.circle(64, 64, 43, ICE, outline=BLUE_DARK, width=4)
+    c.line(40, 40, 88, 88, BLUE_MID, 11)
+    c.line(88, 40, 40, 88, BLUE_MID, 11)
+    c.sparkle(96, 34, 6)
+    return c
+
+
+def qgame_o():
+    c = Canvas()
+    c.circle(64, 64, 43, ICE, outline=BLUE_DARK, width=4)
+    c.circle(64, 64, 24, TRANSPARENT, outline=BLUE_MID, width=11)
+    c.sparkle(96, 34, 6)
+    return c
+
+
+def qconnect_black():
+    c = Canvas()
+    c.circle(64, 64, 42, NAVY, outline=CYAN, width=5)
+    c.text_q(64, 66, 27, CYAN)
+    c.sparkle(96, 34, 6)
+    return c
+
+
+def qconnect_white():
+    c = Canvas()
+    c.circle(64, 64, 42, ICE, outline=BLUE_DARK, width=5)
+    c.text_q(64, 66, 27, BLUE_MID)
+    c.sparkle(96, 34, 6)
+    return c
+
+
+def qgift():
+    c = Canvas()
+    c.rect(30, 58, 68, 42, BLUE, outline=BLUE_DARK, width=4)
+    c.rect(25, 45, 78, 18, ICE, outline=BLUE_DARK, width=3)
+    c.rect(58, 43, 13, 58, GOLD, outline=BLUE_DARK, width=2)
+    c.ellipse(50, 39, 16, 10, TRANSPARENT, outline=CYAN, width=5)
+    c.ellipse(78, 39, 16, 10, TRANSPARENT, outline=CYAN, width=5)
+    c.sparkle(98, 35, 6)
+    return c
+
+
+def qalarm():
+    c = qtimer(-math.pi / 4)
+    c.circle(36, 33, 12, BLUE, outline=BLUE_DARK, width=2)
+    c.circle(92, 33, 12, BLUE, outline=BLUE_DARK, width=2)
+    c.sparkle(98, 54, 6)
+    return c
+
+
+def qbell():
+    c = Canvas()
+    c.ellipse(64, 68, 34, 39, GOLD, outline=BLUE_DARK, width=4)
+    c.rect(46, 85, 36, 12, GOLD, outline=BLUE_DARK, width=3)
+    c.circle(64, 101, 7, ICE, outline=BLUE_DARK, width=2)
+    c.line(38, 28, 27, 40, CYAN, 3)
+    c.line(90, 28, 101, 40, CYAN, 3)
+    c.sparkle(96, 39, 6)
+    return c
+
+
+def qsleep():
+    c = Canvas()
+    c.circle(64, 70, 36, NAVY, outline=BLUE_DARK, width=4)
+    c.circle(77, 58, 36, TRANSPARENT)
+    c.line(46, 69, 60, 69, ICE, 4)
+    c.line(70, 59, 86, 59, CYAN, 4)
+    c.line(74, 52, 88, 52, CYAN, 3)
+    c.sparkle(97, 35, 6)
+    return c
+
+
+def qbook():
+    c = Canvas()
+    c.poly([(28, 35), (62, 45), (62, 101), (28, 91)], ICE, outline=BLUE_DARK, width=3)
+    c.poly([(100, 35), (66, 45), (66, 101), (100, 91)], BLUE, outline=BLUE_DARK, width=3)
+    c.line(64, 45, 64, 101, CYAN, 3)
+    c.text_q(82, 67, 22, ICE)
+    c.sparkle(99, 34, 6)
+    return c
+
+
+def qthinking():
+    c = Canvas()
+    c.circle(64, 62, 38, ICE, outline=BLUE_DARK, width=4)
+    c.circle(50, 55, 4, BLUE_DARK)
+    c.circle(74, 55, 4, BLUE_DARK)
+    c.line(55, 76, 75, 74, BLUE_MID, 4)
+    c.circle(91, 91, 8, CYAN, outline=BLUE_DARK, width=2)
+    c.circle(104, 103, 4, CYAN, outline=BLUE_DARK, width=1.5)
+    c.sparkle(96, 34, 6)
+    return c
+
+
+def qstreak_fire():
+    c = Canvas()
+    c.poly([(64, 108), (37, 82), (52, 58), (57, 21), (76, 52), (87, 39), (92, 76)], BLUE, outline=BLUE_DARK, width=4)
+    c.poly([(64, 99), (50, 79), (62, 59), (65, 36), (76, 66), (82, 83)], CYAN, outline=ICE, width=2)
+    c.text_q(64, 78, 22, ICE)
+    c.sparkle(96, 35, 6)
+    return c
+
+
+def qtarget():
+    c = Canvas()
+    for r, col in [(43, ICE), (32, BLUE), (21, ICE), (10, RED)]:
+        c.circle(64, 64, r, col, outline=BLUE_DARK if r == 43 else None, width=4 if r == 43 else 0)
+    c.line(64, 19, 64, 109, BLUE_DARK, 3)
+    c.line(19, 64, 109, 64, BLUE_DARK, 3)
+    c.sparkle(96, 34, 6)
+    return c
+
+
+def qcards():
+    c = Canvas()
+    c.rect(35, 31, 38, 58, ICE, outline=BLUE_DARK, width=3)
+    c.rect(57, 40, 38, 58, BLUE, outline=BLUE_DARK, width=3)
+    c.text_q(55, 61, 20, BLUE_MID)
+    c.text_q(76, 70, 20, ICE)
+    c.sparkle(98, 35, 6)
+    return c
+
+
+def qconfetti():
+    c = Canvas()
+    coin(c, 64, 73, 27)
+    for pts, col in [
+        ([(26, 32), (38, 27), (35, 43)], RED),
+        ([(93, 28), (108, 35), (92, 44)], GOLD),
+        ([(30, 89), (42, 96), (27, 104)], CYAN),
+        ([(94, 90), (106, 99), (90, 105)], GREEN),
+    ]:
+        c.poly(pts, col, outline=BLUE_DARK, width=1)
+    c.line(38, 35, 52, 52, CYAN, 3)
+    c.line(88, 35, 76, 53, GOLD, 3)
+    c.sparkle(99, 34, 7)
+    return c
+
+
 STATIC = {
     "QoinBag": qoin_bag,
     "QoinChest": qoin_chest,
@@ -556,6 +893,40 @@ STATIC = {
     "QTicketCharm": qticket_charm,
     "QCooldownClock": qcooldown_clock,
     "QRoyalCrown": qroyal_crown,
+    "QBirthday": qbirthday,
+    "QHammer": qhammer,
+    "QTrash": qtrash,
+    "QEdit": qedit,
+    "QImage": qimage,
+    "QLock": qlock,
+    "QWarning": qwarning,
+    "QBroom": qbroom,
+    "QAttachment": qattachment,
+    "QPoll": qpoll,
+    "QReaction": qreaction,
+    "QTimeout": qtimeout,
+    "QUserEdit": quser_edit,
+    "QRoles": qroles,
+    "QVoice": qvoice,
+    "QPermissions": qpermissions,
+    "QAccept": qaccept,
+    "QReject": qreject,
+    "QGameWin": qgame_win,
+    "QGameTimeout": qgame_timeout,
+    "QGameX": qgame_x,
+    "QGameO": qgame_o,
+    "QConnectBlack": qconnect_black,
+    "QConnectWhite": qconnect_white,
+    "QGift": qgift,
+    "QAlarm": qalarm,
+    "QBell": qbell,
+    "QSleep": qsleep,
+    "QBook": qbook,
+    "QThinking": qthinking,
+    "QStreakFire": qstreak_fire,
+    "QTarget": qtarget,
+    "QCards": qcards,
+    "QConfetti": qconfetti,
 }
 
 

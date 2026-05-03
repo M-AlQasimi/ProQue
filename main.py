@@ -27,7 +27,41 @@ from economy import (
     format_balance as economy_format_balance,
     get_user as economy_get_user,
     parse_amount as economy_parse_amount,
+    Q_ACCEPT as economy_q_accept,
+    Q_ALARM as economy_q_alarm,
+    Q_ATTACHMENT as economy_q_attachment,
+    Q_BELL as economy_q_bell,
+    Q_BIRTHDAY as economy_q_birthday,
+    Q_BOOK as economy_q_book,
+    Q_BROOM as economy_q_broom,
+    Q_CARDS as economy_q_cards,
+    Q_CONFETTI as economy_q_confetti,
+    Q_CONNECT_BLACK as economy_q_connect_black,
+    Q_CONNECT_WHITE as economy_q_connect_white,
+    Q_EDIT as economy_q_edit,
+    Q_GAME_O as economy_q_game_o,
+    Q_GAME_TIMEOUT as economy_q_game_timeout,
+    Q_GAME_WIN as economy_q_game_win,
+    Q_GAME_X as economy_q_game_x,
+    Q_GIFT as economy_q_gift,
+    Q_HAMMER as economy_q_hammer,
+    Q_IMAGE as economy_q_image,
     Q_LEVEL_PULSE as economy_q_level_pulse,
+    Q_LOCK as economy_q_lock,
+    Q_PERMISSIONS as economy_q_permissions,
+    Q_POLL as economy_q_poll,
+    Q_REACTION as economy_q_reaction,
+    Q_REJECT as economy_q_reject,
+    Q_ROLES as economy_q_roles,
+    Q_SLEEP as economy_q_sleep,
+    Q_THINKING as economy_q_thinking,
+    Q_TIMEOUT as economy_q_timeout,
+    Q_TIMER as economy_q_timer,
+    Q_TIMER_TICK as economy_q_timer_tick,
+    Q_TRASH as economy_q_trash,
+    Q_USER_EDIT as economy_q_user_edit,
+    Q_VOICE as economy_q_voice,
+    Q_WARNING as economy_q_warning,
     setup as economy_setup,
     update_user as economy_update_user,
 )
@@ -547,7 +581,7 @@ async def on_ready():
             "bal", "profile", "quests", "shop", "cooldowns", "transactions", "richest", "poorest", "lottery", "editlottery", "stoplottery", "lotterystats", "buytick",
             "daily", "weekly", "monthly", "cf", "roulette", "slots",
             "blackjack", "scratch", "ms", "wheel", "give", "lb",
-            "add", "remove", "explain"
+            "add", "remove", "econhelp", "explain"
         ]
         loaded_economy_commands = [name for name in economy_command_names if bot.get_command(name)]
         print(f"Economy system loaded ({len(loaded_economy_commands)}/{len(economy_command_names)} commands)")
@@ -571,7 +605,7 @@ async def birthday_check_loop():
                     channel = bot.get_channel(bday_channel_id)
                     if channel:
                         user = await bot.fetch_user(int(user_id))
-                        await channel.send(f"@everyone it's {user.mention}'s birthday today! 🎉🎂")
+                        await channel.send(f"@everyone {economy_q_birthday} it's {user.mention}'s birthday today!")
                         already_sent.add((user_id, now.date()))
 
         await asyncio.sleep(60)
@@ -598,7 +632,7 @@ async def on_member_ban(guild, user):
     async for entry in guild.audit_logs(limit=1, action=discord.AuditLogAction.ban):
         if entry.target.id == user.id:
             embed = discord.Embed(
-                title="🔨 Member Banned",
+                title=f"{economy_q_hammer} Member Banned",
                 color=discord.Color.red()
             )
             embed.add_field(name="User", value=f"{user} ({user.id})", inline=False)
@@ -647,7 +681,7 @@ async def on_guild_remove(guild):
 @bot.event
 async def on_guild_channel_create(channel):
     embed = discord.Embed(
-        title="📥 Channel Created",
+        title=f"{economy_q_accept} Channel Created",
         color=discord.Color.green()
     )
     embed.add_field(name="Channel", value=channel.mention, inline=False)
@@ -666,7 +700,7 @@ async def on_guild_channel_create(channel):
 @bot.event
 async def on_guild_channel_delete(channel):
     embed = discord.Embed(
-        title="🗑️ Channel Deleted",
+        title=f"{economy_q_trash} Channel Deleted",
         color=discord.Color.red()
     )
     embed.add_field(name="Channel", value=channel.name, inline=False)
@@ -704,7 +738,7 @@ async def on_guild_role_create(role):
 @bot.event
 async def on_guild_role_delete(role):
     embed = discord.Embed(
-        title="🗑️ Role Deleted",
+        title=f"{economy_q_trash} Role Deleted",
         color=discord.Color.red()
     )
     embed.add_field(name="Role", value=role.name, inline=False)
@@ -723,7 +757,7 @@ async def on_guild_role_delete(role):
 @bot.event
 async def on_guild_role_update(before, after):
     embed = discord.Embed(
-        title="🎨 Role Updated",
+        title=f"{economy_q_roles} Role Updated",
         color=discord.Color.blue()
     )
     embed.add_field(name="Role", value=f"{after.name} ({after.id})", inline=False)
@@ -773,14 +807,14 @@ async def on_guild_update(before, after):
 
     if before.name != after.name:
         embed = discord.Embed(
-            title="📝 Server Name Changed",
+            title=f"{economy_q_edit} Server Name Changed",
             description=f"**Before:** {before.name}\n**After:** {after.name}",
             color=discord.Color.orange()
         )
 
     elif before.icon != after.icon:
         embed = discord.Embed(
-            title="🖼️ Server Icon Changed",
+            title=f"{economy_q_image} Server Icon Changed",
             color=discord.Color.orange()
         )
         if before.icon:
@@ -790,7 +824,7 @@ async def on_guild_update(before, after):
 
     elif before.verification_level != after.verification_level:
         embed = discord.Embed(
-            title="🔒 Verification Level Changed",
+            title=f"{economy_q_lock} Verification Level Changed",
             description=f"**Before:** {before.verification_level.name}\n**After:** {after.verification_level.name}",
             color=discord.Color.orange()
         )
@@ -901,8 +935,8 @@ async def on_message(message):
         formatted = " ".join([f"{days}d" if days else "", f"{hours}h" if hours else "", f"{mins}m" if mins or not (days or hours) else ""]).strip()
 
         embed = discord.Embed(
-            title=f"Good morning, {message.author.display_name} 🌅",
-            description=f"You were sleeping for **{formatted}**.",
+            title=f"{economy_q_bell} Good morning",
+            description=f"<@{message.author.id}> was sleeping for **{formatted}**.",
             color=0xF1C40F,
             timestamp=datetime.now(timezone.utc)
         )
@@ -917,7 +951,7 @@ async def on_message(message):
                     inline=True
                 )
 
-        await message.channel.send(embed=embed)
+        await message.channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
     for uid in sleeping_users:
         if any(user.id == uid for user in message.mentions) or (
@@ -932,8 +966,8 @@ async def on_message(message):
                     user = None
             if user:
                 sleep_messages = [
-                    "Shut up you’re gonna wake them up 💤.",
-                    "Let the thing sleep peacefully 😴"
+                    f"Shut up you’re gonna wake them up {economy_q_sleep}.",
+                    f"Let the thing sleep peacefully {economy_q_sleep}"
                 ]
                 chosen_msg = random.choice(sleep_messages)
                 await message.reply(chosen_msg, mention_author=True)
@@ -968,8 +1002,8 @@ async def on_message(message):
         reason_text = f": **{reason}**" if reason.lower() != "afk" else ""
 
         embed = discord.Embed(
-            title=f"Welcome back, {message.author.display_name}",
-            description=f"You were AFK for **{formatted}**{reason_text}",
+            title="Welcome back",
+            description=f"<@{message.author.id}> was AFK for **{formatted}**{reason_text}",
             color=0x2ECC71,
             timestamp=datetime.now(timezone.utc)
         )
@@ -984,7 +1018,7 @@ async def on_message(message):
                     inline=True
                 )
 
-        await message.channel.send(embed=embed)
+        await message.channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
     if message.author.id in guild_watchlist(message.guild) and message.author.id != super_owner_id:
         try:
@@ -1026,7 +1060,7 @@ async def on_command_error(ctx, error):
     elif isinstance(error, commands.CheckFailure):
         print(f"Command check failed: {ctx.command} for {ctx.author} ({ctx.author.id}) - {type(error).__name__}: {error}")
         if ctx.author.id in guild_blacklisted_users(ctx.guild):
-            await ctx.send("LMAO you're blocked you can't use ts 😭✌🏻")
+            await ctx.send(f"LMAO you're blocked you can't use ts {economy_q_reject}")
         else:
             await ctx.send("You can't use that heh")
 
@@ -1150,7 +1184,7 @@ async def on_message_delete(message):
                 break
 
     embed = discord.Embed(
-        title="🗑️ Message Deleted",
+        title=f"{economy_q_trash} Message Deleted",
         color=discord.Color.red()
     )
     embed.add_field(name="User", value=f"{message.author} ({message.author.id})", inline=False)
@@ -1192,7 +1226,7 @@ async def on_message_delete(message):
                 mentions.extend(m.mention for m in message.mentions)
 
             ghost_embed = discord.Embed(
-                title="⚠️ Ghost Ping Detected!",
+                title=f"{economy_q_warning} Ghost Ping Detected!",
                 description=f"**Author:** {message.author.mention} (`{message.author.id}`)\n"
                             f"**Channel:** {message.channel.mention}\n"
                             f"**Mentions:** {' '.join(mentions)}\n"
@@ -1243,7 +1277,7 @@ async def on_bulk_message_delete(messages):
 
     for i, chunk in enumerate(chunks, 1):
         embed = discord.Embed(
-            title=f"🧹 Bulk Messages Deleted (Part {i}/{len(chunks)})",
+            title=f"{economy_q_broom} Bulk Messages Deleted (Part {i}/{len(chunks)})",
             description="\n".join(chunk),
             color=discord.Color.red()
         )
@@ -1258,7 +1292,7 @@ async def on_bulk_message_delete(messages):
         attach_chunks = [attachments[i:i+5] for i in range(0, len(attachments), 5)]
         for i, group in enumerate(attach_chunks, 1):
             embed = discord.Embed(
-                title=f"📎 Attachments from Purged Messages (Part {i}/{len(attach_chunks)})",
+                title=f"{economy_q_attachment} Attachments from Purged Messages (Part {i}/{len(attach_chunks)})",
                 color=discord.Color.orange()
             )
             for name, url in group:
@@ -1287,7 +1321,7 @@ async def on_message_edit(before, after):
         edited_snipes[before.channel.id] = edited_snipes[before.channel.id][:50]
 
         embed = discord.Embed(
-            title="✏️ Message Edited",
+        title=f"{economy_q_edit} Message Edited",
             color=discord.Color.orange()
         )
         embed.add_field(name="Author", value=f"{before.author} ({before.author.id})", inline=False)
@@ -1328,9 +1362,9 @@ async def update_poll_counts(message):
             embed.set_field_at(idx, name=opt, value=str(count), inline=True)
         else:
             if opt.lower() == "yes":
-                count = sum(r.count - 1 for r in message.reactions if str(r.emoji) == "✔️")
+                count = sum(r.count - 1 for r in message.reactions if str(r.emoji) == economy_q_accept)
             elif opt.lower() == "no":
-                count = sum(r.count - 1 for r in message.reactions if str(r.emoji) == "✖️")
+                count = sum(r.count - 1 for r in message.reactions if str(r.emoji) == economy_q_reject)
             embed.set_field_at(idx, name=opt, value=str(count), inline=True)
 
     await message.edit(embed=embed)
@@ -1357,13 +1391,13 @@ async def finalize_poll(msg, poll_data):
             embed.set_field_at(idx, name=opt, value=str(count), inline=True)
         else:
             if opt.lower() == "yes":
-                count = sum(r.count - 1 for r in poll_msg.reactions if str(r.emoji) == "✔️")
+                count = sum(r.count - 1 for r in poll_msg.reactions if str(r.emoji) == economy_q_accept)
             elif opt.lower() == "no":
-                count = sum(r.count - 1 for r in poll_msg.reactions if str(r.emoji) == "✖️")
+                count = sum(r.count - 1 for r in poll_msg.reactions if str(r.emoji) == economy_q_reject)
             embed.set_field_at(idx, name=opt, value=str(count), inline=True)
 
     embed.color = discord.Color.green()
-    embed.set_footer(text="Poll Ended 📊")
+    embed.set_footer(text=f"Poll Ended {economy_q_poll}")
     embed.timestamp = datetime.now(timezone.utc)
 
     await poll_msg.edit(embed=embed)
@@ -1465,7 +1499,7 @@ async def on_reaction_remove(reaction, user):
     removed_reactions[msg.channel.id] = removed_reactions[msg.channel.id][:50]
 
     embed = discord.Embed(
-        title="🗑️ Reaction Removed",
+        title=f"{economy_q_reaction} Reaction Removed",
         color=discord.Color.red()
     )
     embed.add_field(name="User", value=f"{user} ({user.id})", inline=False)
@@ -1502,7 +1536,7 @@ async def on_reaction_add(reaction, user):
 
     msg = reaction.message
     embed = discord.Embed(
-        title="➕ Reaction Added",
+        title=f"{economy_q_reaction} Reaction Added",
         color=discord.Color.green()
     )
     embed.add_field(name="User", value=f"{user} ({user.id})", inline=False)
@@ -1541,7 +1575,7 @@ async def on_raw_reaction_clear(payload):
         remover = None
 
     embed = discord.Embed(
-        title="🗑️ All Reactions Removed",
+        title=f"{economy_q_reaction} All Reactions Removed",
         description=f"All reactions were removed from a [message]({message.jump_url}) in {channel.mention}.",
         color=discord.Color.red()
     )
@@ -1574,7 +1608,7 @@ async def on_member_update(before, after):
     if before.nick != after.nick:
         action_by = await get_action_by({discord.AuditLogAction.member_update})
         embed = discord.Embed(
-            title="📝 Nickname Changed",
+            title=f"{economy_q_user_edit} Nickname Changed",
             color=discord.Color.blue()
         )
         embed.add_field(name="User", value=f"{before} ({before.id})", inline=False)
@@ -1592,7 +1626,7 @@ async def on_member_update(before, after):
     if added or removed:
         action_by = await get_action_by({discord.AuditLogAction.member_role_update})
         embed = discord.Embed(
-            title="🎭 Roles Updated",
+            title=f"{economy_q_roles} Roles Updated",
             color=discord.Color.teal()
         )
         embed.add_field(name="User", value=f"{after} ({after.id})", inline=False)
@@ -1611,7 +1645,7 @@ async def on_member_update(before, after):
         action_by = await get_action_by({discord.AuditLogAction.member_update})
         if after_timeout and (after_timeout > datetime.now(timezone.utc)):
             embed = discord.Embed(
-                title="⏳ Member Timed Out",
+                title=f"{economy_q_timeout} Member Timed Out",
                 color=discord.Color.orange()
             )
             embed.add_field(name="User", value=f"{after} ({after.id})", inline=False)
@@ -1621,7 +1655,7 @@ async def on_member_update(before, after):
             embed.timestamp = datetime.now(timezone.utc)
         else:
             embed = discord.Embed(
-                title="✔️ Timeout Removed",
+                title=f"{economy_q_accept} Timeout Removed",
                 color=discord.Color.green()
             )
             embed.add_field(name="User", value=f"{after} ({after.id})", inline=False)
@@ -1641,7 +1675,7 @@ async def on_audit_log_entry_create(entry):
 
         if after_timeout and after_timeout.timestamp() > datetime.now(timezone.utc).timestamp():
             embed = discord.Embed(
-                title="⏳ Member Timed Out",
+                title=f"{economy_q_timeout} Member Timed Out",
                 color=discord.Color.orange()
             )
             embed.add_field(name="User", value=f"{target} ({target.id})", inline=False)
@@ -1655,7 +1689,7 @@ async def on_audit_log_entry_create(entry):
 
         elif after_timeout is None:
             embed = discord.Embed(
-                title="✔️ Timeout Removed",
+                title=f"{economy_q_accept} Timeout Removed",
                 color=discord.Color.green()
             )
             embed.add_field(name="User", value=f"{target} ({target.id})", inline=False)
@@ -1669,7 +1703,7 @@ async def on_audit_log_entry_create(entry):
 @bot.event
 async def on_user_update(before, after):
     if before.name != after.name:
-        embed = discord.Embed(title="📝 Username Changed", color=discord.Color.blue())
+        embed = discord.Embed(title=f"{economy_q_user_edit} Username Changed", color=discord.Color.blue())
         embed.add_field(name="User", value=f"{after.mention} ({after.id})", inline=False)
         embed.add_field(name="Before", value=before.name, inline=True)
         embed.add_field(name="After", value=after.name, inline=True)
@@ -1707,7 +1741,7 @@ async def on_member_remove(member):
     async for entry in guild.audit_logs(limit=1, action=discord.AuditLogAction.kick):
         if entry.target.id == member.id:
             embed = discord.Embed(
-                title="🔨 Member Kicked",
+                title=f"{economy_q_hammer} Member Kicked",
                 color=discord.Color.red()
             )
             embed.timestamp = datetime.now(timezone.utc)
@@ -1735,21 +1769,21 @@ async def on_member_remove(member):
 async def on_voice_state_update(member, before, after):
     changes = []
     if not before.channel and after.channel:
-        changes.append(f"🔊 **Joined voice:** {after.channel.mention}")
+        changes.append(f"{economy_q_voice} **Joined voice:** {after.channel.mention}")
     elif before.channel and not after.channel:
         changes.append(f"**Left voice:** {before.channel.name}")
     elif before.channel != after.channel:
-        changes.append(f"➡️ **Moved voice:** {before.channel.name} → {after.channel.name}")
+        changes.append(f"{economy_q_voice} **Moved voice:** {before.channel.name} -> {after.channel.name}")
 
     if before.self_mute != after.self_mute:
-        changes.append(f"{'🔇 Muted' if after.self_mute else '🔊 Unmuted'}")
+        changes.append(f"{economy_q_timeout if after.self_mute else economy_q_voice} {'Muted' if after.self_mute else 'Unmuted'}")
 
     if before.self_deaf != after.self_deaf:
-        changes.append(f"{'Deafened' if after.self_deaf else '👂 Undeafened'}")
+        changes.append(f"{economy_q_timeout if after.self_deaf else economy_q_voice} {'Deafened' if after.self_deaf else 'Undeafened'}")
 
     if changes:
         embed = discord.Embed(
-            title="🎙️ Voice State Changed",
+            title=f"{economy_q_voice} Voice State Changed",
             description="\n".join(changes),
             color=discord.Color.blurple()
         )
@@ -1977,19 +2011,19 @@ async def rolesinfo(ctx):
         lines = []
 
         if powerful_roles:
-            lines.append("**🔒 Roles with Power:**")
+            lines.append(f"**{economy_q_lock} Roles with Power:**")
             lines.extend(powerful_roles)
 
         if bot_roles:
-            lines.append("**🤖 Bot Roles (No Power):**")
+            lines.append(f"**{economy_q_permissions} Bot Roles (No Power):**")
             lines.extend(bot_roles)
 
         if no_power_roles:
-            lines.append("**➖ Custom Roles (No Power):**")
+            lines.append(f"**{economy_q_roles} Custom Roles (No Power):**")
             lines.extend(no_power_roles)
 
         if other_roles:
-            lines.append("**📦 Other Roles:**")
+            lines.append(f"**{economy_q_roles} Other Roles:**")
             lines.extend(other_roles)
 
         if not lines:
@@ -2014,7 +2048,7 @@ async def roleinfo(ctx, role: discord.Role):
     is_admin = role.permissions.administrator
 
     if is_admin:
-        perms_text = "**Admin Permissions: ✔️**"
+        perms_text = f"**Admin Permissions:** {economy_q_accept}"
     else:
         perms = [name.replace('_', ' ').title() for name, value in role.permissions if value]
         perms_text = "**Permissions:**\n" + ", ".join(perms) if perms else "No special permissions."
@@ -2043,9 +2077,9 @@ async def deleterole(ctx, *roles: discord.Role):
 
     response = ""
     if deleted:
-        response += f"✔️ Deleted roles: {', '.join(deleted)}\n"
+        response += f"{economy_q_accept} Deleted roles: {', '.join(deleted)}\n"
     if failed:
-        response += f"✖️ Failed to delete: {', '.join(failed)}"
+        response += f"{economy_q_reject} Failed to delete: {', '.join(failed)}"
 
     await ctx.send(response or "No roles processed.")
 
@@ -2111,7 +2145,7 @@ class TicTacToeButton(Button):
         if board[self.row][self.col] != '⬜':
             return await interaction.response.send_message("That spot is taken.", ephemeral=True)
 
-        mark = '✖️' if game["turn"] == 0 else '🔘'
+        mark = economy_q_game_x if game["turn"] == 0 else economy_q_game_o
         board[self.row][self.col] = mark
         self.label = mark
         self.disabled = True
@@ -2126,7 +2160,7 @@ class TicTacToeButton(Button):
             payout_text = await settle_game_bet(game, interaction.user)
             await disable_all_buttons(game["view"])
             await game["msg"].edit(
-                content=f"🎉 <@{interaction.user.id}> wins!{payout_text}",
+                content=f"{economy_q_game_win} <@{interaction.user.id}> wins!{payout_text}",
                 view=game["view"],
                 allowed_mentions=discord.AllowedMentions.none()
             )
@@ -2229,7 +2263,10 @@ async def ask_game_bet(ctx, opponent, game_name):
         await ctx.send(f"You only have {economy_format_balance(author_data['balance'])}. Game canceled.")
         return None
     if amount > opponent_data["balance"]:
-        await ctx.send(f"{opponent.display_name} only has {economy_format_balance(opponent_data['balance'])}. Game canceled.")
+        await ctx.send(
+            f"<@{opponent.id}> only has {economy_format_balance(opponent_data['balance'])}. Game canceled.",
+            allowed_mentions=discord.AllowedMentions.none()
+        )
         return None
 
     return amount
@@ -2279,7 +2316,7 @@ class AcceptView(View):
             return await interaction.response.send_message("You're not the challenged player.", ephemeral=True)
         self.accepted = True
         self.stop()
-        await interaction.response.edit_message(content="✔️ Challenge accepted!", view=None)
+        await interaction.response.edit_message(content=f"{economy_q_accept} Challenge accepted!", view=None)
 
     @discord.ui.button(label="Decline", style=discord.ButtonStyle.danger)
     async def decline(self, interaction: discord.Interaction, button: Button):
@@ -2287,7 +2324,7 @@ class AcceptView(View):
             return await interaction.response.send_message("You're not the challenged player.", ephemeral=True)
         self.declined = True
         self.stop()
-        await interaction.response.edit_message(content="✖️ Challenge declined.", view=None)
+        await interaction.response.edit_message(content=f"{economy_q_reject} Challenge declined.", view=None)
 
     async def on_timeout(self):
         if not self.accepted and not self.declined:
@@ -2353,7 +2390,7 @@ async def update_turn(game, channel):
         payout_text = await settle_game_bet(game, opponent)
         await disable_all_buttons(game["view"])
         await game["msg"].edit(
-            content=f"⏱️ <@{current.id}> took too long.\n🎉 <@{opponent.id}> wins by timeout!{payout_text}",
+            content=f"{economy_q_timer} <@{current.id}> took too long.\n{economy_q_game_timeout} <@{opponent.id}> wins by timeout!{payout_text}",
             view=game["view"],
             allowed_mentions=discord.AllowedMentions.none()
         )
@@ -2376,7 +2413,7 @@ class Connect4Button(Button):
 
             for row in reversed(range(6)):
                 if board[row][self.col] == " ":
-                    piece = "⚫" if game["turn"] == 0 else "⚪"
+                    piece = economy_q_connect_black if game["turn"] == 0 else economy_q_connect_white
                     board[row][self.col] = piece
                     break
             else:
@@ -2390,7 +2427,7 @@ class Connect4Button(Button):
                 payout_text = await settle_game_bet(game, interaction.user)
                 await disable_all_buttons(game["view"])
                 await interaction.response.edit_message(
-                    content=f"{render}\n\n🎉 <@{interaction.user.id}> wins!{payout_text}",
+                    content=f"{render}\n\n{economy_q_game_win} <@{interaction.user.id}> wins!{payout_text}",
                     view=game["view"],
                     allowed_mentions=discord.AllowedMentions.none()
                 )
@@ -2473,7 +2510,7 @@ async def update_c4_turn(game, channel):
             payout_text = await settle_game_bet(game, opponent)
             await disable_all_buttons(game["view"])
             await msg.edit(
-                content=f"{render_board(board, game['turn'])}\n\n⏱️ <@{current.id}> took too long.\n🎉 <@{opponent.id}> wins by timeout!{payout_text}",
+                content=f"{render_board(board, game['turn'])}\n\n{economy_q_timer} <@{current.id}> took too long.\n{economy_q_game_timeout} <@{opponent.id}> wins by timeout!{payout_text}",
                 view=game["view"],
                 allowed_mentions=discord.AllowedMentions.none()
             )
@@ -2488,7 +2525,7 @@ def render_board(board, turn):
     rendered = ""
     for row in board:
         for cell in row:
-            rendered += cell if cell in ("⚫", "⚪") else bg
+            rendered += cell if cell in (economy_q_connect_black, economy_q_connect_white) else bg
         rendered += "\n"
     return rendered
 
@@ -2821,7 +2858,6 @@ async def setup(bot):
     await bot.add_cog(OwnerModManagement(bot))
 
 from collections import Counter
-from discord.utils import escape_mentions
 
 @bot.command()
 @is_owner_or_mod()
@@ -2844,13 +2880,13 @@ async def purge(ctx, amount: int, member: discord.Member = None):
             return await ctx.send("No messages found to delete.", delete_after=5)
 
         counts = Counter([msg.author for msg in deleted])
-        lines = [f"{escape_mentions(user.display_name)}: {count}" for user, count in counts.items()]
+        lines = [f"<@{user.id}>: {count}" for user, count in counts.items()]
         summary = (
-            f"**{len(deleted)} messages** were purged by {escape_mentions(ctx.author.display_name)}:\n\n"
+            f"**{len(deleted)} messages** were purged by <@{ctx.author.id}>:\n\n"
             + "\n".join(lines)
         )
 
-        await ctx.send(summary, delete_after=10)
+        await ctx.send(summary, delete_after=10, allowed_mentions=discord.AllowedMentions.none())
 
     except discord.Forbidden:
         await ctx.send("I don’t have permission to delete messages.", delete_after=5)
@@ -2891,13 +2927,13 @@ async def rpurge(ctx, amount: int, member: discord.Member = None):
             return await ctx.send("No reactions removed.", delete_after=5)
 
         counts = Counter(reaction_owners)
-        lines = [f"{escape_mentions(user.display_name)}: {count}" for user, count in counts.items()]
+        lines = [f"<@{user.id}>: {count}" for user, count in counts.items()]
         summary = (
-            f"**{removed} reactions** were purged by {escape_mentions(ctx.author.display_name)}:\n\n"
+            f"**{removed} reactions** were purged by <@{ctx.author.id}>:\n\n"
             + "\n".join(lines)
         )
 
-        await ctx.send(summary, delete_after=10)
+        await ctx.send(summary, delete_after=10, allowed_mentions=discord.AllowedMentions.none())
 
     except discord.HTTPException as e:
         await ctx.send(f"Failed to remove reactions: {type(e).__name__} - {e}", delete_after=5)
@@ -2920,7 +2956,7 @@ async def unmute(ctx, member: discord.Member):
     try:
         await member.timeout(None)
         await ctx.send(
-            f"{member.id} has been unmuted.",
+            f"<@{member.id}> has been unmuted.",
             allowed_mentions=discord.AllowedMentions.none()
         )
     except discord.Forbidden:
@@ -2932,7 +2968,7 @@ async def unmute(ctx, member: discord.Member):
 @is_owner()
 async def ban(ctx, user: discord.User):
     try:
-        await user.send(f"LMAO you got banned from **{ctx.guild.name}** 🤣✌🏻")
+        await user.send(f"LMAO you got banned from **{ctx.guild.name}** {economy_q_reject}")
     except Exception:
         pass
 
@@ -3020,13 +3056,13 @@ class NameModal(Modal):
                     description=f"Sticker stolen via bot",
                     reason=None
                 )
-                await interaction.response.send_message(f"✅ Sticker `{name}` added successfully! {sticker}", ephemeral=True)
+                await interaction.response.send_message(f"{economy_q_accept} Sticker `{name}` added successfully! {sticker}", ephemeral=True)
             except discord.Forbidden:
-                await interaction.response.send_message("❌ I don't have permission to create stickers.", ephemeral=True)
+                await interaction.response.send_message(f"{economy_q_reject} I don't have permission to create stickers.", ephemeral=True)
             except discord.HTTPException as e:
-                await interaction.response.send_message(f"❌ Failed to add sticker: {e.text[:100] if e.text else e}", ephemeral=True)
+                await interaction.response.send_message(f"{economy_q_reject} Failed to add sticker: {e.text[:100] if e.text else e}", ephemeral=True)
             except Exception as e:
-                await interaction.response.send_message(f"❌ Failed to add sticker: {e}", ephemeral=True)
+                await interaction.response.send_message(f"{economy_q_reject} Failed to add sticker: {e}", ephemeral=True)
         elif self.type_ in ["emoji", "animated_emoji"]:
             is_animated = getattr(self.emoji_char, "animated", False) if self.emoji_char else False
             try:
@@ -3036,13 +3072,13 @@ class NameModal(Modal):
                     image=self.asset,
                     reason=None
                 )
-                await interaction.response.send_message(f"✅ Emoji `{name}` added successfully! {emoji}", ephemeral=True)
+                await interaction.response.send_message(f"{economy_q_accept} Emoji `{name}` added successfully! {emoji}", ephemeral=True)
             except discord.Forbidden:
-                await interaction.response.send_message("❌ I don't have permission to create emojis.", ephemeral=True)
+                await interaction.response.send_message(f"{economy_q_reject} I don't have permission to create emojis.", ephemeral=True)
             except discord.HTTPException as e:
-                await interaction.response.send_message(f"❌ Failed to add emoji: {e.text[:100] if e.text else e}", ephemeral=True)
+                await interaction.response.send_message(f"{economy_q_reject} Failed to add emoji: {e.text[:100] if e.text else e}", ephemeral=True)
             except Exception as e:
-                await interaction.response.send_message(f"❌ Failed to add emoji: {e}", ephemeral=True)
+                await interaction.response.send_message(f"{economy_q_reject} Failed to add emoji: {e}", ephemeral=True)
 
 class StealView(View):
     def __init__(self, type_: str, asset: BytesIO, emoji_char=None, preview_url: str = None):
@@ -3066,7 +3102,7 @@ class StealView(View):
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.red)
     async def cancel_button(self, interaction: discord.Interaction, button: Button):
-        await interaction.response.send_message("❌ Cancelled.", ephemeral=True)
+        await interaction.response.send_message(f"{economy_q_reject} Cancelled.", ephemeral=True)
         self.stop()
 
 @commands.command()
@@ -3322,7 +3358,7 @@ async def poll(ctx, *, args):
     embed = discord.Embed(title=question, color=discord.Color.blue())
     for opt in options:
         embed.add_field(name=opt, value="0", inline=True)
-    footer_text = f"Poll 📊"
+    footer_text = f"Poll {economy_q_poll}"
     if end_time:
         footer_text += f" | Ending at {discord.utils.format_dt(end_time, 'f')}"
         embed.timestamp = end_time
@@ -3334,8 +3370,8 @@ async def poll(ctx, *, args):
         for i in range(len(options)):
             await msg.add_reaction(number_emojis[i])
     else:
-        await msg.add_reaction("✔️")
-        await msg.add_reaction("✖️")
+        await msg.add_reaction(economy_q_accept)
+        await msg.add_reaction(economy_q_reject)
 
     active_polls[msg.id] = {
         "question": question,
@@ -3409,12 +3445,12 @@ class ConfirmEndPollView(View):
         except:
             await interaction.response.edit_message(content="Poll message not found.", view=None)
             return
-        yes_count = sum(r.count - 1 for r in poll_msg.reactions if str(r.emoji) == "✔️")
-        no_count = sum(r.count - 1 for r in poll_msg.reactions if str(r.emoji) == "✖️")
+        yes_count = sum(r.count - 1 for r in poll_msg.reactions if str(r.emoji) == economy_q_accept)
+        no_count = sum(r.count - 1 for r in poll_msg.reactions if str(r.emoji) == economy_q_reject)
         final_embed = discord.Embed(title=poll_data["question"], color=discord.Color.green())
         final_embed.add_field(name="Yes", value=str(yes_count), inline=True)
         final_embed.add_field(name="No", value=str(no_count), inline=True)
-        final_embed.set_footer(text="Poll Ended 📊")
+        final_embed.set_footer(text=f"Poll Ended {economy_q_poll}")
         final_embed.timestamp = datetime.now(timezone.utc)
         await poll_msg.edit(embed=final_embed)
         author = await bot.fetch_user(poll_data["author_id"])
@@ -3514,10 +3550,10 @@ async def giveaway(ctx, time: str, *, prize: str):
     amount, unit = int(match[1]), match[2]
     unit_map = {'s': 1, 'm': 60, 'h': 3600, 'd': 86400, 'w': 604800}
     seconds = amount * unit_map[unit]
-    embed = discord.Embed(title="Giveaway! 🎁", description=f"Prize: **{prize}**\nReact with 🎉 to enter!", color=0x00ff00)
+    embed = discord.Embed(title=f"{economy_q_gift} Giveaway!", description=f"Prize: **{prize}**\nReact with {economy_q_confetti} to enter!", color=0x00ff00)
     embed.set_footer(text=f"Ends in {time}")
     msg = await ctx.send(embed=embed)
-    await msg.add_reaction("🎉")
+    await msg.add_reaction(economy_q_confetti)
     end_time = datetime.now(timezone.utc) + timedelta(seconds=seconds)
     while seconds > 0:
         if seconds <= 60:
@@ -3530,7 +3566,7 @@ async def giveaway(ctx, time: str, *, prize: str):
     if users:
         winner = random.choice(users)
         await ctx.send(
-            f"Congratulations {winner.mention} 🎉! You won **{prize}**!",
+            f"{economy_q_confetti} Congratulations {winner.mention}! You won **{prize}**!",
         )
     else:
         await ctx.send("No one entered the giveaway.")
@@ -3628,7 +3664,7 @@ async def timer_countdown_message(channel, guild, message, end_time, time_str, t
             break
 
         time_left = format_remaining(remaining)
-        description = f"⏳ Time remaining:\n```{time_left}```"
+        description = f"{economy_q_timer_tick} Time remaining:\n```{time_left}```"
         embed = message.embeds[0]
         embed.description = description
         try:
@@ -3639,9 +3675,9 @@ async def timer_countdown_message(channel, guild, message, end_time, time_str, t
 
     embed = message.embeds[0]
     if title and title != "Timer":
-        embed.description = f"⏰ Time's up!\n```{title}``` timer has ended"
+        embed.description = f"{economy_q_alarm} Time's up!\n```{title}``` timer has ended"
     else:
-        embed.description = "⏰ Time's up!"
+        embed.description = f"{economy_q_alarm} Time's up!"
 
     embed.set_footer(text=f"Ended at:")
     embed.timestamp = datetime.now(timezone.utc)
@@ -3661,9 +3697,9 @@ async def timer_countdown_message(channel, guild, message, end_time, time_str, t
             user = None
     mention = user.mention if user else f"<@{owner_id}>"
     if title:
-        await channel.send(f"⏰ {mention} Your **{title}** timer for **{time_str}** is over!")
+        await channel.send(f"{economy_q_alarm} {mention} Your **{title}** timer for **{time_str}** is over!")
     else:
-        await channel.send(f"⏰ {mention} Your timer for **{time_str}** is over!")
+        await channel.send(f"{economy_q_alarm} {mention} Your timer for **{time_str}** is over!")
 
 async def timer_countdown(ctx, message, end_time, time_str, title, owner_id):
     await timer_countdown_message(ctx.channel, ctx.guild, message, end_time, time_str, title, owner_id)
@@ -3697,7 +3733,7 @@ async def timer(ctx, *, args: str):
 
     embed = Embed(
         title=title_display,
-        description=f"⏳ Time remaining:\n```{format_remaining(seconds)}```",
+        description=f"{economy_q_timer_tick} Time remaining:\n```{format_remaining(seconds)}```",
         color=0x00ff00
     )
     embed.set_footer(text="Ends at:")
@@ -3910,9 +3946,9 @@ async def alarm(ctx, date: str):
         return await ctx.send("Date must be in the future.")
     
     delta = (alarm_time - now).total_seconds()
-    await ctx.send(f"⏰ Alarm set for {date}, {ctx.author.mention}. I'll ping you then.")
+    await ctx.send(f"{economy_q_alarm} Alarm set for {date}, {ctx.author.mention}. I'll ping you then.")
     await asyncio.sleep(delta)
-    await ctx.send(f"🔔 {ctx.author.mention} It's **{date}**! Here's your alarm.")
+    await ctx.send(f"{economy_q_bell} {ctx.author.mention} It's **{date}**! Here's your alarm.")
 
 _allowed_funcs = {
     'sin': math.sin, 'cos': math.cos, 'tan': math.tan,
@@ -4055,7 +4091,7 @@ async def define(ctx, *, word: str):
                         definition = d["definition"]
                         definitions.append(f"**({part_of_speech})** {definition}")
                 unique_defs = list(dict.fromkeys(definitions))
-                response = f"📖 **Definition of `{word}`:**\n" + "\n".join(unique_defs[:3])
+                response = f"{economy_q_book} **Definition of `{word}`:**\n" + "\n".join(unique_defs[:3])
                 await ctx.send(response)
             except:
                 await ctx.send("Error.")
@@ -4084,7 +4120,7 @@ async def block(ctx, member: discord.Member):
     blocked.add(member.id)
     save_blacklisted_users(scoped_id(ctx.guild), blocked)
     await ctx.send(
-        f"<@{member.id}> (**{member.name}**) is now blocked from using commands.",
+        f"<@{member.id}> is now blocked from using commands.",
         allowed_mentions=discord.AllowedMentions.none()
     )
 
@@ -4095,7 +4131,7 @@ async def unblock(ctx, member: discord.Member):
     blocked.discard(member.id)
     save_blacklisted_users(scoped_id(ctx.guild), blocked)
     await ctx.send(
-        f"<@{member.id}> (**{member.name}**) is now unblocked.",
+        f"<@{member.id}> is now unblocked.",
         allowed_mentions=discord.AllowedMentions.none()
     )
 
@@ -4103,7 +4139,7 @@ async def unblock(ctx, member: discord.Member):
 async def sleep(ctx):
     sleeping_users[ctx.author.id] = datetime.now(timezone.utc)
     save_sleeping_user(ctx.author.id, sleeping_users[ctx.author.id])
-    await ctx.send("You’re now in sleep mode. 💤 Good night!")
+    await ctx.send(f"You’re now in sleep mode. {economy_q_sleep} Good night!")
 
 @bot.command()
 async def fsleep(ctx, members: commands.Greedy[discord.Member], *, time: str = None):
@@ -4121,7 +4157,7 @@ async def fsleep(ctx, members: commands.Greedy[discord.Member], *, time: str = N
         if time:
             matches = re.findall(r'(\d+)\s*(h|m|s)', time.lower())
             if not matches:
-                results.append(f"⚠️ Invalid time format: `{time}` (skipped {member.mention})")
+                results.append(f"{economy_q_warning} Invalid time format: `{time}` (skipped {member.mention})")
                 continue
 
             total_seconds = 0
@@ -4174,7 +4210,7 @@ async def setbday(ctx, date):
         birthdays[user_id] = {"date": date}
         save_birthday(ctx.author.id, date)
 
-        await ctx.send("✔️ Birthday saved!")
+        await ctx.send(f"{economy_q_accept} Birthday saved!")
     except ValueError:
         await ctx.send("Invalid date format. Use DD/MM.")
 
@@ -4291,7 +4327,7 @@ async def clearcensors(ctx):
     save_censored_phrases(scoped_id(ctx.guild), guild_censored_phrases(ctx.guild))
     await ctx.send("All censors have been cleared.")
 
-def generate_list_embed(title, user_ids, guild=None, show_names=True):
+def generate_list_embed(title, user_ids, guild=None, show_names=False):
     embed = discord.Embed(title=title, color=0x3498db, timestamp=datetime.now(timezone.utc))
     if not user_ids:
         embed.description = "None."
@@ -4303,8 +4339,7 @@ def generate_list_embed(title, user_ids, guild=None, show_names=True):
             member = guild.get_member(uid)
             if member:
                 mention = f"<@{member.id}>"
-                name = f" (**{member.display_name}**)" if show_names else ""
-                lines.append(f"{mention}{name}")
+                lines.append(mention)
             else:
                 lines.append(f"User ID: `{uid}`")
         else:
@@ -4449,7 +4484,7 @@ async def ask_command(ctx, *, question: str):
     if not GROQ_API_KEY:
         return await ctx.send("API not configured. Set GROQ_API_KEY.")
     
-    await safe_add_reaction(ctx.message, "⏳")
+    await safe_add_reaction(ctx.message, economy_q_timer_tick)
 
     headers = {
         "Authorization": f"Bearer {GROQ_API_KEY}",
@@ -4470,7 +4505,7 @@ async def ask_command(ctx, *, question: str):
         async with aiohttp.ClientSession() as session:
             async with session.post("https://api.groq.com/openai/v1/chat/completions", json=payload, headers=headers) as resp:
                 if resp.status != 200:
-                    await safe_remove_reaction(ctx.message, "⏳", bot.user)
+                    await safe_remove_reaction(ctx.message, economy_q_timer_tick, bot.user)
                     return await ctx.send(f"Error: {resp.status}")
 
                 data = await resp.json()
@@ -4479,11 +4514,11 @@ async def ask_command(ctx, *, question: str):
                 if len(answer) > 1900:
                     answer = answer[:1897] + "..."
 
-                await safe_remove_reaction(ctx.message, "⏳", bot.user)
+                await safe_remove_reaction(ctx.message, economy_q_timer_tick, bot.user)
                 await ctx.send(answer)
 
     except Exception as e:
-        await safe_remove_reaction(ctx.message, "⏳", bot.user)
+        await safe_remove_reaction(ctx.message, economy_q_timer_tick, bot.user)
         await ctx.send(f"Error: {str(e)[:100]}")
 
 @bot.command(name="generate")
@@ -4492,7 +4527,7 @@ async def generate_command(ctx, *, prompt: str):
     if not CLOUDFLARE_API_KEY or not CLOUDFLARE_ACCOUNT_ID:
         return await ctx.send("API not configured. Set CLOUDFLARE_API_KEY and CLOUDFLARE_ACCOUNT_ID.")
     
-    await safe_add_reaction(ctx.message, "⏳")
+    await safe_add_reaction(ctx.message, economy_q_timer_tick)
 
     url = f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/run/@cf/black-forest-labs/flux-1-schnell"
 
@@ -4509,7 +4544,7 @@ async def generate_command(ctx, *, prompt: str):
         async with aiohttp.ClientSession() as session:
             async with session.post(url, json=payload, headers=headers) as resp:
                 if resp.status != 200:
-                    await safe_remove_reaction(ctx.message, "⏳", bot.user)
+                    await safe_remove_reaction(ctx.message, economy_q_timer_tick, bot.user)
                     return await ctx.send(f"Error: {resp.status}")
 
                 data = await resp.json()
@@ -4520,11 +4555,11 @@ async def generate_command(ctx, *, prompt: str):
                 image_bytes = base64.b64decode(image_data)
                 file = discord.File(BytesIO(image_bytes), filename="generated.png")
 
-                await safe_remove_reaction(ctx.message, "⏳", bot.user)
+                await safe_remove_reaction(ctx.message, economy_q_timer_tick, bot.user)
                 await ctx.send(file=file)
 
     except Exception as e:
-        await safe_remove_reaction(ctx.message, "⏳", bot.user)
+        await safe_remove_reaction(ctx.message, economy_q_timer_tick, bot.user)
         await ctx.send(f"Error: {str(e)[:100]}")
 
 
@@ -4559,7 +4594,7 @@ async def analyse_command(ctx):
     if not CLOUDFLARE_API_KEY or not CLOUDFLARE_ACCOUNT_ID:
         return await ctx.send("API not configured.")
     
-    await safe_add_reaction(ctx.message, "⏳")
+    await safe_add_reaction(ctx.message, economy_q_timer_tick)
     
     url = f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/run/@cf/meta/llama-3.2-90b-vision-instruct"
     
@@ -4580,7 +4615,7 @@ async def analyse_command(ctx):
         async with aiohttp.ClientSession() as session:
             async with session.post(url, json=payload, headers=headers) as resp:
                 if resp.status != 200:
-                    await safe_remove_reaction(ctx.message, "⏳", bot.user)
+                    await safe_remove_reaction(ctx.message, economy_q_timer_tick, bot.user)
                     return await ctx.send(f"Error: {resp.status}")
                 
                 data = await resp.json()
@@ -4589,10 +4624,10 @@ async def analyse_command(ctx):
                 if len(result) > 1900:
                     result = result[:1897] + "..."
                 
-                await safe_remove_reaction(ctx.message, "⏳", bot.user)
+                await safe_remove_reaction(ctx.message, economy_q_timer_tick, bot.user)
                 await ctx.send(result)
     except Exception as e:
-        await safe_remove_reaction(ctx.message, "⏳", bot.user)
+        await safe_remove_reaction(ctx.message, economy_q_timer_tick, bot.user)
         await ctx.send(f"Error: {str(e)[:100]}")
 
 # === TRANSLATE COMMAND ===
@@ -4611,7 +4646,7 @@ async def translate_command(ctx, *, args: str = None):
     else:
         return await ctx.send("Reply to a message or provide text: `.translate [text]`")
     
-    await safe_add_reaction(ctx.message, "⏳")
+    await safe_add_reaction(ctx.message, economy_q_timer_tick)
     
     try:
         # MyMemory auto-detect: use "auto" as source
@@ -4620,12 +4655,12 @@ async def translate_command(ctx, *, args: str = None):
             url_detect = f"https://api.mymemory.translated.net/get?q={text}&langpair=auto|en"
             async with session.get(url_detect) as resp:
                 if resp.status != 200:
-                    await safe_remove_reaction(ctx.message, "⏳", bot.user)
+                    await safe_remove_reaction(ctx.message, economy_q_timer_tick, bot.user)
                     return await ctx.send(f"Error: {resp.status}")
                 
                 data = await resp.json()
                 if data.get("responseStatus") != 200:
-                    await safe_remove_reaction(ctx.message, "⏳", bot.user)
+                    await safe_remove_reaction(ctx.message, economy_q_timer_tick, bot.user)
                     return await ctx.send(f"Error: {data.get('responseDetails', 'Translation failed')}")
                 
                 # MyMemory returns detected language in responseData
@@ -4638,11 +4673,11 @@ async def translate_command(ctx, *, args: str = None):
                 else:
                     response = f"**Detected: {detected_lang.upper()} → English**\n{result}"
                 
-                await safe_remove_reaction(ctx.message, "⏳", bot.user)
+                await safe_remove_reaction(ctx.message, economy_q_timer_tick, bot.user)
                 await ctx.send(response)
             
     except Exception as e:
-        await safe_remove_reaction(ctx.message, "⏳", bot.user)
+        await safe_remove_reaction(ctx.message, economy_q_timer_tick, bot.user)
         await ctx.send(f"Error: {str(e)[:100]}")
 
 # === RUN BOT ===

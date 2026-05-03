@@ -41,6 +41,7 @@ Do not revert these unless the user explicitly asks.
 - When adding bot visuals, prefer the custom Q-themed emoji set over generic Unicode where it improves branding.
 - Keep generated emoji files as pure upload-ready image files so the user can upload them to Discord Developer Portal and provide markdown back.
 - The user will usually provide Discord custom emoji markdown after uploading. Wire those markdowns into code as constants where possible.
+- Whenever adding something new to the bot, check whether it needs a custom Q-themed emoji. If it does, ask whether the user wants one created and tell them to upload it and provide the Discord markdown before wiring it into command UI.
 
 ## Currency And Emoji Branding
 
@@ -110,6 +111,40 @@ Q_VELVET_FRAME = "<:QVelvetFrame:1500502979306852484>"
 Q_TICKET_CHARM = "<:QTicketCharm:1500502975746146356>"
 Q_COOLDOWN_CLOCK = "<:QCooldownClock:1500502940107149403>"
 Q_ROYAL_CROWN = "<:QRoyalCrown:1500502964048232570>"
+Q_ACCEPT = "<:QAccept:1500516711114477709>"
+Q_ALARM = "<:QAlarm:1500516713094054008>"
+Q_ATTACHMENT = "<:QAttachment:1500516714641887402>"
+Q_BELL = "<:QBell:1500516716344639618>"
+Q_BIRTHDAY = "<:QBirthday:1500516717976097004>"
+Q_BOOK = "<:QBook:1500516719771385926>"
+Q_BROOM = "<:QBroom:1500516722170396772>"
+Q_CARDS = "<:QCards:1500516723860701395>"
+Q_CONFETTI = "<:QConfetti:1500516725618118736>"
+Q_CONNECT_WHITE = "<:QConnectWhite:1500516729384603708>"
+Q_CONNECT_BLACK = "<:QConnectBlack:1500516727547498706>"
+Q_EDIT = "<:QEdit:1500516736942866653>"
+Q_GAME_O = "<:QGameO:1500516742865227778>"
+Q_GAME_TIMEOUT = "<:QGameTimeout:1500516745088077864>"
+Q_GAME_WIN = "<:QGameWin:1500516747369910302>"
+Q_GAME_X = "<:QGameX:1500516749781504041>"
+Q_GIFT = "<:QGift:1500516751467872326>"
+Q_HAMMER = "<:QHammer:1500516755301335161>"
+Q_IMAGE = "<:QImage:1500516761097863348>"
+Q_LOCK = "<:QLock:1500516764369424454>"
+Q_PERMISSIONS = "<:QPermissions:1500516773475123412>"
+Q_POLL = "<:QPoll:1500516775182336050>"
+Q_REACTION = "<:QReaction:1500516779355668573>"
+Q_REJECT = "<:QReject:1500516781931106344>"
+Q_ROLES = "<:QRoles:1500516783570948330>"
+Q_SLEEP = "<:QSleep:1500516788926939220>"
+Q_STREAK_FIRE = "<:QStreakFire:1500516793020711035>"
+Q_TARGET = "<:QTarget:1500516799710761021>"
+Q_THINKING = "<:QThinking:1500516802008973505>"
+Q_TIMEOUT = "<:QTimeout:1500516806119522610>"
+Q_TRASH = "<:QTrash:1500516810909290716>"
+Q_USER_EDIT = "<:QUserEdit:1500516813119946992>"
+Q_VOICE = "<:QVoice:1500516816701886535>"
+Q_WARNING = "<:QWarning:1500516819604209704>"
 ```
 
 ## Intended Emoji Meanings
@@ -140,6 +175,14 @@ Q_ROYAL_CROWN = "<:QRoyalCrown:1500502964048232570>"
 - `QTicketCharm`: item icon for Ticket Charm.
 - `QCooldownClock`: item icon for Cooldown Clock.
 - `QRoyalCrown`: item icon for Royal Q Crown.
+- Broad `QAccept`/`QReject`/`QWarning`/`QBook`/tool/moderation/game constants are imported into `main.py` with `economy_q_*` aliases and used in user-facing embeds/messages where practical.
+- Numeric reaction controls, card suits, slot symbols, roulette colors, scratch symbols, minesweeper cells, and wheel segment colors may still use Unicode because they function as compact game state or reaction selectors unless custom markdown exists for a full replacement set.
+
+## Economy Help And Lottery Refunds
+
+- `.econhelp` / `.economyhelp` / `.ehelp` is an economy-only help embed. It lists commands, aliases, and short explanations, and points users to `.explain <command>` for deeper help.
+- Lottery ticket rows track both `spent` and `pot_add` so the bot can refund exact user spend when a lottery round is cancelled.
+- If a lottery draw has fewer than 5 unique players, `process_lottery_draw` refunds users automatically, resets the round, and sends a cancellation/refund confirmation message.
 
 ## Generated Emoji Assets
 
@@ -150,27 +193,60 @@ Static PNGs, 128x128 RGBA with transparency:
 ```text
 assets/emojis/png/QDenied.png
 assets/emojis/png/QDailySpice.png
+assets/emojis/png/QAccept.png
+assets/emojis/png/QAlarm.png
+assets/emojis/png/QAttachment.png
+assets/emojis/png/QBell.png
+assets/emojis/png/QBirthday.png
+assets/emojis/png/QBook.png
+assets/emojis/png/QBroom.png
+assets/emojis/png/QCards.png
+assets/emojis/png/QConfetti.png
+assets/emojis/png/QConnectBlack.png
+assets/emojis/png/QConnectWhite.png
 assets/emojis/png/QFlip.png
+assets/emojis/png/QGameO.png
+assets/emojis/png/QGameTimeout.png
+assets/emojis/png/QGameWin.png
+assets/emojis/png/QGameX.png
+assets/emojis/png/QGift.png
 assets/emojis/png/QGoldBadge.png
+assets/emojis/png/QHammer.png
 assets/emojis/png/QHighRoller.png
+assets/emojis/png/QImage.png
 assets/emojis/png/QLevelUp.png
+assets/emojis/png/QLock.png
 assets/emojis/png/QLuckyCharm.png
 assets/emojis/png/QMine.png
+assets/emojis/png/QPermissions.png
+assets/emojis/png/QPoll.png
 assets/emojis/png/QQuesoMagnet.png
 assets/emojis/png/QQuest.png
+assets/emojis/png/QReaction.png
+assets/emojis/png/QReject.png
+assets/emojis/png/QRoles.png
 assets/emojis/png/QRoyalCrown.png
 assets/emojis/png/QShop.png
+assets/emojis/png/QSleep.png
 assets/emojis/png/QSlots.png
+assets/emojis/png/QStreakFire.png
 assets/emojis/png/QStreakPolish.png
 assets/emojis/png/QSuccess.png
+assets/emojis/png/QTarget.png
+assets/emojis/png/QThinking.png
 assets/emojis/png/QTimer.png
 assets/emojis/png/QTicket.png
 assets/emojis/png/QTicketCharm.png
 assets/emojis/png/QCooldownClock.png
+assets/emojis/png/QTimeout.png
+assets/emojis/png/QTrash.png
+assets/emojis/png/QUserEdit.png
 assets/emojis/png/QWheel.png
 assets/emojis/png/QXP.png
 assets/emojis/png/QXPTonic.png
 assets/emojis/png/QVelvetFrame.png
+assets/emojis/png/QVoice.png
+assets/emojis/png/QWarning.png
 assets/emojis/png/QoinBag.png
 assets/emojis/png/QoinChest.png
 assets/emojis/png/QoinTransfer.png
@@ -243,6 +319,70 @@ ffmpeg -y -framerate 12 -i assets/emojis/gif_frames/QMineSpark/%03d.png -vf "fps
 ```
 
 `QFlipSpin.gif` was later improved because the first version did not look enough like a spin. The current generator uses a `flip_coin()` helper where the coin width changes per frame: face-on, edge-on, opposite side, face-on.
+
+Later, a broad replacement PNG pack was generated for remaining normal emoji usage across `main.py`, `pgdata.py`, and leftover `economy.py` spots. These include moderation/log symbols, poll symbols, game/challenge symbols, giveaway/timer/sleep/birthday symbols, and remaining economy symbols. They are upload-ready but not wired until the user provides markdown.
+
+Broad pack names:
+
+```text
+QAccept
+QAlarm
+QAttachment
+QBell
+QBirthday
+QBook
+QBroom
+QCards
+QConfetti
+QConnectBlack
+QConnectWhite
+QEdit
+QGameO
+QGameTimeout
+QGameWin
+QGameX
+QGift
+QHammer
+QImage
+QLock
+QPermissions
+QPoll
+QReaction
+QReject
+QRoles
+QSleep
+QStreakFire
+QTarget
+QThinking
+QTimeout
+QTrash
+QUserEdit
+QVoice
+QWarning
+```
+
+Recommended wiring targets after upload:
+
+- `QBirthday`: birthday announcement.
+- `QHammer`: ban/kick/mod actions.
+- `QTrash`: message/channel/role deletion logs.
+- `QEdit`: username/nickname/server-name edits.
+- `QImage`: server icon/image events.
+- `QLock`: verification/security events.
+- `QWarning`: ghost ping, invalid input, warnings.
+- `QBroom`: purge/bulk delete.
+- `QAttachment`: attachment logs.
+- `QPoll`, `QAccept`, `QReject`: poll UI and yes/no reactions.
+- `QReaction`: reaction logs.
+- `QTimeout`: timeout logs.
+- `QUserEdit`, `QRoles`, `QVoice`, `QPermissions`: audit/log embeds.
+- `QGameWin`, `QGameTimeout`, `QGameX`, `QGameO`, `QConnectBlack`, `QConnectWhite`: tic-tac-toe/connect-four/challenge displays if replacing gameplay symbols.
+- `QGift`: giveaways.
+- `QAlarm`, `QBell`: timers/alarms.
+- `QSleep`: AFK/sleep.
+- `QBook`: dictionary/definition output.
+- `QThinking`: AI command loading reaction/message.
+- `QStreakFire`, `QTarget`, `QCards`, `QConfetti`: leftover economy streak/roulette/blackjack/lottery winner symbols.
 
 ## User-Provided Visual References
 
