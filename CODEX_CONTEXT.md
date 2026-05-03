@@ -42,6 +42,7 @@ Do not revert these unless the user explicitly asks.
 - Keep generated emoji files as pure upload-ready image files so the user can upload them to Discord Developer Portal and provide markdown back.
 - The user will usually provide Discord custom emoji markdown after uploading. Wire those markdowns into code as constants where possible.
 - Whenever adding something new to the bot, check whether it needs a custom Q-themed emoji. If it does, ask whether the user wants one created and tell them to upload it and provide the Discord markdown before wiring it into command UI.
+- Whenever adding, removing, renaming, or changing bot commands, update every relevant help surface in the same pass. This includes `.help`, `.explain`, `.econhelp`, command aliases, detailed explanations, command registration/loading lists, and any similar command-discovery UI so users always see the latest behavior.
 
 ## Currency And Emoji Branding
 
@@ -155,7 +156,7 @@ Q_WARNING = "<:QWarning:1500516819604209704>"
 - `QSuccess`: success actions, wins, purchases, confirmations.
 - `QTimer`: static cooldown/timer/cancel messages.
 - `QTimerTick`: animated cooldown messages.
-- `QTicket`: dedicated lottery ticket emoji for ticket instructions, ticket counts, ticket thread, ticket price, top ticket holders, and `.buytick` purchase messages.
+- `QTicket`: dedicated lottery ticket emoji for lottery panel buttons/status, ticket counts, ticket price, top ticket holders, and ticket purchase confirmations.
 - `QFlip`: coinflip static header/selection/result.
 - `QFlipSpin`: animated coinflip spin.
 - `QWheel`: wheel/roulette static header/result.
@@ -183,6 +184,10 @@ Q_WARNING = "<:QWarning:1500516819604209704>"
 - `.econhelp` / `.economyhelp` / `.ehelp` is an economy-only help embed. It lists commands, aliases, and short explanations, and points users to `.explain <command>` for deeper help.
 - Lottery ticket rows track both `spent` and `pot_add` so the bot can refund exact user spend when a lottery round is cancelled.
 - If a lottery draw has fewer than 5 unique players, `process_lottery_draw` refunds users automatically, resets the round, and sends a cancellation/refund confirmation message.
+- Lottery now uses a persistent main panel message saved as `lottery_config.message_id`. Users buy tickets with panel buttons (`Buy 1`, `Buy 5`, `Buy 10`, `Custom`, `Stats`) and receive ephemeral confirmations. The panel updates when the pot/ticket count changes.
+- Existing active lottery data is preserved when moving from old thread-based entry to the panel. `thread_id` remains in the schema for old rows but new setup uses `message_id` and no longer creates a ticket thread.
+- Startup calls `restore_lottery_panels()` from `economy.setup()` to register persistent lottery button handlers and recreate/refresh panels for active lottery configs without clearing ticket rows or pot.
+- Speed work: chat XP awarding from `main.py` runs in a background `asyncio.to_thread` task so normal message handling does not wait on PostgreSQL; economy DB init also runs via `asyncio.to_thread`.
 
 ## Generated Emoji Assets
 
@@ -410,12 +415,12 @@ Style for future Q emojis:
 - Shop items now support an `emoji` field. Use `item_display_name(item)` for message/embed/inventory display and `item_select_emoji(item)` for Discord select-menu option emojis.
 - Existing item-specific PNGs were generated for Lucky Charm, XP Tonic, Queso Magnet, Daily Spice, Streak Polish, Gold Badge, High Roller Title, and Velvet Profile Frame.
 - Added new shop items:
-  - `ticket_charm`: Lottery category, costs 1,200,000, max 5, gives +2% bonus lottery tickets per charm when using `.buytick`.
+  - `ticket_charm`: Lottery category, costs 1,200,000, max 5, gives +2% bonus lottery tickets per charm when using the lottery panel or `.buytick`.
   - `cooldown_clock`: Utility category, costs 1,500,000, max 5, gives -4% gambling command cooldown per clock.
   - `royal_crown`: Cosmetics category, costs 5,000,000, max 1, upgrades profile title to Royal High Roller.
 - Cooldown embed.
 - Transactions embed.
-- Lottery instructions, setup, updates, stats, ticket purchase, and draw-cancel messages.
+- Lottery setup, panel embeds/buttons, updates, stats, ticket purchase, and draw-cancel messages.
 - Daily/weekly/monthly claim rewards and cooldown messages.
 - Coinflip command:
   - `QFlipSpin` for spinning messages.

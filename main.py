@@ -837,6 +837,25 @@ async def on_guild_update(before, after):
         except Exception as e:
             print(f"Failed to send log: {e}")
 
+async def award_chat_xp_background(message):
+    try:
+        xp_result = await asyncio.to_thread(economy_award_chat_xp, message.author.id)
+    except Exception as e:
+        print(f"Chat XP skipped for {message.author.id}: {type(e).__name__} - {e}")
+        return
+    if not xp_result or xp_result["levels_gained"] <= 0:
+        return
+    try:
+        data = await asyncio.to_thread(economy_get_user, message.author.id)
+        await message.channel.send(
+            f"{economy_q_level_pulse} <@{message.author.id}> reached **level {xp_result['level']}** "
+            f"and earned **{economy_format_balance(xp_result['reward'])}**!",
+            embed=economy_build_profile_embed(message.author, data),
+            allowed_mentions=discord.AllowedMentions.none()
+        )
+    except Exception as e:
+        print(f"Level-up message skipped for {message.author.id}: {type(e).__name__} - {e}")
+
 @bot.event
 async def on_message(message):
     if message.author.bot:
@@ -946,7 +965,7 @@ async def on_message(message):
             embed.add_field(name="Mentions received", value=f"You received **{len(mentions_list)}** mentions:", inline=False)
             for uid, link, ts in mentions_list:
                 embed.add_field(
-                    name=f"{bot.get_user(uid) or await bot.fetch_user(uid)}",
+                    name=f"<@{uid}>",
                     value=f"<t:{ts}:R> — [Click to view message]({link})",
                     inline=True
                 )
@@ -957,21 +976,13 @@ async def on_message(message):
         if any(user.id == uid for user in message.mentions) or (
             message.reference and message.reference.resolved and message.reference.resolved.author.id == uid
         ):
-            user = bot.get_user(uid)
-            if not user:
-                try:
-                    user = await bot.fetch_user(uid)
-                    await asyncio.sleep(1)
-                except:
-                    user = None
-            if user:
-                sleep_messages = [
-                    f"Shut up you’re gonna wake them up {economy_q_sleep}.",
-                    f"Let the thing sleep peacefully {economy_q_sleep}"
-                ]
-                chosen_msg = random.choice(sleep_messages)
-                await message.reply(chosen_msg, mention_author=True)
-                break
+            sleep_messages = [
+                f"Shut up you’re gonna wake them up {economy_q_sleep}.",
+                f"Let the thing sleep peacefully {economy_q_sleep}"
+            ]
+            chosen_msg = random.choice(sleep_messages)
+            await message.reply(chosen_msg, mention_author=True)
+            break
 
     for user in message.mentions:
         if user.id in afk_users:
@@ -1013,7 +1024,7 @@ async def on_message(message):
             embed.add_field(name="Mentions received", value=f"You received **{len(mentions_list)}** mentions:", inline=False)
             for uid, link, ts in mentions_list:
                 embed.add_field(
-                    name=f"{bot.get_user(uid) or await bot.fetch_user(uid)}",
+                    name=f"<@{uid}>",
                     value=f"<t:{ts}:R> — [Click to view message]({link})",
                     inline=True
                 )
@@ -1032,18 +1043,7 @@ async def on_message(message):
         last_xp = chat_xp_memory.get(message.author.id, 0)
         if now_ts - last_xp >= 60:
             chat_xp_memory[message.author.id] = now_ts
-            try:
-                xp_result = economy_award_chat_xp(message.author.id)
-            except Exception as e:
-                print(f"Chat XP skipped for {message.author.id}: {type(e).__name__} - {e}")
-                xp_result = None
-            if xp_result and xp_result["levels_gained"] > 0:
-                await message.channel.send(
-                    f"{economy_q_level_pulse} <@{message.author.id}> reached **level {xp_result['level']}** "
-                    f"and earned **{economy_format_balance(xp_result['reward'])}**!",
-                    embed=economy_build_profile_embed(message.author, economy_get_user(message.author.id)),
-                    allowed_mentions=discord.AllowedMentions.none()
-                )
+            asyncio.create_task(award_chat_xp_background(message))
 
     # Commands are invoked at the top of this handler after one shared context lookup.
 
@@ -1085,7 +1085,7 @@ async def on_command_error(ctx, error):
 
 HELP_CATEGORIES = {
     "Economy": [
-        "bal", "profile", "quests", "daily", "weekly", "monthly", "cooldowns", "transactions", "shop", "lottery", "editlottery", "stoplottery", "lotterystats", "buytick",
+        "bal", "profile", "quests", "daily", "weekly", "monthly", "cooldowns", "transactions", "shop", "lottery", "editlottery", "stoplottery", "lotterystats", "buytick", "econhelp",
         "cf", "roulette", "slots", "blackjack", "scratch", "ms", "wheel",
         "give", "lb", "richest", "poorest",
     ],
@@ -4684,5 +4684,4 @@ async def translate_command(ctx, *, args: str = None):
 
 
 # Start the bot
-time.sleep(20)
 run_bot_with_retry()
