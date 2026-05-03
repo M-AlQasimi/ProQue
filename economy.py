@@ -18,7 +18,28 @@ bot = None
 MAX_BET = 150_000
 COOLDOWN_SECS = 5
 STREAK_MULTIPLIER = 0.015  # 1.5% per consecutive win
-CURRENCY_EMOJI = "<:237D8DDE449D457F9305E100C0CB971F:1500255107428782100>"
+CURRENCY_EMOJI = "<:Qoins:1500255107428782100>"
+QASH_EMOJI = "<:Qash:1500235432011497703>"
+Q_DENIED = "<:QDenied:1500427032020914266>"
+Q_FLIP = "<:QFlip:1500427033753423993>"
+Q_LEVEL_UP = "<:QLevelUp:1500427035292598383>"
+Q_MINE = "<:QMine:1500427037301542932>"
+QOIN_BAG = "<:QoinBag:1500427038748573777>"
+QOIN_CHEST = "<:QoinChest:1500427040212516904>"
+QOIN_TRANSFER = "<:QoinTransfer:1500427041735180318>"
+Q_QUEST = "<:QQuest:1500427043429417101>"
+Q_SHOP = "<:QShop:1500427045019189338>"
+Q_SLOTS = "<:QSlots:1500427046365565020>"
+Q_SUCCESS = "<:QSuccess:1500427048865235104>"
+Q_TIMER = "<:QTimer:1500427051209986188>"
+Q_TICKET = "<:QTicket:1500491388985282761>"
+Q_WHEEL = "<:QWheel:1500427053160468480>"
+Q_XP = "<:QXP:1500427054930333778>"
+Q_FLIP_SPIN = "<a:QFlipSpin:1500427305216901160>"
+Q_LEVEL_PULSE = "<a:QLevelPulse:1500427307230429284>"
+Q_MINE_SPARK = "<a:QMineSpark:1500427308903829586>"
+Q_TIMER_TICK = "<a:QTimerTick:1500427311395246180>"
+Q_WHEEL_SPIN = "<a:QWheelSpin:1500427313760964691>"
 CHAT_XP_COOLDOWN_SECS = 60
 LEVEL_REWARD_BASE = 300_000
 LEVEL_REWARD_STEP = 50_000
@@ -567,7 +588,7 @@ def set_lottery_role(guild_id, role_id):
 
 def lottery_instructions(period_seconds, ticket_cost=LOTTERY_TICKET_COST, house_cut=LOTTERY_HOUSE_CUT):
     return (
-        "🎟️ **Lottery Tickets**\n"
+        f"{Q_TICKET} **Lottery Tickets**\n"
         "Prize: **the full current pot** goes to one winner each draw.\n"
         f"Buy tickets with `.buytick <amount>` in this thread.\n"
         f"Each ticket costs **{format_balance(ticket_cost)}**.\n"
@@ -588,7 +609,7 @@ async def prepare_lottery_channel(guild, channel, period_seconds, ticket_cost=LO
     except Exception as e:
         print(f"Lottery channel lock skipped: {type(e).__name__} - {e}")
 
-    starter = await channel.send("🎟️ Lottery is open. Prize: **the current pot**. Buy tickets in the thread below.")
+    starter = await channel.send(f"{Q_TICKET} Lottery is open. Prize: **the current pot**. Buy tickets in the thread below.")
     thread = await starter.create_thread(name="buy tickets here")
     info = await thread.send(lottery_instructions(period_seconds, ticket_cost, house_cut))
     try:
@@ -642,7 +663,7 @@ async def announce_lottery_update(guild, config, message):
         return
     role_mention = lottery_role_mention(config)
     await channel.send(
-        f"{role_mention} 🎟️ **Lottery Update**\n{message}".strip(),
+        f"{role_mention} {QOIN_CHEST} **Lottery Update**\n{message}".strip(),
         allowed_mentions=discord.AllowedMentions(roles=True)
     )
 
@@ -762,14 +783,14 @@ def build_profile_embed(user, data):
     net = (data.get("total_won") or 0) - (data.get("total_lost") or 0)
 
     embed = discord.Embed(
-        title="Profile",
+        title=f"{Q_XP} Profile",
         description=f"{user_mention(user.id)}\n**{title}**",
         color=discord.Color.gold()
     )
     embed.set_thumbnail(url=user.display_avatar.url)
-    embed.add_field(name="Balance", value=format_balance(data["balance"]), inline=True)
-    embed.add_field(name="Level", value=f"{level}", inline=True)
-    embed.add_field(name="XP", value=f"{xp:,}/{needed:,}", inline=True)
+    embed.add_field(name=f"{QASH_EMOJI} Balance", value=format_balance(data["balance"]), inline=True)
+    embed.add_field(name=f"{Q_LEVEL_UP} Level", value=f"{level}", inline=True)
+    embed.add_field(name=f"{Q_XP} XP", value=f"{xp:,}/{needed:,}", inline=True)
     embed.add_field(name="Messages", value=f"{data.get('messages_sent') or 0:,}", inline=True)
     embed.add_field(name="Net Gambling", value=format_balance(net), inline=True)
     embed.add_field(name="Items", value=", ".join(items) if items else "None", inline=False)
@@ -777,7 +798,7 @@ def build_profile_embed(user, data):
 
 def build_quests_embed(user, data):
     embed = discord.Embed(
-        title="Quests",
+        title=f"{Q_QUEST} Quests",
         description=f"{user_mention(user.id)}\nClaim completed quests with the button below.",
         color=discord.Color.blurple()
     )
@@ -890,10 +911,10 @@ def parse_amount(raw, user_id=None, guild=None, balance=None):
 
 async def send_nonpositive_amount_error(ctx, raw_amount):
     if str(raw_amount).lower() == "all":
-        await ctx.send(f"❌ You don't have any {CURRENCY_EMOJI} to use.")
+        await ctx.send(f"{Q_DENIED} You don't have any {CURRENCY_EMOJI} to use.")
         return
 
-    await ctx.send("❌ Amount must be positive.")
+    await ctx.send(f"{Q_DENIED} Amount must be positive.")
 
 # --- Helpers ---
 async def send_error(ctx, text):
@@ -902,7 +923,7 @@ async def send_error(ctx, text):
         return
 
     try:
-        await ctx.send(f"❌ {text}")
+        await ctx.send(f"{Q_DENIED} {text}")
     except:
         pass
 
@@ -968,7 +989,7 @@ async def bal(ctx, member: discord.Member = None):
             streak_lines += f"\n`{game}` {streak} wins → ×{mult:.2f} payout"
 
     embed = discord.Embed(
-        title="Balance",
+        title=f"{QASH_EMOJI} Balance",
         description=user_mention(user.id),
         color=discord.Color.gold()
     )
@@ -1054,11 +1075,11 @@ async def quests(ctx):
                 )
                 updated = get_user(interaction.user.id)
             except Exception:
-                await interaction.response.send_message("❌ Database unavailable. Try again shortly.", ephemeral=True)
+                await interaction.response.send_message(f"{Q_DENIED} Database unavailable. Try again shortly.", ephemeral=True)
                 return
 
             await interaction.response.edit_message(
-                content=f"✅ Claimed **{format_balance(total_reward)}** in quest rewards.",
+                content=f"{Q_SUCCESS} Claimed **{format_balance(total_reward)}** in quest rewards.",
                 embed=build_quests_embed(interaction.user, updated),
                 view=self,
                 allowed_mentions=discord.AllowedMentions.none()
@@ -1086,7 +1107,7 @@ async def shop(ctx):
             data = {"balance": 0, "inventory": []}
 
         embed = discord.Embed(
-            title="Queso Shop",
+            title=f"{Q_SHOP} Queso Shop",
             description=(
                 f"{user_mention(ctx.author.id)}\n"
                 f"Balance: **{format_balance(data['balance'])}**\n"
@@ -1127,12 +1148,12 @@ async def shop(ctx):
         async def on_submit(self, interaction):
             raw_quantity = str(self.quantity.value).strip()
             if not raw_quantity.isdigit():
-                await interaction.response.send_message("❌ Quantity must be a positive whole number.", ephemeral=True)
+                await interaction.response.send_message(f"{Q_DENIED} Quantity must be a positive whole number.", ephemeral=True)
                 return
 
             quantity = int(raw_quantity)
             if quantity <= 0:
-                await interaction.response.send_message("❌ Quantity must be positive.", ephemeral=True)
+                await interaction.response.send_message(f"{Q_DENIED} Quantity must be positive.", ephemeral=True)
                 return
 
             item = SHOP_ITEMS[self.item_id]
@@ -1143,11 +1164,11 @@ async def shop(ctx):
                 max_qty = item.get("max_qty", 1)
                 remaining_allowed = max_qty - owned
                 if remaining_allowed <= 0:
-                    await interaction.response.send_message(f"❌ You already own the max amount of **{item['name']}**.", ephemeral=True)
+                    await interaction.response.send_message(f"{Q_DENIED} You already own the max amount of **{item['name']}**.", ephemeral=True)
                     return
                 if quantity > remaining_allowed:
                     await interaction.response.send_message(
-                        f"❌ You can only buy **{remaining_allowed}** more **{item['name']}**.",
+                        f"{Q_DENIED} You can only buy **{remaining_allowed}** more **{item['name']}**.",
                         ephemeral=True
                     )
                     return
@@ -1156,7 +1177,7 @@ async def shop(ctx):
                 if data["balance"] < total_cost:
                     affordable = data["balance"] // item["cost"]
                     await interaction.response.send_message(
-                        f"❌ That costs **{format_balance(total_cost)}**. You can afford **{affordable}**.",
+                        f"{Q_DENIED} That costs **{format_balance(total_cost)}**. You can afford **{affordable}**.",
                         ephemeral=True
                     )
                     return
@@ -1166,11 +1187,11 @@ async def shop(ctx):
                 update_user(interaction.user.id, balance=new_balance, inventory=inventory)
                 log_transaction(interaction.user.id, "shop_purchase", -total_cost, f"{quantity}x {item['name']}")
             except Exception:
-                await interaction.response.send_message("❌ Database unavailable. Try again shortly.", ephemeral=True)
+                await interaction.response.send_message(f"{Q_DENIED} Database unavailable. Try again shortly.", ephemeral=True)
                 return
 
             await interaction.response.send_message(
-                f"✅ Bought **{quantity}x {item['name']}** for **{format_balance(total_cost)}**.\n"
+                f"{Q_SUCCESS} Bought **{quantity}x {item['name']}** for **{format_balance(total_cost)}**.\n"
                 f"New Balance: **{format_balance(new_balance)}**",
                 ephemeral=True
             )
@@ -1228,7 +1249,7 @@ async def cooldowns(ctx):
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
 
-    embed = discord.Embed(title="Cooldowns", color=discord.Color.blurple())
+    embed = discord.Embed(title=f"{Q_TIMER} Cooldowns", color=discord.Color.blurple())
     embed.add_field(name="Daily", value=claim_cooldown_text(data.get("last_daily"), 86400), inline=True)
     embed.add_field(name="Weekly", value=claim_cooldown_text(data.get("last_weekly"), 604800), inline=True)
     embed.add_field(name="Monthly", value=claim_cooldown_text(data.get("last_monthly"), 2592000), inline=True)
@@ -1249,7 +1270,7 @@ async def transactions(ctx, member: discord.Member = None):
         return
 
     embed = discord.Embed(
-        title="Transactions",
+        title=f"{QOIN_TRANSFER} Transactions",
         description=user_mention(user.id),
         color=discord.Color.blurple()
     )
@@ -1271,7 +1292,7 @@ async def transactions(ctx, member: discord.Member = None):
 @commands.command()
 async def lottery(ctx, action: str = None, amount: str = None):
     if ctx.guild is None:
-        await ctx.send("❌ Lottery only works in servers.")
+        await ctx.send(f"{Q_DENIED} Lottery only works in servers.")
         return
     if not await ensure_db_ready(ctx):
         return
@@ -1297,10 +1318,10 @@ async def lottery(ctx, action: str = None, amount: str = None):
         if channel is None and channel_msg.content.strip().isdigit():
             channel = ctx.guild.get_channel(int(channel_msg.content.strip()))
         if channel is None:
-            await ctx.send("❌ Channel not found. Run `.lottery` again.")
+            await ctx.send(f"{Q_DENIED} Channel not found. Run `.lottery` again.")
             return
         if not isinstance(channel, discord.TextChannel):
-            await ctx.send("❌ Pick a normal text channel for lottery setup.")
+            await ctx.send(f"{Q_DENIED} Pick a normal text channel for lottery setup.")
             return
 
         await ctx.send("How often should the lottery draw? Example: `1d`, `12h`, `30m`.")
@@ -1312,7 +1333,7 @@ async def lottery(ctx, action: str = None, amount: str = None):
 
         period_seconds = period_seconds_from_text(period_msg.content)
         if period_seconds is None:
-            await ctx.send("❌ Invalid period. Use at least 5 minutes, like `30m`, `12h`, or `1d`.")
+            await ctx.send(f"{Q_DENIED} Invalid period. Use at least 5 minutes, like `30m`, `12h`, or `1d`.")
             return
 
         next_draw = datetime.now(timezone.utc) + timedelta(seconds=period_seconds)
@@ -1320,13 +1341,13 @@ async def lottery(ctx, action: str = None, amount: str = None):
             thread = await prepare_lottery_channel(ctx.guild, channel, period_seconds, LOTTERY_TICKET_COST, LOTTERY_HOUSE_CUT)
             role = await recreate_lottery_role(ctx.guild)
         except Exception as e:
-            await ctx.send(f"❌ I couldn't prepare the lottery channel/thread: `{type(e).__name__}`")
+            await ctx.send(f"{Q_DENIED} I couldn't prepare the lottery channel/thread: `{type(e).__name__}`")
             print(f"Lottery setup failed: {type(e).__name__} - {e}")
             return
 
         save_lottery_config(ctx.guild.id, channel.id, period_seconds, next_draw, thread_id=thread.id, role_id=role.id if role else None)
         await ctx.send(
-            f"✅ Lottery set for {channel.mention}. Draws every **{format_duration(period_seconds)}**.\n"
+            f"{Q_SUCCESS} Lottery set for {channel.mention}. Draws every **{format_duration(period_seconds)}**.\n"
             f"Prize: **the current pot**. Starting pot: **{format_balance(0)}**.\n"
             f"Tickets cost **{format_balance(LOTTERY_TICKET_COST)}**. House cut: **{LOTTERY_HOUSE_CUT * 100:.1f}%**.\n"
             f"Use `.buytick <amount>` in <#{thread.id}>.",
@@ -1336,7 +1357,7 @@ async def lottery(ctx, action: str = None, amount: str = None):
 
     if action and action.casefold() in {"setup", "config"}:
         if not has_economy_owner_power(ctx.author.id, ctx.guild):
-            await ctx.send("❌ Server owner only.")
+            await ctx.send(f"{Q_DENIED} Server owner only.")
             return
         await ctx.send("To reconfigure, delete the current lottery config from the database or ask me to add a reset flow.")
         return
@@ -1353,14 +1374,14 @@ async def lottery(ctx, action: str = None, amount: str = None):
     if next_draw.tzinfo is None:
         next_draw = next_draw.replace(tzinfo=timezone.utc)
     channel = ctx.guild.get_channel(config["channel_id"])
-    embed = discord.Embed(title="Lottery", color=discord.Color.gold())
+    embed = discord.Embed(title=f"{QOIN_CHEST} Lottery", color=discord.Color.gold())
     embed.add_field(name="Channel", value=channel.mention if channel else f"`{config['channel_id']}`", inline=False)
     embed.add_field(name="Prize / Current Pot", value=format_balance(config["pot"]), inline=True)
-    embed.add_field(name="Tickets", value=f"{total_tickets:,}", inline=True)
+    embed.add_field(name=f"{Q_TICKET} Tickets", value=f"{total_tickets:,}", inline=True)
     embed.add_field(name="Players", value=f"{len(rows):,}/5 minimum", inline=True)
     embed.add_field(name="Next Draw", value=f"<t:{int(next_draw.timestamp())}:R>", inline=True)
     thread_value = f"<#{config['thread_id']}>" if config.get("thread_id") else "ticket thread not saved"
-    embed.add_field(name="Ticket Thread", value=thread_value, inline=False)
+    embed.add_field(name=f"{Q_TICKET} Ticket Thread", value=thread_value, inline=False)
     if config.get("role_id"):
         embed.add_field(name="Participant Role", value=f"<@&{config['role_id']}>", inline=True)
     embed.add_field(
@@ -1379,12 +1400,12 @@ async def lottery(ctx, action: str = None, amount: str = None):
 @commands.command()
 async def editlottery(ctx, setting: str = None, *, value: str = None):
     if ctx.guild is None:
-        await ctx.send("❌ Lottery editing only works in servers.")
+        await ctx.send(f"{Q_DENIED} Lottery editing only works in servers.")
         return
     if not await ensure_db_ready(ctx):
         return
     if not has_economy_owner_power(ctx.author.id, ctx.guild):
-        await ctx.send("❌ Server owner only.")
+        await ctx.send(f"{Q_DENIED} Server owner only.")
         return
 
     config = get_lottery_config(ctx.guild.id)
@@ -1407,7 +1428,7 @@ async def editlottery(ctx, setting: str = None, *, value: str = None):
     if setting in {"price", "ticket", "ticketprice"}:
         parsed = parse_amount(value, ctx.author.id, ctx.guild, None)
         if parsed is None or parsed <= 0:
-            await ctx.send("❌ Ticket price must be a positive number.")
+            await ctx.send(f"{Q_DENIED} Ticket price must be a positive number.")
             return
         updates["ticket_cost"] = parsed
         message = f"Ticket price set to **{format_balance(parsed)}**."
@@ -1415,7 +1436,7 @@ async def editlottery(ctx, setting: str = None, *, value: str = None):
     elif setting in {"duration", "period", "time"}:
         seconds = period_seconds_from_text(value)
         if seconds is None:
-            await ctx.send("❌ Invalid duration. Use at least 5 minutes, like `30m`, `12h`, or `1d`.")
+            await ctx.send(f"{Q_DENIED} Invalid duration. Use at least 5 minutes, like `30m`, `12h`, or `1d`.")
             return
         updates["period_seconds"] = seconds
         updates["next_draw"] = datetime.now(timezone.utc) + timedelta(seconds=seconds)
@@ -1425,10 +1446,10 @@ async def editlottery(ctx, setting: str = None, *, value: str = None):
         try:
             cut_percent = float(value.strip().replace("%", ""))
         except ValueError:
-            await ctx.send("❌ House cut must be a number from 0 to 90.")
+            await ctx.send(f"{Q_DENIED} House cut must be a number from 0 to 90.")
             return
         if cut_percent < 0 or cut_percent > 90:
-            await ctx.send("❌ House cut must be from 0 to 90.")
+            await ctx.send(f"{Q_DENIED} House cut must be from 0 to 90.")
             return
         updates["house_cut"] = cut_percent / 100
         message = f"House cut set to **{cut_percent:.1f}%**."
@@ -1438,7 +1459,7 @@ async def editlottery(ctx, setting: str = None, *, value: str = None):
         if channel is None and value.strip().isdigit():
             channel = ctx.guild.get_channel(int(value.strip()))
         if channel is None or not isinstance(channel, discord.TextChannel):
-            await ctx.send("❌ Mention a normal text channel or send its channel ID.")
+            await ctx.send(f"{Q_DENIED} Mention a normal text channel or send its channel ID.")
             return
         try:
             thread = await prepare_lottery_channel(
@@ -1449,14 +1470,14 @@ async def editlottery(ctx, setting: str = None, *, value: str = None):
                 lottery_house_cut(config)
             )
         except Exception as e:
-            await ctx.send(f"❌ I couldn't prepare that channel/thread: `{type(e).__name__}`")
+            await ctx.send(f"{Q_DENIED} I couldn't prepare that channel/thread: `{type(e).__name__}`")
             return
         updates["channel_id"] = channel.id
         updates["thread_id"] = thread.id
         message = f"Lottery channel moved to {channel.mention}; ticket thread is <#{thread.id}>."
 
     else:
-        await ctx.send("❌ Unknown setting. Use `price`, `duration`, `cut`, or `channel`.")
+        await ctx.send(f"{Q_DENIED} Unknown setting. Use `price`, `duration`, `cut`, or `channel`.")
         return
 
     try:
@@ -1480,17 +1501,17 @@ async def editlottery(ctx, setting: str = None, *, value: str = None):
     if updated:
         await announce_lottery_update(ctx.guild, updated, message)
 
-    await ctx.send(f"✅ {message}", allowed_mentions=discord.AllowedMentions.none())
+    await ctx.send(f"{Q_SUCCESS} {message}", allowed_mentions=discord.AllowedMentions.none())
 
 @commands.command()
 async def stoplottery(ctx):
     if ctx.guild is None:
-        await ctx.send("❌ Lottery stopping only works in servers.")
+        await ctx.send(f"{Q_DENIED} Lottery stopping only works in servers.")
         return
     if not await ensure_db_ready(ctx):
         return
     if not has_economy_owner_power(ctx.author.id, ctx.guild):
-        await ctx.send("❌ Server owner only.")
+        await ctx.send(f"{Q_DENIED} Server owner only.")
         return
 
     config = get_lottery_config(ctx.guild.id)
@@ -1524,10 +1545,10 @@ async def stoplottery(ctx):
         return
 
     await ctx.send(
-        "✅ Lottery stopped for this server.\n"
+        f"{Q_SUCCESS} Lottery stopped for this server.\n"
         f"Cleared Prize Pot: **{format_balance(pot)}**\n"
-        f"Cleared Tickets: **{total_tickets:,}** from **{len(rows):,}** players\n"
-        f"{'✅' if role_deleted else 'ℹ️'} {role_note}\n"
+        f"Cleared {Q_TICKET} Tickets: **{total_tickets:,}** from **{len(rows):,}** players\n"
+        f"{Q_SUCCESS if role_deleted else 'ℹ️'} {role_note}\n"
         "The lottery channel/thread/messages were left in place.",
         allowed_mentions=discord.AllowedMentions.none()
     )
@@ -1535,7 +1556,7 @@ async def stoplottery(ctx):
 @commands.command()
 async def lotterystats(ctx):
     if ctx.guild is None:
-        await ctx.send("❌ Lottery stats only work in servers.")
+        await ctx.send(f"{Q_DENIED} Lottery stats only work in servers.")
         return
     if not await ensure_db_ready(ctx):
         return
@@ -1557,26 +1578,26 @@ async def lotterystats(ctx):
     channel = ctx.guild.get_channel(config["channel_id"])
     thread_value = f"<#{config['thread_id']}>" if config.get("thread_id") else "ticket thread not saved"
 
-    embed = discord.Embed(title="Lottery Stats", color=discord.Color.gold())
+    embed = discord.Embed(title=f"{QOIN_CHEST} Lottery Stats", color=discord.Color.gold())
     embed.add_field(name="Prize / Current Pot", value=format_balance(config["pot"]), inline=True)
-    embed.add_field(name="Total Tickets", value=f"{total_tickets:,}", inline=True)
+    embed.add_field(name=f"{Q_TICKET} Total Tickets", value=f"{total_tickets:,}", inline=True)
     embed.add_field(name="Players", value=f"{unique_players:,}", inline=True)
-    embed.add_field(name="Ticket Price", value=format_balance(ticket_cost), inline=True)
+    embed.add_field(name=f"{Q_TICKET} Ticket Price", value=format_balance(ticket_cost), inline=True)
     embed.add_field(name="House Cut", value=f"{house_cut * 100:.1f}%", inline=True)
     if config.get("role_id"):
         embed.add_field(name="Participant Role", value=f"<@&{config['role_id']}>", inline=True)
     embed.add_field(name="Next Draw", value=f"<t:{int(next_draw.timestamp())}:R>", inline=True)
     embed.add_field(name="Lottery Channel", value=channel.mention if channel else f"`{config['channel_id']}`", inline=True)
-    embed.add_field(name="Ticket Thread", value=thread_value, inline=True)
+    embed.add_field(name=f"{Q_TICKET} Ticket Thread", value=thread_value, inline=True)
 
     if rows:
         leaders = []
         for index, row in enumerate(rows[:10], 1):
             odds = (row["tickets"] / total_tickets * 100) if total_tickets else 0
             leaders.append(f"{index}. {user_mention(row['user_id'])} - **{row['tickets']:,}** tickets ({odds:.1f}%)")
-        embed.add_field(name="Top Ticket Holders", value="\n".join(leaders), inline=False)
+        embed.add_field(name=f"{Q_TICKET} Top Ticket Holders", value="\n".join(leaders), inline=False)
     else:
-        embed.add_field(name="Top Ticket Holders", value="No tickets bought this round.", inline=False)
+        embed.add_field(name=f"{Q_TICKET} Top Ticket Holders", value="No tickets bought this round.", inline=False)
 
     embed.add_field(
         name="How To Enter",
@@ -1588,7 +1609,7 @@ async def lotterystats(ctx):
 @commands.command()
 async def buytick(ctx, amount: str = "1"):
     if ctx.guild is None:
-        await ctx.send("❌ Lottery tickets only work in servers.")
+        await ctx.send(f"{Q_DENIED} Lottery tickets only work in servers.")
         return
     if not await ensure_db_ready(ctx):
         return
@@ -1598,16 +1619,16 @@ async def buytick(ctx, amount: str = "1"):
         await ctx.send("Lottery is not set up yet.")
         return
     if config.get("thread_id") and ctx.channel.id != config["thread_id"]:
-        await ctx.send(f"Buy tickets in <#{config['thread_id']}>.", allowed_mentions=discord.AllowedMentions.none())
+        await ctx.send(f"{Q_TICKET} Buy tickets in <#{config['thread_id']}>.", allowed_mentions=discord.AllowedMentions.none())
         return
 
     try:
         tickets = int(amount)
     except ValueError:
-        await ctx.send("❌ Use `.buytick <ticket amount>`.")
+        await ctx.send(f"{Q_DENIED} Use `.buytick <ticket amount>`.")
         return
     if tickets <= 0:
-        await ctx.send("❌ Ticket amount must be positive.")
+        await ctx.send(f"{Q_DENIED} Ticket amount must be positive.")
         return
 
     ticket_cost = lottery_ticket_cost(config)
@@ -1619,7 +1640,7 @@ async def buytick(ctx, amount: str = "1"):
     try:
         data = get_user(ctx.author.id)
         if data["balance"] < total_cost:
-            await ctx.send(f"❌ You need {format_balance(total_cost)}, but you only have {format_balance(data['balance'])}.")
+            await ctx.send(f"{Q_DENIED} You need {format_balance(total_cost)}, but you only have {format_balance(data['balance'])}.")
             return
         new_balance = data["balance"] - total_cost
         update_user(ctx.author.id, balance=new_balance)
@@ -1631,7 +1652,7 @@ async def buytick(ctx, amount: str = "1"):
         return
 
     await ctx.send(
-        f"🎟️ {user_mention(ctx.author.id)} bought **{tickets}** lottery tickets for **{format_balance(total_cost)}**.\n"
+        f"{Q_TICKET} {user_mention(ctx.author.id)} bought **{tickets}** lottery tickets for **{format_balance(total_cost)}**.\n"
         f"Prize Pot +**{format_balance(pot_add)}** | Burned **{format_balance(burned)}**\n"
         f"Current Prize: **{format_balance(config['pot'] + pot_add)}**\n"
         f"New Balance: **{format_balance(new_balance)}**",
@@ -1659,7 +1680,7 @@ async def process_lottery_draw(config):
         set_lottery_role(guild.id, role.id if role else None)
         if channel:
             await channel.send(
-                f"🎟️ Lottery draw cancelled: **{unique_players}/5** players joined.\n"
+                f"{QOIN_CHEST} Lottery draw cancelled: **{unique_players}/5** players joined.\n"
                 "No winner this round. The lottery has restarted with a fresh participant role."
             )
         return
@@ -1762,7 +1783,7 @@ async def daily(ctx):
         if elapsed < 86400:
             hours_left = int((86400 - elapsed) / 3600)
             minutes_left = int(((86400 - elapsed) % 3600) / 60)
-            await ctx.send(f"⏰ You can claim daily in **{hours_left}h {minutes_left}m**")
+            await ctx.send(f"{Q_TIMER} You can claim daily in **{hours_left}h {minutes_left}m**")
             return
 
     streak = data['daily_streak'] + 1
@@ -1786,8 +1807,8 @@ async def daily(ctx):
 
     updated = get_user(user_id)
     achievement_reward = maybe_award_main_quest(user_id, updated, "daily_30")
-    extra = f"\n🏆 Main quest complete: **{format_balance(achievement_reward)}**!" if achievement_reward else ""
-    await ctx.send(f"🎉 You claimed **{format_balance(reward)}**!\nStreak: **{streak}** days (+{streak_bonus} bonus){extra}")
+    extra = f"\n{Q_QUEST} Main quest complete: **{format_balance(achievement_reward)}**!" if achievement_reward else ""
+    await ctx.send(f"{QOIN_BAG} You claimed **{format_balance(reward)}**!\nStreak: **{streak}** days (+{streak_bonus} bonus){extra}")
 
 @commands.command()
 async def weekly(ctx):
@@ -1809,7 +1830,7 @@ async def weekly(ctx):
 
         if elapsed < 604800:
             days_left = int((604800 - elapsed) / 86400)
-            await ctx.send(f"⏰ You can claim weekly in **{days_left}** days")
+            await ctx.send(f"{Q_TIMER} You can claim weekly in **{days_left}** days")
             return
 
     streak = data['weekly_streak'] + 1
@@ -1833,8 +1854,8 @@ async def weekly(ctx):
 
     updated = get_user(user_id)
     achievement_reward = maybe_award_main_quest(user_id, updated, "weekly_8")
-    extra = f"\n🏆 Main quest complete: **{format_balance(achievement_reward)}**!" if achievement_reward else ""
-    await ctx.send(f"🎉 You claimed **{format_balance(reward)}**!\nWeekly streak: **{streak}** weeks (+{streak_bonus} bonus){extra}")
+    extra = f"\n{Q_QUEST} Main quest complete: **{format_balance(achievement_reward)}**!" if achievement_reward else ""
+    await ctx.send(f"{QOIN_BAG} You claimed **{format_balance(reward)}**!\nWeekly streak: **{streak}** weeks (+{streak_bonus} bonus){extra}")
 
 @commands.command()
 async def monthly(ctx):
@@ -1856,7 +1877,7 @@ async def monthly(ctx):
 
         if elapsed < 2592000:
             days_left = int((2592000 - elapsed) / 86400)
-            await ctx.send(f"⏰ You can claim monthly in **{days_left}** days")
+            await ctx.send(f"{Q_TIMER} You can claim monthly in **{days_left}** days")
             return
 
     streak = data['monthly_streak'] + 1
@@ -1880,8 +1901,8 @@ async def monthly(ctx):
 
     updated = get_user(user_id)
     achievement_reward = maybe_award_main_quest(user_id, updated, "monthly_5")
-    extra = f"\n🏆 Main quest complete: **{format_balance(achievement_reward)}**!" if achievement_reward else ""
-    await ctx.send(f"🎉 You claimed **{format_balance(reward)}**!\nMonthly streak: **{streak}** months (+{streak_bonus} bonus){extra}")
+    extra = f"\n{Q_QUEST} Main quest complete: **{format_balance(achievement_reward)}**!" if achievement_reward else ""
+    await ctx.send(f"{QOIN_BAG} You claimed **{format_balance(reward)}**!\nMonthly streak: **{streak}** months (+{streak_bonus} bonus){extra}")
 
 # =====================
 # COIN FLIP
@@ -1894,7 +1915,7 @@ async def gamble(ctx, amount: str, choice: str = None):
 
     cd = check_cooldown(ctx.author.id, "cf")
     if cd > 0:
-        await ctx.send(f"⏳ Chill for **{cd:.1f}s** before flipping again.")
+        await ctx.send(f"{Q_TIMER_TICK} Chill for **{cd:.1f}s** before flipping again.")
         return
 
     user_id = ctx.author.id
@@ -1908,7 +1929,7 @@ async def gamble(ctx, amount: str, choice: str = None):
     raw_amount = amount
     parsed = parse_amount(amount, ctx.author.id, ctx.guild, data['balance'])
     if parsed is None:
-        await ctx.send(f"❌ Use `.cf all`, `.cf <amount>`, or `.flip <amount>` (max 150,000 {CURRENCY_EMOJI})")
+        await ctx.send(f"{Q_DENIED} Use `.cf all`, `.cf <amount>`, or `.flip <amount>` (max 150,000 {CURRENCY_EMOJI})")
         return
 
     amount = parsed
@@ -1918,7 +1939,7 @@ async def gamble(ctx, amount: str, choice: str = None):
         return
 
     if amount > data['balance'] and not has_economy_owner_power(ctx.author.id, ctx.guild):
-        await ctx.send(f"❌ You only have {format_balance(data['balance'])}")
+        await ctx.send(f"{Q_DENIED} You only have {format_balance(data['balance'])}")
         return
 
     if choice:
@@ -1928,7 +1949,7 @@ async def gamble(ctx, amount: str, choice: str = None):
         elif choice in ("t", "tails"):
             chosen_side = "TAILS"
         else:
-            await ctx.send("❌ Pick `h`, `heads`, `t`, `tails`, or leave it blank.")
+            await ctx.send(f"{Q_DENIED} Pick `h`, `heads`, `t`, `tails`, or leave it blank.")
             return
     else:
         class FlipChoiceView(discord.ui.View):
@@ -1943,7 +1964,7 @@ async def gamble(ctx, amount: str, choice: str = None):
                 self.choice = selected
                 for item in self.children:
                     item.disabled = True
-                await interaction.response.edit_message(content=f"🪙 You picked **{selected}**.", view=self)
+                await interaction.response.edit_message(content=f"{Q_FLIP} You picked **{selected}**.", view=self)
                 self.stop()
 
             @discord.ui.button(label="Heads", style=discord.ButtonStyle.primary)
@@ -1959,10 +1980,10 @@ async def gamble(ctx, amount: str, choice: str = None):
                 await self.choose(interaction, random.choice(["HEADS", "TAILS"]))
 
         choice_view = FlipChoiceView()
-        choice_msg = await ctx.send("🪙 Pick heads, tails, or random:", view=choice_view)
+        choice_msg = await ctx.send(f"{Q_FLIP} Pick heads, tails, or random:", view=choice_view)
         await choice_view.wait()
         if choice_view.choice is None:
-            await choice_msg.edit(content="⏰ Coin flip cancelled.", view=None)
+            await choice_msg.edit(content=f"{Q_TIMER} Coin flip cancelled.", view=None)
             return
         chosen_side = choice_view.choice
 
@@ -1971,7 +1992,7 @@ async def gamble(ctx, amount: str, choice: str = None):
     coin_result = random.choice(["HEADS", "TAILS"])
     win = coin_result == chosen_side
     flip_msg = await ctx.send(
-        f"🪙 **COIN FLIP**\n"
+        f"{Q_FLIP_SPIN} **COIN FLIP**\n"
         f"─────────────────\n"
         f"Pick: **{chosen_side}**\n"
         f"`[ spinning ]`  Bet: **{format_balance(amount)}**"
@@ -1980,7 +2001,7 @@ async def gamble(ctx, amount: str, choice: str = None):
         await asyncio.sleep(0.8)
         await flip_msg.edit(
             content=(
-                f"🪙 **COIN FLIP**\n"
+                f"{Q_FLIP_SPIN} **COIN FLIP**\n"
                 f"─────────────────\n"
                 f"Pick: **{chosen_side}**\n"
                 f"`[ {face} ]`  Bet: **{format_balance(amount)}**"
@@ -2000,10 +2021,10 @@ async def gamble(ctx, amount: str, choice: str = None):
             streak_msg = f" 🔥 {streak + 1} in a row! ×{payout_multiplier_after_win(data, streak + 1):.2f} payout" if streak > 0 else ""
             await flip_msg.edit(
                 content=(
-                f"🪙 **COIN FLIP**\n"
+                f"{Q_FLIP} **COIN FLIP**\n"
                 f"─────────────────\n"
                 f"Pick: **{chosen_side}**\n"
-                f">>> 🟢 **{coin_result} — YOU WIN!**\n"
+                f">>> {Q_SUCCESS} **{coin_result} — YOU WIN!**\n"
                 f"Prize: **{format_balance(winnings)}**{streak_msg}\n"
                 f"New Balance: **{format_balance(new_balance)}**"
                 )
@@ -2018,10 +2039,10 @@ async def gamble(ctx, amount: str, choice: str = None):
             )
             await flip_msg.edit(
                 content=(
-                f"🪙 **COIN FLIP**\n"
+                f"{Q_FLIP} **COIN FLIP**\n"
                 f"─────────────────\n"
                 f"Pick: **{chosen_side}**\n"
-                f">>> 🔴 **{coin_result} — YOU LOSE**\n"
+                f">>> {Q_DENIED} **{coin_result} — YOU LOSE**\n"
                 f"Lost: **{format_balance(amount)}**\n"
                 f"New Balance: **{format_balance(new_balance)}**\n"
                 f"Streak reset."
@@ -2041,7 +2062,7 @@ async def roulette(ctx, amount: str, color: str = None):
 
     cd = check_cooldown(ctx.author.id, "roulette")
     if cd > 0:
-        await ctx.send(f"⏳ Chill for **{cd:.1f}s** before roulette again.")
+        await ctx.send(f"{Q_TIMER_TICK} Chill for **{cd:.1f}s** before roulette again.")
         return
 
     user_id = ctx.author.id
@@ -2054,7 +2075,7 @@ async def roulette(ctx, amount: str, color: str = None):
     raw_amount = amount
     parsed = parse_amount(amount, ctx.author.id, ctx.guild, data['balance'])
     if parsed is None:
-        await ctx.send("❌ Use `.roulette all <red|black|green>` or `.roulette <amount> <red|black|green>`")
+        await ctx.send(f"{Q_DENIED} Use `.roulette all <red|black|green>` or `.roulette <amount> <red|black|green>`")
         return
 
     amount = parsed
@@ -2072,7 +2093,7 @@ async def roulette(ctx, amount: str, color: str = None):
                 for item in self.children:
                     item.disabled = True
                 await interaction.response.edit_message(
-                    content=f"🎡 Roulette color: **{selected_color.upper()}**",
+                    content=f"{Q_WHEEL} Roulette color: **{selected_color.upper()}**",
                     view=self
                 )
                 self.stop()
@@ -2094,17 +2115,17 @@ async def roulette(ctx, amount: str, color: str = None):
                 await self.choose(interaction, random.choice(["red", "black", "green"]))
 
         color_view = RouletteColorView()
-        color_msg = await ctx.send("🎡 Pick a roulette color:", view=color_view)
+        color_msg = await ctx.send(f"{Q_WHEEL} Pick a roulette color:", view=color_view)
         await color_view.wait()
         if color_view.color is None:
-            await color_msg.edit(content="⏰ Roulette cancelled.", view=None)
+            await color_msg.edit(content=f"{Q_TIMER} Roulette cancelled.", view=None)
             return
         color = color_view.color
     else:
         color = color.lower()
 
     if color not in ['red', 'black', 'green']:
-        await ctx.send("❌ Use `.roulette all <red|black|green>` or `.roulette <amount> <red|black|green>`")
+        await ctx.send(f"{Q_DENIED} Use `.roulette all <red|black|green>` or `.roulette <amount> <red|black|green>`")
         return
 
     if amount <= 0:
@@ -2112,7 +2133,7 @@ async def roulette(ctx, amount: str, color: str = None):
         return
 
     if amount > data['balance'] and not has_economy_owner_power(ctx.author.id, ctx.guild):
-        await ctx.send(f"❌ You only have {format_balance(data['balance'])}")
+        await ctx.send(f"{Q_DENIED} You only have {format_balance(data['balance'])}")
         return
 
     outcomes = ['red'] * 18 + ['black'] * 18 + ['green'] * 2
@@ -2122,7 +2143,7 @@ async def roulette(ctx, amount: str, color: str = None):
     streak = data.get('roulette_streak', 0)
     mult = payout_multiplier(data, streak)
     roulette_msg = await ctx.send(
-        f"🎡 **ROULETTE**\n"
+        f"{Q_WHEEL_SPIN} **ROULETTE**\n"
         f"─────────────────\n"
         f"🎯 Pick: **{emoji_map[color]} {color.upper()}**\n"
         f"`[ spinning... ]`"
@@ -2132,7 +2153,7 @@ async def roulette(ctx, amount: str, color: str = None):
         await asyncio.sleep(0.8)
         await roulette_msg.edit(
             content=(
-                f"🎡 **ROULETTE**\n"
+                f"{Q_WHEEL_SPIN} **ROULETTE**\n"
                 f"─────────────────\n"
                 f"🎯 Pick: **{emoji_map[color]} {color.upper()}**\n"
                 f"`[ {frame} ]`"
@@ -2152,11 +2173,11 @@ async def roulette(ctx, amount: str, color: str = None):
             streak_msg = f" 🔥 {streak + 1} in a row! ×{payout_multiplier_after_win(data, streak + 1):.2f} payout" if streak > 0 else ""
             await roulette_msg.edit(
                 content=(
-                f"🎡 **ROULETTE**\n"
+                f"{Q_WHEEL} **ROULETTE**\n"
                 f"─────────────────\n"
                 f"🎯 You picked: **{emoji_map[color]} {color.upper()}**\n"
                 f"─────────────────\n"
-                f">>> 🟢 **{color.upper()}!**\n"
+                f">>> {Q_SUCCESS} **{color.upper()}!**\n"
                 f"Multiplier: ×{mult * multipliers[color]:.2f}\n"
                 f"Won: **{format_balance(winnings)}**{streak_msg}\n"
                 f"New Balance: **{format_balance(new_balance)}**"
@@ -2172,7 +2193,7 @@ async def roulette(ctx, amount: str, color: str = None):
             )
             await roulette_msg.edit(
                 content=(
-                f"🎡 **ROULETTE**\n"
+                f"{Q_WHEEL} **ROULETTE**\n"
                 f"─────────────────\n"
                 f"🎯 You picked: **{emoji_map[color]} {color.upper()}**\n"
                 f"─────────────────\n"
@@ -2196,7 +2217,7 @@ async def slots(ctx, amount: str):
 
     cd = check_cooldown(ctx.author.id, "slots")
     if cd > 0:
-        await ctx.send(f"⏳ Chill for **{cd:.1f}s** before slots again.")
+        await ctx.send(f"{Q_TIMER_TICK} Chill for **{cd:.1f}s** before slots again.")
         return
 
     user_id = ctx.author.id
@@ -2210,7 +2231,7 @@ async def slots(ctx, amount: str):
     raw_amount = amount
     parsed = parse_amount(amount, ctx.author.id, ctx.guild, data['balance'])
     if parsed is None:
-        await ctx.send(f"❌ Use `.slots all` or `.slots <amount>` (max 150,000 {CURRENCY_EMOJI})")
+        await ctx.send(f"{Q_DENIED} Use `.slots all` or `.slots <amount>` (max 150,000 {CURRENCY_EMOJI})")
         return
 
     amount = parsed
@@ -2220,16 +2241,16 @@ async def slots(ctx, amount: str):
         return
 
     if amount > data['balance'] and not has_economy_owner_power(ctx.author.id, ctx.guild):
-        await ctx.send(f"❌ You only have {format_balance(data['balance'])}")
+        await ctx.send(f"{Q_DENIED} You only have {format_balance(data['balance'])}")
         return
 
     emojis = ['🍒', '🍋', '🍊', '🍇', '💎', '⭐']
     weights = [30, 25, 20, 15, 8, 2]
 
     slots_msg = await ctx.send(
-        f"🎰 **SPINNING...**\n"
+        f"{Q_SLOTS} **SPINNING...**\n"
         f"─────────────────\n"
-        f"| 🎰 | 🎰 | 🎰 |\n"
+        f"| {Q_SLOTS} | {Q_SLOTS} | {Q_SLOTS} |\n"
         f"─────────────────"
     )
 
@@ -2237,9 +2258,9 @@ async def slots(ctx, amount: str):
     r1 = random.choices(emojis, weights=weights)[0]
     await slots_msg.edit(
         content=(
-            f"🎰 **SPINNING...**\n"
+            f"{Q_SLOTS} **SPINNING...**\n"
             f"─────────────────\n"
-            f"| {r1} | 🎰 | 🎰 |\n"
+            f"| {r1} | {Q_SLOTS} | {Q_SLOTS} |\n"
             f"─────────────────\n"
             f"_First reel locked..._"
         )
@@ -2248,9 +2269,9 @@ async def slots(ctx, amount: str):
     r2 = random.choices(emojis, weights=weights)[0]
     await slots_msg.edit(
         content=(
-            f"🎰 **SPINNING...**\n"
+            f"{Q_SLOTS} **SPINNING...**\n"
             f"─────────────────\n"
-            f"| {r1} | {r2} | 🎰 |\n"
+            f"| {r1} | {r2} | {Q_SLOTS} |\n"
             f"─────────────────\n"
             f"_One reel left..._"
         )
@@ -2276,11 +2297,11 @@ async def slots(ctx, amount: str):
             streak_msg = f" 🔥 {streak + 1} in a row! ×{payout_multiplier_after_win(data, streak + 1):.2f} payout" if streak > 0 else ""
             await slots_msg.edit(
                 content=(
-                    f"🎰 **RESULTS**\n"
+                    f"{Q_SLOTS} **RESULTS**\n"
                     f"─────────────────\n"
                     f"| {r1} | {r2} | {r3} |\n"
                     f"─────────────────\n"
-                    f">>> 🌟 **JACKPOT!** ×{multiplier}\n"
+                    f">>> {QOIN_CHEST} **JACKPOT!** ×{multiplier}\n"
                     f"Won: **{format_balance(winnings)}**{streak_msg}\n"
                     f"New Balance: **{format_balance(new_balance)}**"
                 )
@@ -2297,11 +2318,11 @@ async def slots(ctx, amount: str):
             streak_msg = f" 🔥 {streak + 1} in a row! ×{payout_multiplier_after_win(data, streak + 1):.2f} payout" if streak > 0 else ""
             await slots_msg.edit(
                 content=(
-                    f"🎰 **RESULTS**\n"
+                    f"{Q_SLOTS} **RESULTS**\n"
                     f"─────────────────\n"
                     f"| {r1} | {r2} | {r3} |\n"
                     f"─────────────────\n"
-                    f">>> ✨ **SMALL WIN!** ×2\n"
+                    f">>> {Q_SUCCESS} **SMALL WIN!** ×2\n"
                     f"Won: **{format_balance(winnings)}**{streak_msg}\n"
                     f"New Balance: **{format_balance(new_balance)}**"
                 )
@@ -2316,11 +2337,11 @@ async def slots(ctx, amount: str):
             )
             await slots_msg.edit(
                 content=(
-                    f"🎰 **RESULTS**\n"
+                    f"{Q_SLOTS} **RESULTS**\n"
                     f"─────────────────\n"
                     f"| {r1} | {r2} | {r3} |\n"
                     f"─────────────────\n"
-                    f">>> 💸 **NO MATCH**\n"
+                    f">>> {Q_DENIED} **NO MATCH**\n"
                     f"Lost: **{format_balance(amount)}**\n"
                     f"New Balance: **{format_balance(new_balance)}**\n"
                     f"Streak reset."
@@ -2366,7 +2387,7 @@ async def blackjack(ctx, amount: str):
 
     cd = check_cooldown(ctx.author.id, "blackjack")
     if cd > 0:
-        await ctx.send(f"⏳ Chill for **{cd:.1f}s** before blackjack again.")
+        await ctx.send(f"{Q_TIMER_TICK} Chill for **{cd:.1f}s** before blackjack again.")
         return
 
     user_id = ctx.author.id
@@ -2380,7 +2401,7 @@ async def blackjack(ctx, amount: str):
     raw_amount = amount
     parsed = parse_amount(amount, ctx.author.id, ctx.guild, data['balance'])
     if parsed is None:
-        await ctx.send(f"❌ Use `.blackjack all` or `.blackjack <amount>` (max 150,000 {CURRENCY_EMOJI})")
+        await ctx.send(f"{Q_DENIED} Use `.blackjack all` or `.blackjack <amount>` (max 150,000 {CURRENCY_EMOJI})")
         return
 
     amount = parsed
@@ -2390,7 +2411,7 @@ async def blackjack(ctx, amount: str):
         return
 
     if amount > data['balance'] and not has_economy_owner_power(ctx.author.id, ctx.guild):
-        await ctx.send(f"❌ You only have {format_balance(data['balance'])}")
+        await ctx.send(f"{Q_DENIED} You only have {format_balance(data['balance'])}")
         return
 
     deck = shuffle_deck()
@@ -2422,7 +2443,7 @@ async def blackjack(ctx, amount: str):
                         f"**Your hand:** {format_hand(player_hand)}  →  **{player_final}**\n"
                         f"**Dealer:**     {format_hand(dealer_hand)}  →  **{dealer_final}**\n"
                         f"─────────────────\n"
-                        f">>> 🟢 **{win_type}!**\n"
+                        f">>> {Q_SUCCESS} **{win_type}!**\n"
                         f"Won: **+{format_balance(winnings)}**{streak_msg}\n"
                         f"New Balance: **{format_balance(data['balance'] + winnings)}**"
                     )
@@ -2442,7 +2463,7 @@ async def blackjack(ctx, amount: str):
                         f"**Your hand:** {format_hand(player_hand)}  →  **{player_final}**\n"
                         f"**Dealer:**     {format_hand(dealer_hand)}  →  **{dealer_final}**\n"
                         f"─────────────────\n"
-                        f">>> 🔴 **{win_type}**\n"
+                        f">>> {Q_DENIED} **{win_type}**\n"
                         f"Lost: **{format_balance(abs(amount_delta))}**\n"
                         f"New Balance: **{format_balance(new_balance)}**\n"
                         f"Streak reset."
@@ -2558,7 +2579,7 @@ async def give(ctx, member: discord.Member, amount: str):
         raw_amount = amount
         parsed = parse_amount(amount, ctx.author.id, ctx.guild, data['balance'])
         if parsed is None:
-            await ctx.send("❌ Use `.give @user all` or `.give @user <amount>`")
+            await ctx.send(f"{Q_DENIED} Use `.give @user all` or `.give @user <amount>`")
             return
         amount = parsed
 
@@ -2567,11 +2588,11 @@ async def give(ctx, member: discord.Member, amount: str):
         return
 
     if member.id == ctx.author.id:
-        await ctx.send("❌ Can't transfer to yourself.")
+        await ctx.send(f"{Q_DENIED} Can't transfer to yourself.")
         return
 
     if amount > data['balance'] and not has_economy_owner_power(ctx.author.id, ctx.guild):
-        await ctx.send(f"❌ You only have {format_balance(data['balance'])}")
+        await ctx.send(f"{Q_DENIED} You only have {format_balance(data['balance'])}")
         return
 
     try:
@@ -2593,7 +2614,7 @@ async def give(ctx, member: discord.Member, amount: str):
         return
 
     await ctx.send(
-        f"💸 You sent **{format_balance(amount)}** to **{user_mention(member.id)}**\n"
+        f"{QOIN_TRANSFER} You sent **{format_balance(amount)}** to **{user_mention(member.id)}**\n"
         f"Tax Burned: **{format_balance(tax)}**\n"
         f"Received: **{format_balance(received_amount)}**\n"
         f"Your Balance: **{format_balance(old_sender_balance)}** → **{format_balance(new_sender_balance)}**\n"
@@ -2629,7 +2650,7 @@ async def lb(ctx):
         return
 
     embed = discord.Embed(
-        title="🏆 Leaderboard",
+        title=f"{QOIN_CHEST} Leaderboard",
         color=discord.Color.gold()
     )
 
@@ -2651,11 +2672,11 @@ async def add(ctx, target: str, amount: int):
         return
 
     if not has_economy_owner_power(ctx.author.id, ctx.guild):
-        await ctx.send("❌ Bot owner only.")
+        await ctx.send(f"{Q_DENIED} Bot owner only.")
         return
 
     if amount <= 0:
-        await ctx.send("❌ Amount must be positive.")
+        await ctx.send(f"{Q_DENIED} Amount must be positive.")
         return
 
     target_key = target.strip()
@@ -2665,7 +2686,7 @@ async def add(ctx, target: str, amount: int):
 
     if ctx.guild and is_everyone:
         if ctx.author.id != 885548126365171824:
-            await ctx.send("❌ Bulk `.add @everyone` is superowner only.")
+            await ctx.send(f"{Q_DENIED} Bulk `.add @everyone` is superowner only.")
             return
         members = list(ctx.guild.members)
         try:
@@ -2675,7 +2696,7 @@ async def add(ctx, target: str, amount: int):
             return
 
         await ctx.send(
-            f"✅ Added **{format_balance(amount)}** to **{count}** server members.",
+            f"{Q_SUCCESS} Added **{format_balance(amount)}** to **{count}** server members.",
             allowed_mentions=discord.AllowedMentions.none()
         )
         await send_economy_log(ctx, "Economy Bulk Add", [
@@ -2694,11 +2715,11 @@ async def add(ctx, target: str, amount: int):
 
     if role is not None:
         if ctx.author.id != 885548126365171824:
-            await ctx.send("❌ Bulk `.add @role` is superowner only.")
+            await ctx.send(f"{Q_DENIED} Bulk `.add @role` is superowner only.")
             return
         members = list(role.members)
         if not members:
-            await ctx.send("❌ That role has no members.")
+            await ctx.send(f"{Q_DENIED} That role has no members.")
             return
         try:
             count = bulk_add_users([m.id for m in members], amount, ctx.author.id, f"role {role.id}")
@@ -2707,7 +2728,7 @@ async def add(ctx, target: str, amount: int):
             return
 
         await ctx.send(
-            f"✅ Added **{format_balance(amount)}** to **{count}** members with **{role.name}**.",
+            f"{Q_SUCCESS} Added **{format_balance(amount)}** to **{count}** members with **{role.name}**.",
             allowed_mentions=discord.AllowedMentions.none()
         )
         await send_economy_log(ctx, "Economy Bulk Add", [
@@ -2721,7 +2742,7 @@ async def add(ctx, target: str, amount: int):
     try:
         member = await commands.MemberConverter().convert(ctx, target_key)
     except commands.BadArgument:
-        await ctx.send("❌ Use `.add @user <amount>`, `.add @role <amount>`, or `.add @everyone <amount>`.")
+        await ctx.send(f"{Q_DENIED} Use `.add @user <amount>`, `.add @role <amount>`, or `.add @everyone <amount>`.")
         return
 
     try:
@@ -2739,7 +2760,7 @@ async def add(ctx, target: str, amount: int):
         return
 
     await ctx.send(
-        f"✅ Added **{format_balance(amount)}** to **{user_mention(member.id)}**\n"
+        f"{Q_SUCCESS} Added **{format_balance(amount)}** to **{user_mention(member.id)}**\n"
         f"Balance: **{format_balance(old_balance)}** → **{format_balance(new_balance)}**",
         allowed_mentions=discord.AllowedMentions.none()
     )
@@ -2755,7 +2776,7 @@ async def remove(ctx, member: discord.Member, amount: str):
         return
 
     if not has_economy_owner_power(ctx.author.id, ctx.guild):
-        await ctx.send("❌ Bot owner only.")
+        await ctx.send(f"{Q_DENIED} Bot owner only.")
         return
 
     try:
@@ -2773,14 +2794,14 @@ async def remove(ctx, member: discord.Member, amount: str):
         update_user(member.id, balance=new_balance)
         log_transaction(member.id, "owner_remove", -amount, f"By {ctx.author.id}")
     except ValueError:
-        await ctx.send("❌ Use `.remove @user all` or `.remove @user <amount>`")
+        await ctx.send(f"{Q_DENIED} Use `.remove @user all` or `.remove @user <amount>`")
         return
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
 
     await ctx.send(
-        f"✅ Removed **{format_balance(amount)}** from **{user_mention(member.id)}**\n"
+        f"{Q_SUCCESS} Removed **{format_balance(amount)}** from **{user_mention(member.id)}**\n"
         f"Balance: **{format_balance(old_balance)}** → **{format_balance(new_balance)}**",
         allowed_mentions=discord.AllowedMentions.none()
     )
@@ -2811,7 +2832,7 @@ async def scratch(ctx, amount: str):
 
     cd = check_cooldown(ctx.author.id, "scratch")
     if cd > 0:
-        await ctx.send(f"⏳ Chill for **{cd:.1f}s** before scratching again.")
+        await ctx.send(f"{Q_TIMER_TICK} Chill for **{cd:.1f}s** before scratching again.")
         return
 
     user_id = ctx.author.id
@@ -2825,7 +2846,7 @@ async def scratch(ctx, amount: str):
     raw_amount = amount
     parsed = parse_amount(amount, ctx.author.id, ctx.guild, data['balance'])
     if parsed is None:
-        await ctx.send(f"❌ Use `.scratch all` or `.scratch <amount>` (max 150,000 {CURRENCY_EMOJI})")
+        await ctx.send(f"{Q_DENIED} Use `.scratch all` or `.scratch <amount>` (max 150,000 {CURRENCY_EMOJI})")
         return
 
     amount = parsed
@@ -2835,7 +2856,7 @@ async def scratch(ctx, amount: str):
         return
 
     if amount > data['balance'] and not has_economy_owner_power(ctx.author.id, ctx.guild):
-        await ctx.send(f"❌ You only have {format_balance(data['balance'])}")
+        await ctx.send(f"{Q_DENIED} You only have {format_balance(data['balance'])}")
         return
 
     win_symbol = random.choice(SCRATCH_SYMBOLS)
@@ -2861,7 +2882,7 @@ async def scratch(ctx, amount: str):
     async def scratch_msg(states, extra=None):
         cells_line = '  '.join(states)
         return (
-            f"🎫 **SCRATCH CARD**\n"
+            f"{QOIN_CHEST} **SCRATCH CARD**\n"
             f"─────────────────\n"
             f"`{cells_line}`\n"
             f"─────────────────\n"
@@ -2892,11 +2913,11 @@ async def scratch(ctx, amount: str):
             streak_msg = f" 🔥 {streak + 1} streak! ×{payout_multiplier_after_win(data, streak + 1):.2f}" if streak > 0 else ""
             await msg.edit(
                 content=(
-                    f"🎫 **SCRATCH CARD — WIN!**\n"
+                    f"{QOIN_CHEST} **SCRATCH CARD — WIN!**\n"
                     f"─────────────────\n"
                     f"`{'  '.join(cell_states)}`\n"
                     f"─────────────────\n"
-                    f">>> ✨ **{match_count}/5 {win_symbol} matched!**\n"
+                    f">>> {Q_SUCCESS} **{match_count}/5 {win_symbol} matched!**\n"
                     f"Multiplier: ×{multiplier}  |  Streak bonus: ×{mult:.2f}\n"
                     f"Won: **{format_balance(winnings)}**{streak_msg}\n"
                     f"New Balance: **{format_balance(new_balance)}**"
@@ -2912,11 +2933,11 @@ async def scratch(ctx, amount: str):
             )
             await msg.edit(
                 content=(
-                    f"🎫 **SCRATCH CARD**\n"
+                    f"{QOIN_CHEST} **SCRATCH CARD**\n"
                     f"─────────────────\n"
                     f"`{'  '.join(cell_states)}`\n"
                     f"─────────────────\n"
-                    f">>> 💸 **{match_count}/5 matched** — no prize\n"
+                    f">>> {Q_DENIED} **{match_count}/5 matched** — no prize\n"
                     f"Lost: **{format_balance(amount)}**\n"
                     f"New Balance: **{format_balance(new_balance)}**\n"
                     f"Streak reset."
@@ -2934,8 +2955,8 @@ async def scratch(ctx, amount: str):
 # Cost per cell revealed = bet / grid_size * cells_revealed (scaled)
 
 GRID_EMOJIS = {
-    'gem': '💎',
-    'bomb': '💣',
+    'gem': Q_XP,
+    'bomb': Q_MINE,
     'hidden': '⬛',
     'cursor': '🟨',
 }
@@ -2948,7 +2969,7 @@ async def minesweeper(ctx, amount: str):
 
     cd = check_cooldown(ctx.author.id, "ms")
     if cd > 0:
-        await ctx.send(f"⏳ Chill for **{cd:.1f}s** before minesweeper again.")
+        await ctx.send(f"{Q_TIMER_TICK} Chill for **{cd:.1f}s** before minesweeper again.")
         return
 
     user_id = ctx.author.id
@@ -2962,7 +2983,7 @@ async def minesweeper(ctx, amount: str):
     raw_amount = amount
     parsed = parse_amount(amount, ctx.author.id, ctx.guild, data['balance'])
     if parsed is None:
-        await ctx.send("❌ Use `.ms all` or `.ms <amount>`")
+        await ctx.send(f"{Q_DENIED} Use `.ms all` or `.ms <amount>`")
         return
 
     amount = parsed
@@ -2972,7 +2993,7 @@ async def minesweeper(ctx, amount: str):
         return
 
     if amount > data['balance'] and not has_economy_owner_power(ctx.author.id, ctx.guild):
-        await ctx.send(f"❌ You only have {format_balance(data['balance'])}")
+        await ctx.send(f"{Q_DENIED} You only have {format_balance(data['balance'])}")
         return
 
     class SizeView(discord.ui.View):
@@ -2988,7 +3009,7 @@ async def minesweeper(ctx, amount: str):
             for item in self.children:
                 item.disabled = True
             await interaction.response.edit_message(
-                content=f"💎 **MINE HUNT** `{grid_size}x{grid_size}` selected.",
+                content=f"{Q_MINE} **MINE HUNT** `{grid_size}x{grid_size}` selected.",
                 view=self
             )
             self.stop()
@@ -3006,10 +3027,10 @@ async def minesweeper(ctx, amount: str):
             await self.choose(interaction, 5)
 
     size_view = SizeView()
-    size_msg = await ctx.send("💎 Choose your minefield size:", view=size_view)
+    size_msg = await ctx.send(f"{Q_MINE} Choose your minefield size:", view=size_view)
     await size_view.wait()
     if size_view.grid is None:
-        await size_msg.edit(content="⏰ Mine hunt cancelled.", view=None)
+        await size_msg.edit(content=f"{Q_TIMER} Mine hunt cancelled.", view=None)
         return
 
     rows = cols = size_view.grid
@@ -3045,12 +3066,12 @@ async def minesweeper(ctx, amount: str):
                     cell = GRID_EMOJIS['hidden']
                 row_str += cell
             lines.append(row_str)
-        header = f"💎 **MINE HUNT** `{rows}x{cols}` | 💣 {bomb_count} | Bet **{format_balance(amount)}**"
+        header = f"{Q_MINE_SPARK} **MINE HUNT** `{rows}x{cols}` | {Q_MINE} {bomb_count} | Bet **{format_balance(amount)}**"
         if game_over:
             if game_won:
-                header += f"\n> ✨ All gems found! ×{multiplier:.2f} multiplier!"
+                header += f"\n> {Q_SUCCESS} All gems found! ×{multiplier:.2f} multiplier!"
             else:
-                header += f"\n> 💥 BOOM! Game over."
+                header += f"\n> {Q_DENIED} BOOM! Game over."
         elif revealed_count > 0:
             header += f"\n> Current multiplier: ×{multiplier:.2f} (×{1 + (revealed_count * 0.15):.2f} if won now)"
         return header + "\n" + "\n".join(lines)
@@ -3152,7 +3173,7 @@ async def minesweeper(ctx, amount: str):
                 new_balance = max(0, data['balance'] - amount)
                 content = (
                     render_board() +
-                    f"\n> ⏰ Timed out! Lost **{format_balance(amount)}**\n"
+                    f"\n> {Q_TIMER} Timed out! Lost **{format_balance(amount)}**\n"
                     f"New Balance: **{format_balance(new_balance)}**"
                 )
                 try:
@@ -3191,7 +3212,7 @@ async def wheel(ctx, amount: str):
 
     cd = check_cooldown(ctx.author.id, "wheel")
     if cd > 0:
-        await ctx.send(f"⏳ Chill for **{cd:.1f}s** before wheel again.")
+        await ctx.send(f"{Q_TIMER_TICK} Chill for **{cd:.1f}s** before wheel again.")
         return
 
     user_id = ctx.author.id
@@ -3205,7 +3226,7 @@ async def wheel(ctx, amount: str):
     raw_amount = amount
     parsed = parse_amount(amount, ctx.author.id, ctx.guild, data['balance'])
     if parsed is None:
-        await ctx.send(f"❌ Use `.wheel all` or `.wheel <amount>` (max 150,000 {CURRENCY_EMOJI})")
+        await ctx.send(f"{Q_DENIED} Use `.wheel all` or `.wheel <amount>` (max 150,000 {CURRENCY_EMOJI})")
         return
 
     amount = parsed
@@ -3215,7 +3236,7 @@ async def wheel(ctx, amount: str):
         return
 
     if amount > data['balance'] and not has_economy_owner_power(ctx.author.id, ctx.guild):
-        await ctx.send(f"❌ You only have {format_balance(data['balance'])}")
+        await ctx.send(f"{Q_DENIED} You only have {format_balance(data['balance'])}")
         return
 
     # Pre-select outcome
@@ -3231,13 +3252,13 @@ async def wheel(ctx, amount: str):
         right = WHEEL_SEGMENTS[(offset + 3) % n][2]
         bottom = WHEEL_SEGMENTS[(offset + 4) % n][2]
         wheel_art = f"      {top}\n   {left}  {center_emoji}  {right}\n      {bottom}"
-        header = f"🎡 **FORTUNE WHEEL**  |  Bet **{format_balance(amount)}**"
+        header = f"{Q_WHEEL_SPIN if spinning else Q_WHEEL} **FORTUNE WHEEL**  |  Bet **{format_balance(amount)}**"
         if not spinning:
             if label == 'BLANK':
                 header += f"\n> {emoji} **{label}** — nothing lost, nothing won"
             else:
                 mult_val = float(label.replace('×', ''))
-                header += f"\n> 🎯 Landed on: **{emoji} {label}**"
+                header += f"\n> {Q_WHEEL} Landed on: **{emoji} {label}**"
         else:
             header += "\n> _Spinning..._"
         return header + "\n```text\n" + wheel_art + "\n```"

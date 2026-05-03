@@ -27,6 +27,7 @@ from economy import (
     format_balance as economy_format_balance,
     get_user as economy_get_user,
     parse_amount as economy_parse_amount,
+    Q_LEVEL_PULSE as economy_q_level_pulse,
     setup as economy_setup,
     update_user as economy_update_user,
 )
@@ -1004,7 +1005,7 @@ async def on_message(message):
                 xp_result = None
             if xp_result and xp_result["levels_gained"] > 0:
                 await message.channel.send(
-                    f"🎉 <@{message.author.id}> reached **level {xp_result['level']}** "
+                    f"{economy_q_level_pulse} <@{message.author.id}> reached **level {xp_result['level']}** "
                     f"and earned **{economy_format_balance(xp_result['reward'])}**!",
                     embed=economy_build_profile_embed(message.author, economy_get_user(message.author.id)),
                     allowed_mentions=discord.AllowedMentions.none()
