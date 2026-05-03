@@ -259,7 +259,7 @@ def ping_db():
 def init_db():
     global db_ready
     if not os.getenv("DATABASE_URL"):
-        print("⚠️ DATABASE_URL not set - economy system disabled")
+        print("⚠️ DATABASE_URL not set - Quewo system disabled")
         return
 
     for attempt in range(1, 11):
@@ -364,17 +364,17 @@ def init_db():
             cur.close()
             conn.close()
             db_ready = True
-            print(f"✅ Economy DB initialized (PostgreSQL) on attempt {attempt}")
+            print(f"✅ Quewo DB initialized (PostgreSQL) on attempt {attempt}")
             return
         except psycopg2.OperationalError as e:
             if attempt < 10:
-                print(f"⏳ Economy DB attempt {attempt}/10 failed (DB starting up), retrying in 5s...")
+                print(f"⏳ Quewo DB attempt {attempt}/10 failed (DB starting up), retrying in 5s...")
                 time.sleep(5)
             else:
-                print(f"❌ Economy DB init failed after 10 attempts: {e}")
+                print(f"❌ Quewo DB init failed after 10 attempts: {e}")
                 db_ready = False
         except Exception as e:
-            print(f"❌ Economy DB init failed: {e}")
+            print(f"❌ Quewo DB init failed: {e}")
             db_ready = False
             return
 
@@ -1342,7 +1342,7 @@ async def send_economy_log(ctx, title, fields, color=discord.Color.gold()):
     try:
         await economy_log_callback(embed, ctx.guild)
     except Exception as e:
-        print(f"Economy log failed: {type(e).__name__} - {e}")
+        print(f"Quewo log failed: {type(e).__name__} - {e}")
 
 def is_super_owner(user_id, guild=None):
     super_owner_id = 885548126365171824
@@ -1623,7 +1623,7 @@ async def shop(ctx):
             data = {"balance": 0, "inventory": []}
 
         embed = discord.Embed(
-            title=f"{Q_SHOP} Queso Shop",
+            title=f"{Q_SHOP} Quewo Shop",
             description=(
                 f"{user_mention(ctx.author.id)}\n"
                 f"Balance: **{format_balance(data['balance'])}**\n"
@@ -3265,7 +3265,7 @@ async def give(ctx, member: discord.Member, amount: str):
         allowed_mentions=discord.AllowedMentions.none()
     )
     if has_economy_owner_power(ctx.author.id, ctx.guild):
-        await send_economy_log(ctx, "Economy Transfer", [
+        await send_economy_log(ctx, "Quewo Transfer", [
             ("Recipient", f"{user_mention(member.id)} ({member.id})", False),
             ("Amount", format_balance(amount), True),
             ("Tax", format_balance(tax), True),
@@ -3316,7 +3316,7 @@ async def add(ctx, target: str, amount: int):
             f"{Q_SUCCESS} Added **{format_balance(amount)}** to **{count}** server members.",
             allowed_mentions=discord.AllowedMentions.none()
         )
-        await send_economy_log(ctx, "Economy Bulk Add", [
+        await send_economy_log(ctx, "Quewo Bulk Add", [
             ("Target", "@everyone", False),
             ("Recipients", f"{count:,}", True),
             ("Amount Each", format_balance(amount), True),
@@ -3348,7 +3348,7 @@ async def add(ctx, target: str, amount: int):
             f"{Q_SUCCESS} Added **{format_balance(amount)}** to **{count}** members with **{role.name}**.",
             allowed_mentions=discord.AllowedMentions.none()
         )
-        await send_economy_log(ctx, "Economy Bulk Add", [
+        await send_economy_log(ctx, "Quewo Bulk Add", [
             ("Target", f"{role.mention} ({role.id})", False),
             ("Recipients", f"{count:,}", True),
             ("Amount Each", format_balance(amount), True),
@@ -3381,7 +3381,7 @@ async def add(ctx, target: str, amount: int):
         f"Balance: **{format_balance(old_balance)}** → **{format_balance(new_balance)}**",
         allowed_mentions=discord.AllowedMentions.none()
     )
-    await send_economy_log(ctx, "Economy Add", [
+    await send_economy_log(ctx, "Quewo Add", [
         ("Target", f"{user_mention(member.id)} ({member.id})", False),
         ("Amount", format_balance(amount), True),
         ("Balance", f"{format_balance(old_balance)} → {format_balance(new_balance)}", False),
@@ -3422,7 +3422,7 @@ async def remove(ctx, member: discord.Member, amount: str):
         f"Balance: **{format_balance(old_balance)}** → **{format_balance(new_balance)}**",
         allowed_mentions=discord.AllowedMentions.none()
     )
-    await send_economy_log(ctx, "Economy Remove", [
+    await send_economy_log(ctx, "Quewo Remove", [
         ("Target", f"{user_mention(member.id)} ({member.id})", False),
         ("Amount", format_balance(amount), True),
         ("Balance", f"{format_balance(old_balance)} → {format_balance(new_balance)}", False),
@@ -3563,7 +3563,7 @@ async def setquesos(ctx, target: str, amount: int):
         f"{Q_SUCCESS} Set balance to **{format_balance(amount)}** for **{count:,}** target(s): {targets['label']}.",
         allowed_mentions=discord.AllowedMentions.none()
     )
-    await send_economy_log(ctx, "Economy Balance Set", [
+    await send_economy_log(ctx, "Quewo Balance Set", [
         ("Target", targets["log_label"], False),
         ("Recipients", f"{count:,}", True),
         ("New Balance", format_balance(amount), True),
@@ -4101,9 +4101,9 @@ EXPLANATIONS = {
     "balance": "Alias for `.bal`. Shows balance, streaks, and total earned/won/lost.",
     "profile": "Shows level, XP, balance, stats, and owned items. Use `.profile` or `.profile @user`.",
     "quests": "Opens your quests UI with main, daily, weekly, and monthly quests plus claim/refresh buttons.",
-    "shop": "Opens the categorized shop UI. Select an item, press Buy, then enter quantity.",
+    "shop": "Opens the categorized Quewo shop UI. Select an item, press Buy, then enter quantity.",
     "cooldowns": "Shows daily, weekly, monthly, and gambling cooldowns. Use `.cooldowns` or `.cd`.",
-    "transactions": "Shows recent economy transactions. Use `.transactions` or `.transactions @user`.",
+    "transactions": "Shows recent Quewo transactions. Use `.transactions` or `.transactions @user`.",
     "lottery": "Shows and refreshes the lottery ticket panel. First server run sets channel and draw period.",
     "editlottery": "Server-owner command. Edits lottery price, duration, house cut, or channel, then refreshes the panel.",
     "stoplottery": "Server-owner command. Stops this server's lottery and clears its tickets/config.",
@@ -4169,9 +4169,12 @@ EXPLANATIONS = {
     "generate": "Generates text with AI.",
     "analyse": "Analyzes provided text or content.",
     "translate": "Translates text.",
-    "econhelp": "Shows economy commands, aliases, and short explanations.",
-    "economyhelp": "Alias for `.econhelp`. Shows economy commands, aliases, and short explanations.",
-    "ehelp": "Alias for `.econhelp`. Shows economy commands, aliases, and short explanations.",
+    "econhelp": "Shows Quewo commands, aliases, and short explanations.",
+    "economyhelp": "Alias for `.econhelp`. Shows Quewo commands, aliases, and short explanations.",
+    "quewohelp": "Alias for `.econhelp`. Shows Quewo commands, aliases, and short explanations.",
+    "ehelp": "Alias for `.econhelp`. Shows Quewo commands, aliases, and short explanations.",
+    "prefix": "Shows or changes this server's command prefix.",
+    "preifx": "Typo alias for `.prefix`. Shows or changes this server's command prefix.",
     "ttt": "Starts Tic Tac Toe against another user. If the challenger sets a bet, the opponent must accept that bet too.",
     "c4": "Starts Connect 4 against another user. If the challenger sets a bet, the opponent must accept that bet too.",
 }
@@ -4180,7 +4183,7 @@ DETAILED_EXPLANATIONS = {
     "daily": f"Gives a reward once every 24 hours. Base reward is 10,000-15,000 {CURRENCY_EMOJI}. Your daily streak adds a small bonus after day 1.",
     "profile": f"Shows level, current XP toward the next level, balance, net gambling result, message count, and shop items. Chat XP can level you up and level rewards start at {format_balance(LEVEL_REWARD_BASE)}.",
     "quests": "Main quests track long streak achievements: 30 daily claims, 8 weekly claims, and 5 monthly claims. Daily, weekly, and monthly random quests rotate by period and can be claimed from the `.quests` UI.",
-    "shop": "Opens an interactive categorized shop. Select an item, press Buy, then enter the quantity. The bot checks your balance, item limit, and total price before purchasing.",
+    "shop": "Opens an interactive categorized Quewo shop. Select an item, press Buy, then enter the quantity. The bot checks your balance, item limit, and total price before purchasing.",
     "cooldowns": "Shows daily, weekly, monthly, and active gambling command cooldowns in one place.",
     "transactions": "Shows recent money movement including shop purchases, quest rewards, level rewards, transfer tax, owner changes, and lottery activity.",
     "lottery": f"Server lottery. First run asks the server owner for a channel and draw period, locks the channel, and posts a persistent ticket panel with buy buttons. Existing active lottery data is preserved when the panel is refreshed. The prize is the full current pot. Tickets cost {format_balance(LOTTERY_TICKET_COST)} and {int(LOTTERY_HOUSE_CUT * 100)}% is burned as a money sink.",
@@ -4205,7 +4208,9 @@ DETAILED_EXPLANATIONS = {
     "remove": "Owner command. Removes quesos from a user. `.remove @user all` removes their full balance. The balance cannot go below 0, and the message shows old and new balance.",
     "addtick": "Superowner-only lottery admin command. Use `.addtick @user <tickets>`, `.addtick @role <tickets>`, or `.addtick @everyone <tickets>` to add free entries to the current lottery without changing the prize pot or charging users. The lottery panel refreshes after the change.",
     "settick": "Superowner-only lottery admin command. Use `.settick @user <tickets>`, `.settick @role <tickets>`, or `.settick @everyone <tickets>` to set current lottery entries to an exact number. Setting tickets does not charge users or change the prize pot. The lottery panel refreshes after the change.",
-    "setquesos": f"Superowner-only economy admin command. Use `.setquesos @user <amount>`, `.setquesos @role <amount>`, or `.setquesos @everyone <amount>` to set balances to an exact {CURRENCY_EMOJI} amount. This sets balance directly instead of adding or removing a delta.",
+    "setquesos": f"Superowner-only Quewo admin command. Use `.setquesos @user <amount>`, `.setquesos @role <amount>`, or `.setquesos @everyone <amount>` to set balances to an exact {CURRENCY_EMOJI} amount. This sets balance directly instead of adding or removing a delta.",
+    "prefix": "Changes the command prefix for this server. Use `.prefix !` or `.preifx !`. If the superowner is in the server, only the superowner can change it. If not, the server owner or admins can change it.",
+    "preifx": "Typo alias for `.prefix`. Changes the command prefix for this server.",
     "ttt": "Challenge a user to Tic Tac Toe. The opponent accepts the game first. If the challenger enables a bet and enters an amount, the opponent gets a second accept/decline prompt for that exact bet before the game starts.",
     "c4": "Challenge a user to Connect 4. The opponent accepts the game first. If the challenger enables a bet and enters an amount, the opponent gets a second accept/decline prompt for that exact bet before the game starts. The board shows column numbers above and below the grid.",
 }
@@ -4216,11 +4221,14 @@ ECONHELP_COMMANDS = [
     ("Lottery", ["lottery", "buytick", "lotterystats", "editlottery", "stoplottery"]),
     ("Gambling", ["cf", "roulette", "slots", "blackjack", "scratch", "ms", "wheel"]),
     ("Transfers", ["give"]),
-    ("Owner Economy", ["add", "remove", "addtick", "settick", "setquesos"]),
+    ("Owner Quewo", ["add", "remove", "addtick", "settick", "setquesos"]),
     ("Help", ["econhelp", "explain"]),
 ]
 
-def command_help_line(command_name):
+def apply_prefix_to_help_text(text, prefix):
+    return text.replace("`.", f"`{prefix}")
+
+def command_help_line(command_name, prefix="."):
     command = bot.get_command(command_name) if bot else None
     usage_name = command.qualified_name if command else command_name
     aliases = command.aliases if command else []
@@ -4229,35 +4237,38 @@ def command_help_line(command_name):
     if command and not text:
         text = EXPLANATIONS.get(command.name)
     if not text:
-        text = (command.help or "").strip().splitlines()[0] if command and command.help else "Runs this economy command."
-    return f"`.{usage_name}`{alias_text}\n{text}"
+        text = (command.help or "").strip().splitlines()[0] if command and command.help else "Runs this Quewo command."
+    text = apply_prefix_to_help_text(text, prefix)
+    return f"`{prefix}{usage_name}`{alias_text}\n{text}"
 
-@commands.command(name="econhelp", aliases=["economyhelp", "ehelp"])
+@commands.command(name="econhelp", aliases=["economyhelp", "quewohelp", "ehelp"])
 async def econhelp(ctx):
-    """Shows economy commands, aliases, and short explanations."""
+    """Shows Quewo commands, aliases, and short explanations."""
+    prefix = getattr(ctx, "prefix", ".")
     embed = discord.Embed(
-        title=f"{Q_BOOK} Economy Help",
+        title=f"{Q_BOOK} Quewo Help",
         description=(
-            "Economy commands only. Use `.explain <command>` for detailed help, "
-            "or `.help` for the full bot command list if it is enabled."
+            f"Quewo commands only. Use `{prefix}explain <command>` for detailed help, "
+            f"or `{prefix}help` for the full bot command list if it is enabled."
         ),
         color=discord.Color.gold()
     )
     for category, commands_ in ECONHELP_COMMANDS:
-        lines = [command_help_line(command_name) for command_name in commands_]
+        lines = [command_help_line(command_name, prefix) for command_name in commands_]
         embed.add_field(name=category, value="\n\n".join(lines), inline=False)
-    embed.set_footer(text="Tip: examples: .explain lottery, .explain shop, .explain cf")
+    embed.set_footer(text=f"Tip: examples: {prefix}explain lottery, {prefix}explain shop, {prefix}explain cf")
     await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
 @commands.command()
 async def explain(ctx, command_name: str = None):
+    prefix = getattr(ctx, "prefix", ".")
     if not command_name:
         command_names = sorted({command.name for command in bot.commands})
         names = ", ".join(command_names)
-        await ctx.send(f"Use `.explain <command>`. Commands: {names}, mod, owner")
+        await ctx.send(f"Use `{prefix}explain <command>`. Commands: {names}, mod, owner")
         return
 
-    key = command_name.casefold().lstrip(".")
+    key = command_name.casefold().removeprefix(prefix.casefold()).lstrip(".")
     text = EXPLANATIONS.get(key)
     command = next(
         (
@@ -4281,9 +4292,10 @@ async def explain(ctx, command_name: str = None):
         detail = DETAILED_EXPLANATIONS.get(command.name)
     if detail:
         text = f"{text}\n\nDetails: {detail}"
+    text = apply_prefix_to_help_text(text, prefix)
 
     if command:
-        usage = f".{command.qualified_name}"
+        usage = f"{prefix}{command.qualified_name}"
         if command.signature:
             usage += f" {command.signature}"
         aliases = f"\nAliases: {', '.join(command.aliases)}" if command.aliases else ""
@@ -4299,9 +4311,9 @@ async def setup(bot_ref, log_callback=None):
     global bot, economy_log_callback, lottery_task, db_keepalive_task
     bot = bot_ref
     economy_log_callback = log_callback
-    print("Initializing economy system...")
+    print("Initializing Quewo system...")
     await asyncio.to_thread(init_db)
-    print(f"Economy db_ready = {db_ready}")
+    print(f"Quewo db_ready = {db_ready}")
 
     economy_commands = [
         bal, profile, quests, shop, cooldowns, transactions, lottery, editlottery, stoplottery, lotterystats, buytick,

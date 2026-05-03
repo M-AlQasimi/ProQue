@@ -72,6 +72,13 @@ def _create_tables(cur):
     """)
 
     cur.execute("""
+        CREATE TABLE IF NOT EXISTS guild_prefixes (
+            guild_id BIGINT PRIMARY KEY,
+            prefix TEXT NOT NULL
+        )
+    """)
+
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS birthdays (
             user_id BIGINT PRIMARY KEY,
             date TEXT NOT NULL
@@ -831,6 +838,44 @@ def save_guild_log_config(guild_id, log_channel_id, reaction_log_channel_id):
         conn.close()
     except Exception:
         pass
+
+def load_guild_prefixes():
+    _ensure_ready()
+    if not pg_ready:
+        return {}
+    try:
+        conn = pg_conn()
+        if conn is None:
+            return {}
+        cur = conn.cursor()
+        cur.execute("SELECT guild_id, prefix FROM guild_prefixes")
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        return {int(guild_id): prefix for guild_id, prefix in rows}
+    except Exception:
+        return {}
+
+def save_guild_prefix(guild_id, prefix):
+    _ensure_ready()
+    if not pg_ready:
+        return False
+    try:
+        conn = pg_conn()
+        if conn is None:
+            return False
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO guild_prefixes (guild_id, prefix) VALUES (%s, %s) "
+            "ON CONFLICT (guild_id) DO UPDATE SET prefix = EXCLUDED.prefix",
+            (int(guild_id), str(prefix))
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+        return True
+    except Exception:
+        return False
 
 # === BIRTHDAYS ===
 

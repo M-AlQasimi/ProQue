@@ -74,6 +74,7 @@ from pgdata import (
     load_birthdays as pg_load_birthdays,
     load_censored_phrases,
     load_disabled_commands,
+    load_guild_prefixes,
     load_guild_log_config,
     load_mod_ids,
     load_owner_ids,
@@ -96,6 +97,7 @@ from pgdata import (
     save_birthday,
     save_censored_phrases,
     save_disabled_commands,
+    save_guild_prefix,
     save_guild_log_config,
     save_mod_ids,
     save_owner_ids,
@@ -124,10 +126,13 @@ class MyBot(commands.Bot):
     async def setup_hook(self):
         pass
         
+DEFAULT_PREFIX = "."
+
 intents = discord.Intents.all()
 def get_prefix(bot, message):
-    """Support mentions, dot commands, and bare command names."""
-    return commands.when_mentioned_or('.', '')(bot, message)
+    """Use only the saved server prefix for commands."""
+    guild_id = message.guild.id if message.guild else 0
+    return guild_prefixes.get(guild_id, DEFAULT_PREFIX)
 
 bot = MyBot(command_prefix=get_prefix, intents=intents, case_insensitive=True)
 bot.remove_command("help")
@@ -146,6 +151,7 @@ blacklisted_users = load_blacklisted_users()
 shutdown_channels = load_shutdown_channels()
 reaction_shutdown_channels = load_reaction_shutdown_channels()
 disabled_commands = load_disabled_commands()
+guild_prefixes = load_guild_prefixes()
 censored_phrases = load_censored_phrases()
 watchlist = load_watchlist()
 reaction_watchlist = load_reaction_watchlist()
@@ -182,7 +188,11 @@ class CommandDisabledError(commands.CheckFailure):
 def get_command_case_insensitive(command_name):
     if not command_name:
         return None
-    key = command_name.lstrip(".").casefold()
+    key = command_name.strip().casefold()
+    for prefix in sorted({DEFAULT_PREFIX, *guild_prefixes.values()}, key=len, reverse=True):
+        if prefix and key.startswith(prefix.casefold()):
+            key = key[len(prefix):]
+            break
     return next(
         (
             command
@@ -198,14 +208,11 @@ def looks_like_command_message(message):
     content = message.content.strip()
     if not content:
         return False
-    if content.startswith("."):
+    guild_id = message.guild.id if message.guild else 0
+    prefix = guild_prefixes.get(guild_id, DEFAULT_PREFIX)
+    if content.startswith(prefix):
         return True
-    if bot.user:
-        mention_prefixes = (f"<@{bot.user.id}>", f"<@!{bot.user.id}>")
-        if content.startswith(mention_prefixes):
-            return True
-    first_word = content.split(maxsplit=1)[0].casefold()
-    return first_word in bot.all_commands
+    return False
 
 def scoped_id(guild):
     return guild.id if guild else 0
@@ -571,6 +578,14 @@ def has_mod_power(user, guild=None):
 def has_owner_or_mod_power(user, guild=None):
     return has_owner_power(user, guild) or user.id in guild_mods(guild)
 
+def can_manage_prefix(user, guild):
+    if guild is None or user is None:
+        return False
+    if super_owner_in_guild(guild):
+        return user.id == super_owner_id
+    permissions = getattr(user, "guild_permissions", None)
+    return guild.owner_id == user.id or bool(permissions and permissions.administrator)
+
 def is_owner():
     async def predicate(ctx):
         return has_owner_power(ctx.author, ctx.guild)
@@ -616,9 +631,9 @@ async def on_ready():
             "add", "remove", "addtick", "settick", "setquesos", "econhelp", "explain"
         ]
         loaded_economy_commands = [name for name in economy_command_names if bot.get_command(name)]
-        print(f"Economy system loaded ({len(loaded_economy_commands)}/{len(economy_command_names)} commands)")
+        print(f"Quewo system loaded ({len(loaded_economy_commands)}/{len(economy_command_names)} commands)")
     except Exception as e:
-        print(f"Economy system not loaded: {e}")
+        print(f"Quewo system not loaded: {e}")
     await restore_persistent_runtime_state()
     print("Bot ready, waiting to sync slash commands...")
 
@@ -1117,7 +1132,7 @@ async def on_command_error(ctx, error):
             await ctx.send("You can't use that heh")
 
 HELP_CATEGORIES = {
-    "Economy": [
+    "Quewo": [
         "bal", "profile", "quests", "daily", "weekly", "monthly", "cooldowns", "transactions", "shop", "lottery", "editlottery", "stoplottery", "lotterystats", "buytick", "econhelp",
         "cf", "roulette", "slots", "blackjack", "scratch", "ms", "wheel",
         "give", "lb", "addtick", "settick", "setquesos",
@@ -1127,28 +1142,33 @@ HELP_CATEGORIES = {
     "AI": ["ask", "generate", "analyse"],
     "Server Tools": ["dsnipe", "esnipe", "rsnipe", "rolesinfo", "roleinfo", "purge", "rpurge", "steal"],
     "Status": ["afk", "sleep", "wake", "away", "setbday", "removebday"],
-    "Admin": ["setlogs", "disable", "enable", "disableall", "enableall", "dclist", "addowner", "removeowner", "addmod", "removemod", "add", "remove", "addtick", "settick", "setquesos"],
+    "Admin": ["setlogs", "prefix", "disable", "enable", "disableall", "enableall", "dclist", "addowner", "removeowner", "addmod", "removemod", "add", "remove", "addtick", "settick", "setquesos"],
 }
 
-def render_help_embed(category_name=None):
+def prefix_for_guild(guild):
+    guild_id = guild.id if guild else 0
+    return guild_prefixes.get(guild_id, DEFAULT_PREFIX)
+
+def render_help_embed(guild=None, category_name=None):
+    current_prefix = prefix_for_guild(guild)
     if category_name:
         names = HELP_CATEGORIES.get(category_name, [])
         embed = discord.Embed(
             title=f"ProQue Help: {category_name}",
-            description="Use `.help <command>` for usage or `.explain <command>` for details.",
+            description=f"Use `{current_prefix}help <command>` for usage or `{current_prefix}explain <command>` for details.",
             color=discord.Color.blurple()
         )
         commands_text = []
         for name in names:
             command = get_command_case_insensitive(name)
             if command and not command.hidden:
-                commands_text.append(f"`.{command.name}`")
+                commands_text.append(f"`{current_prefix}{command.name}`")
         embed.description += "\n\n" + (" ".join(commands_text) if commands_text else "No commands loaded for this category.")
         return embed
 
     embed = discord.Embed(
         title="ProQue Help",
-        description="Pick a category below, or use `.help <command>`.",
+        description=f"Pick a category below, or use `{current_prefix}help <command>`.",
         color=discord.Color.blurple()
     )
     for category, names in HELP_CATEGORIES.items():
@@ -1166,7 +1186,7 @@ class HelpCategoryButton(Button):
         view = self.view
         if interaction.user.id != view.author_id:
             return await interaction.response.send_message("Use your own help menu.", ephemeral=True)
-        await interaction.response.edit_message(embed=render_help_embed(self.category_name), view=view)
+        await interaction.response.edit_message(embed=render_help_embed(interaction.guild, self.category_name), view=view)
 
 class HelpHomeButton(Button):
     def __init__(self):
@@ -1176,7 +1196,7 @@ class HelpHomeButton(Button):
         view = self.view
         if interaction.user.id != view.author_id:
             return await interaction.response.send_message("Use your own help menu.", ephemeral=True)
-        await interaction.response.edit_message(embed=render_help_embed(), view=view)
+        await interaction.response.edit_message(embed=render_help_embed(interaction.guild), view=view)
 
 class HelpView(View):
     def __init__(self, author_id):
@@ -1193,14 +1213,15 @@ async def help_command(ctx, command_name: str = None):
         if not command:
             return await ctx.send("Command not found.", delete_after=30)
 
-        usage = f".{command.qualified_name}"
+        current_prefix = prefix_for_guild(ctx.guild)
+        usage = f"{current_prefix}{command.qualified_name}"
         if command.signature:
             usage += f" {command.signature}"
         aliases = f"\nAliases: {', '.join(command.aliases)}" if command.aliases else ""
         description = (command.help or "").strip().splitlines()[0] if command.help else "No extra help available."
         return await ctx.send(f"**{usage}**\n{description}{aliases}")
 
-    await ctx.send(embed=render_help_embed(), view=HelpView(ctx.author.id))
+    await ctx.send(embed=render_help_embed(ctx.guild), view=HelpView(ctx.author.id))
 
 @bot.event
 async def on_message_delete(message):
@@ -1843,6 +1864,38 @@ async def block_blacklisted(ctx):
         print(f"Blacklisted user blocked: {ctx.author} ({ctx.author.id}) in guild {ctx.guild.id if ctx.guild else 'DM'}")
         return False
     return True
+
+@bot.command(name="prefix", aliases=["preifx", "setprefix"])
+async def prefix_command(ctx, new_prefix: str = None):
+    """Shows or changes this server's command prefix."""
+    if ctx.guild is None:
+        await ctx.send(f"Current prefix: `{DEFAULT_PREFIX}`")
+        return
+
+    current_prefix = guild_prefixes.get(ctx.guild.id, DEFAULT_PREFIX)
+    if new_prefix is None:
+        await ctx.send(f"Current prefix: `{current_prefix}`\nUse `{current_prefix}prefix <new prefix>` to change it.")
+        return
+
+    if not can_manage_prefix(ctx.author, ctx.guild):
+        await ctx.send("You can't change the prefix here.")
+        return
+
+    new_prefix = new_prefix.strip()
+    if not new_prefix or len(new_prefix) > 5 or any(char.isspace() for char in new_prefix):
+        await ctx.send("Prefix must be 1-5 characters with no spaces.")
+        return
+    if new_prefix.startswith("<@"):
+        await ctx.send("Prefix can't be a user mention.")
+        return
+
+    saved = await asyncio.to_thread(save_guild_prefix, ctx.guild.id, new_prefix)
+    if not saved:
+        await ctx.send("Prefix save failed because the database is unavailable.")
+        return
+
+    guild_prefixes[ctx.guild.id] = new_prefix
+    await ctx.send(f"Prefix changed to `{new_prefix}`")
 
 @bot.command()
 @is_owner_or_mod()
