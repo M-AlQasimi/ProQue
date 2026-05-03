@@ -99,6 +99,17 @@ Q_LEVEL_PULSE = "<a:QLevelPulse:1500427307230429284>"
 Q_MINE_SPARK = "<a:QMineSpark:1500427308903829586>"
 Q_TIMER_TICK = "<a:QTimerTick:1500427311395246180>"
 Q_WHEEL_SPIN = "<a:QWheelSpin:1500427313760964691>"
+Q_LUCKY_CHARM = "<:QLuckyCharm:1500502953239380089>"
+Q_XP_TONIC = "<:QXPTonic:1500502985707618574>"
+Q_QUESO_MAGNET = "<:QQuesoMagnet:1500502961162289294>"
+Q_DAILY_SPICE = "<:QDailySpice:1500502941927342151>"
+Q_STREAK_POLISH = "<:QStreakPolish:1500502970050023445>"
+Q_GOLD_BADGE = "<:QGoldBadge:1500502947698577418>"
+Q_HIGH_ROLLER = "<:QHighRoller:1500502949594665080>"
+Q_VELVET_FRAME = "<:QVelvetFrame:1500502979306852484>"
+Q_TICKET_CHARM = "<:QTicketCharm:1500502975746146356>"
+Q_COOLDOWN_CLOCK = "<:QCooldownClock:1500502940107149403>"
+Q_ROYAL_CROWN = "<:QRoyalCrown:1500502964048232570>"
 ```
 
 ## Intended Emoji Meanings
@@ -125,6 +136,10 @@ Q_WHEEL_SPIN = "<a:QWheelSpin:1500427313760964691>"
 - `QoinBag`: daily/weekly/monthly claim reward.
 - `QoinChest`: lottery, jackpots, leaderboard, scratch cards, big-prize contexts.
 - `QoinTransfer`: transactions and `.give`.
+- Item-specific constants have uploaded Discord markdown. `SHOP_ITEMS` shows them in shop lists, select menus, buy confirmations, and profile inventory.
+- `QTicketCharm`: item icon for Ticket Charm.
+- `QCooldownClock`: item icon for Cooldown Clock.
+- `QRoyalCrown`: item icon for Royal Q Crown.
 
 ## Generated Emoji Assets
 
@@ -134,17 +149,28 @@ Static PNGs, 128x128 RGBA with transparency:
 
 ```text
 assets/emojis/png/QDenied.png
+assets/emojis/png/QDailySpice.png
 assets/emojis/png/QFlip.png
+assets/emojis/png/QGoldBadge.png
+assets/emojis/png/QHighRoller.png
 assets/emojis/png/QLevelUp.png
+assets/emojis/png/QLuckyCharm.png
 assets/emojis/png/QMine.png
+assets/emojis/png/QQuesoMagnet.png
 assets/emojis/png/QQuest.png
+assets/emojis/png/QRoyalCrown.png
 assets/emojis/png/QShop.png
 assets/emojis/png/QSlots.png
+assets/emojis/png/QStreakPolish.png
 assets/emojis/png/QSuccess.png
 assets/emojis/png/QTimer.png
 assets/emojis/png/QTicket.png
+assets/emojis/png/QTicketCharm.png
+assets/emojis/png/QCooldownClock.png
 assets/emojis/png/QWheel.png
 assets/emojis/png/QXP.png
+assets/emojis/png/QXPTonic.png
+assets/emojis/png/QVelvetFrame.png
 assets/emojis/png/QoinBag.png
 assets/emojis/png/QoinChest.png
 assets/emojis/png/QoinTransfer.png
@@ -241,6 +267,12 @@ Style for future Q emojis:
 - Balance/profile embeds.
 - Quest embeds and quest claim messages.
 - Shop embed and shop buy/error messages.
+- Shop items now support an `emoji` field. Use `item_display_name(item)` for message/embed/inventory display and `item_select_emoji(item)` for Discord select-menu option emojis.
+- Existing item-specific PNGs were generated for Lucky Charm, XP Tonic, Queso Magnet, Daily Spice, Streak Polish, Gold Badge, High Roller Title, and Velvet Profile Frame.
+- Added new shop items:
+  - `ticket_charm`: Lottery category, costs 1,200,000, max 5, gives +2% bonus lottery tickets per charm when using `.buytick`.
+  - `cooldown_clock`: Utility category, costs 1,500,000, max 5, gives -4% gambling command cooldown per clock.
+  - `royal_crown`: Cosmetics category, costs 5,000,000, max 1, upgrades profile title to Royal High Roller.
 - Cooldown embed.
 - Transactions embed.
 - Lottery instructions, setup, updates, stats, ticket purchase, and draw-cancel messages.
@@ -367,6 +399,8 @@ For static emojis:
 
 - Keep emoji markdown centralized as constants in `economy.py`.
 - If other modules need economy emoji constants, import the constant from `economy.py` rather than duplicating markdown.
+- Whenever adding something new to the bot, check whether it should have a custom Q-themed emoji. If yes, ask the user whether they want one created and tell them to upload it and provide the markdown before wiring it into live UI.
+- For shop items specifically, generate/upload an item emoji when the item is visually distinct enough to help inventory/shop readability.
 - Run syntax checks after changes:
 
 ```bash

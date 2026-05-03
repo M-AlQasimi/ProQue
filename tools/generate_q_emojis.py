@@ -415,6 +415,120 @@ def qtimer(hand_angle=0):
     return c
 
 
+def qlucky_charm():
+    c = Canvas()
+    for cx, cy in [(51, 52), (75, 52), (51, 76), (75, 76)]:
+        c.circle(cx, cy, 18, GREEN, outline=BLUE_DARK, width=3)
+    c.line(63, 78, 46, 102, GREEN, 7)
+    coin(c, 63, 64, 18)
+    c.sparkle(96, 35, 7)
+    return c
+
+
+def qxp_tonic():
+    c = Canvas()
+    c.rect(52, 25, 24, 14, SILVER, outline=BLUE_DARK, width=2)
+    c.rect(45, 37, 38, 66, CYAN, outline=BLUE_DARK, width=4)
+    c.ellipse(64, 42, 19, 8, ICE, outline=CYAN, width=2)
+    c.rect(49, 59, 30, 24, ICE, outline=BLUE_DARK, width=2)
+    c.poly([(52, 65), (60, 65), (64, 72), (68, 65), (76, 65), (69, 77), (76, 88), (68, 88), (64, 80), (60, 88), (52, 88), (59, 77)], BLUE_MID)
+    c.sparkle(94, 32, 6)
+    return c
+
+
+def qqueso_magnet():
+    c = Canvas()
+    c.circle(44, 80, 16, RED, outline=BLUE_DARK, width=3)
+    c.circle(84, 80, 16, RED, outline=BLUE_DARK, width=3)
+    c.rect(30, 39, 28, 43, BLUE, outline=BLUE_DARK, width=4)
+    c.rect(70, 39, 28, 43, BLUE, outline=BLUE_DARK, width=4)
+    c.rect(51, 30, 26, 20, SILVER, outline=BLUE_DARK, width=3)
+    coin(c, 64, 73, 17)
+    c.sparkle(97, 36, 6)
+    return c
+
+
+def qdaily_spice():
+    c = Canvas()
+    c.rect(43, 31, 42, 12, SILVER, outline=BLUE_DARK, width=2)
+    c.rect(38, 43, 52, 58, BLUE_MID, outline=BLUE_DARK, width=4)
+    c.rect(43, 58, 42, 26, ICE, outline=CYAN, width=2)
+    c.poly([(53, 84), (63, 55), (75, 84)], GOLD, outline=BLUE_DARK, width=2)
+    c.text_q(64, 72, 18, BLUE_MID)
+    c.sparkle(94, 34, 6)
+    return c
+
+
+def qstreak_polish():
+    c = Canvas()
+    c.rect(52, 23, 24, 18, NAVY, outline=CYAN, width=2)
+    c.rect(43, 40, 42, 60, BLUE, outline=BLUE_DARK, width=4)
+    c.rect(49, 54, 30, 28, ICE, outline=CYAN, width=2)
+    c.line(55, 89, 76, 56, SILVER, 4)
+    c.sparkle(81, 50, 8)
+    c.text_q(64, 69, 19, BLUE_MID)
+    return c
+
+
+def qgold_badge():
+    c = Canvas()
+    c.circle(64, 61, 39, GOLD, outline=BLUE_DARK, width=5)
+    c.poly([(64, 91), (78, 113), (64, 106), (50, 113)], BLUE_MID, outline=BLUE_DARK, width=2)
+    c.circle(64, 61, 25, ICE, outline=CYAN, width=3)
+    c.text_q(64, 62, 29, BLUE_MID)
+    c.sparkle(96, 31, 6)
+    return c
+
+
+def qhigh_roller():
+    c = Canvas()
+    c.poly([(27, 86), (39, 33), (89, 33), (101, 86)], NAVY, outline=BLUE_DARK, width=4)
+    c.rect(32, 78, 64, 18, BLUE, outline=CYAN, width=2)
+    for x in [44, 64, 84]:
+        coin(c, x, 61, 14)
+    c.poly([(50, 38), (64, 20), (78, 38)], GOLD, outline=BLUE_DARK, width=2)
+    c.sparkle(97, 36, 6)
+    return c
+
+
+def qvelvet_frame():
+    c = Canvas()
+    c.rect(28, 27, 72, 72, PURPLE, outline=BLUE_DARK, width=5)
+    c.rect(41, 40, 46, 46, ICE, outline=CYAN, width=3)
+    c.circle(64, 63, 18, BLUE_MID, outline=BLUE_DARK, width=3)
+    c.text_q(64, 64, 21, ICE)
+    c.sparkle(97, 32, 6)
+    return c
+
+
+def qticket_charm():
+    c = qticket()
+    c.circle(91, 88, 20, GREEN, outline=BLUE_DARK, width=3)
+    c.line(80, 88, 88, 97, ICE, 5)
+    c.line(88, 97, 104, 78, ICE, 5)
+    c.sparkle(100, 61, 5)
+    return c
+
+
+def qcooldown_clock():
+    c = qtimer(-math.pi / 3)
+    c.poly([(83, 25), (106, 25), (91, 44)], CYAN, outline=BLUE_DARK, width=2)
+    c.line(96, 29, 82, 29, CYAN, 4)
+    c.sparkle(99, 48, 5)
+    return c
+
+
+def qroyal_crown():
+    c = Canvas()
+    c.poly([(25, 83), (35, 37), (54, 65), (64, 27), (75, 65), (94, 37), (103, 83)], GOLD, outline=BLUE_DARK, width=4)
+    c.rect(32, 80, 64, 18, BLUE_MID, outline=BLUE_DARK, width=3)
+    for x, y in [(35, 37), (64, 27), (94, 37)]:
+        c.circle(x, y, 7, ICE, outline=CYAN, width=2)
+    coin(c, 64, 74, 16)
+    c.sparkle(101, 28, 6)
+    return c
+
+
 STATIC = {
     "QoinBag": qoin_bag,
     "QoinChest": qoin_chest,
@@ -431,6 +545,17 @@ STATIC = {
     "QSuccess": qsuccess,
     "QDenied": qdenied,
     "QTimer": qtimer,
+    "QLuckyCharm": qlucky_charm,
+    "QXPTonic": qxp_tonic,
+    "QQuesoMagnet": qqueso_magnet,
+    "QDailySpice": qdaily_spice,
+    "QStreakPolish": qstreak_polish,
+    "QGoldBadge": qgold_badge,
+    "QHighRoller": qhigh_roller,
+    "QVelvetFrame": qvelvet_frame,
+    "QTicketCharm": qticket_charm,
+    "QCooldownClock": qcooldown_clock,
+    "QRoyalCrown": qroyal_crown,
 }
 
 

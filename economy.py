@@ -40,6 +40,17 @@ Q_LEVEL_PULSE = "<a:QLevelPulse:1500427307230429284>"
 Q_MINE_SPARK = "<a:QMineSpark:1500427308903829586>"
 Q_TIMER_TICK = "<a:QTimerTick:1500427311395246180>"
 Q_WHEEL_SPIN = "<a:QWheelSpin:1500427313760964691>"
+Q_LUCKY_CHARM = "<:QLuckyCharm:1500502953239380089>"
+Q_XP_TONIC = "<:QXPTonic:1500502985707618574>"
+Q_QUESO_MAGNET = "<:QQuesoMagnet:1500502961162289294>"
+Q_DAILY_SPICE = "<:QDailySpice:1500502941927342151>"
+Q_STREAK_POLISH = "<:QStreakPolish:1500502970050023445>"
+Q_GOLD_BADGE = "<:QGoldBadge:1500502947698577418>"
+Q_HIGH_ROLLER = "<:QHighRoller:1500502949594665080>"
+Q_VELVET_FRAME = "<:QVelvetFrame:1500502979306852484>"
+Q_TICKET_CHARM = "<:QTicketCharm:1500502975746146356>"
+Q_COOLDOWN_CLOCK = "<:QCooldownClock:1500502940107149403>"
+Q_ROYAL_CROWN = "<:QRoyalCrown:1500502964048232570>"
 CHAT_XP_COOLDOWN_SECS = 60
 LEVEL_REWARD_BASE = 300_000
 LEVEL_REWARD_STEP = 50_000
@@ -93,6 +104,7 @@ SHOP_ITEMS = {
     "lucky_charm": {
         "category": "Gambling",
         "name": "Lucky Charm",
+        "emoji": Q_LUCKY_CHARM,
         "cost": 500_000,
         "max_qty": 10,
         "description": "+1% gambling payout on wins per charm.",
@@ -100,6 +112,7 @@ SHOP_ITEMS = {
     "xp_tonic": {
         "category": "Leveling",
         "name": "XP Tonic",
+        "emoji": Q_XP_TONIC,
         "cost": 350_000,
         "max_qty": 5,
         "description": "+5% chat XP per tonic.",
@@ -107,6 +120,7 @@ SHOP_ITEMS = {
     "queso_magnet": {
         "category": "Leveling",
         "name": "Queso Magnet",
+        "emoji": Q_QUESO_MAGNET,
         "cost": 900_000,
         "max_qty": 5,
         "description": "+5% level-up queso rewards per magnet.",
@@ -114,6 +128,7 @@ SHOP_ITEMS = {
     "daily_spice": {
         "category": "Claims",
         "name": "Daily Spice",
+        "emoji": Q_DAILY_SPICE,
         "cost": 250_000,
         "max_qty": 10,
         "description": "+2% daily, weekly, and monthly claim rewards per spice.",
@@ -121,6 +136,7 @@ SHOP_ITEMS = {
     "streak_polish": {
         "category": "Gambling",
         "name": "Streak Polish",
+        "emoji": Q_STREAK_POLISH,
         "cost": 650_000,
         "max_qty": 8,
         "description": "+0.5% gambling payout per polish. Stacks with Lucky Charm.",
@@ -128,6 +144,7 @@ SHOP_ITEMS = {
     "gold_badge": {
         "category": "Cosmetics",
         "name": "Gold Badge",
+        "emoji": Q_GOLD_BADGE,
         "cost": 1_000_000,
         "max_qty": 1,
         "description": "A profile badge for people with taste and dangerous levels of queso.",
@@ -135,6 +152,7 @@ SHOP_ITEMS = {
     "high_roller": {
         "category": "Cosmetics",
         "name": "High Roller Title",
+        "emoji": Q_HIGH_ROLLER,
         "cost": 2_500_000,
         "max_qty": 1,
         "description": "A profile title shown on `.profile`.",
@@ -142,9 +160,34 @@ SHOP_ITEMS = {
     "velvet_frame": {
         "category": "Cosmetics",
         "name": "Velvet Profile Frame",
+        "emoji": Q_VELVET_FRAME,
         "cost": 1_750_000,
         "max_qty": 1,
         "description": "Adds a velvet profile flair on `.profile`.",
+    },
+    "ticket_charm": {
+        "category": "Lottery",
+        "name": "Ticket Charm",
+        "emoji": Q_TICKET_CHARM,
+        "cost": 1_200_000,
+        "max_qty": 5,
+        "description": "+2% bonus lottery tickets per charm when buying tickets.",
+    },
+    "cooldown_clock": {
+        "category": "Utility",
+        "name": "Cooldown Clock",
+        "emoji": Q_COOLDOWN_CLOCK,
+        "cost": 1_500_000,
+        "max_qty": 5,
+        "description": "-4% gambling cooldown per clock.",
+    },
+    "royal_crown": {
+        "category": "Cosmetics",
+        "name": "Royal Q Crown",
+        "emoji": Q_ROYAL_CROWN,
+        "cost": 5_000_000,
+        "max_qty": 1,
+        "description": "Upgrades your profile title to Royal High Roller.",
     },
 }
 
@@ -759,6 +802,19 @@ def level_reward_multiplier(data):
 def claim_reward_multiplier(data):
     return 1 + item_bonus(data, "daily_spice", 0.02, 10)
 
+def item_display_name(item):
+    emoji = (item.get("emoji") or "").strip()
+    return f"{emoji} {item['name']}" if emoji else item["name"]
+
+def item_select_emoji(item):
+    emoji = (item.get("emoji") or "").strip()
+    if not emoji:
+        return None
+    try:
+        return discord.PartialEmoji.from_str(emoji)
+    except Exception:
+        return emoji
+
 def owned_item_lines(data):
     inventory = user_inventory(data)
     lines = []
@@ -766,7 +822,7 @@ def owned_item_lines(data):
         qty = inventory.count(item_id)
         if qty:
             suffix = f" x{qty}" if item.get("max_qty", 1) > 1 else ""
-            lines.append(f"{item['name']}{suffix}")
+            lines.append(f"{item_display_name(item)}{suffix}")
     return lines
 
 def user_mention(user_id):
@@ -777,7 +833,7 @@ def build_profile_embed(user, data):
     xp = data.get("xp") or 0
     needed = xp_needed_for_level(level)
     items = owned_item_lines(data)
-    title = "High Roller" if has_item(data, "high_roller") else "Queso Collector"
+    title = "Royal High Roller" if has_item(data, "royal_crown") else ("High Roller" if has_item(data, "high_roller") else "Queso Collector")
     if has_item(data, "velvet_frame"):
         title = f"Velvet {title}"
     net = (data.get("total_won") or 0) - (data.get("total_lost") or 0)
@@ -857,7 +913,14 @@ def command_cooldown_text(user_id, command):
     last_used = _cooldowns.get((user_id, command))
     if not last_used:
         return "Ready"
-    remaining = COOLDOWN_SECS - (time.time() - last_used)
+    cooldown = COOLDOWN_SECS
+    try:
+        data = get_user(user_id) if db_ready else None
+        if data:
+            cooldown *= max(0.5, 1 - item_bonus(data, "cooldown_clock", 0.04, 5))
+    except Exception:
+        pass
+    remaining = cooldown - (time.time() - last_used)
     return "Ready" if remaining <= 0 else format_duration(remaining)
 
 async def send_economy_log(ctx, title, fields, color=discord.Color.gold()):
@@ -888,10 +951,17 @@ def has_economy_owner_power(user_id, guild=None):
 def check_cooldown(user_id, command):
     key = (user_id, command)
     now = time.time()
+    cooldown = COOLDOWN_SECS
+    try:
+        data = get_user(user_id) if db_ready else None
+        if data:
+            cooldown *= max(0.5, 1 - item_bonus(data, "cooldown_clock", 0.04, 5))
+    except Exception:
+        pass
     if key in _cooldowns:
         elapsed = now - _cooldowns[key]
-        if elapsed < COOLDOWN_SECS:
-            return COOLDOWN_SECS - elapsed
+        if elapsed < cooldown:
+            return cooldown - elapsed
     _cooldowns[key] = now
     return 0
 
@@ -1125,7 +1195,7 @@ async def shop(ctx):
                 owned_text = f"{owned}/{max_qty}" if max_qty > 1 else ("owned" if owned else "not owned")
                 marker = "→ " if item_id == selected_item_id else ""
                 lines.append(
-                    f"{marker}**{item['name']}** - {format_balance(item['cost'])}\n"
+                    f"{marker}**{item_display_name(item)}** - {format_balance(item['cost'])}\n"
                     f"{item['description']}\n"
                     f"Owned: **{owned_text}**"
                 )
@@ -1157,6 +1227,7 @@ async def shop(ctx):
                 return
 
             item = SHOP_ITEMS[self.item_id]
+            item_name = item_display_name(item)
             try:
                 data = get_user(interaction.user.id)
                 inventory = user_inventory(data)
@@ -1164,11 +1235,11 @@ async def shop(ctx):
                 max_qty = item.get("max_qty", 1)
                 remaining_allowed = max_qty - owned
                 if remaining_allowed <= 0:
-                    await interaction.response.send_message(f"{Q_DENIED} You already own the max amount of **{item['name']}**.", ephemeral=True)
+                    await interaction.response.send_message(f"{Q_DENIED} You already own the max amount of **{item_name}**.", ephemeral=True)
                     return
                 if quantity > remaining_allowed:
                     await interaction.response.send_message(
-                        f"{Q_DENIED} You can only buy **{remaining_allowed}** more **{item['name']}**.",
+                        f"{Q_DENIED} You can only buy **{remaining_allowed}** more **{item_name}**.",
                         ephemeral=True
                     )
                     return
@@ -1191,7 +1262,7 @@ async def shop(ctx):
                 return
 
             await interaction.response.send_message(
-                f"{Q_SUCCESS} Bought **{quantity}x {item['name']}** for **{format_balance(total_cost)}**.\n"
+                f"{Q_SUCCESS} Bought **{quantity}x {item_name}** for **{format_balance(total_cost)}**.\n"
                 f"New Balance: **{format_balance(new_balance)}**",
                 ephemeral=True
             )
@@ -1204,7 +1275,8 @@ async def shop(ctx):
                 discord.SelectOption(
                     label=item["name"],
                     value=item_id,
-                    description=f"{item['category']} | {format_balance(item['cost'])} | max {item.get('max_qty', 1)}"
+                    description=f"{item['category']} | {format_balance(item['cost'])} | max {item.get('max_qty', 1)}",
+                    emoji=item_select_emoji(item)
                 )
                 for item_id, item in SHOP_ITEMS.items()
             ]
@@ -1642,10 +1714,12 @@ async def buytick(ctx, amount: str = "1"):
         if data["balance"] < total_cost:
             await ctx.send(f"{Q_DENIED} You need {format_balance(total_cost)}, but you only have {format_balance(data['balance'])}.")
             return
+        bonus_tickets = int(tickets * item_bonus(data, "ticket_charm", 0.02, 5))
+        total_entries = tickets + bonus_tickets
         new_balance = data["balance"] - total_cost
         update_user(ctx.author.id, balance=new_balance)
-        add_lottery_tickets(ctx.guild.id, ctx.author.id, tickets, pot_add)
-        log_transaction(ctx.author.id, "lottery_tickets", -total_cost, f"{tickets} tickets; {burned} burned")
+        add_lottery_tickets(ctx.guild.id, ctx.author.id, total_entries, pot_add)
+        log_transaction(ctx.author.id, "lottery_tickets", -total_cost, f"{tickets} tickets; {bonus_tickets} bonus; {burned} burned")
         await assign_lottery_role(ctx.guild, ctx.author.id, config.get("role_id"))
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
@@ -1653,6 +1727,7 @@ async def buytick(ctx, amount: str = "1"):
 
     await ctx.send(
         f"{Q_TICKET} {user_mention(ctx.author.id)} bought **{tickets}** lottery tickets for **{format_balance(total_cost)}**.\n"
+        f"Bonus Tickets: **+{bonus_tickets:,}** | Total Entries: **{total_entries:,}**\n"
         f"Prize Pot +**{format_balance(pot_add)}** | Burned **{format_balance(burned)}**\n"
         f"Current Prize: **{format_balance(config['pot'] + pot_add)}**\n"
         f"New Balance: **{format_balance(new_balance)}**",
