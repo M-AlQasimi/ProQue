@@ -238,6 +238,12 @@ def guild_log_label(guild):
         return "unknown server"
     return f"{guild.name} ({guild.id})"
 
+def log_user(value):
+    user_id = getattr(value, "id", None)
+    if user_id is None:
+        return "Unknown"
+    return f"<@{user_id}> ({user_id})"
+
 async def send_log(embed, guild=None):
     try:
         if guild is None:
@@ -270,7 +276,7 @@ async def send_log(embed, guild=None):
             print(f"Log skipped: missing Embed Links permission in normal log channel {channel_id}.")
             return
 
-        await channel.send(embed=embed)
+        await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
         print(f"Sending log: {embed.title} | Server: {guild_log_label(guild)}")
     except Exception as e:
         print(f"Failed to send log for guild {guild.id if guild else 'unknown'}: {type(e).__name__} - {e}")
@@ -307,7 +313,7 @@ async def send_rlog(embed, guild=None):
             print(f"Reaction log skipped: missing Embed Links permission in channel {channel_id}.")
             return
 
-        await channel.send(embed=embed)
+        await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
         print(f"Sending reaction log: {embed.title} | Server: {guild_log_label(guild)}")
     except Exception as e:
         print(f"Failed to send reaction log for guild {guild.id if guild else 'unknown'}: {type(e).__name__} - {e}")
@@ -581,7 +587,7 @@ async def on_ready():
             "bal", "profile", "quests", "shop", "cooldowns", "transactions", "richest", "poorest", "lottery", "editlottery", "stoplottery", "lotterystats", "buytick",
             "daily", "weekly", "monthly", "cf", "roulette", "slots",
             "blackjack", "scratch", "ms", "wheel", "give", "lb",
-            "add", "remove", "econhelp", "explain"
+            "add", "remove", "addtick", "settick", "setquesos", "econhelp", "explain"
         ]
         loaded_economy_commands = [name for name in economy_command_names if bot.get_command(name)]
         print(f"Economy system loaded ({len(loaded_economy_commands)}/{len(economy_command_names)} commands)")
@@ -623,7 +629,7 @@ async def on_member_join(member):
         title="Member Joined",
         color=discord.Color.green()
     )
-    embed.add_field(name="User", value=f"{member} ({member.id})", inline=False)
+    embed.add_field(name="User", value=log_user(member), inline=False)
     embed.timestamp = datetime.now(timezone.utc)
     await send_log(embed, member.guild)
 
@@ -635,8 +641,8 @@ async def on_member_ban(guild, user):
                 title=f"{economy_q_hammer} Member Banned",
                 color=discord.Color.red()
             )
-            embed.add_field(name="User", value=f"{user} ({user.id})", inline=False)
-            embed.add_field(name="Banned by", value=f"{entry.user} ({entry.user.id})", inline=False)
+            embed.add_field(name="User", value=log_user(user), inline=False)
+            embed.add_field(name="Banned by", value=log_user(entry.user), inline=False)
             embed.add_field(name="Reason", value=entry.reason or "No reason provided", inline=False)
             embed.timestamp = datetime.now(timezone.utc)
             try:
@@ -653,8 +659,8 @@ async def on_member_unban(guild, user):
                 title="Member Unbanned",
                 color=discord.Color.green()
             )
-            embed.add_field(name="User", value=f"{user} ({user.id})", inline=False)
-            embed.add_field(name="Unbanned by", value=f"{entry.user} ({entry.user.id})", inline=False)
+            embed.add_field(name="User", value=log_user(user), inline=False)
+            embed.add_field(name="Unbanned by", value=log_user(entry.user), inline=False)
             embed.add_field(name="Reason", value=entry.reason or "No reason provided", inline=False)
             embed.timestamp = datetime.now(timezone.utc)
             try:
@@ -688,7 +694,7 @@ async def on_guild_channel_create(channel):
 
     async for entry in channel.guild.audit_logs(limit=1, action=discord.AuditLogAction.channel_create):
         if entry.target.id == channel.id:
-            embed.add_field(name="By", value=f"{entry.user} ({entry.user.id})", inline=False)
+            embed.add_field(name="By", value=log_user(entry.user), inline=False)
             break
 
     embed.timestamp = datetime.now(timezone.utc)
@@ -707,7 +713,7 @@ async def on_guild_channel_delete(channel):
 
     async for entry in channel.guild.audit_logs(limit=1, action=discord.AuditLogAction.channel_delete):
         if entry.target.id == channel.id:
-            embed.add_field(name="By", value=f"{entry.user} ({entry.user.id})", inline=False)
+            embed.add_field(name="By", value=log_user(entry.user), inline=False)
             break
 
     embed.timestamp = datetime.now(timezone.utc)
@@ -726,7 +732,7 @@ async def on_guild_role_create(role):
 
     async for entry in role.guild.audit_logs(limit=1, action=discord.AuditLogAction.role_create):
         if entry.target.id == role.id:
-            embed.add_field(name="By", value=f"{entry.user} ({entry.user.id})", inline=False)
+            embed.add_field(name="By", value=log_user(entry.user), inline=False)
             break
 
     embed.timestamp = datetime.now(timezone.utc)
@@ -745,7 +751,7 @@ async def on_guild_role_delete(role):
 
     async for entry in role.guild.audit_logs(limit=1, action=discord.AuditLogAction.role_delete):
         if entry.target.id == role.id:
-            embed.add_field(name="By", value=f"{entry.user} ({entry.user.id})", inline=False)
+            embed.add_field(name="By", value=log_user(entry.user), inline=False)
             break
 
     embed.timestamp = datetime.now(timezone.utc)
@@ -785,7 +791,7 @@ async def on_guild_role_update(before, after):
 
     async for entry in after.guild.audit_logs(limit=1, action=discord.AuditLogAction.role_update):
         if entry.target.id == after.id:
-            embed.add_field(name="By", value=f"{entry.user} ({entry.user.id})", inline=False)
+            embed.add_field(name="By", value=log_user(entry.user), inline=False)
             break
 
     embed.timestamp = datetime.now(timezone.utc)
@@ -830,7 +836,7 @@ async def on_guild_update(before, after):
         )
 
     if embed and entry:
-        embed.add_field(name="By", value=f"{entry.user} ({entry.user.id})", inline=False)
+        embed.add_field(name="By", value=log_user(entry.user), inline=False)
         embed.timestamp = datetime.now(timezone.utc)
         try:
             await send_log(embed, guild)
@@ -1087,14 +1093,14 @@ HELP_CATEGORIES = {
     "Economy": [
         "bal", "profile", "quests", "daily", "weekly", "monthly", "cooldowns", "transactions", "shop", "lottery", "editlottery", "stoplottery", "lotterystats", "buytick", "econhelp",
         "cf", "roulette", "slots", "blackjack", "scratch", "ms", "wheel",
-        "give", "lb", "richest", "poorest",
+        "give", "lb", "richest", "poorest", "addtick", "settick", "setquesos",
     ],
     "Games": ["ttt", "c4", "q", "picker"],
     "Utility": ["help", "explain", "userinfo", "pfp", "calc", "define", "timer", "ctimer", "alarm", "poll", "epoll", "translate"],
     "AI": ["ask", "generate", "analyse"],
     "Server Tools": ["dsnipe", "esnipe", "rsnipe", "rolesinfo", "roleinfo", "purge", "rpurge", "steal"],
     "Status": ["afk", "sleep", "wake", "away", "setbday", "removebday"],
-    "Admin": ["setlogs", "disable", "enable", "disableall", "enableall", "dclist", "addowner", "removeowner", "addmod", "removemod", "add", "remove"],
+    "Admin": ["setlogs", "disable", "enable", "disableall", "enableall", "dclist", "addowner", "removeowner", "addmod", "removemod", "add", "remove", "addtick", "settick", "setquesos"],
 }
 
 def render_help_embed(category_name=None):
@@ -1158,7 +1164,7 @@ async def help_command(ctx, command_name: str = None):
     if command_name:
         command = get_command_case_insensitive(command_name)
         if not command:
-            return await ctx.send("Command not found.")
+            return await ctx.send("Command not found.", delete_after=30)
 
         usage = f".{command.qualified_name}"
         if command.signature:
@@ -1180,14 +1186,14 @@ async def on_message_delete(message):
     if message.guild:
         async for entry in message.guild.audit_logs(limit=5, action=discord.AuditLogAction.message_delete):
             if entry.target.id == message.author.id and (datetime.now(timezone.utc) - entry.created_at).total_seconds() < 5:
-                deleter = f"{entry.user} ({entry.user.id})"
+                deleter = log_user(entry.user)
                 break
 
     embed = discord.Embed(
         title=f"{economy_q_trash} Message Deleted",
         color=discord.Color.red()
     )
-    embed.add_field(name="User", value=f"{message.author} ({message.author.id})", inline=False)
+    embed.add_field(name="User", value=log_user(message.author), inline=False)
     embed.add_field(name="Deleted by", value=deleter, inline=False)
     embed.add_field(name="Channel", value=message.channel.mention, inline=False)
     embed.timestamp = datetime.now(timezone.utc)
@@ -1257,7 +1263,7 @@ async def on_bulk_message_delete(messages):
 
     for i, msg in enumerate(messages, 1):
         content = msg.content.strip() or "[No content]"
-        log_entries.append(f"**{i}.** {msg.author} ({msg.author.id}): {content}")
+        log_entries.append(f"**{i}.** {log_user(msg.author)}: {content}")
         for j, att in enumerate(msg.attachments, 1):
             attachments.append((f"Attachment {i}.{j}", att.url))
 
@@ -1324,7 +1330,7 @@ async def on_message_edit(before, after):
         title=f"{economy_q_edit} Message Edited",
             color=discord.Color.orange()
         )
-        embed.add_field(name="Author", value=f"{before.author} ({before.author.id})", inline=False)
+        embed.add_field(name="Author", value=log_user(before.author), inline=False)
         embed.add_field(name="Before", value=before.content, inline=False)
         embed.add_field(name="After", value=after.content, inline=False)
         embed.add_field(name="Message", value=f"[Jump to Message]({before.jump_url})", inline=False)
@@ -1502,7 +1508,7 @@ async def on_reaction_remove(reaction, user):
         title=f"{economy_q_reaction} Reaction Removed",
         color=discord.Color.red()
     )
-    embed.add_field(name="User", value=f"{user} ({user.id})", inline=False)
+    embed.add_field(name="User", value=log_user(user), inline=False)
     embed.add_field(name="Emoji", value=str(reaction.emoji), inline=True)
     embed.add_field(name="Message", value=f"[Jump to Message]({msg.jump_url})", inline=False)
     embed.add_field(name="Channel", value=msg.channel.mention, inline=False)
@@ -1539,7 +1545,7 @@ async def on_reaction_add(reaction, user):
         title=f"{economy_q_reaction} Reaction Added",
         color=discord.Color.green()
     )
-    embed.add_field(name="User", value=f"{user} ({user.id})", inline=False)
+    embed.add_field(name="User", value=log_user(user), inline=False)
     embed.add_field(name="Emoji", value=str(reaction.emoji), inline=True)
     embed.add_field(name="Message", value=f"[Jump to Message]({msg.jump_url})", inline=False)
     embed.add_field(name="Channel", value=msg.channel.mention, inline=False)
@@ -1580,7 +1586,7 @@ async def on_raw_reaction_clear(payload):
         color=discord.Color.red()
     )
     if remover:
-        embed.add_field(name="By", value=f"{remover} ({remover.id})", inline=False)
+        embed.add_field(name="By", value=log_user(remover), inline=False)
     else:
         embed.add_field(name="By", value="Unknown", inline=False)
     
@@ -1602,7 +1608,7 @@ async def on_member_update(before, after):
     async def get_action_by(action_types):
         async for entry in guild.audit_logs(limit=10, oldest_first=False):
             if entry.target.id == after.id and entry.action in action_types:
-                return f"{entry.user} ({entry.user.id})"
+                return log_user(entry.user)
         return None
 
     if before.nick != after.nick:
@@ -1611,7 +1617,7 @@ async def on_member_update(before, after):
             title=f"{economy_q_user_edit} Nickname Changed",
             color=discord.Color.blue()
         )
-        embed.add_field(name="User", value=f"{before} ({before.id})", inline=False)
+        embed.add_field(name="User", value=log_user(before), inline=False)
         embed.add_field(name="Before", value=before.nick or before.name, inline=True)
         embed.add_field(name="After", value=after.nick or after.name, inline=True)
         if action_by:
@@ -1629,7 +1635,7 @@ async def on_member_update(before, after):
             title=f"{economy_q_roles} Roles Updated",
             color=discord.Color.teal()
         )
-        embed.add_field(name="User", value=f"{after} ({after.id})", inline=False)
+        embed.add_field(name="User", value=log_user(after), inline=False)
         if added:
             embed.add_field(name="Added", value=", ".join(role.name for role in added), inline=True)
         if removed:
@@ -1648,7 +1654,7 @@ async def on_member_update(before, after):
                 title=f"{economy_q_timeout} Member Timed Out",
                 color=discord.Color.orange()
             )
-            embed.add_field(name="User", value=f"{after} ({after.id})", inline=False)
+            embed.add_field(name="User", value=log_user(after), inline=False)
             embed.add_field(name="Until", value=f"<t:{int(after_timeout.timestamp())}:F>", inline=False)
             if action_by:
                 embed.add_field(name="By", value=action_by, inline=False)
@@ -1658,7 +1664,7 @@ async def on_member_update(before, after):
                 title=f"{economy_q_accept} Timeout Removed",
                 color=discord.Color.green()
             )
-            embed.add_field(name="User", value=f"{after} ({after.id})", inline=False)
+            embed.add_field(name="User", value=log_user(after), inline=False)
             if action_by:
                 embed.add_field(name="By", value=action_by, inline=False)
             embed.timestamp = datetime.now(timezone.utc)
@@ -1678,9 +1684,9 @@ async def on_audit_log_entry_create(entry):
                 title=f"{economy_q_timeout} Member Timed Out",
                 color=discord.Color.orange()
             )
-            embed.add_field(name="User", value=f"{target} ({target.id})", inline=False)
+            embed.add_field(name="User", value=log_user(target), inline=False)
             embed.add_field(name="Until", value=f"<t:{int(after_timeout.timestamp())}:F>", inline=False)
-            embed.add_field(name="By", value=f"{entry.user} ({entry.user.id})", inline=False)
+            embed.add_field(name="By", value=log_user(entry.user), inline=False)
             embed.timestamp = datetime.now(timezone.utc)
             try:
                 await send_log(embed, entry.guild)
@@ -1692,8 +1698,8 @@ async def on_audit_log_entry_create(entry):
                 title=f"{economy_q_accept} Timeout Removed",
                 color=discord.Color.green()
             )
-            embed.add_field(name="User", value=f"{target} ({target.id})", inline=False)
-            embed.add_field(name="By", value=f"{entry.user} ({entry.user.id})", inline=False)
+            embed.add_field(name="User", value=log_user(target), inline=False)
+            embed.add_field(name="By", value=log_user(entry.user), inline=False)
             embed.timestamp = datetime.now(timezone.utc)
             try:
                 await send_log(embed, entry.guild)
@@ -1704,7 +1710,7 @@ async def on_audit_log_entry_create(entry):
 async def on_user_update(before, after):
     if before.name != after.name:
         embed = discord.Embed(title=f"{economy_q_user_edit} Username Changed", color=discord.Color.blue())
-        embed.add_field(name="User", value=f"{after.mention} ({after.id})", inline=False)
+        embed.add_field(name="User", value=log_user(after), inline=False)
         embed.add_field(name="Before", value=before.name, inline=True)
         embed.add_field(name="After", value=after.name, inline=True)
         embed.timestamp = datetime.now(timezone.utc)
@@ -1715,7 +1721,7 @@ async def on_user_update(before, after):
 
     if before.discriminator != after.discriminator:
         embed = discord.Embed(title="Discriminator Changed", color=discord.Color.purple())
-        embed.add_field(name="User", value=f"{after.mention} ({after.id})", inline=False)
+        embed.add_field(name="User", value=log_user(after), inline=False)
         embed.add_field(name="Before", value=before.discriminator, inline=True)
         embed.add_field(name="After", value=after.discriminator, inline=True)
         embed.timestamp = datetime.now(timezone.utc)
@@ -1726,7 +1732,7 @@ async def on_user_update(before, after):
 
     if before.avatar != after.avatar:
         embed = discord.Embed(title="Avatar Changed", color=discord.Color.gold())
-        embed.add_field(name="User", value=f"{after.mention} ({after.id})", inline=False)
+        embed.add_field(name="User", value=log_user(after), inline=False)
         embed.set_thumbnail(url=before.avatar.url if before.avatar else discord.Embed.Empty)
         embed.set_image(url=after.avatar.url if after.avatar else discord.Embed.Empty)
         embed.timestamp = datetime.now(timezone.utc)
@@ -1745,8 +1751,8 @@ async def on_member_remove(member):
                 color=discord.Color.red()
             )
             embed.timestamp = datetime.now(timezone.utc)
-            embed.add_field(name="User", value=f"{member} ({member.id})", inline=False)
-            embed.add_field(name="Kicked by", value=f"{entry.user} ({entry.user.id})", inline=False)
+            embed.add_field(name="User", value=log_user(member), inline=False)
+            embed.add_field(name="Kicked by", value=log_user(entry.user), inline=False)
             embed.add_field(name="Reason", value=entry.reason or "No reason provided", inline=False)
             try:
                 await send_log(embed, guild)
@@ -1759,7 +1765,7 @@ async def on_member_remove(member):
         color=discord.Color.orange()
     )
     embed.timestamp = datetime.now(timezone.utc)
-    embed.add_field(name="User", value=f"{member} ({member.id})", inline=False)
+    embed.add_field(name="User", value=log_user(member), inline=False)
     try:
         await send_log(embed, guild)
     except Exception as e:
@@ -1787,7 +1793,8 @@ async def on_voice_state_update(member, before, after):
             description="\n".join(changes),
             color=discord.Color.blurple()
         )
-        embed.set_author(name=f"{member} ({member.id})", icon_url=member.display_avatar.url)
+        embed.add_field(name="User", value=log_user(member), inline=False)
+        embed.set_thumbnail(url=member.display_avatar.url)
         embed.timestamp = datetime.now(timezone.utc)
         try:
             await send_log(embed, member.guild)
@@ -2057,7 +2064,7 @@ async def roleinfo(ctx, role: discord.Role):
     embed = discord.Embed(title=f"Role Info: {role.name}", color=role.color)
     embed.add_field(name="Members", value=member_list, inline=False)
     embed.add_field(name="Permissions", value=perms_text, inline=False)
-    await ctx.send(embed=embed)
+    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
 @bot.command()
 @is_owner()
@@ -2103,7 +2110,8 @@ async def userinfo(ctx, member: discord.Member = None):
     member = member or ctx.author
     embed = discord.Embed(title="User Info", color=0x3498db)
     embed.set_thumbnail(url=member.display_avatar.url)
-    embed.add_field(name="Username", value=str(member), inline=True)
+    embed.add_field(name="User", value=log_user(member), inline=True)
+    embed.add_field(name="Username", value=f"`{member}`", inline=True)
     embed.add_field(name="ID", value=member.id, inline=True)
     embed.add_field(
         name="Joined Server",
@@ -3269,7 +3277,12 @@ async def send(ctx, target=None, *, msg=None):
         print(f"[SEND ERROR] {type(e).__name__}: {e}")
         return await ctx.send("Failed to send message.", delete_after=5)
 
-    await ctx.send(f"Message sent to {target_channel.mention}.", delete_after=5)
+    if target_channel.id != ctx.channel.id:
+        await ctx.send(
+            f"Message sent to {target_channel.mention}.",
+            delete_after=3,
+            allowed_mentions=discord.AllowedMentions.none()
+        )
 
 
 @bot.command()
@@ -3313,7 +3326,12 @@ async def reply(ctx, message_id: int, *, text=None):
         print(f"[REPLY ERROR] {type(e).__name__}: {e}")
         return await ctx.send("Failed to reply to the message.", delete_after=5)
 
-    await ctx.send(f"Replied to message in {msg.channel.mention}.", delete_after=5)
+    if getattr(msg.channel, "id", None) != ctx.channel.id:
+        await ctx.send(
+            f"Replied to message in {msg.channel.mention}.",
+            delete_after=3,
+            allowed_mentions=discord.AllowedMentions.none()
+        )
 
 @bot.command()
 async def poll(ctx, *, args):
@@ -4290,7 +4308,7 @@ async def find(ctx, user_id: int):
         user = await bot.fetch_user(user_id)
         mention_text = f"<@{user.id}>"
         await ctx.send(
-            f"User found: {user} ({mention_text})",
+            f"User found: {mention_text} (`{user.id}`)",
             allowed_mentions=discord.AllowedMentions(users=False)
         )
     except Exception as e:

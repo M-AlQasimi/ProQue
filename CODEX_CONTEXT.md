@@ -188,6 +188,15 @@ Q_WARNING = "<:QWarning:1500516819604209704>"
 - Existing active lottery data is preserved when moving from old thread-based entry to the panel. `thread_id` remains in the schema for old rows but new setup uses `message_id` and no longer creates a ticket thread.
 - Startup calls `restore_lottery_panels()` from `economy.setup()` to register persistent lottery button handlers and recreate/refresh panels for active lottery configs without clearing ticket rows or pot.
 - Speed work: chat XP awarding from `main.py` runs in a background `asyncio.to_thread` task so normal message handling does not wait on PostgreSQL; economy DB init also runs via `asyncio.to_thread`.
+- Economy gambling command cooldowns use `COOLDOWN_SECS = 8`.
+- Prefix/dot commands cannot send true Discord ephemeral messages. Keep normal command outputs persistent unless the user asks otherwise.
+- `.send` and `.reply` confirmations should not DM users. Only send a short auto-deleting confirmation when the target channel is different from the command channel.
+- Do not render user identities as only nickname/username text in bot output. Logs/audit embeds should use non-pinging mentions like `<@id> (id)` via `log_user(...)` and log sends should use `AllowedMentions.none()`. Keep real pings only for messages whose purpose is active notification, such as game turns, timer/alarm completion, birthday announcements, or giveaway winners.
+- Superowner-only economy admin commands:
+  - `.addtick <user|role|@everyone> <tickets>` adds free current-lottery entries without charging users or changing the prize pot.
+  - `.settick <user|role|@everyone> <tickets>` sets current-lottery entries exactly without charging users or changing the prize pot.
+  - `.setquesos <user|role|@everyone> <amount>` sets balances exactly instead of adding/removing a delta.
+  - These commands are intentionally locked to the exact superowner ID, not server-owner override.
 
 ## Generated Emoji Assets
 

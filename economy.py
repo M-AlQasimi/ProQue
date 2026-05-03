@@ -17,7 +17,7 @@ bot = None
 
 # --- Config ---
 MAX_BET = 150_000
-COOLDOWN_SECS = 5
+COOLDOWN_SECS = 8
 STREAK_MULTIPLIER = 0.015  # 1.5% per consecutive win
 CURRENCY_EMOJI = "<:Qoins:1500255107428782100>"
 QASH_EMOJI = "<:Qash:1500235432011497703>"
@@ -482,6 +482,41 @@ def bulk_add_users(user_ids, amount, actor_id, note):
     conn.close()
     return len(unique_ids)
 
+def bulk_set_balances(user_ids, amount, actor_id, note):
+    unique_ids = sorted(set(int(user_id) for user_id in user_ids))
+    if not unique_ids:
+        return 0
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO economy (user_id, balance)
+        SELECT user_id, 0 FROM unnest(%s::bigint[]) AS user_id
+        ON CONFLICT (user_id) DO NOTHING
+        """,
+        (unique_ids,)
+    )
+    cur.execute(
+        """
+        UPDATE economy
+        SET balance = %s
+        WHERE user_id = ANY(%s::bigint[])
+        """,
+        (amount, unique_ids)
+    )
+    cur.execute(
+        """
+        INSERT INTO economy_transactions (user_id, kind, amount, note)
+        SELECT user_id, 'owner_set', %s, %s FROM unnest(%s::bigint[]) AS user_id
+        """,
+        (amount, f"Set by {actor_id}: {note}", unique_ids)
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+    return len(unique_ids)
+
 def get_recent_transactions(user_id, limit=10):
     conn = get_db_connection()
     cur = conn.cursor()
@@ -661,6 +696,51 @@ def add_lottery_tickets(guild_id, user_id, tickets, pot_add, spent):
     conn.commit()
     cur.close()
     conn.close()
+
+def bulk_adjust_lottery_tickets(guild_id, user_ids, tickets, mode, actor_id):
+    unique_ids = sorted(set(int(user_id) for user_id in user_ids))
+    if not unique_ids:
+        return 0
+    if mode not in {"add", "set"}:
+        raise ValueError("mode must be add or set")
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+    if mode == "add":
+        cur.execute(
+            """
+            INSERT INTO lottery_tickets (guild_id, user_id, tickets, spent, pot_add)
+            SELECT %s, user_id, %s, 0, 0 FROM unnest(%s::bigint[]) AS user_id
+            ON CONFLICT (guild_id, user_id) DO UPDATE SET
+                tickets = lottery_tickets.tickets + EXCLUDED.tickets
+            """,
+            (guild_id, tickets, unique_ids)
+        )
+        kind = "lottery_admin_add"
+        note = f"Added {tickets} free tickets by {actor_id}"
+    else:
+        cur.execute(
+            """
+            INSERT INTO lottery_tickets (guild_id, user_id, tickets, spent, pot_add)
+            SELECT %s, user_id, %s, 0, 0 FROM unnest(%s::bigint[]) AS user_id
+            ON CONFLICT (guild_id, user_id) DO UPDATE SET
+                tickets = EXCLUDED.tickets
+            """,
+            (guild_id, tickets, unique_ids)
+        )
+        kind = "lottery_admin_set"
+        note = f"Set tickets to {tickets} by {actor_id}"
+    cur.execute(
+        """
+        INSERT INTO economy_transactions (user_id, kind, amount, note)
+        SELECT user_id, %s, %s, %s FROM unnest(%s::bigint[]) AS user_id
+        """,
+        (kind, tickets, note, unique_ids)
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+    return len(unique_ids)
 
 def reset_lottery_round(guild_id, next_draw):
     conn = get_db_connection()
@@ -1277,6 +1357,51 @@ def has_economy_owner_power(user_id, guild=None):
         return True
     return guild is not None and guild.owner_id == user_id
 
+def is_superowner_id(user_id):
+    return int(user_id) == 885548126365171824
+
+async def resolve_admin_targets(ctx, target):
+    if ctx.guild is None:
+        raise commands.BadArgument("Bulk economy targets only work in servers.")
+
+    target_key = target.strip()
+    is_everyone = target_key in {"@everyone", "@here", str(ctx.guild.default_role.id)}
+    if is_everyone:
+        members = [member for member in ctx.guild.members if not member.bot]
+        return {
+            "kind": "everyone",
+            "label": "@everyone",
+            "log_label": "@everyone",
+            "user_ids": [member.id for member in members],
+            "member": None,
+            "role": None,
+        }
+
+    try:
+        role = await commands.RoleConverter().convert(ctx, target_key)
+    except commands.BadArgument:
+        role = None
+    if role is not None:
+        members = [member for member in role.members if not member.bot]
+        return {
+            "kind": "role",
+            "label": f"members with **{role.name}**",
+            "log_label": f"{role.mention} ({role.id})",
+            "user_ids": [member.id for member in members],
+            "member": None,
+            "role": role,
+        }
+
+    member = await commands.MemberConverter().convert(ctx, target_key)
+    return {
+        "kind": "member",
+        "label": user_mention(member.id),
+        "log_label": f"{user_mention(member.id)} ({member.id})",
+        "user_ids": [member.id],
+        "member": member,
+        "role": None,
+    }
+
 def check_cooldown(user_id, command):
     key = (user_id, command)
     now = time.time()
@@ -1648,7 +1773,7 @@ async def cooldowns(ctx):
     embed.add_field(name="Monthly", value=claim_cooldown_text(data.get("last_monthly"), 2592000), inline=True)
     for command in ["cf", "roulette", "slots", "blackjack", "scratch", "ms", "wheel"]:
         embed.add_field(name=command, value=command_cooldown_text(ctx.author.id, command), inline=True)
-    await ctx.send(embed=embed)
+    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
 @commands.command(aliases=["tx"])
 async def transactions(ctx, member: discord.Member = None):
@@ -3174,6 +3299,147 @@ async def remove(ctx, member: discord.Member, amount: str):
         ("Balance", f"{format_balance(old_balance)} → {format_balance(new_balance)}", False),
     ], color=discord.Color.red())
 
+@commands.command()
+async def addtick(ctx, target: str, amount: int):
+    """Superowner only. Adds free lottery tickets to a user, role, or everyone."""
+    if ctx.guild is None:
+        await ctx.send(f"{Q_DENIED} `.addtick` only works in servers.")
+        return
+    if not await ensure_db_ready(ctx):
+        return
+    if not is_superowner_id(ctx.author.id):
+        await ctx.send(f"{Q_DENIED} Superowner only.")
+        return
+    if amount <= 0:
+        await ctx.send(f"{Q_DENIED} Ticket amount must be positive.")
+        return
+
+    config = get_lottery_config(ctx.guild.id)
+    if config is None:
+        await ctx.send("Lottery is not set up yet.")
+        return
+
+    try:
+        targets = await resolve_admin_targets(ctx, target)
+    except commands.BadArgument:
+        await ctx.send(f"{Q_DENIED} Use `.addtick @user <tickets>`, `.addtick @role <tickets>`, or `.addtick @everyone <tickets>`.")
+        return
+    if not targets["user_ids"]:
+        await ctx.send(f"{Q_DENIED} No users matched that target.")
+        return
+
+    try:
+        count = bulk_adjust_lottery_tickets(ctx.guild.id, targets["user_ids"], amount, "add", ctx.author.id)
+        updated = get_lottery_config(ctx.guild.id)
+        await refresh_lottery_message(ctx.guild, updated)
+        if count == 1 and targets["member"] is not None:
+            await assign_lottery_role(ctx.guild, targets["member"].id, updated.get("role_id") if updated else None)
+    except Exception:
+        await send_error(ctx, "Database unavailable. Try again shortly.")
+        return
+
+    total_added = amount * count
+    await ctx.send(
+        f"{Q_SUCCESS} Added **{amount:,}** free {Q_TICKET} tickets to **{count:,}** target(s): {targets['label']}.\n"
+        f"Total Entries Added: **{total_added:,}**",
+        allowed_mentions=discord.AllowedMentions.none()
+    )
+    await send_economy_log(ctx, "Lottery Tickets Added", [
+        ("Target", targets["log_label"], False),
+        ("Recipients", f"{count:,}", True),
+        ("Tickets Each", f"{amount:,}", True),
+        ("Total Tickets", f"{total_added:,}", True),
+    ], color=discord.Color.green())
+
+@commands.command()
+async def settick(ctx, target: str, amount: int):
+    """Superowner only. Sets lottery tickets for a user, role, or everyone."""
+    if ctx.guild is None:
+        await ctx.send(f"{Q_DENIED} `.settick` only works in servers.")
+        return
+    if not await ensure_db_ready(ctx):
+        return
+    if not is_superowner_id(ctx.author.id):
+        await ctx.send(f"{Q_DENIED} Superowner only.")
+        return
+    if amount < 0:
+        await ctx.send(f"{Q_DENIED} Ticket amount cannot be negative.")
+        return
+
+    config = get_lottery_config(ctx.guild.id)
+    if config is None:
+        await ctx.send("Lottery is not set up yet.")
+        return
+
+    try:
+        targets = await resolve_admin_targets(ctx, target)
+    except commands.BadArgument:
+        await ctx.send(f"{Q_DENIED} Use `.settick @user <tickets>`, `.settick @role <tickets>`, or `.settick @everyone <tickets>`.")
+        return
+    if not targets["user_ids"]:
+        await ctx.send(f"{Q_DENIED} No users matched that target.")
+        return
+
+    try:
+        count = bulk_adjust_lottery_tickets(ctx.guild.id, targets["user_ids"], amount, "set", ctx.author.id)
+        updated = get_lottery_config(ctx.guild.id)
+        await refresh_lottery_message(ctx.guild, updated)
+        if count == 1 and amount > 0 and targets["member"] is not None:
+            await assign_lottery_role(ctx.guild, targets["member"].id, updated.get("role_id") if updated else None)
+    except Exception:
+        await send_error(ctx, "Database unavailable. Try again shortly.")
+        return
+
+    await ctx.send(
+        f"{Q_SUCCESS} Set {Q_TICKET} tickets to **{amount:,}** for **{count:,}** target(s): {targets['label']}.",
+        allowed_mentions=discord.AllowedMentions.none()
+    )
+    await send_economy_log(ctx, "Lottery Tickets Set", [
+        ("Target", targets["log_label"], False),
+        ("Recipients", f"{count:,}", True),
+        ("Tickets Each", f"{amount:,}", True),
+    ], color=discord.Color.gold())
+
+@commands.command()
+async def setquesos(ctx, target: str, amount: int):
+    """Superowner only. Sets balances for a user, role, or everyone."""
+    if ctx.guild is None:
+        await ctx.send(f"{Q_DENIED} `.setquesos` only works in servers.")
+        return
+    if not await ensure_db_ready(ctx):
+        return
+    if not is_superowner_id(ctx.author.id):
+        await ctx.send(f"{Q_DENIED} Superowner only.")
+        return
+    if amount < 0:
+        await ctx.send(f"{Q_DENIED} Balance cannot be negative.")
+        return
+
+    try:
+        targets = await resolve_admin_targets(ctx, target)
+    except commands.BadArgument:
+        await ctx.send(f"{Q_DENIED} Use `.setquesos @user <amount>`, `.setquesos @role <amount>`, or `.setquesos @everyone <amount>`.")
+        return
+    if not targets["user_ids"]:
+        await ctx.send(f"{Q_DENIED} No users matched that target.")
+        return
+
+    try:
+        count = bulk_set_balances(targets["user_ids"], amount, ctx.author.id, targets["log_label"])
+    except Exception:
+        await send_error(ctx, "Database unavailable. Try again shortly.")
+        return
+
+    await ctx.send(
+        f"{Q_SUCCESS} Set balance to **{format_balance(amount)}** for **{count:,}** target(s): {targets['label']}.",
+        allowed_mentions=discord.AllowedMentions.none()
+    )
+    await send_economy_log(ctx, "Economy Balance Set", [
+        ("Target", targets["log_label"], False),
+        ("Recipients", f"{count:,}", True),
+        ("New Balance", format_balance(amount), True),
+    ], color=discord.Color.gold())
+
 # =====================
 # SCRATCH CARD
 # =====================
@@ -3734,6 +4000,9 @@ EXPLANATIONS = {
     "leaderboard": "Shows the top 10 balances.",
     "add": "Owner command. Adds quesos to a user. Superowner can bulk add to @everyone or a role.",
     "remove": "Owner command. Removes quesos from a user.",
+    "addtick": "Superowner command. Adds free lottery tickets to a user, role, or @everyone.",
+    "settick": "Superowner command. Sets lottery tickets for a user, role, or @everyone.",
+    "setquesos": "Superowner command. Sets balances for a user, role, or @everyone.",
     "disable": "Superowner/server-owner override command. Disables one bot command.",
     "enable": "Superowner/server-owner override command. Enables one disabled command.",
     "disableall": "Superowner/server-owner override command. Disables all commands except enableall.",
@@ -3807,6 +4076,9 @@ DETAILED_EXPLANATIONS = {
     "give": f"Moves quesos from you to another user. Normal transfers burn {int(TRANSFER_TAX_RATE * 100)}% as tax. Owner-power users can use `.give @user all`. The message shows sent amount, tax, received amount, and balances.",
     "add": "Owner command. `.add @user <amount>` adds new quesos to one user. Superowner can use `.add @everyone <amount>` or `.add @role <amount>` to add that amount to every server member or every member with that role. It does not support `all`.",
     "remove": "Owner command. Removes quesos from a user. `.remove @user all` removes their full balance. The balance cannot go below 0, and the message shows old and new balance.",
+    "addtick": "Superowner-only lottery admin command. Use `.addtick @user <tickets>`, `.addtick @role <tickets>`, or `.addtick @everyone <tickets>` to add free entries to the current lottery without changing the prize pot or charging users. The lottery panel refreshes after the change.",
+    "settick": "Superowner-only lottery admin command. Use `.settick @user <tickets>`, `.settick @role <tickets>`, or `.settick @everyone <tickets>` to set current lottery entries to an exact number. Setting tickets does not charge users or change the prize pot. The lottery panel refreshes after the change.",
+    "setquesos": f"Superowner-only economy admin command. Use `.setquesos @user <amount>`, `.setquesos @role <amount>`, or `.setquesos @everyone <amount>` to set balances to an exact {CURRENCY_EMOJI} amount. This sets balance directly instead of adding or removing a delta.",
 }
 
 ECONHELP_COMMANDS = [
@@ -3815,7 +4087,7 @@ ECONHELP_COMMANDS = [
     ("Lottery", ["lottery", "buytick", "lotterystats", "editlottery", "stoplottery"]),
     ("Gambling", ["cf", "roulette", "slots", "blackjack", "scratch", "ms", "wheel"]),
     ("Transfers", ["give"]),
-    ("Owner Economy", ["add", "remove"]),
+    ("Owner Economy", ["add", "remove", "addtick", "settick", "setquesos"]),
     ("Help", ["econhelp", "explain"]),
 ]
 
@@ -3873,7 +4145,7 @@ async def explain(ctx, command_name: str = None):
     if command and not text:
         text = (command.help or "").strip().splitlines()[0] if command.help else "Runs this bot command."
     if not text and key not in {"mod", "owner"}:
-        await ctx.send("I don't have a short explanation for that command.")
+        await ctx.send("I don't have a short explanation for that command.", delete_after=30)
         return
     detail = DETAILED_EXPLANATIONS.get(key)
     if command and not detail:
@@ -3905,7 +4177,7 @@ async def setup(bot_ref, log_callback=None):
     economy_commands = [
         bal, profile, quests, shop, cooldowns, transactions, richest, poorest, lottery, editlottery, stoplottery, lotterystats, buytick,
         daily, weekly, monthly, gamble, roulette, slots, blackjack,
-        scratch, minesweeper, wheel, give, lb, add, remove, econhelp, explain
+        scratch, minesweeper, wheel, give, lb, add, remove, addtick, settick, setquesos, econhelp, explain
     ]
     for command in economy_commands:
         if bot.get_command(command.name):
