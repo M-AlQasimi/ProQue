@@ -154,6 +154,16 @@ ttt_games = {}
 edited_snipes = {}
 deleted_snipes = {}
 removed_reactions = {}
+
+TTT_EMPTY = "empty"
+TTT_X = "x"
+TTT_O = "o"
+
+def custom_emoji(markdown):
+    try:
+        return discord.PartialEmoji.from_str(markdown)
+    except Exception:
+        return None
 active_timers = load_active_timers()
 active_polls = load_active_polls()
 user_mentions = {}
@@ -2140,7 +2150,7 @@ async def pfp(ctx, member: discord.Member = None):
 
 class TicTacToeButton(Button):
     def __init__(self, row, col):
-        super().__init__(style=discord.ButtonStyle.secondary, label='⬜', row=row)
+        super().__init__(style=discord.ButtonStyle.secondary, label="\u200b", row=row)
         self.row = row
         self.col = col
 
@@ -2150,12 +2160,13 @@ class TicTacToeButton(Button):
             return await interaction.response.send_message("Not your turn.", ephemeral=True)
 
         board = game["board"]
-        if board[self.row][self.col] != '⬜':
+        if board[self.row][self.col] != TTT_EMPTY:
             return await interaction.response.send_message("That spot is taken.", ephemeral=True)
 
-        mark = economy_q_game_x if game["turn"] == 0 else economy_q_game_o
+        mark = TTT_X if game["turn"] == 0 else TTT_O
         board[self.row][self.col] = mark
-        self.label = mark
+        self.label = None
+        self.emoji = custom_emoji(economy_q_game_x if mark == TTT_X else economy_q_game_o)
         self.disabled = True
 
         await interaction.response.edit_message(view=game["view"])
@@ -2170,15 +2181,15 @@ class TicTacToeButton(Button):
             await game["msg"].edit(
                 content=f"{economy_q_game_win} <@{interaction.user.id}> wins!{payout_text}",
                 view=game["view"],
-                allowed_mentions=discord.AllowedMentions.none()
+                allowed_mentions=discord.AllowedMentions(users=True)
             )
             ttt_games.pop(interaction.channel.id, None)
             return
 
-        if all(cell != '⬜' for row in board for cell in row):
+        if all(cell != TTT_EMPTY for row in board for cell in row):
             payout_text = await settle_game_bet(game, None)
             await disable_all_buttons(game["view"])
-            await game["msg"].edit(content=f"It's a draw!{payout_text}", view=game["view"])
+            await game["msg"].edit(content=f"It's a draw!{payout_text}", view=game["view"], allowed_mentions=discord.AllowedMentions.none())
             ttt_games.pop(interaction.channel.id, None)
             return
 
@@ -2194,13 +2205,13 @@ class TicTacToeView(View):
 
 def check_winner(board):
     for i in range(3):
-        if board[i][0] == board[i][1] == board[i][2] != '⬜':
+        if board[i][0] == board[i][1] == board[i][2] != TTT_EMPTY:
             return True
-        if board[0][i] == board[1][i] == board[2][i] != '⬜':
+        if board[0][i] == board[1][i] == board[2][i] != TTT_EMPTY:
             return True
-    if board[0][0] == board[1][1] == board[2][2] != '⬜':
+    if board[0][0] == board[1][1] == board[2][2] != TTT_EMPTY:
         return True
-    if board[0][2] == board[1][1] == board[2][0] != '⬜':
+    if board[0][2] == board[1][1] == board[2][0] != TTT_EMPTY:
         return True
     return False
 
@@ -2305,8 +2316,8 @@ async def settle_game_bet(game, winner):
     note = "" if payout == amount else "\nLoser did not have the full bet anymore, so only their remaining balance was paid."
     return (
         f"\nBet paid: **{economy_format_balance(payout)}**"
-        f"\nWinner: **{economy_format_balance(winner_data['balance'])}** → **{economy_format_balance(winner_data['balance'] + payout)}**"
-        f"\nLoser: **{economy_format_balance(loser_data['balance'])}** → **{economy_format_balance(max(0, loser_data['balance'] - payout))}**"
+        f"\nWinner <@{winner.id}>: **{economy_format_balance(winner_data['balance'])}** → **{economy_format_balance(winner_data['balance'] + payout)}**"
+        f"\nLoser <@{loser.id}>: **{economy_format_balance(loser_data['balance'])}** → **{economy_format_balance(max(0, loser_data['balance'] - payout))}**"
         f"{note}"
     )
 
@@ -2352,7 +2363,7 @@ async def ttt(ctx, opponent: discord.Member):
     await ctx.send(
         f"<@{opponent.id}>, <@{ctx.author.id}> challenged you to a game of **Tic Tac Toe**.\nClick below to accept or decline:",
         view=view,
-        allowed_mentions=discord.AllowedMentions.none()
+        allowed_mentions=discord.AllowedMentions(users=[opponent])
     )
     await view.wait()
 
@@ -2363,7 +2374,7 @@ async def ttt(ctx, opponent: discord.Member):
     if bet_amount is None:
         return
 
-    board = [['⬜'] * 3 for _ in range(3)]
+    board = [[TTT_EMPTY] * 3 for _ in range(3)]
     game_view = TicTacToeView()
     msg = await ctx.send(f"Game started!{game_bet_line({'bet_amount': bet_amount})}", view=game_view)
     game = {
@@ -2400,7 +2411,7 @@ async def update_turn(game, channel):
         await game["msg"].edit(
             content=f"{economy_q_timer} <@{current.id}> took too long.\n{economy_q_game_timeout} <@{opponent.id}> wins by timeout!{payout_text}",
             view=game["view"],
-            allowed_mentions=discord.AllowedMentions.none()
+            allowed_mentions=discord.AllowedMentions(users=True)
         )
         ttt_games.pop(channel.id, None)
 
@@ -2437,7 +2448,7 @@ class Connect4Button(Button):
                 await interaction.response.edit_message(
                     content=f"{render}\n\n{economy_q_game_win} <@{interaction.user.id}> wins!{payout_text}",
                     view=game["view"],
-                    allowed_mentions=discord.AllowedMentions.none()
+                    allowed_mentions=discord.AllowedMentions(users=True)
                 )
                 c4_games.pop(interaction.channel.id, None)
                 return
@@ -2448,7 +2459,8 @@ class Connect4Button(Button):
                 await disable_all_buttons(game["view"])
                 await interaction.response.edit_message(
                     content=f"{render}\n\nIt's a draw!{payout_text}",
-                    view=game["view"]
+                    view=game["view"],
+                    allowed_mentions=discord.AllowedMentions.none()
                 )
                 c4_games.pop(interaction.channel.id, None)
                 return
@@ -2520,7 +2532,7 @@ async def update_c4_turn(game, channel):
             await msg.edit(
                 content=f"{render_board(board, game['turn'])}\n\n{economy_q_timer} <@{current.id}> took too long.\n{economy_q_game_timeout} <@{opponent.id}> wins by timeout!{payout_text}",
                 view=game["view"],
-                allowed_mentions=discord.AllowedMentions.none()
+                allowed_mentions=discord.AllowedMentions(users=True)
             )
             c4_games.pop(channel.id, None)
         except Exception as e:
@@ -2548,7 +2560,7 @@ async def c4(ctx, opponent: discord.Member):
     await ctx.send(
         f"<@{opponent.id}>, <@{ctx.author.id}> challenged you to a game of **Connect 4**.\nClick below to accept or decline:",
         view=view,
-        allowed_mentions=discord.AllowedMentions(users=[opponent.id])
+        allowed_mentions=discord.AllowedMentions(users=[opponent])
     )
     await view.wait()
 

@@ -2038,6 +2038,107 @@ async def stoplottery(ctx):
         allowed_mentions=discord.AllowedMentions.none()
     )
 
+def build_lottery_stats_embed(ctx, config, rows, panel_value, page=0, per_page=10):
+    total_tickets = sum(row["tickets"] for row in rows)
+    unique_players = len(rows)
+    ticket_cost = lottery_ticket_cost(config)
+    house_cut = lottery_house_cut(config)
+    next_draw = config["next_draw"]
+    if next_draw.tzinfo is None:
+        next_draw = next_draw.replace(tzinfo=timezone.utc)
+
+    channel = ctx.guild.get_channel(config["channel_id"])
+    embed = discord.Embed(title=f"{QOIN_CHEST} Lottery Stats", color=discord.Color.gold())
+    embed.add_field(name="Prize / Current Pot", value=format_balance(config["pot"]), inline=True)
+    embed.add_field(name=f"{Q_TICKET} Total Tickets", value=f"{total_tickets:,}", inline=True)
+    embed.add_field(name="Players", value=f"{unique_players:,}", inline=True)
+    embed.add_field(name=f"{Q_TICKET} Ticket Price", value=format_balance(ticket_cost), inline=True)
+    embed.add_field(name="House Cut", value=f"{house_cut * 100:.1f}%", inline=True)
+    if config.get("role_id"):
+        embed.add_field(name="Participant Role", value=f"<@&{config['role_id']}>", inline=True)
+    embed.add_field(name="Next Draw", value=f"<t:{int(next_draw.timestamp())}:R>", inline=True)
+    embed.add_field(name="Lottery Channel", value=channel.mention if channel else f"`{config['channel_id']}`", inline=True)
+    embed.add_field(name=f"{Q_TICKET} Ticket Panel", value=panel_value, inline=True)
+
+    if rows:
+        page_count = max(1, ((len(rows) - 1) // per_page) + 1)
+        page = max(0, min(page, page_count - 1))
+        start = page * per_page
+        page_rows = rows[start:start + per_page]
+        leaders = []
+        for index, row in enumerate(page_rows, start + 1):
+            odds = (row["tickets"] / total_tickets * 100) if total_tickets else 0
+            leaders.append(f"{index}. {user_mention(row['user_id'])} - **{row['tickets']:,}** tickets ({odds:.1f}%)")
+        embed.add_field(
+            name=f"{Q_TICKET} Ticket Holders #{start + 1}-{start + len(page_rows)}",
+            value="\n".join(leaders),
+            inline=False
+        )
+        embed.set_footer(text=f"Ticket holder page {page + 1}/{page_count}")
+    else:
+        embed.add_field(name=f"{Q_TICKET} Ticket Holders", value="No tickets bought this round.", inline=False)
+        embed.set_footer(text="Ticket holder page 1/1")
+
+    embed.add_field(
+        name="How To Enter",
+        value=f"Use the buttons on the lottery panel. Each ticket costs **{format_balance(ticket_cost)}**.",
+        inline=False
+    )
+    return embed
+
+class LotteryStatsView(discord.ui.View):
+    def __init__(self, ctx, config, rows, panel_value):
+        super().__init__(timeout=180)
+        self.ctx = ctx
+        self.config = config
+        self.rows = rows
+        self.panel_value = panel_value
+        self.page = 0
+        self.per_page = 10
+        self.message = None
+        self.update_buttons()
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message("Use your own lottery stats command.", ephemeral=True)
+            return False
+        return True
+
+    def update_buttons(self):
+        max_page = max(0, (len(self.rows) - 1) // self.per_page)
+        self.prev_page.disabled = self.page <= 0
+        self.next_page.disabled = self.page >= max_page
+
+    def embed(self):
+        self.update_buttons()
+        return build_lottery_stats_embed(
+            self.ctx,
+            self.config,
+            self.rows,
+            self.panel_value,
+            self.page,
+            self.per_page
+        )
+
+    @discord.ui.button(label="Prev", style=discord.ButtonStyle.secondary)
+    async def prev_page(self, interaction, button):
+        self.page = max(0, self.page - 1)
+        await interaction.response.edit_message(embed=self.embed(), view=self)
+
+    @discord.ui.button(label="Next", style=discord.ButtonStyle.secondary)
+    async def next_page(self, interaction, button):
+        self.page = min(max(0, (len(self.rows) - 1) // self.per_page), self.page + 1)
+        await interaction.response.edit_message(embed=self.embed(), view=self)
+
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except Exception:
+                pass
+
 @commands.command()
 async def lotterystats(ctx):
     if ctx.guild is None:
@@ -2052,45 +2153,10 @@ async def lotterystats(ctx):
         return
 
     rows = sorted(lottery_ticket_rows(ctx.guild.id), key=lambda row: row["tickets"], reverse=True)
-    total_tickets = sum(row["tickets"] for row in rows)
-    unique_players = len(rows)
-    ticket_cost = lottery_ticket_cost(config)
-    house_cut = lottery_house_cut(config)
-    next_draw = config["next_draw"]
-    if next_draw.tzinfo is None:
-        next_draw = next_draw.replace(tzinfo=timezone.utc)
-
-    channel = ctx.guild.get_channel(config["channel_id"])
     panel = await refresh_lottery_message(ctx.guild, config)
     panel_value = f"[Open Panel]({panel.jump_url})" if panel else "panel unavailable"
-
-    embed = discord.Embed(title=f"{QOIN_CHEST} Lottery Stats", color=discord.Color.gold())
-    embed.add_field(name="Prize / Current Pot", value=format_balance(config["pot"]), inline=True)
-    embed.add_field(name=f"{Q_TICKET} Total Tickets", value=f"{total_tickets:,}", inline=True)
-    embed.add_field(name="Players", value=f"{unique_players:,}", inline=True)
-    embed.add_field(name=f"{Q_TICKET} Ticket Price", value=format_balance(ticket_cost), inline=True)
-    embed.add_field(name="House Cut", value=f"{house_cut * 100:.1f}%", inline=True)
-    if config.get("role_id"):
-        embed.add_field(name="Participant Role", value=f"<@&{config['role_id']}>", inline=True)
-    embed.add_field(name="Next Draw", value=f"<t:{int(next_draw.timestamp())}:R>", inline=True)
-    embed.add_field(name="Lottery Channel", value=channel.mention if channel else f"`{config['channel_id']}`", inline=True)
-    embed.add_field(name=f"{Q_TICKET} Ticket Panel", value=panel_value, inline=True)
-
-    if rows:
-        leaders = []
-        for index, row in enumerate(rows[:10], 1):
-            odds = (row["tickets"] / total_tickets * 100) if total_tickets else 0
-            leaders.append(f"{index}. {user_mention(row['user_id'])} - **{row['tickets']:,}** tickets ({odds:.1f}%)")
-        embed.add_field(name=f"{Q_TICKET} Top Ticket Holders", value="\n".join(leaders), inline=False)
-    else:
-        embed.add_field(name=f"{Q_TICKET} Top Ticket Holders", value="No tickets bought this round.", inline=False)
-
-    embed.add_field(
-        name="How To Enter",
-        value=f"Use the buttons on the lottery panel. Each ticket costs **{format_balance(ticket_cost)}**.",
-        inline=False
-    )
-    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+    view = LotteryStatsView(ctx, config, rows, panel_value)
+    view.message = await ctx.send(embed=view.embed(), view=view, allowed_mentions=discord.AllowedMentions.none())
 
 @commands.command()
 async def buytick(ctx, amount: str = "1"):
@@ -2217,35 +2283,132 @@ async def db_keepalive_loop():
             print(f"Database keep-alive loop error: {type(e).__name__} - {e}")
         await asyncio.sleep(240)
 
-async def send_balance_rank(ctx, order, title):
-    if not await ensure_db_ready(ctx):
-        return
+class BalanceRankView(discord.ui.View):
+    def __init__(self, ctx, order, title, icon):
+        super().__init__(timeout=180)
+        self.ctx = ctx
+        self.order = order
+        self.title = title
+        self.icon = icon
+        self.page = 0
+        self.per_page = 10
+        self.total = 0
+        self.message = None
+        self.update_buttons()
 
-    try:
+    async def interaction_check(self, interaction):
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message("Use your own leaderboard command.", ephemeral=True)
+            return False
+        return True
+
+    def update_buttons(self):
+        max_page = max(0, (self.total - 1) // self.per_page)
+        self.first_page.disabled = self.page <= 0
+        self.prev_page.disabled = self.page <= 0
+        self.next_page.disabled = self.page >= max_page
+        self.last_page.disabled = self.page >= max_page
+
+    def fetch_page(self):
         conn = get_db_connection()
         cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) AS count FROM economy")
+        self.total = cur.fetchone()["count"]
         cur.execute(
-            f"SELECT user_id, balance FROM economy ORDER BY balance {order}, user_id ASC LIMIT 10"
+            f"SELECT user_id, balance FROM economy ORDER BY balance {self.order}, user_id ASC LIMIT %s OFFSET %s",
+            (self.per_page, self.page * self.per_page)
         )
         rows = cur.fetchall()
         cur.close()
         conn.close()
-    except Exception:
+        return rows
+
+    def build_embed(self, rows):
+        max_page = max(1, ((self.total - 1) // self.per_page) + 1)
+        start_rank = self.page * self.per_page + 1
+        end_rank = min(self.total, self.page * self.per_page + len(rows))
+        embed = discord.Embed(title=f"{self.icon} {self.title}", color=discord.Color.gold())
+        if not rows:
+            embed.description = "No balances found yet."
+        else:
+            embed.description = f"Showing **#{start_rank}-{end_rank}** of **{self.total}**."
+            for i, row in enumerate(rows, start_rank):
+                embed.add_field(
+                    name=f"{i}. {user_mention(row['user_id'])}",
+                    value=format_balance(row["balance"]),
+                    inline=False
+                )
+        embed.set_footer(text=f"Page {self.page + 1}/{max_page}")
+        return embed
+
+    async def render(self):
+        try:
+            rows = await asyncio.to_thread(self.fetch_page)
+        except Exception:
+            return None
+        self.update_buttons()
+        return self.build_embed(rows)
+
+    @discord.ui.button(label="First", style=discord.ButtonStyle.secondary)
+    async def first_page(self, interaction, button):
+        self.page = 0
+        embed = await self.render()
+        if embed is None:
+            return await interaction.response.send_message("Database unavailable. Try again shortly.", ephemeral=True)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="Prev", style=discord.ButtonStyle.secondary)
+    async def prev_page(self, interaction, button):
+        self.page = max(0, self.page - 1)
+        embed = await self.render()
+        if embed is None:
+            return await interaction.response.send_message("Database unavailable. Try again shortly.", ephemeral=True)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="Next", style=discord.ButtonStyle.secondary)
+    async def next_page(self, interaction, button):
+        self.page += 1
+        embed = await self.render()
+        if embed is None:
+            return await interaction.response.send_message("Database unavailable. Try again shortly.", ephemeral=True)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="Last", style=discord.ButtonStyle.secondary)
+    async def last_page(self, interaction, button):
+        self.page = max(0, (self.total - 1) // self.per_page)
+        embed = await self.render()
+        if embed is None:
+            return await interaction.response.send_message("Database unavailable. Try again shortly.", ephemeral=True)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except Exception:
+                pass
+
+async def send_balance_rank(ctx, order, title, icon=QOIN_CHEST):
+    if not await ensure_db_ready(ctx):
+        return
+
+    view = BalanceRankView(ctx, order, title, icon)
+    embed = await view.render()
+    if embed is None:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
 
-    embed = discord.Embed(title=title, color=discord.Color.gold())
-    for i, row in enumerate(rows, 1):
-        embed.add_field(name=f"{i}. {user_mention(row['user_id'])}", value=format_balance(row["balance"]), inline=False)
-    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+    view.message = await ctx.send(embed=embed, view=view, allowed_mentions=discord.AllowedMentions.none())
 
 @commands.command()
 async def richest(ctx):
-    await send_balance_rank(ctx, "DESC", "Richest Users")
+    await send_balance_rank(ctx, "DESC", "Richest Users", QOIN_CHEST)
 
 @commands.command()
 async def poorest(ctx):
-    await send_balance_rank(ctx, "ASC", "Poorest Users")
+    await send_balance_rank(ctx, "ASC", "Poorest Users", QOIN_BAG)
 
 # =====================
 # DAILY / WEEKLY / MONTHLY
@@ -3123,33 +3286,7 @@ async def give(ctx, member: discord.Member, amount: str):
 # =====================
 @commands.command(name="lb", aliases=["leaderboard", "rank"])
 async def lb(ctx):
-    if not await ensure_db_ready(ctx):
-        return
-
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute("SELECT user_id, balance FROM economy ORDER BY balance DESC LIMIT 10")
-        rows = cur.fetchall()
-        cur.close()
-        conn.close()
-    except Exception:
-        await send_error(ctx, "Database unavailable. Try again shortly.")
-        return
-
-    embed = discord.Embed(
-        title=f"{QOIN_CHEST} Leaderboard",
-        color=discord.Color.gold()
-    )
-
-    for i, row in enumerate(rows, 1):
-        embed.add_field(
-            name=f"{i}. {user_mention(row['user_id'])}",
-            value=format_balance(row['balance']),
-            inline=False
-        )
-
-    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+    await send_balance_rank(ctx, "DESC", "Leaderboard", QOIN_CHEST)
 
 # =====================
 # ADD / REMOVE (OWNER)
@@ -3978,10 +4115,10 @@ EXPLANATIONS = {
     "lottery": "Shows and refreshes the lottery ticket panel. First server run sets channel and draw period.",
     "editlottery": "Server-owner command. Edits lottery price, duration, house cut, or channel, then refreshes the panel.",
     "stoplottery": "Server-owner command. Stops this server's lottery and clears its tickets/config.",
-    "lotterystats": "Shows lottery prize, tickets, players, next draw, top ticket holders, and panel link.",
+    "lotterystats": "Shows lottery prize, tickets, players, next draw, paginated ticket holders, and panel link.",
     "buytick": "Legacy text command for buying lottery tickets. The lottery panel buttons are preferred.",
-    "richest": "Shows the top 10 richest users.",
-    "poorest": "Shows the 10 lowest balances.",
+    "richest": "Shows a paginated ranking of the richest users.",
+    "poorest": "Shows a paginated ranking of the lowest balances.",
     "daily": "Claim a daily reward. Higher daily streak means a small bonus.",
     "weekly": "Claim a weekly reward. Higher weekly streak means a bigger bonus.",
     "monthly": "Claim a monthly reward. Higher monthly streak means a bigger bonus.",
@@ -3996,8 +4133,8 @@ EXPLANATIONS = {
     "minesweepeer": "Pick a grid size, reveal safe tiles, avoid bombs.",
     "wheel": "Spin the wheel for a multiplier or blank result.",
     "give": "Transfers quesos to another user. Normal transfers burn 3% tax.",
-    "lb": "Shows the top 10 balances.",
-    "leaderboard": "Shows the top 10 balances.",
+    "lb": "Shows a paginated balance leaderboard.",
+    "leaderboard": "Shows a paginated balance leaderboard.",
     "add": "Owner command. Adds quesos to a user. Superowner can bulk add to @everyone or a role.",
     "remove": "Owner command. Removes quesos from a user.",
     "addtick": "Superowner command. Adds free lottery tickets to a user, role, or @everyone.",
@@ -4057,10 +4194,10 @@ DETAILED_EXPLANATIONS = {
     "lottery": f"Server lottery. First run asks the server owner for a channel and draw period, locks the channel, and posts a persistent ticket panel with buy buttons. Existing active lottery data is preserved when the panel is refreshed. The prize is the full current pot. Tickets cost {format_balance(LOTTERY_TICKET_COST)} and {int(LOTTERY_HOUSE_CUT * 100)}% is burned as a money sink.",
     "editlottery": "Server-owner command. Use `.editlottery price 250000`, `.editlottery duration 12h`, `.editlottery cut 5`, or `.editlottery channel #lottery`. Duration resets the next draw timer. Channel posts a fresh lottery panel. Updates ping the lottery participant role.",
     "stoplottery": "Server-owner command. Use `.stoplottery` to remove the lottery setup for this server, clear the current pot/tickets, and delete the participant role if the bot can. It leaves channels and panel messages alone.",
-    "lotterystats": "Shows the current lottery prize pot, total ticket count, number of players, participant role, next draw time, panel link, and the top 10 ticket holders with their approximate odds.",
+    "lotterystats": "Shows the current lottery prize pot, total ticket count, number of players, participant role, next draw time, panel link, and paginated ticket holders with approximate odds.",
     "buytick": f"Legacy text command for buying tickets for the configured server lottery. The lottery panel buttons are preferred because they send private confirmations and update the panel automatically. Each ticket costs {format_balance(LOTTERY_TICKET_COST)}. The prize is the full current lottery pot; every ticket is one entry.",
-    "richest": "Shows the top 10 balances from the economy table.",
-    "poorest": "Shows the lowest 10 balances from the economy table.",
+    "richest": "Shows balances from highest to lowest with buttons for more pages. Each page shows 10 users.",
+    "poorest": "Shows balances from lowest to highest with buttons for more pages. Each page shows 10 users.",
     "weekly": f"Gives a reward once every 7 days. Base reward is 20,000-30,000 {CURRENCY_EMOJI}. Your weekly streak adds a bonus after week 1.",
     "monthly": f"Gives a reward once every 30 days. Base reward is 40,000-60,000 {CURRENCY_EMOJI}. Your monthly streak adds a bigger bonus after month 1.",
     "cf": "Pick heads or tails with `.cf <amount> h`, `.cf <amount> t`, `.flip <amount> heads`, or `.flip <amount> tails`. If you do not pick, the bot asks you. Winning pays ×2 before streak bonus, so betting 100 wins 200 total and gives +100 profit. Losing removes the bet. Consecutive coinflip wins add +1.5% payout each win and reset on loss.",
