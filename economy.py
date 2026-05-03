@@ -2402,14 +2402,6 @@ async def send_balance_rank(ctx, order, title, icon=QOIN_CHEST):
 
     view.message = await ctx.send(embed=embed, view=view, allowed_mentions=discord.AllowedMentions.none())
 
-@commands.command()
-async def richest(ctx):
-    await send_balance_rank(ctx, "DESC", "Richest Users", QOIN_CHEST)
-
-@commands.command()
-async def poorest(ctx):
-    await send_balance_rank(ctx, "ASC", "Poorest Users", QOIN_BAG)
-
 # =====================
 # DAILY / WEEKLY / MONTHLY
 # =====================
@@ -4117,8 +4109,6 @@ EXPLANATIONS = {
     "stoplottery": "Server-owner command. Stops this server's lottery and clears its tickets/config.",
     "lotterystats": "Shows lottery prize, tickets, players, next draw, paginated ticket holders, and panel link.",
     "buytick": "Legacy text command for buying lottery tickets. The lottery panel buttons are preferred.",
-    "richest": "Shows a paginated ranking of the richest users.",
-    "poorest": "Shows a paginated ranking of the lowest balances.",
     "daily": "Claim a daily reward. Higher daily streak means a small bonus.",
     "weekly": "Claim a weekly reward. Higher weekly streak means a bigger bonus.",
     "monthly": "Claim a monthly reward. Higher monthly streak means a bigger bonus.",
@@ -4182,6 +4172,8 @@ EXPLANATIONS = {
     "econhelp": "Shows economy commands, aliases, and short explanations.",
     "economyhelp": "Alias for `.econhelp`. Shows economy commands, aliases, and short explanations.",
     "ehelp": "Alias for `.econhelp`. Shows economy commands, aliases, and short explanations.",
+    "ttt": "Starts Tic Tac Toe against another user. If the challenger sets a bet, the opponent must accept that bet too.",
+    "c4": "Starts Connect 4 against another user. If the challenger sets a bet, the opponent must accept that bet too.",
 }
 
 DETAILED_EXPLANATIONS = {
@@ -4196,8 +4188,6 @@ DETAILED_EXPLANATIONS = {
     "stoplottery": "Server-owner command. Use `.stoplottery` to remove the lottery setup for this server, clear the current pot/tickets, and delete the participant role if the bot can. It leaves channels and panel messages alone.",
     "lotterystats": "Shows the current lottery prize pot, total ticket count, number of players, participant role, next draw time, panel link, and paginated ticket holders with approximate odds.",
     "buytick": f"Legacy text command for buying tickets for the configured server lottery. The lottery panel buttons are preferred because they send private confirmations and update the panel automatically. Each ticket costs {format_balance(LOTTERY_TICKET_COST)}. The prize is the full current lottery pot; every ticket is one entry.",
-    "richest": "Shows balances from highest to lowest with buttons for more pages. Each page shows 10 users.",
-    "poorest": "Shows balances from lowest to highest with buttons for more pages. Each page shows 10 users.",
     "weekly": f"Gives a reward once every 7 days. Base reward is 20,000-30,000 {CURRENCY_EMOJI}. Your weekly streak adds a bonus after week 1.",
     "monthly": f"Gives a reward once every 30 days. Base reward is 40,000-60,000 {CURRENCY_EMOJI}. Your monthly streak adds a bigger bonus after month 1.",
     "cf": "Pick heads or tails with `.cf <amount> h`, `.cf <amount> t`, `.flip <amount> heads`, or `.flip <amount> tails`. If you do not pick, the bot asks you. Winning pays ×2 before streak bonus, so betting 100 wins 200 total and gives +100 profit. Losing removes the bet. Consecutive coinflip wins add +1.5% payout each win and reset on loss.",
@@ -4216,10 +4206,12 @@ DETAILED_EXPLANATIONS = {
     "addtick": "Superowner-only lottery admin command. Use `.addtick @user <tickets>`, `.addtick @role <tickets>`, or `.addtick @everyone <tickets>` to add free entries to the current lottery without changing the prize pot or charging users. The lottery panel refreshes after the change.",
     "settick": "Superowner-only lottery admin command. Use `.settick @user <tickets>`, `.settick @role <tickets>`, or `.settick @everyone <tickets>` to set current lottery entries to an exact number. Setting tickets does not charge users or change the prize pot. The lottery panel refreshes after the change.",
     "setquesos": f"Superowner-only economy admin command. Use `.setquesos @user <amount>`, `.setquesos @role <amount>`, or `.setquesos @everyone <amount>` to set balances to an exact {CURRENCY_EMOJI} amount. This sets balance directly instead of adding or removing a delta.",
+    "ttt": "Challenge a user to Tic Tac Toe. The opponent accepts the game first. If the challenger enables a bet and enters an amount, the opponent gets a second accept/decline prompt for that exact bet before the game starts.",
+    "c4": "Challenge a user to Connect 4. The opponent accepts the game first. If the challenger enables a bet and enters an amount, the opponent gets a second accept/decline prompt for that exact bet before the game starts. The board shows column numbers above and below the grid.",
 }
 
 ECONHELP_COMMANDS = [
-    ("Core", ["bal", "profile", "quests", "shop", "cooldowns", "transactions", "richest", "poorest", "lb"]),
+    ("Core", ["bal", "profile", "quests", "shop", "cooldowns", "transactions", "lb"]),
     ("Claims", ["daily", "weekly", "monthly"]),
     ("Lottery", ["lottery", "buytick", "lotterystats", "editlottery", "stoplottery"]),
     ("Gambling", ["cf", "roulette", "slots", "blackjack", "scratch", "ms", "wheel"]),
@@ -4312,7 +4304,7 @@ async def setup(bot_ref, log_callback=None):
     print(f"Economy db_ready = {db_ready}")
 
     economy_commands = [
-        bal, profile, quests, shop, cooldowns, transactions, richest, poorest, lottery, editlottery, stoplottery, lotterystats, buytick,
+        bal, profile, quests, shop, cooldowns, transactions, lottery, editlottery, stoplottery, lotterystats, buytick,
         daily, weekly, monthly, gamble, roulette, slots, blackjack,
         scratch, minesweeper, wheel, give, lb, add, remove, addtick, settick, setquesos, econhelp, explain
     ]

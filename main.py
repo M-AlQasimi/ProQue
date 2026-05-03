@@ -158,6 +158,9 @@ removed_reactions = {}
 TTT_EMPTY = "empty"
 TTT_X = "x"
 TTT_O = "o"
+C4_COLUMN_LABELS = "1️⃣2️⃣3️⃣4️⃣5️⃣6️⃣7️⃣"
+TURN_TIMEOUT_SECONDS = 30
+TURN_COUNTDOWN_EDIT_POINTS = {30, 20, 10, 5, 4, 3, 2, 1}
 
 def custom_emoji(markdown):
     try:
@@ -190,6 +193,19 @@ def get_command_case_insensitive(command_name):
         ),
         None
     )
+
+def looks_like_command_message(message):
+    content = message.content.strip()
+    if not content:
+        return False
+    if content.startswith("."):
+        return True
+    if bot.user:
+        mention_prefixes = (f"<@{bot.user.id}>", f"<@!{bot.user.id}>")
+        if content.startswith(mention_prefixes):
+            return True
+    first_word = content.split(maxsplit=1)[0].casefold()
+    return first_word in bot.all_commands
 
 def scoped_id(guild):
     return guild.id if guild else 0
@@ -594,7 +610,7 @@ async def on_ready():
     try:
         await economy_setup(bot, send_log)
         economy_command_names = [
-            "bal", "profile", "quests", "shop", "cooldowns", "transactions", "richest", "poorest", "lottery", "editlottery", "stoplottery", "lotterystats", "buytick",
+            "bal", "profile", "quests", "shop", "cooldowns", "transactions", "lottery", "editlottery", "stoplottery", "lotterystats", "buytick",
             "daily", "weekly", "monthly", "cf", "roulette", "slots",
             "blackjack", "scratch", "ms", "wheel", "give", "lb",
             "add", "remove", "addtick", "settick", "setquesos", "econhelp", "explain"
@@ -877,14 +893,15 @@ async def on_message(message):
     if message.author.bot:
         return
 
-    ctx = await bot.get_context(message)
-    if ctx.valid:
-        print(
-            f"Command received: {ctx.command} by {message.author} "
-            f"({message.author.id}) in guild {message.guild.id if message.guild else 'DM'}"
-        )
-        await bot.invoke(ctx)
-        return
+    if looks_like_command_message(message):
+        ctx = await bot.get_context(message)
+        if ctx.valid:
+            print(
+                f"Command received: {ctx.command} by {message.author} "
+                f"({message.author.id}) in guild {message.guild.id if message.guild else 'DM'}"
+            )
+            await bot.invoke(ctx)
+            return
 
     # AI mention handling
     content = message.content.strip()
@@ -1103,7 +1120,7 @@ HELP_CATEGORIES = {
     "Economy": [
         "bal", "profile", "quests", "daily", "weekly", "monthly", "cooldowns", "transactions", "shop", "lottery", "editlottery", "stoplottery", "lotterystats", "buytick", "econhelp",
         "cf", "roulette", "slots", "blackjack", "scratch", "ms", "wheel",
-        "give", "lb", "richest", "poorest", "addtick", "settick", "setquesos",
+        "give", "lb", "addtick", "settick", "setquesos",
     ],
     "Games": ["ttt", "c4", "q", "picker"],
     "Utility": ["help", "explain", "userinfo", "pfp", "calc", "define", "timer", "ctimer", "alarm", "poll", "epoll", "translate"],
@@ -2171,8 +2188,7 @@ class TicTacToeButton(Button):
 
         await interaction.response.edit_message(view=game["view"])
 
-        if game["timeout_task"]:
-            game["timeout_task"].cancel()
+        await cancel_game_timeout(game)
 
         winner = check_winner(board)
         if winner:
@@ -2218,6 +2234,16 @@ def check_winner(board):
 async def disable_all_buttons(view):
     for item in view.children:
         item.disabled = True
+
+async def cancel_game_timeout(game):
+    task = game.get("timeout_task")
+    if task and not task.done():
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+    game["timeout_task"] = None
 
 class GameBetView(View):
     def __init__(self, ctx):
@@ -2286,6 +2312,17 @@ async def ask_game_bet(ctx, opponent, game_name):
             f"<@{opponent.id}> only has {economy_format_balance(opponent_data['balance'])}. Game canceled.",
             allowed_mentions=discord.AllowedMentions.none()
         )
+        return None
+
+    bet_view = AcceptView(ctx, opponent)
+    await ctx.send(
+        f"<@{opponent.id}>, do you accept a **{economy_format_balance(amount)}** bet for **{game_name}**?",
+        view=bet_view,
+        allowed_mentions=discord.AllowedMentions(users=[opponent])
+    )
+    await bet_view.wait()
+    if not bet_view.accepted:
+        await ctx.send("Bet declined. Game canceled.")
         return None
 
     return amount
@@ -2393,16 +2430,17 @@ async def ttt(ctx, opponent: discord.Member):
 async def update_turn(game, channel):
     current = game["players"][game["turn"]]
     opponent = game["players"][1 - game["turn"]]
-    time_left = 30
+    time_left = TURN_TIMEOUT_SECONDS
 
     async def countdown():
         nonlocal time_left
         while time_left > 0:
-            await game["msg"].edit(
-                content=f"<@{current.id}>, it's your turn! ({time_left}s){game_bet_line(game)}",
-                view=game["view"],
-                allowed_mentions=discord.AllowedMentions.none()
-            )
+            if time_left in TURN_COUNTDOWN_EDIT_POINTS:
+                await game["msg"].edit(
+                    content=f"<@{current.id}>, it's your turn! ({time_left}s){game_bet_line(game)}",
+                    view=game["view"],
+                    allowed_mentions=discord.AllowedMentions.none()
+                )
             await asyncio.sleep(1)
             time_left -= 1
 
@@ -2438,14 +2476,14 @@ class Connect4Button(Button):
             else:
                 return await interaction.response.send_message("Column full.", ephemeral=True)
 
-            if game["timeout_task"]:
-                game["timeout_task"].cancel()
+            await interaction.response.defer()
+            await cancel_game_timeout(game)
 
             if check_c4_winner(board, piece):
                 render = render_board(board, game["turn"])
                 payout_text = await settle_game_bet(game, interaction.user)
                 await disable_all_buttons(game["view"])
-                await interaction.response.edit_message(
+                await interaction.message.edit(
                     content=f"{render}\n\n{economy_q_game_win} <@{interaction.user.id}> wins!{payout_text}",
                     view=game["view"],
                     allowed_mentions=discord.AllowedMentions(users=True)
@@ -2457,7 +2495,7 @@ class Connect4Button(Button):
                 render = render_board(board, game["turn"])
                 payout_text = await settle_game_bet(game, None)
                 await disable_all_buttons(game["view"])
-                await interaction.response.edit_message(
+                await interaction.message.edit(
                     content=f"{render}\n\nIt's a draw!{payout_text}",
                     view=game["view"],
                     allowed_mentions=discord.AllowedMentions.none()
@@ -2471,7 +2509,7 @@ class Connect4Button(Button):
             game["view"] = Connect4View()
 
             render = render_board(board, game["turn"])
-            await interaction.response.edit_message(content=render, view=game["view"])
+            await interaction.message.edit(content=render, view=game["view"], allowed_mentions=discord.AllowedMentions.none())
             await update_c4_turn(game, interaction.channel)
 
         except Exception as e:
@@ -2513,17 +2551,18 @@ async def update_c4_turn(game, channel):
     opponent = game["players"][1 - game["turn"]]
     msg = game["msg"]
     board = game["board"]
-    time_left = 30
+    time_left = TURN_TIMEOUT_SECONDS
 
     async def countdown():
         nonlocal time_left
         try:
             while time_left > 0:
-                await msg.edit(
-                    content=f"{render_board(board, game['turn'])}\n\n<@{current.id}>, it's your turn! ({time_left}s){game_bet_line(game)}",
-                    view=game["view"],
-                    allowed_mentions=discord.AllowedMentions.none()
-                )
+                if time_left in TURN_COUNTDOWN_EDIT_POINTS:
+                    await msg.edit(
+                        content=f"{render_board(board, game['turn'])}\n\n<@{current.id}>, it's your turn! ({time_left}s){game_bet_line(game)}",
+                        view=game["view"],
+                        allowed_mentions=discord.AllowedMentions.none()
+                    )
                 await asyncio.sleep(1)
                 time_left -= 1
 
@@ -2542,11 +2581,12 @@ async def update_c4_turn(game, channel):
 
 def render_board(board, turn):
     bg = "◻️" if turn == 0 else "◾"
-    rendered = ""
+    rendered = f"{C4_COLUMN_LABELS}\n"
     for row in board:
         for cell in row:
             rendered += cell if cell in (economy_q_connect_black, economy_q_connect_white) else bg
         rendered += "\n"
+    rendered += C4_COLUMN_LABELS
     return rendered
 
 @bot.command()
