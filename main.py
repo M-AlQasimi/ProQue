@@ -12,6 +12,10 @@ import traceback
 import aiohttp
 import discord
 import pytz
+try:
+    import chess as chess_lib
+except ImportError:
+    chess_lib = None
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from discord import Embed, Emoji, File, Interaction, StickerItem, app_commands
@@ -26,7 +30,6 @@ from economy import (
     ensure_db_ready as economy_ensure_db_ready,
     format_balance as economy_format_balance,
     get_user as economy_get_user,
-    parse_amount as economy_parse_amount,
     Q_ACCEPT as economy_q_accept,
     Q_ALARM as economy_q_alarm,
     Q_ATTACHMENT as economy_q_attachment,
@@ -74,6 +77,7 @@ from pgdata import (
     load_birthdays as pg_load_birthdays,
     load_censored_phrases,
     load_disabled_commands,
+    load_guild_birthday_channels,
     load_guild_prefixes,
     load_guild_log_config,
     load_mod_ids,
@@ -97,6 +101,7 @@ from pgdata import (
     save_birthday,
     save_censored_phrases,
     save_disabled_commands,
+    save_guild_birthday_channel,
     save_guild_prefix,
     save_guild_log_config,
     save_mod_ids,
@@ -108,6 +113,7 @@ from pgdata import (
     save_watchlist,
 )
 last_message_time = 0
+birthday_task = None
 app = Flask('')
 
 # PostgreSQL is the single source of truth
@@ -140,7 +146,6 @@ print(f"Bot is starting with intents: {bot.intents}")
 
 log_channel_id = None
 rlog_channel_id = None
-bday_channel_id = 1364346683709718619
 super_owner_id = 885548126365171824  
 # Loaded from PostgreSQL tables
 mods = load_mod_ids()
@@ -152,11 +157,13 @@ shutdown_channels = load_shutdown_channels()
 reaction_shutdown_channels = load_reaction_shutdown_channels()
 disabled_commands = load_disabled_commands()
 guild_prefixes = load_guild_prefixes()
+guild_birthday_channels = load_guild_birthday_channels()
 censored_phrases = load_censored_phrases()
 watchlist = load_watchlist()
 reaction_watchlist = load_reaction_watchlist()
 c4_games = {}
 ttt_games = {}
+chess_games = {}
 edited_snipes = {}
 deleted_snipes = {}
 removed_reactions = {}
@@ -164,9 +171,49 @@ removed_reactions = {}
 TTT_EMPTY = "empty"
 TTT_X = "x"
 TTT_O = "o"
-C4_COLUMN_LABELS = "1️⃣2️⃣3️⃣4️⃣5️⃣6️⃣7️⃣"
+C4_NUMBER_EMOJIS = [
+    "<:QC4One:1500858417810772160>",
+    "<:QC4Two:1500858426698498219>",
+    "<:QC4Three:1500858424999673956>",
+    "<:QC4Four:1500858416220864622>",
+    "<:QC4Five:1500858414660714717>",
+    "<:QC4Six:1500858422264856738>",
+    "<:QC4Seven:1500858419979096064>",
+]
+C4_COLUMN_LABELS = "".join(C4_NUMBER_EMOJIS)
 TURN_TIMEOUT_SECONDS = 30
 TURN_COUNTDOWN_EDIT_POINTS = {30, 20, 10, 5, 4, 3, 2, 1}
+
+CHESS_PIECE_EMOJIS = {
+    "P": "<:QChessWhitePawn:1500858450010312855>",
+    "N": "<:QChessWhiteKnight:1500858448428925141>",
+    "B": "<:QChessWhiteBishop:1500858444675289240>",
+    "R": "<:QChessWhiteRook:1500858453424607262>",
+    "Q": "<:QChessWhiteQueen:1500858451260215459>",
+    "K": "<:QChessWhiteKing:1500858446642286644>",
+    "p": "<:QChessBlackPawn:1500858437658087696>",
+    "n": "<:QChessBlackKnight:1500858435925970975>",
+    "b": "<:QChessBlackBishop:1500858431840452628>",
+    "r": "<:QChessBlackRook:1500858442724675625>",
+    "q": "<:QChessBlackQueen:1500858439197397034>",
+    "k": "<:QChessBlackKing:1500858433786609874>",
+}
+CHESS_LIGHT = "⬜"
+CHESS_DARK = "<:QChessDark:1500878861653770271>"
+POLL_NUMBER_EMOJIS = [
+    "<:QPollOne:1500881606389530724>",
+    "<:QPollTwo:1500878993954705690>",
+    "<:QPollThree:1500878992100688043>",
+    "<:QPollFour:1500878979782152353>",
+    "<:QPollFive:1500878977135284225>",
+    "<:QPollSix:1500878987927224402>",
+    "<:QPollSeven:1500878986107162755>",
+    "<:QPollEight:1500883998723805346>",
+    "<:QPollNine:1500884000355389563>",
+    "<:QPollTen:1500884002507329636>",
+]
+C4_EMPTY_LIGHT = "<:QC4EmptyLight:1500878748537585715>"
+C4_EMPTY_DARK = "<:QC4EmptyDark:1500878746956202136>"
 
 def custom_emoji(markdown):
     try:
@@ -525,6 +572,55 @@ async def prompt_log_setup(guild):
     save_guild_log_config(guild.id, normal_channel_id, reaction_channel_id)
     await channel.send("Log channels saved.")
 
+async def prompt_birthday_setup(guild):
+    channel = first_sendable_text_channel(guild)
+    if channel is None:
+        return
+    requester = await find_bot_adder(guild)
+
+    class BirthdayChannelSelect(discord.ui.ChannelSelect):
+        def __init__(self):
+            super().__init__(
+                placeholder="Select birthday channel",
+                min_values=1,
+                max_values=1,
+                channel_types=[discord.ChannelType.text],
+            )
+
+        async def callback(self, interaction):
+            selected_channel = self.values[0]
+            bot_member = guild.get_member(bot.user.id) or guild.me
+            perms = selected_channel.permissions_for(bot_member)
+            if not perms.view_channel or not perms.send_messages:
+                return await interaction.response.send_message("I can't send birthday messages in that channel.", ephemeral=True)
+            saved = await asyncio.to_thread(save_guild_birthday_channel, guild.id, selected_channel.id, interaction.user.id)
+            if not saved:
+                return await interaction.response.send_message("Birthday channel save failed because the database is unavailable.", ephemeral=True)
+            guild_birthday_channels[guild.id] = {"channel_id": selected_channel.id, "set_by_user_id": interaction.user.id}
+            await interaction.response.edit_message(
+                content=f"{economy_q_birthday} Birthday channel saved: {selected_channel.mention}",
+                view=None,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+
+    class BirthdayChannelView(discord.ui.View):
+        def __init__(self):
+            super().__init__(timeout=180)
+            self.add_item(BirthdayChannelSelect())
+
+        async def interaction_check(self, interaction):
+            if requester is not None and interaction.user.id != requester.id:
+                await interaction.response.send_message("Only the person who added me can choose this.", ephemeral=True)
+                return False
+            return True
+
+    mention = requester.mention if requester else guild.owner.mention
+    await channel.send(
+        f"{mention} choose the birthday announcement channel.",
+        view=BirthdayChannelView(),
+        allowed_mentions=discord.AllowedMentions(users=True),
+    )
+
 async def send_user_update_log(embed, user_id):
     for guild in bot.guilds:
         if guild.get_member(user_id) and load_guild_log_config(guild.id):
@@ -617,10 +713,12 @@ async def keep_alive_task():
 
 @bot.event
 async def on_ready():
+    global birthday_task
     print(f'ProQue is online as {bot.user}')
     if not keep_alive_task.is_running():
         keep_alive_task.start()
-    asyncio.create_task(birthday_check_loop())
+    if birthday_task is None or birthday_task.done():
+        birthday_task = asyncio.create_task(birthday_check_loop())
     # Load economy cog
     try:
         await economy_setup(bot, send_log)
@@ -647,15 +745,47 @@ async def birthday_check_loop():
         today_str = now.strftime("%d/%m")
 
         if now.hour == 0 and now.minute == 0:
-            for user_id, data in birthdays.items():
-                if data["date"] == today_str and (user_id, now.date()) not in already_sent:
-                    channel = bot.get_channel(bday_channel_id)
-                    if channel:
-                        user = await bot.fetch_user(int(user_id))
-                        await channel.send(f"@everyone {economy_q_birthday} it's {user.mention}'s birthday today!")
-                        already_sent.add((user_id, now.date()))
+            for user_id, data in list(birthdays.items()):
+                if data["date"] != today_str:
+                    continue
+                for guild in bot.guilds:
+                    member = guild.get_member(int(user_id))
+                    if member is None:
+                        try:
+                            member = await guild.fetch_member(int(user_id))
+                        except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+                            member = None
+                    if member is None:
+                        continue
+                    sent_key = (guild.id, int(user_id), now.date())
+                    if sent_key in already_sent:
+                        continue
+                    config = guild_birthday_channels.get(guild.id)
+                    if not config:
+                        continue
+                    channel = guild.get_channel(config["channel_id"]) or bot.get_channel(config["channel_id"])
+                    if not channel:
+                        continue
+                    await channel.send(
+                        f"@everyone {economy_q_birthday} it's {member.mention}'s birthday today!",
+                        allowed_mentions=discord.AllowedMentions(everyone=True, users=True)
+                    )
+                    already_sent.add(sent_key)
 
         await asyncio.sleep(60)
+
+async def can_manage_birthday_channel(user, guild):
+    if guild is None or user is None:
+        return False
+    if has_super_owner_power(user, guild):
+        return True
+    if guild.owner_id == user.id:
+        return True
+    permissions = getattr(user, "guild_permissions", None)
+    if permissions and permissions.administrator:
+        return True
+    adder = await find_bot_adder(guild)
+    return adder is not None and adder.id == user.id
 
 
 @bot.event
@@ -714,12 +844,37 @@ async def on_member_unban(guild, user):
 async def on_guild_join(guild):
     print(f"Joined server: {guild.name} ({guild.id})")
     await prompt_log_setup(guild)
+    await prompt_birthday_setup(guild)
 
 @bot.command()
 @is_owner()
 async def setlogs(ctx):
     await ctx.send("Starting log setup.")
     await prompt_log_setup(ctx.guild)
+
+@bot.command(name="setbdaychannel", aliases=["bdaychannel", "birthdaychannel"])
+async def set_birthday_channel(ctx, channel: discord.TextChannel = None):
+    """Sets this server's birthday announcement channel."""
+    if ctx.guild is None:
+        return await ctx.send("Birthday channels only work in servers.")
+    if not await can_manage_birthday_channel(ctx.author, ctx.guild):
+        return await ctx.send("Only the person who added me, an admin, the server owner, or the superowner can set the birthday channel.")
+
+    channel = channel or ctx.channel
+    bot_member = ctx.guild.get_member(bot.user.id) or ctx.guild.me
+    perms = channel.permissions_for(bot_member)
+    if not perms.view_channel or not perms.send_messages:
+        return await ctx.send("I can't send birthday messages in that channel.")
+
+    saved = await asyncio.to_thread(save_guild_birthday_channel, ctx.guild.id, channel.id, ctx.author.id)
+    if not saved:
+        return await ctx.send("Birthday channel save failed because the database is unavailable.")
+
+    guild_birthday_channels[ctx.guild.id] = {"channel_id": channel.id, "set_by_user_id": ctx.author.id}
+    await ctx.send(
+        f"{economy_q_birthday} Birthday announcements will be sent in {channel.mention}.",
+        allowed_mentions=discord.AllowedMentions.none()
+    )
 
 @bot.event
 async def on_guild_remove(guild):
@@ -908,16 +1063,6 @@ async def on_message(message):
     if message.author.bot:
         return
 
-    if looks_like_command_message(message):
-        ctx = await bot.get_context(message)
-        if ctx.valid:
-            print(
-                f"Command received: {ctx.command} by {message.author} "
-                f"({message.author.id}) in guild {message.guild.id if message.guild else 'DM'}"
-            )
-            await bot.invoke(ctx)
-            return
-
     # AI mention handling
     content = message.content.strip()
     is_mention = message.mentions and any(u.id == bot.user.id for u in message.mentions)
@@ -1020,7 +1165,7 @@ async def on_message(message):
 
         await message.channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
-    for uid in sleeping_users:
+    for uid in list(sleeping_users):
         if any(user.id == uid for user in message.mentions) or (
             message.reference and message.reference.resolved and message.reference.resolved.author.id == uid
         ):
@@ -1093,7 +1238,15 @@ async def on_message(message):
             chat_xp_memory[message.author.id] = now_ts
             asyncio.create_task(award_chat_xp_background(message))
 
-    # Commands are invoked at the top of this handler after one shared context lookup.
+    if looks_like_command_message(message):
+        ctx = await bot.get_context(message)
+        if ctx.valid:
+            print(
+                f"Command received: {ctx.command} by {message.author} "
+                f"({message.author.id}) in guild {message.guild.id if message.guild else 'DM'}"
+            )
+            await bot.invoke(ctx)
+            return
 
 @bot.event
 async def on_command_error(ctx, error):
@@ -1137,11 +1290,11 @@ HELP_CATEGORIES = {
         "cf", "roulette", "slots", "blackjack", "scratch", "ms", "wheel",
         "give", "lb", "addtick", "settick", "setquesos",
     ],
-    "Games": ["ttt", "c4", "q", "picker"],
+    "Games": ["ttt", "c4", "chess", "move", "resign", "q", "picker"],
     "Utility": ["help", "explain", "userinfo", "pfp", "calc", "define", "timer", "ctimer", "alarm", "poll", "epoll", "translate"],
     "AI": ["ask", "generate", "analyse"],
     "Server Tools": ["dsnipe", "esnipe", "rsnipe", "rolesinfo", "roleinfo", "purge", "rpurge", "steal"],
-    "Status": ["afk", "sleep", "wake", "away", "setbday", "removebday"],
+    "Status": ["afk", "sleep", "wake", "away", "setbday", "removebday", "setbdaychannel"],
     "Admin": ["setlogs", "prefix", "disable", "enable", "disableall", "enableall", "dclist", "addowner", "removeowner", "addmod", "removemod", "add", "remove", "addtick", "settick", "setquesos"],
 }
 
@@ -1404,7 +1557,7 @@ async def update_poll_counts(message):
     
     options = poll_data.get("options", ["Yes", "No"])
     use_numbers = poll_data.get("use_numbers", False)
-    number_emojis = ["1️⃣","2️⃣","3️⃣","4️⃣","5️⃣","6️⃣","7️⃣","8️⃣","9️⃣","🔟"]
+    number_emojis = POLL_NUMBER_EMOJIS
     
     for idx, opt in enumerate(options):
         if use_numbers:
@@ -1433,7 +1586,7 @@ async def finalize_poll(msg, poll_data):
     embed = poll_msg.embeds[0] if poll_msg.embeds else discord.Embed(title=poll_data["question"])
     options = poll_data.get("options", ["Yes", "No"])
     use_numbers = poll_data.get("use_numbers", False)
-    number_emojis = ["1️⃣","2️⃣","3️⃣","4️⃣","5️⃣","6️⃣","7️⃣","8️⃣","9️⃣","🔟"]
+    number_emojis = POLL_NUMBER_EMOJIS
 
     for idx, opt in enumerate(options):
         if use_numbers:
@@ -2353,7 +2506,7 @@ async def ask_game_bet(ctx, opponent, game_name):
         await ctx.send("Database unavailable. Try again shortly.")
         return None
 
-    amount = economy_parse_amount(amount_msg.content.strip(), ctx.author.id, ctx.guild, author_data["balance"])
+    amount = parse_uncapped_game_amount(amount_msg.content.strip(), author_data["balance"])
     if amount is None or amount <= 0:
         await ctx.send("Invalid bet amount. Game canceled.")
         return None
@@ -2379,6 +2532,18 @@ async def ask_game_bet(ctx, opponent, game_name):
         return None
 
     return amount
+
+def parse_uncapped_game_amount(raw, balance):
+    raw = str(raw).strip().lower().replace(",", "").replace("_", "")
+    if raw in {"all", "max"}:
+        return int(balance)
+    multipliers = {"k": 1_000, "m": 1_000_000, "b": 1_000_000_000}
+    try:
+        if raw and raw[-1] in multipliers:
+            return int(float(raw[:-1]) * multipliers[raw[-1]])
+        return int(float(raw))
+    except (TypeError, ValueError):
+        return None
 
 def game_bet_line(game):
     amount = game.get("bet_amount", 0)
@@ -2441,6 +2606,319 @@ class AcceptView(View):
                 f"<@{self.opponent.id}> didn't respond in time. Game canceled.",
                 allowed_mentions=discord.AllowedMentions.none()
             )
+
+def render_chess_board(game):
+    board = game["board"]
+    lines = []
+    for rank in range(7, -1, -1):
+        cells = []
+        for file in range(8):
+            square = chess_lib.square(file, rank)
+            piece = board.piece_at(square)
+            if piece:
+                cells.append(CHESS_PIECE_EMOJIS[piece.symbol()])
+            else:
+                cells.append(CHESS_LIGHT if (rank + file) % 2 == 0 else CHESS_DARK)
+        lines.append(f"{rank + 1} " + "".join(cells))
+    lines.append("  a b c d e f g h")
+    return "\n".join(lines)
+
+def chess_current_player(game):
+    return game["white"] if game["board"].turn == chess_lib.WHITE else game["black"]
+
+def chess_move_label(board, move):
+    try:
+        return board.san(move)
+    except Exception:
+        return move.uci()
+
+def chess_move_options(board, from_square=None):
+    moves = sorted(
+        list(board.legal_moves),
+        key=lambda move: (move.from_square, move.to_square, move.promotion or 0)
+    )
+    if from_square is not None:
+        moves = [move for move in moves if move.from_square == from_square]
+    return moves
+
+def chess_option_emoji(value):
+    if isinstance(value, str) and value.startswith("<"):
+        return custom_emoji(value)
+    return value
+
+def chess_status(game):
+    board = game["board"]
+    current = chess_current_player(game)
+    color = "White" if board.turn == chess_lib.WHITE else "Black"
+    status = f"{render_chess_board(game)}\n\n{economy_q_cards} **Chess**\n{color} to move: <@{current.id}>"
+    if board.is_check():
+        status += f"\n{economy_q_warning} Check."
+    selected = game.get("selected_from")
+    if selected is not None:
+        status += f"\nSelected: `{chess_lib.square_name(selected)}`"
+    status += "\nUse the menus below to select a piece and a legal move."
+    return status
+
+def parse_chess_move(board, raw_move):
+    text = raw_move.strip()
+    try:
+        return board.parse_san(text)
+    except ValueError:
+        pass
+    try:
+        move = chess_lib.Move.from_uci(text.lower())
+    except ValueError:
+        return None
+    return move if move in board.legal_moves else None
+
+class ChessFromSelect(Select):
+    def __init__(self, game):
+        board = game["board"]
+        from_squares = sorted({move.from_square for move in board.legal_moves})
+        options = []
+        for square in from_squares[:25]:
+            piece = board.piece_at(square)
+            square_name = chess_lib.square_name(square)
+            legal_count = sum(1 for move in board.legal_moves if move.from_square == square)
+            options.append(
+                discord.SelectOption(
+                    label=f"{square_name} ({legal_count})",
+                    value=str(square),
+                    emoji=chess_option_emoji(CHESS_PIECE_EMOJIS.get(piece.symbol())) if piece else None,
+                    description=f"{piece.symbol().upper()} legal moves" if piece else "Legal moves",
+                )
+            )
+        if not options:
+            options = [discord.SelectOption(label="No legal moves", value="-1")]
+        super().__init__(placeholder="Choose piece", min_values=1, max_values=1, options=options, row=0)
+
+    async def callback(self, interaction: discord.Interaction):
+        view = self.view
+        game = view.game
+        current = chess_current_player(game)
+        if interaction.user.id != current.id:
+            return await interaction.response.send_message("Not your turn.", ephemeral=True)
+        selected = int(self.values[0])
+        if selected < 0:
+            return await interaction.response.send_message("No legal moves are available.", ephemeral=True)
+        game["selected_from"] = selected
+        new_view = ChessView(game)
+        game["view"] = new_view
+        await interaction.response.edit_message(
+            content=chess_status(game),
+            view=new_view,
+            allowed_mentions=discord.AllowedMentions(users=True)
+        )
+
+class ChessMoveSelect(Select):
+    def __init__(self, game, moves, row):
+        board = game["board"]
+        options = []
+        for move in moves[:25]:
+            to_name = chess_lib.square_name(move.to_square)
+            label = chess_move_label(board, move)
+            options.append(
+                discord.SelectOption(
+                    label=label[:100],
+                    value=move.uci(),
+                    description=f"Move to {to_name}",
+                )
+            )
+        super().__init__(placeholder="Choose move", min_values=1, max_values=1, options=options, row=row)
+
+    async def callback(self, interaction: discord.Interaction):
+        view = self.view
+        game = view.game
+        current = chess_current_player(game)
+        if interaction.user.id != current.id:
+            return await interaction.response.send_message("Not your turn.", ephemeral=True)
+
+        move = chess_lib.Move.from_uci(self.values[0])
+        if move not in game["board"].legal_moves:
+            return await interaction.response.send_message("That move is no longer legal.", ephemeral=True)
+        await view.play_move(interaction, move)
+
+class ChessResignButton(Button):
+    def __init__(self):
+        super().__init__(label="Resign", style=discord.ButtonStyle.danger, row=4)
+
+    async def callback(self, interaction: discord.Interaction):
+        view = self.view
+        game = view.game
+        if interaction.user.id not in {game["white"].id, game["black"].id}:
+            return await interaction.response.send_message("Only chess players can resign.", ephemeral=True)
+        winner = game["black"] if interaction.user.id == game["white"].id else game["white"]
+        view.disable_all_items()
+        chess_games.pop(game["channel_id"], None)
+        await interaction.response.edit_message(
+            content=f"{render_chess_board(game)}\n\n{economy_q_game_win} <@{winner.id}> wins by resignation.",
+            view=view,
+            allowed_mentions=discord.AllowedMentions(users=True)
+        )
+
+class ChessClearSelectionButton(Button):
+    def __init__(self):
+        super().__init__(label="Clear", style=discord.ButtonStyle.secondary, row=4)
+
+    async def callback(self, interaction: discord.Interaction):
+        view = self.view
+        game = view.game
+        current = chess_current_player(game)
+        if interaction.user.id != current.id:
+            return await interaction.response.send_message("Not your turn.", ephemeral=True)
+        game["selected_from"] = None
+        new_view = ChessView(game)
+        game["view"] = new_view
+        await interaction.response.edit_message(
+            content=chess_status(game),
+            view=new_view,
+            allowed_mentions=discord.AllowedMentions(users=True)
+        )
+
+class ChessView(View):
+    def __init__(self, game):
+        super().__init__(timeout=900)
+        self.game = game
+        self.add_item(ChessFromSelect(game))
+        selected = game.get("selected_from")
+        if selected is not None:
+            moves = chess_move_options(game["board"], selected)
+            for idx in range(0, len(moves), 25):
+                row = 1 + idx // 25
+                if row >= 4:
+                    break
+                self.add_item(ChessMoveSelect(game, moves[idx:idx + 25], row=row))
+            self.add_item(ChessClearSelectionButton())
+        self.add_item(ChessResignButton())
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id not in {self.game["white"].id, self.game["black"].id}:
+            await interaction.response.send_message("Only the chess players can use this board.", ephemeral=True)
+            return False
+        return True
+
+    def disable_all_items(self):
+        for item in self.children:
+            item.disabled = True
+
+    async def play_move(self, interaction, move):
+        board = self.game["board"]
+        board.push(move)
+        self.game["selected_from"] = None
+
+        if board.is_checkmate():
+            winner = self.game["black"] if board.turn == chess_lib.WHITE else self.game["white"]
+            self.disable_all_items()
+            chess_games.pop(self.game["channel_id"], None)
+            return await interaction.response.edit_message(
+                content=f"{render_chess_board(self.game)}\n\n{economy_q_game_win} Checkmate. <@{winner.id}> wins!",
+                view=self,
+                allowed_mentions=discord.AllowedMentions(users=True)
+            )
+
+        if board.is_stalemate() or board.is_insufficient_material() or board.can_claim_draw():
+            self.disable_all_items()
+            chess_games.pop(self.game["channel_id"], None)
+            return await interaction.response.edit_message(
+                content=f"{render_chess_board(self.game)}\n\nGame drawn.",
+                view=self,
+                allowed_mentions=discord.AllowedMentions.none()
+            )
+
+        new_view = ChessView(self.game)
+        self.game["view"] = new_view
+        await interaction.response.edit_message(
+            content=chess_status(self.game),
+            view=new_view,
+            allowed_mentions=discord.AllowedMentions(users=True)
+        )
+
+@bot.command()
+async def chess(ctx, opponent: discord.Member):
+    if chess_lib is None:
+        return await ctx.send("Chess needs `python-chess` installed. Redeploy after installing requirements.")
+    if ctx.channel.id in chess_games:
+        return await ctx.send("A chess game is already in progress here.")
+    if opponent.bot or opponent == ctx.author:
+        return await ctx.send("Choose a real opponent.")
+
+    view = AcceptView(ctx, opponent)
+    await ctx.send(
+        f"<@{opponent.id}>, <@{ctx.author.id}> challenged you to **Chess**.\nClick below to accept or decline:",
+        view=view,
+        allowed_mentions=discord.AllowedMentions(users=[opponent])
+    )
+    await view.wait()
+    if not view.accepted:
+        return
+
+    game = {
+        "white": ctx.author,
+        "black": opponent,
+        "board": chess_lib.Board(),
+        "channel_id": ctx.channel.id,
+        "message": None,
+        "selected_from": None,
+        "view": None,
+    }
+    game["view"] = ChessView(game)
+    msg = await ctx.send(chess_status(game), view=game["view"], allowed_mentions=discord.AllowedMentions(users=True))
+    game["message"] = msg
+    chess_games[ctx.channel.id] = game
+
+@bot.command(name="move", aliases=["chessmove"])
+async def chess_move(ctx, *, move: str):
+    game = chess_games.get(ctx.channel.id)
+    if not game:
+        return await ctx.send("No chess game is active in this channel.")
+
+    board = game["board"]
+    current = game["white"] if board.turn == chess_lib.WHITE else game["black"]
+    if ctx.author.id != current.id:
+        return await ctx.send("Not your turn.")
+
+    parsed = parse_chess_move(board, move)
+    if parsed is None:
+        return await ctx.send(f"Illegal move. Use the chess UI or something like `{ctx.prefix}move e2e4`.")
+
+    board.push(parsed)
+    game["selected_from"] = None
+    if board.is_checkmate():
+        winner = game["black"] if board.turn == chess_lib.WHITE else game["white"]
+        await game["message"].edit(
+            content=f"{render_chess_board(game)}\n\n{economy_q_game_win} Checkmate. <@{winner.id}> wins!",
+            view=None,
+            allowed_mentions=discord.AllowedMentions(users=True)
+        )
+        chess_games.pop(ctx.channel.id, None)
+        return
+    if board.is_stalemate() or board.is_insufficient_material() or board.can_claim_draw():
+        await game["message"].edit(
+            content=f"{render_chess_board(game)}\n\nGame drawn.",
+            view=None,
+            allowed_mentions=discord.AllowedMentions.none()
+        )
+        chess_games.pop(ctx.channel.id, None)
+        return
+
+    game["view"] = ChessView(game)
+    await game["message"].edit(content=chess_status(game), view=game["view"], allowed_mentions=discord.AllowedMentions(users=True))
+
+@bot.command()
+async def resign(ctx):
+    game = chess_games.get(ctx.channel.id)
+    if not game:
+        return await ctx.send("No chess game is active in this channel.")
+    if ctx.author.id not in {game["white"].id, game["black"].id}:
+        return await ctx.send("Only a chess player can resign.")
+
+    winner = game["black"] if ctx.author.id == game["white"].id else game["white"]
+    await game["message"].edit(
+        content=f"{render_chess_board(game)}\n\n{economy_q_game_win} <@{winner.id}> wins by resignation.",
+        view=None,
+        allowed_mentions=discord.AllowedMentions(users=True)
+    )
+    chess_games.pop(ctx.channel.id, None)
 
 @bot.command()
 async def ttt(ctx, opponent: discord.Member):
@@ -2633,8 +3111,8 @@ async def update_c4_turn(game, channel):
     game["timeout_task"] = asyncio.create_task(countdown())
 
 def render_board(board, turn):
-    bg = "◻️" if turn == 0 else "◾"
-    rendered = f"{C4_COLUMN_LABELS}\n"
+    bg = C4_EMPTY_LIGHT if turn == 0 else C4_EMPTY_DARK
+    rendered = ""
     for row in board:
         for cell in row:
             rendered += cell if cell in (economy_q_connect_black, economy_q_connect_white) else bg
@@ -3154,6 +3632,7 @@ class NameModal(Modal):
         if not name:
             await interaction.response.send_message("Please enter a name.", ephemeral=True)
             return
+        await interaction.response.defer(ephemeral=True, thinking=True)
         
         # Sanitize name - Discord emoji/sticker names only allow alphanumeric, underscores
         name = re.sub(r'[^\w]+', '_', name)
@@ -3169,13 +3648,13 @@ class NameModal(Modal):
                     description=f"Sticker stolen via bot",
                     reason=None
                 )
-                await interaction.response.send_message(f"{economy_q_accept} Sticker `{name}` added successfully! {sticker}", ephemeral=True)
+                await interaction.followup.send(f"{economy_q_accept} Sticker `{name}` added successfully! {sticker}", ephemeral=True)
             except discord.Forbidden:
-                await interaction.response.send_message(f"{economy_q_reject} I don't have permission to create stickers.", ephemeral=True)
+                await interaction.followup.send(f"{economy_q_reject} I don't have permission to create stickers.", ephemeral=True)
             except discord.HTTPException as e:
-                await interaction.response.send_message(f"{economy_q_reject} Failed to add sticker: {e.text[:100] if e.text else e}", ephemeral=True)
+                await interaction.followup.send(f"{economy_q_reject} Failed to add sticker: {e.text[:100] if e.text else e}", ephemeral=True)
             except Exception as e:
-                await interaction.response.send_message(f"{economy_q_reject} Failed to add sticker: {e}", ephemeral=True)
+                await interaction.followup.send(f"{economy_q_reject} Failed to add sticker: {e}", ephemeral=True)
         elif self.type_ in ["emoji", "animated_emoji"]:
             is_animated = getattr(self.emoji_char, "animated", False) if self.emoji_char else False
             try:
@@ -3185,13 +3664,13 @@ class NameModal(Modal):
                     image=self.asset,
                     reason=None
                 )
-                await interaction.response.send_message(f"{economy_q_accept} Emoji `{name}` added successfully! {emoji}", ephemeral=True)
+                await interaction.followup.send(f"{economy_q_accept} Emoji `{name}` added successfully! {emoji}", ephemeral=True)
             except discord.Forbidden:
-                await interaction.response.send_message(f"{economy_q_reject} I don't have permission to create emojis.", ephemeral=True)
+                await interaction.followup.send(f"{economy_q_reject} I don't have permission to create emojis.", ephemeral=True)
             except discord.HTTPException as e:
-                await interaction.response.send_message(f"{economy_q_reject} Failed to add emoji: {e.text[:100] if e.text else e}", ephemeral=True)
+                await interaction.followup.send(f"{economy_q_reject} Failed to add emoji: {e.text[:100] if e.text else e}", ephemeral=True)
             except Exception as e:
-                await interaction.response.send_message(f"{economy_q_reject} Failed to add emoji: {e}", ephemeral=True)
+                await interaction.followup.send(f"{economy_q_reject} Failed to add emoji: {e}", ephemeral=True)
 
 class StealView(View):
     def __init__(self, type_: str, asset: BytesIO, emoji_char=None, preview_url: str = None):
@@ -3466,7 +3945,7 @@ async def poll(ctx, *, args):
             end_time = None
 
     default_options = ["Yes", "No"]
-    number_emojis = ["1️⃣","2️⃣","3️⃣","4️⃣","5️⃣","6️⃣","7️⃣","8️⃣","9️⃣","🔟"]
+    number_emojis = POLL_NUMBER_EMOJIS
     if options_str:
         raw_options = [o.strip() for o in options_str.split(",") if o.strip()]
         if len(raw_options) > 10:
@@ -4631,7 +5110,7 @@ async def ask_command(ctx, *, question: str):
                     await safe_remove_reaction(ctx.message, economy_q_timer_tick, bot.user)
                     return await ctx.send(f"Error: {resp.status}")
 
-                data = await resp.json()
+                data = await resp.json(content_type=None)
                 answer = data["choices"][0]["message"]["content"]
 
                 if len(answer) > 1900:
@@ -4757,10 +5236,23 @@ async def analyse_command(ctx):
 @bot.command(name="translate")
 async def translate_command(ctx, *, args: str = None):
     """Translate - reply to a message or provide text. Auto-detects language, translates to English."""
-    
-    # Get text to translate
+
+    source_lang = "auto"
+    target_lang = "en"
+
     if args:
-        text = args
+        raw = args.strip()
+        first, _, rest = raw.partition(" ")
+        if "|" in first and rest:
+            left, right = first.split("|", 1)
+            source_lang = left.strip().lower() or "auto"
+            target_lang = right.strip().lower() or "en"
+            text = rest.strip()
+        elif re.fullmatch(r"[a-zA-Z]{2,3}(?:-[a-zA-Z]{2,4})?", first) and rest:
+            target_lang = first.lower()
+            text = rest.strip()
+        else:
+            text = raw
     elif ctx.message.reference and ctx.message.reference.resolved:
         ref_msg = ctx.message.reference.resolved
         text = ref_msg.content
@@ -4772,30 +5264,26 @@ async def translate_command(ctx, *, args: str = None):
     await safe_add_reaction(ctx.message, economy_q_timer_tick)
     
     try:
-        # MyMemory auto-detect: use "auto" as source
         async with aiohttp.ClientSession() as session:
-            # First, detect language by querying with auto
-            url_detect = f"https://api.mymemory.translated.net/get?q={text}&langpair=auto|en"
-            async with session.get(url_detect) as resp:
+            params = {
+                "client": "gtx",
+                "sl": source_lang,
+                "tl": target_lang,
+                "dt": "t",
+                "q": text,
+            }
+            async with session.get("https://translate.googleapis.com/translate_a/single", params=params) as resp:
                 if resp.status != 200:
                     await safe_remove_reaction(ctx.message, economy_q_timer_tick, bot.user)
                     return await ctx.send(f"Error: {resp.status}")
-                
+
                 data = await resp.json()
-                if data.get("responseStatus") != 200:
-                    await safe_remove_reaction(ctx.message, economy_q_timer_tick, bot.user)
-                    return await ctx.send(f"Error: {data.get('responseDetails', 'Translation failed')}")
-                
-                # MyMemory returns detected language in responseData
-                detected_lang = data.get("responseData", {}).get("detectedLanguage", "unknown")
-                result = data["responseData"]["translatedText"]
-                
-                # If text is already English or very similar, note it
-                if detected_lang == "en":
-                    response = f"**Detected: English**\n{result}"
-                else:
-                    response = f"**Detected: {detected_lang.upper()} → English**\n{result}"
-                
+                result = "".join(part[0] for part in data[0] if part and part[0])
+                detected_lang = data[2] if len(data) > 2 and data[2] else source_lang
+                response = f"**Detected: {detected_lang.upper()} → {target_lang.upper()}**\n{result}"
+                if len(response) > 1900:
+                    response = response[:1897] + "..."
+
                 await safe_remove_reaction(ctx.message, economy_q_timer_tick, bot.user)
                 await ctx.send(response)
             

@@ -16,8 +16,8 @@ db_init_task = None
 bot = None
 
 # --- Config ---
-MAX_BET = 150_000
-COOLDOWN_SECS = 8
+MAX_BET = 200_000
+COOLDOWN_SECS = 10
 STREAK_MULTIPLIER = 0.015  # 1.5% per consecutive win
 CURRENCY_EMOJI = "<:Qoins:1500255107428782100>"
 QASH_EMOJI = "<:Qash:1500235432011497703>"
@@ -86,6 +86,28 @@ Q_TRASH = "<:QTrash:1500516810909290716>"
 Q_USER_EDIT = "<:QUserEdit:1500516813119946992>"
 Q_VOICE = "<:QVoice:1500516816701886535>"
 Q_WARNING = "<:QWarning:1500516819604209704>"
+Q_ROULETTE_RED = "<:QRouletteRed:1500878371293495346>"
+Q_ROULETTE_BLACK = "<:QRouletteBlack:1500878367174557706>"
+Q_ROULETTE_GREEN = "<:QRouletteGreen:1500878369271840891>"
+Q_SLOT_STAR = "<:QSlotStar:1500872961702363229>"
+Q_SLOT_DIAMOND = "<:QSlotDiamond:1500872954886619317>"
+Q_SLOT_CROWN = "<:QSlotCrown:1500872952240144534>"
+Q_SLOT_JACKPOT = "<:QSlotJackpot:1500872957348806816>"
+Q_SCRATCH_MARK = "<:QScratchMark:1500872869427810304>"
+Q_MS_HIDDEN = "<:QMineTile:1500878239659200602>"
+Q_MS_CURSOR = "<:QMineCursor:1500878238174417087>"
+Q_CARD_SPADE = "<:QCardSpade:1500873118011621437>"
+Q_CARD_HEART = "<:QCardHeart:1500873114400198779>"
+Q_CARD_DIAMOND = "<:QCardDiamond:1500873111459991754>"
+Q_CARD_CLUB = "<:QCardClub:1500873108960182434>"
+Q_WHEEL_RED = "<:QWheelRed:1500878498913452133>"
+Q_WHEEL_BLUE = "<:QWheelBlue:1500878487249096905>"
+Q_WHEEL_GREEN = "<:QWheelGreen:1500878491753906306>"
+Q_WHEEL_ORANGE = "<:QWheelOrange:1500878493309866206>"
+Q_WHEEL_PURPLE = "<:QWheelPurple:1500878497118289930>"
+Q_WHEEL_GOLD = "<:QWheelGold:1500878489430261780>"
+Q_WHEEL_BLANK = "<:QWheelBlank:1500878485378564308>"
+Q_WHEEL_PINK = "<:QWheelPink:1500878495159685341>"
 CHAT_XP_COOLDOWN_SECS = 60
 LEVEL_REWARD_BASE = 300_000
 LEVEL_REWARD_STEP = 50_000
@@ -233,6 +255,8 @@ lottery_view_registered = False
 
 # --- Cooldown tracking ---
 _cooldowns = {}  # {(user_id, command): timestamp}
+_command_cooldowns = {}  # {user_id: timestamp}
+QUEWO_COOLDOWN_EXEMPT = {"cooldowns", "econhelp", "economyhelp", "quewohelp", "ehelp", "explain"}
 
 def get_db_connection():
     return psycopg2.connect(os.getenv("DATABASE_URL"), cursor_factory=RealDictCursor, connect_timeout=5)
@@ -1319,7 +1343,7 @@ def claim_cooldown_text(last_claim, cooldown_seconds):
     return "Ready" if remaining <= 0 else format_duration(remaining)
 
 def command_cooldown_text(user_id, command):
-    last_used = _cooldowns.get((user_id, command))
+    last_used = _cooldowns.get((user_id, "quewo"))
     if not last_used:
         return "Ready"
     cooldown = COOLDOWN_SECS
@@ -1331,6 +1355,19 @@ def command_cooldown_text(user_id, command):
         pass
     remaining = cooldown - (time.time() - last_used)
     return "Ready" if remaining <= 0 else format_duration(remaining)
+
+async def quewo_command_cooldown_check(ctx):
+    command_name = ctx.command.name if ctx.command else ""
+    if command_name in QUEWO_COOLDOWN_EXEMPT or has_economy_owner_power(ctx.author.id, ctx.guild):
+        return True
+    now = time.time()
+    last_used = _command_cooldowns.get(ctx.author.id)
+    cooldown = COOLDOWN_SECS
+    if last_used and now - last_used < cooldown:
+        await ctx.send(f"{Q_TIMER_TICK} Chill for **{cooldown - (now - last_used):.1f}s** before using another Quewo command.")
+        return False
+    _command_cooldowns[ctx.author.id] = now
+    return True
 
 async def send_economy_log(ctx, title, fields, color=discord.Color.gold()):
     if economy_log_callback is None:
@@ -1403,7 +1440,7 @@ async def resolve_admin_targets(ctx, target):
     }
 
 def check_cooldown(user_id, command):
-    key = (user_id, command)
+    key = (user_id, "quewo")
     now = time.time()
     cooldown = COOLDOWN_SECS
     try:
@@ -1420,17 +1457,41 @@ def check_cooldown(user_id, command):
     return 0
 
 def parse_amount(raw, user_id=None, guild=None, balance=None):
-    if str(raw).lower() == "all":
+    raw_text = str(raw).strip().lower().replace(",", "").replace("_", "")
+    if raw_text == "all":
         if balance is None:
             return MAX_BET
         balance = max(0, int(balance))
         return min(balance, MAX_BET)
+    multipliers = {"k": 1_000, "m": 1_000_000, "b": 1_000_000_000, "bn": 1_000_000_000}
     try:
-        val = int(raw)
+        suffix = ""
+        number = raw_text
+        for candidate in sorted(multipliers, key=len, reverse=True):
+            if raw_text.endswith(candidate):
+                suffix = candidate
+                number = raw_text[:-len(candidate)]
+                break
+        val = int(float(number) * multipliers.get(suffix, 1))
         if user_id is not None and has_economy_owner_power(user_id, guild):
             return val
         return min(val, MAX_BET)
-    except:
+    except (TypeError, ValueError):
+        return None
+
+def parse_whole_number(raw):
+    raw_text = str(raw).strip().lower().replace(",", "").replace("_", "")
+    multipliers = {"k": 1_000, "m": 1_000_000, "b": 1_000_000_000, "bn": 1_000_000_000}
+    try:
+        suffix = ""
+        number = raw_text
+        for candidate in sorted(multipliers, key=len, reverse=True):
+            if raw_text.endswith(candidate):
+                suffix = candidate
+                number = raw_text[:-len(candidate)]
+                break
+        return int(float(number) * multipliers.get(suffix, 1))
+    except (TypeError, ValueError):
         return None
 
 async def send_nonpositive_amount_error(ctx, raw_amount):
@@ -1485,7 +1546,7 @@ async def ensure_db_ready(ctx, force=False):
 # =====================
 # BALANCE + STREAKS
 # =====================
-@commands.command(aliases=["balance", "wallet"])
+@commands.command(aliases=["balance", "wallet", "cash"])
 async def bal(ctx, member: discord.Member = None):
     if not await ensure_db_ready(ctx):
         return
@@ -1521,7 +1582,7 @@ async def bal(ctx, member: discord.Member = None):
 
     await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
-@commands.command(aliases=["prof"])
+@commands.command(aliases=["prof", "level", "lvl"])
 async def profile(ctx, member: discord.Member = None):
     if not await ensure_db_ready(ctx):
         return
@@ -1662,14 +1723,15 @@ async def shop(ctx):
             self.add_item(self.quantity)
 
         async def on_submit(self, interaction):
+            await interaction.response.defer(ephemeral=True, thinking=True)
             raw_quantity = str(self.quantity.value).strip()
             if not raw_quantity.isdigit():
-                await interaction.response.send_message(f"{Q_DENIED} Quantity must be a positive whole number.", ephemeral=True)
+                await interaction.followup.send(f"{Q_DENIED} Quantity must be a positive whole number.", ephemeral=True)
                 return
 
             quantity = int(raw_quantity)
             if quantity <= 0:
-                await interaction.response.send_message(f"{Q_DENIED} Quantity must be positive.", ephemeral=True)
+                await interaction.followup.send(f"{Q_DENIED} Quantity must be positive.", ephemeral=True)
                 return
 
             item = SHOP_ITEMS[self.item_id]
@@ -1681,10 +1743,10 @@ async def shop(ctx):
                 max_qty = item.get("max_qty", 1)
                 remaining_allowed = max_qty - owned
                 if remaining_allowed <= 0:
-                    await interaction.response.send_message(f"{Q_DENIED} You already own the max amount of **{item_name}**.", ephemeral=True)
+                    await interaction.followup.send(f"{Q_DENIED} You already own the max amount of **{item_name}**.", ephemeral=True)
                     return
                 if quantity > remaining_allowed:
-                    await interaction.response.send_message(
+                    await interaction.followup.send(
                         f"{Q_DENIED} You can only buy **{remaining_allowed}** more **{item_name}**.",
                         ephemeral=True
                     )
@@ -1693,7 +1755,7 @@ async def shop(ctx):
                 total_cost = item["cost"] * quantity
                 if data["balance"] < total_cost:
                     affordable = data["balance"] // item["cost"]
-                    await interaction.response.send_message(
+                    await interaction.followup.send(
                         f"{Q_DENIED} That costs **{format_balance(total_cost)}**. You can afford **{affordable}**.",
                         ephemeral=True
                     )
@@ -1704,10 +1766,10 @@ async def shop(ctx):
                 update_user(interaction.user.id, balance=new_balance, inventory=inventory)
                 log_transaction(interaction.user.id, "shop_purchase", -total_cost, f"{quantity}x {item['name']}")
             except Exception:
-                await interaction.response.send_message(f"{Q_DENIED} Database unavailable. Try again shortly.", ephemeral=True)
+                await interaction.followup.send(f"{Q_DENIED} Database unavailable. Try again shortly.", ephemeral=True)
                 return
 
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"{Q_SUCCESS} Bought **{quantity}x {item_name}** for **{format_balance(total_cost)}**.\n"
                 f"New Balance: **{format_balance(new_balance)}**",
                 ephemeral=True
@@ -2572,7 +2634,7 @@ async def gamble(ctx, amount: str, choice: str = None):
     raw_amount = amount
     parsed = parse_amount(amount, ctx.author.id, ctx.guild, data['balance'])
     if parsed is None:
-        await ctx.send(f"{Q_DENIED} Use `.cf all`, `.cf <amount>`, or `.flip <amount>` (max 150,000 {CURRENCY_EMOJI})")
+        await ctx.send(f"{Q_DENIED} Use `.cf all`, `.cf <amount>`, or `.flip <amount>` (max {MAX_BET:,} {CURRENCY_EMOJI})")
         return
 
     amount = parsed
@@ -2782,7 +2844,7 @@ async def roulette(ctx, amount: str, color: str = None):
     outcomes = ['red'] * 18 + ['black'] * 18 + ['green'] * 2
     result = random.choice(outcomes)
     multipliers = {'red': 2, 'black': 2, 'green': 10}
-    emoji_map = {'red': '🔴', 'black': '⚫', 'green': '🟢'}
+    emoji_map = {'red': Q_ROULETTE_RED, 'black': Q_ROULETTE_BLACK, 'green': Q_ROULETTE_GREEN}
     streak = data.get('roulette_streak', 0)
     mult = payout_multiplier(data, streak)
     roulette_msg = await ctx.send(
@@ -2791,7 +2853,12 @@ async def roulette(ctx, amount: str, color: str = None):
         f"{Q_TARGET} Pick: **{emoji_map[color]} {color.upper()}**\n"
         f"`[ spinning... ]`"
     )
-    spin_frames = ["🔴 ⚫ 🟢", "⚫ 🟢 🔴", "🟢 🔴 ⚫", "⚫ 🔴 ⚫"]
+    spin_frames = [
+        f"{Q_ROULETTE_RED} {Q_ROULETTE_BLACK} {Q_ROULETTE_GREEN}",
+        f"{Q_ROULETTE_BLACK} {Q_ROULETTE_GREEN} {Q_ROULETTE_RED}",
+        f"{Q_ROULETTE_GREEN} {Q_ROULETTE_RED} {Q_ROULETTE_BLACK}",
+        f"{Q_ROULETTE_BLACK} {Q_ROULETTE_RED} {Q_ROULETTE_BLACK}",
+    ]
     for frame in spin_frames:
         await asyncio.sleep(0.8)
         await roulette_msg.edit(
@@ -2874,7 +2941,7 @@ async def slots(ctx, amount: str):
     raw_amount = amount
     parsed = parse_amount(amount, ctx.author.id, ctx.guild, data['balance'])
     if parsed is None:
-        await ctx.send(f"{Q_DENIED} Use `.slots all` or `.slots <amount>` (max 150,000 {CURRENCY_EMOJI})")
+        await ctx.send(f"{Q_DENIED} Use `.slots all` or `.slots <amount>` (max {MAX_BET:,} {CURRENCY_EMOJI})")
         return
 
     amount = parsed
@@ -2887,8 +2954,22 @@ async def slots(ctx, amount: str):
         await ctx.send(f"{Q_DENIED} You only have {format_balance(data['balance'])}")
         return
 
-    emojis = ['🍒', '🍋', '🍊', '🍇', '💎', '⭐']
-    weights = [30, 25, 20, 15, 8, 2]
+    slot_symbols = [
+        (Q_SLOT_STAR, 2),
+        (Q_SLOT_DIAMOND, 3),
+        (Q_SLOT_CROWN, 4),
+        (Q_SLOT_JACKPOT, 5),
+    ]
+    symbol_weights = [40, 30, 20, 10]
+    if random.random() < 0.18:
+        chosen_symbol, result_multiplier = random.choices(slot_symbols, weights=symbol_weights)[0]
+        final_reels = [chosen_symbol, chosen_symbol, chosen_symbol]
+    else:
+        symbols = [symbol for symbol, _ in slot_symbols]
+        final_reels = [random.choices(symbols, weights=symbol_weights)[0] for _ in range(3)]
+        while final_reels[0] == final_reels[1] == final_reels[2]:
+            final_reels[random.randrange(3)] = random.choice([symbol for symbol in symbols if symbol != final_reels[0]])
+        result_multiplier = 0
 
     slots_msg = await ctx.send(
         f"{Q_SLOTS} **SPINNING...**\n"
@@ -2898,7 +2979,7 @@ async def slots(ctx, amount: str):
     )
 
     await asyncio.sleep(1.1)
-    r1 = random.choices(emojis, weights=weights)[0]
+    r1 = final_reels[0]
     await slots_msg.edit(
         content=(
             f"{Q_SLOTS} **SPINNING...**\n"
@@ -2909,7 +2990,7 @@ async def slots(ctx, amount: str):
         )
     )
     await asyncio.sleep(1.1)
-    r2 = random.choices(emojis, weights=weights)[0]
+    r2 = final_reels[1]
     await slots_msg.edit(
         content=(
             f"{Q_SLOTS} **SPINNING...**\n"
@@ -2920,16 +3001,14 @@ async def slots(ctx, amount: str):
         )
     )
     await asyncio.sleep(1.0)
-    r3 = random.choices(emojis, weights=weights)[0]
+    r3 = final_reels[2]
 
-    result = f"{r1} {r2} {r3}"
     streak = data.get('slots_streak', 0)
     mult = payout_multiplier(data, streak)
 
     try:
-        if r1 == r2 == r3:
-            multiplier = (emojis.index(r1) + 1) * 3
-            winnings = int(amount * mult * multiplier)
+        if result_multiplier > 0:
+            winnings = int(amount * mult * result_multiplier)
             new_balance = data['balance'] + winnings - amount
             update_user(
                 user_id,
@@ -2944,28 +3023,7 @@ async def slots(ctx, amount: str):
                     f"─────────────────\n"
                     f"| {r1} | {r2} | {r3} |\n"
                     f"─────────────────\n"
-                    f">>> {QOIN_CHEST} **JACKPOT!** ×{multiplier}\n"
-                    f"Won: **{format_balance(winnings)}**{streak_msg}\n"
-                    f"New Balance: **{format_balance(new_balance)}**"
-                )
-            )
-        elif r1 == r2 or r2 == r3 or r1 == r3:
-            winnings = int(amount * mult * 2)
-            new_balance = data['balance'] + winnings - amount
-            update_user(
-                user_id,
-                balance=new_balance,
-                slots_streak=streak + 1,
-                total_won=data['total_won'] + winnings - amount
-            )
-            streak_msg = f" {Q_STREAK_FIRE} {streak + 1} in a row! ×{payout_multiplier_after_win(data, streak + 1):.2f} payout" if streak > 0 else ""
-            await slots_msg.edit(
-                content=(
-                    f"{Q_SLOTS} **RESULTS**\n"
-                    f"─────────────────\n"
-                    f"| {r1} | {r2} | {r3} |\n"
-                    f"─────────────────\n"
-                    f">>> {Q_SUCCESS} **SMALL WIN!** ×2\n"
+                    f">>> {QOIN_CHEST} **THREE MATCH!** ×{result_multiplier}\n"
                     f"Won: **{format_balance(winnings)}**{streak_msg}\n"
                     f"New Balance: **{format_balance(new_balance)}**"
                 )
@@ -2998,7 +3056,7 @@ async def slots(ctx, amount: str):
 # BLACKJACK
 # =====================
 def shuffle_deck():
-    suits = ['♠️', '♥️', '♦️', '♣️']
+    suits = [Q_CARD_SPADE, Q_CARD_HEART, Q_CARD_DIAMOND, Q_CARD_CLUB]
     ranks = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A']
     deck = [(r, s) for s in suits for r in ranks]
     random.shuffle(deck)
@@ -3044,7 +3102,7 @@ async def blackjack(ctx, amount: str):
     raw_amount = amount
     parsed = parse_amount(amount, ctx.author.id, ctx.guild, data['balance'])
     if parsed is None:
-        await ctx.send(f"{Q_DENIED} Use `.blackjack all` or `.blackjack <amount>` (max 150,000 {CURRENCY_EMOJI})")
+        await ctx.send(f"{Q_DENIED} Use `.blackjack all` or `.blackjack <amount>` (max {MAX_BET:,} {CURRENCY_EMOJI})")
         return
 
     amount = parsed
@@ -3284,7 +3342,7 @@ async def lb(ctx):
 # ADD / REMOVE (OWNER)
 # =====================
 @commands.command()
-async def add(ctx, target: str, amount: int):
+async def add(ctx, target: str, amount: str):
     if not await ensure_db_ready(ctx):
         return
 
@@ -3292,6 +3350,10 @@ async def add(ctx, target: str, amount: int):
         await ctx.send(f"{Q_DENIED} Bot owner only.")
         return
 
+    amount = parse_whole_number(amount)
+    if amount is None:
+        await ctx.send(f"{Q_DENIED} Use `.add @user <amount>`, `.add @role <amount>`, or `.add @everyone <amount>`.")
+        return
     if amount <= 0:
         await ctx.send(f"{Q_DENIED} Amount must be positive.")
         return
@@ -3403,7 +3465,9 @@ async def remove(ctx, member: discord.Member, amount: str):
         if str(amount).lower() == "all":
             amount = old_balance
         else:
-            amount = int(amount)
+            amount = parse_whole_number(amount)
+            if amount is None:
+                raise ValueError
         if amount <= 0:
             await send_nonpositive_amount_error(ctx, raw_amount)
             return
@@ -3429,7 +3493,7 @@ async def remove(ctx, member: discord.Member, amount: str):
     ], color=discord.Color.red())
 
 @commands.command()
-async def addtick(ctx, target: str, amount: int):
+async def addtick(ctx, target: str, amount: str):
     """Superowner only. Adds free lottery tickets to a user, role, or everyone."""
     if ctx.guild is None:
         await ctx.send(f"{Q_DENIED} `.addtick` only works in servers.")
@@ -3438,6 +3502,10 @@ async def addtick(ctx, target: str, amount: int):
         return
     if not is_superowner_id(ctx.author.id):
         await ctx.send(f"{Q_DENIED} Superowner only.")
+        return
+    amount = parse_whole_number(amount)
+    if amount is None:
+        await ctx.send(f"{Q_DENIED} Use `.addtick @user <tickets>`, `.addtick @role <tickets>`, or `.addtick @everyone <tickets>`.")
         return
     if amount <= 0:
         await ctx.send(f"{Q_DENIED} Ticket amount must be positive.")
@@ -3481,7 +3549,7 @@ async def addtick(ctx, target: str, amount: int):
     ], color=discord.Color.green())
 
 @commands.command()
-async def settick(ctx, target: str, amount: int):
+async def settick(ctx, target: str, amount: str):
     """Superowner only. Sets lottery tickets for a user, role, or everyone."""
     if ctx.guild is None:
         await ctx.send(f"{Q_DENIED} `.settick` only works in servers.")
@@ -3490,6 +3558,10 @@ async def settick(ctx, target: str, amount: int):
         return
     if not is_superowner_id(ctx.author.id):
         await ctx.send(f"{Q_DENIED} Superowner only.")
+        return
+    amount = parse_whole_number(amount)
+    if amount is None:
+        await ctx.send(f"{Q_DENIED} Use `.settick @user <tickets>`, `.settick @role <tickets>`, or `.settick @everyone <tickets>`.")
         return
     if amount < 0:
         await ctx.send(f"{Q_DENIED} Ticket amount cannot be negative.")
@@ -3530,7 +3602,7 @@ async def settick(ctx, target: str, amount: int):
     ], color=discord.Color.gold())
 
 @commands.command()
-async def setquesos(ctx, target: str, amount: int):
+async def setquesos(ctx, target: str, amount: str):
     """Superowner only. Sets balances for a user, role, or everyone."""
     if ctx.guild is None:
         await ctx.send(f"{Q_DENIED} `.setquesos` only works in servers.")
@@ -3539,6 +3611,10 @@ async def setquesos(ctx, target: str, amount: int):
         return
     if not is_superowner_id(ctx.author.id):
         await ctx.send(f"{Q_DENIED} Superowner only.")
+        return
+    amount = parse_whole_number(amount)
+    if amount is None:
+        await ctx.send(f"{Q_DENIED} Use `.setquesos @user <amount>`, `.setquesos @role <amount>`, or `.setquesos @everyone <amount>`.")
         return
     if amount < 0:
         await ctx.send(f"{Q_DENIED} Balance cannot be negative.")
@@ -3573,15 +3649,13 @@ async def setquesos(ctx, target: str, amount: int):
 # SCRATCH CARD
 # =====================
 # Design: horizontal ticket with 5 hidden cells, animated one-by-one reveal
-# Win: all 5 cells match = ×8 payout, 3-4 matches = ×2 payout
+# Win: all 5 symbols match = ×10 payout
 
 SCRATCH_TIERS = [
-    (2, 2),   # 2 matches = ×2
-    (3, 3),   # 3 matches = ×2
-    (4, 4),   # 4 matches = ×2
-    (5, 5),   # 5 matches = ×8
+    (5, 10),
 ]
-SCRATCH_SYMBOLS = ['💎', '⭐', '🔮', '🌙', '🔥']
+SCRATCH_SYMBOLS = [Q_SCRATCH_MARK, Q_SLOT_STAR, Q_SLOT_DIAMOND, Q_SLOT_CROWN, Q_SLOT_JACKPOT]
+SCRATCH_WIN_CHANCE = 0.08
 
 @commands.command(aliases=["scratchcard"])
 async def scratch(ctx, amount: str):
@@ -3604,7 +3678,7 @@ async def scratch(ctx, amount: str):
     raw_amount = amount
     parsed = parse_amount(amount, ctx.author.id, ctx.guild, data['balance'])
     if parsed is None:
-        await ctx.send(f"{Q_DENIED} Use `.scratch all` or `.scratch <amount>` (max 150,000 {CURRENCY_EMOJI})")
+        await ctx.send(f"{Q_DENIED} Use `.scratch all` or `.scratch <amount>` (max {MAX_BET:,} {CURRENCY_EMOJI})")
         return
 
     amount = parsed
@@ -3617,19 +3691,20 @@ async def scratch(ctx, amount: str):
         await ctx.send(f"{Q_DENIED} You only have {format_balance(data['balance'])}")
         return
 
-    win_symbol = random.choice(SCRATCH_SYMBOLS)
-    n_matches = random.choices([2, 3, 4, 5], weights=[40, 40, 15, 5])[0]
-    ticket = [win_symbol] * n_matches
-    other_symbols = [s for s in SCRATCH_SYMBOLS if s != win_symbol]
-    while len(ticket) < 5:
-        ticket.append(random.choice(other_symbols))
-    random.shuffle(ticket)
+    if random.random() < SCRATCH_WIN_CHANCE:
+        win_symbol = random.choice(SCRATCH_SYMBOLS)
+        ticket = [win_symbol] * 5
+    else:
+        ticket = [random.choice(SCRATCH_SYMBOLS) for _ in range(5)]
+        while len(set(ticket)) == 1:
+            ticket[random.randrange(5)] = random.choice([symbol for symbol in SCRATCH_SYMBOLS if symbol != ticket[0]])
 
-    match_count = ticket.count(win_symbol)
+    best_symbol, match_count = max(
+        ((symbol, ticket.count(symbol)) for symbol in set(ticket)),
+        key=lambda item: item[1]
+    )
     if match_count == 5:
-        multiplier = 8
-    elif match_count >= 3:
-        multiplier = 2
+        multiplier = 10
     else:
         multiplier = 0
 
@@ -3655,10 +3730,11 @@ async def scratch(ctx, amount: str):
         await msg.edit(content=await scratch_msg(cell_states))
 
     await asyncio.sleep(0.4)
-    streak = data.get('scratch_streak', 0)
-    mult = payout_multiplier(data, streak)
 
     try:
+        data = get_user(user_id)
+        streak = data.get('scratch_streak', 0)
+        mult = payout_multiplier(data, streak)
         if multiplier > 0:
             winnings = int(amount * mult * multiplier)
             new_balance = data['balance'] + winnings - amount
@@ -3675,7 +3751,7 @@ async def scratch(ctx, amount: str):
                     f"─────────────────\n"
                     f"`{'  '.join(cell_states)}`\n"
                     f"─────────────────\n"
-                    f">>> {Q_SUCCESS} **{match_count}/5 {win_symbol} matched!**\n"
+                    f">>> {Q_SUCCESS} **{match_count}/5 {best_symbol} matched!**\n"
                     f"Multiplier: ×{multiplier}  |  Streak bonus: ×{mult:.2f}\n"
                     f"Won: **{format_balance(winnings)}**{streak_msg}\n"
                     f"New Balance: **{format_balance(new_balance)}**"
@@ -3715,8 +3791,8 @@ async def scratch(ctx, amount: str):
 GRID_EMOJIS = {
     'gem': Q_XP,
     'bomb': Q_MINE,
-    'hidden': '⬛',
-    'cursor': '🟨',
+    'hidden': Q_MS_HIDDEN,
+    'cursor': Q_MS_CURSOR,
 }
 
 @commands.command(name="ms", aliases=["minesweeper", "minesweepeer"])
@@ -3952,14 +4028,14 @@ async def minesweeper(ctx, amount: str):
 # Segments: various multipliers + 2 blanks, wheel spins for ~3 seconds before landing
 
 WHEEL_SEGMENTS = [
-    ('×0.5', 0xCC0000, '🔴'),   # red
-    ('×1',   0x1E90FF, '🔵'),   # blue
-    ('×1',   0x228B22, '🟢'),   # green
-    ('×2',   0xFF8C00, '🟠'),   # orange
-    ('×2',   0x9932CC, '🟣'),   # purple
-    ('×3',   0xFFD700, '🟡'),   # gold
-    ('BLANK', 0x555555, '⬛'),    # grey - lose nothing won
-    ('×5',   0xFF1493, '💗'),   # pink - rare
+    ('×0.5', 0xCC0000, Q_WHEEL_RED),
+    ('×1',   0x1E90FF, Q_WHEEL_BLUE),
+    ('×1',   0x228B22, Q_WHEEL_GREEN),
+    ('×2',   0xFF8C00, Q_WHEEL_ORANGE),
+    ('×2',   0x9932CC, Q_WHEEL_PURPLE),
+    ('×3',   0xFFD700, Q_WHEEL_GOLD),
+    ('BLANK', 0x555555, Q_WHEEL_BLANK),
+    ('×5',   0xFF1493, Q_WHEEL_PINK),
 ]
 WHEEL_WEIGHTS = [15, 25, 25, 15, 10, 5, 3, 2]  # sum = 100
 
@@ -3984,7 +4060,7 @@ async def wheel(ctx, amount: str):
     raw_amount = amount
     parsed = parse_amount(amount, ctx.author.id, ctx.guild, data['balance'])
     if parsed is None:
-        await ctx.send(f"{Q_DENIED} Use `.wheel all` or `.wheel <amount>` (max 150,000 {CURRENCY_EMOJI})")
+        await ctx.send(f"{Q_DENIED} Use `.wheel all` or `.wheel <amount>` (max {MAX_BET:,} {CURRENCY_EMOJI})")
         return
 
     amount = parsed
@@ -4040,7 +4116,7 @@ async def wheel(ctx, amount: str):
                 content=(
                     render_wheel(spinning=False, offset=final_offset, landed_idx=segment_idx) +
                     "\n" +
-                f">>> ⚪ **{label}**\n"
+                f">>> {emoji} **{label}**\n"
                 f"Nothing lost, nothing won.\n"
                 f"New Balance: **{format_balance(data['balance'])}**"
                 )
@@ -4099,7 +4175,10 @@ EXPLANATIONS = {
     "mod": "Mods can use mod commands for moderation/tools. They are below owners and cannot manage owners or mods.",
     "bal": "Shows balance, streaks, and total earned/won/lost. Use `.bal` or `.bal @user`.",
     "balance": "Alias for `.bal`. Shows balance, streaks, and total earned/won/lost.",
+    "cash": "Alias for `.bal`. Shows balance, streaks, and total earned/won/lost.",
     "profile": "Shows level, XP, balance, stats, and owned items. Use `.profile` or `.profile @user`.",
+    "level": "Alias for `.profile`. Shows level, XP, balance, stats, and owned items.",
+    "lvl": "Alias for `.profile`. Shows level, XP, balance, stats, and owned items.",
     "quests": "Opens your quests UI with main, daily, weekly, and monthly quests plus claim/refresh buttons.",
     "shop": "Opens the categorized Quewo shop UI. Select an item, press Buy, then enter quantity.",
     "cooldowns": "Shows daily, weekly, monthly, and gambling cooldowns. Use `.cooldowns` or `.cd`.",
@@ -4115,9 +4194,9 @@ EXPLANATIONS = {
     "cf": "Bet on heads or tails. Use `.cf <amount> h` or `.cf <amount> tails`.",
     "flip": "Bet on heads or tails. Use `.cf <amount> h` or `.cf <amount> tails`.",
     "roulette": "Bet on red, black, or green. Matching color wins.",
-    "slots": "Slot machine. Matching reels pay out; three matching reels pay more.",
+    "slots": "Slot machine. All 3 reels must match to win.",
     "blackjack": "Blackjack with Hit and Stand buttons. Beat the dealer without busting.",
-    "scratch": "Scratch card. More matching symbols means a better payout.",
+    "scratch": "Scratch card. All 5 symbols must match to win.",
     "ms": "Pick a grid size, reveal safe tiles, avoid bombs.",
     "minesweeper": "Pick a grid size, reveal safe tiles, avoid bombs.",
     "minesweepeer": "Pick a grid size, reveal safe tiles, avoid bombs.",
@@ -4160,6 +4239,9 @@ EXPLANATIONS = {
     "afk": "Marks you AFK until you send a message.",
     "setbday": "Saves your birthday.",
     "removebday": "Removes your birthday.",
+    "setbdaychannel": "Sets the server's birthday announcement channel.",
+    "bdaychannel": "Alias for `.setbdaychannel`. Sets the server's birthday announcement channel.",
+    "birthdaychannel": "Alias for `.setbdaychannel`. Sets the server's birthday announcement channel.",
     "away": "Shows AFK and sleeping users.",
     "listowners": "Lists bot owners.",
     "listmods": "Lists bot mods.",
@@ -4177,11 +4259,17 @@ EXPLANATIONS = {
     "preifx": "Typo alias for `.prefix`. Shows or changes this server's command prefix.",
     "ttt": "Starts Tic Tac Toe against another user. If the challenger sets a bet, the opponent must accept that bet too.",
     "c4": "Starts Connect 4 against another user. If the challenger sets a bet, the opponent must accept that bet too.",
+    "chess": "Starts a chess game against another user with a clickable move UI.",
+    "move": "Fallback chess command. Makes a chess move with notation like `.move e2e4` or `.move Nf3`.",
+    "chessmove": "Alias for `.move`. Makes a chess move with notation like `.move e2e4` or `.move Nf3`.",
+    "resign": "Resigns the active chess game in this channel.",
 }
 
 DETAILED_EXPLANATIONS = {
     "daily": f"Gives a reward once every 24 hours. Base reward is 10,000-15,000 {CURRENCY_EMOJI}. Your daily streak adds a small bonus after day 1.",
     "profile": f"Shows level, current XP toward the next level, balance, net gambling result, message count, and shop items. Chat XP can level you up and level rewards start at {format_balance(LEVEL_REWARD_BASE)}.",
+    "level": f"Alias for `.profile`. Shows level, current XP toward the next level, balance, net gambling result, message count, and shop items. Level rewards start at {format_balance(LEVEL_REWARD_BASE)}.",
+    "lvl": f"Alias for `.profile`. Shows level, current XP toward the next level, balance, net gambling result, message count, and shop items. Level rewards start at {format_balance(LEVEL_REWARD_BASE)}.",
     "quests": "Main quests track long streak achievements: 30 daily claims, 8 weekly claims, and 5 monthly claims. Daily, weekly, and monthly random quests rotate by period and can be claimed from the `.quests` UI.",
     "shop": "Opens an interactive categorized Quewo shop. Select an item, press Buy, then enter the quantity. The bot checks your balance, item limit, and total price before purchasing.",
     "cooldowns": "Shows daily, weekly, monthly, and active gambling command cooldowns in one place.",
@@ -4196,9 +4284,9 @@ DETAILED_EXPLANATIONS = {
     "cf": "Pick heads or tails with `.cf <amount> h`, `.cf <amount> t`, `.flip <amount> heads`, or `.flip <amount> tails`. If you do not pick, the bot asks you. Winning pays ×2 before streak bonus, so betting 100 wins 200 total and gives +100 profit. Losing removes the bet. Consecutive coinflip wins add +1.5% payout each win and reset on loss.",
     "flip": "Pick heads or tails with `.cf <amount> h`, `.cf <amount> t`, `.flip <amount> heads`, or `.flip <amount> tails`. If you do not pick, the bot asks you. Winning pays ×2 before streak bonus, so betting 100 wins 200 total and gives +100 profit. Losing removes the bet. Consecutive coinflip wins add +1.5% payout each win and reset on loss.",
     "roulette": "Pick red, black, green, or use the button menu if you leave the color blank. Red and black pay ×2. Green pays ×10 because it is rarer. The bet is removed from the payout result, so a 100 bet on red winning gives 200 total and +100 profit. Consecutive roulette wins add +1.5% payout each win and reset on loss.",
-    "slots": "The bot spins 3 reels. Three matching symbols are a jackpot and pay based on the symbol: earlier symbols pay less, rarer symbols pay more. Two matching symbols are a small win and pay ×2. No match loses the bet. Consecutive slots wins add +1.5% payout each win and reset on loss.",
+    "slots": "The bot spins 3 reels with 4 custom symbols. All 3 reels must match to win: first symbol pays ×2, second pays ×3, third pays ×4, and fourth pays ×5. Non-perfect results lose the bet. Consecutive slots wins add +1.5% payout each win and reset on loss.",
     "blackjack": "You get cards against the dealer and use Hit or Stand buttons. Try to get closer to 21 than the dealer without going over. A normal win pays +1x your bet as profit. Losing removes the bet. A push changes nothing. Consecutive blackjack wins add +1.5% payout each win and reset on loss.",
-    "scratch": "The ticket reveals 5 symbols one by one. Matching enough symbols wins a prize: 3 or 4 matches pay ×2, and 5 matches pay ×8. Fewer matches loses the bet. Consecutive scratch wins add +1.5% payout each win and reset on loss.",
+    "scratch": "The ticket reveals 5 symbols one by one. All 5 symbols must match to win ×10. The base win chance is intentionally low at about 8%. Consecutive scratch wins add +1.5% payout each win and reset on loss.",
     "ms": "Choose 3x3, 4x4, or 5x5, then reveal tiles. 3x3 has 1 bomb, 4x4 has 3 bombs, and 5x5 has 5 bombs. Reveal every safe tile to win. Each safe reveal raises the final multiplier by +0.15. Hitting a bomb or timing out loses the bet.",
     "minesweeper": "Choose 3x3, 4x4, or 5x5, then reveal tiles. 3x3 has 1 bomb, 4x4 has 3 bombs, and 5x5 has 5 bombs. Reveal every safe tile to win. Each safe reveal raises the final multiplier by +0.15. Hitting a bomb or timing out loses the bet.",
     "minesweepeer": "Choose 3x3, 4x4, or 5x5, then reveal tiles. 3x3 has 1 bomb, 4x4 has 3 bombs, and 5x5 has 5 bombs. Reveal every safe tile to win. Each safe reveal raises the final multiplier by +0.15. Hitting a bomb or timing out loses the bet.",
@@ -4211,8 +4299,13 @@ DETAILED_EXPLANATIONS = {
     "setquesos": f"Superowner-only Quewo admin command. Use `.setquesos @user <amount>`, `.setquesos @role <amount>`, or `.setquesos @everyone <amount>` to set balances to an exact {CURRENCY_EMOJI} amount. This sets balance directly instead of adding or removing a delta.",
     "prefix": "Changes the command prefix for this server. Use `.prefix !` or `.preifx !`. If the superowner is in the server, only the superowner can change it. If not, the server owner or admins can change it.",
     "preifx": "Typo alias for `.prefix`. Changes the command prefix for this server.",
+    "setbdaychannel": "Sets the birthday announcement channel for this server. Users keep one birthday date globally, and the bot announces it in every server where they are still a member and a birthday channel is configured.",
     "ttt": "Challenge a user to Tic Tac Toe. The opponent accepts the game first. If the challenger enables a bet and enters an amount, the opponent gets a second accept/decline prompt for that exact bet before the game starts.",
-    "c4": "Challenge a user to Connect 4. The opponent accepts the game first. If the challenger enables a bet and enters an amount, the opponent gets a second accept/decline prompt for that exact bet before the game starts. The board shows column numbers above and below the grid.",
+    "c4": "Challenge a user to Connect 4. The opponent accepts the game first. If the challenger enables a bet and enters an amount, the opponent gets a second accept/decline prompt for that exact bet before the game starts. The board shows column numbers below the grid.",
+    "chess": "Challenge a user to chess. The opponent accepts first, then the board message uses dropdown UI controls: choose one of your pieces, then choose one of that piece's legal moves. Movement legality, check, checkmate, stalemate, and draw detection come from python-chess.",
+    "move": "Fallback chess command for manual notation. Use UCI like `.move e2e4` or SAN like `.move Nf3`. The clickable chess UI is preferred.",
+    "chessmove": "Fallback chess command for manual notation. Use UCI like `.chessmove e2e4` or SAN like `.chessmove Nf3`. The clickable chess UI is preferred.",
+    "resign": "Ends the active chess game in this channel and awards the win to the other player.",
 }
 
 ECONHELP_COMMANDS = [
@@ -4323,6 +4416,7 @@ async def setup(bot_ref, log_callback=None):
     for command in economy_commands:
         if bot.get_command(command.name):
             continue
+        command.add_check(quewo_command_cooldown_check)
         bot.add_command(command)
 
     await restore_lottery_panels()

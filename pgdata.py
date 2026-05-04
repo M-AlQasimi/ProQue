@@ -79,6 +79,14 @@ def _create_tables(cur):
     """)
 
     cur.execute("""
+        CREATE TABLE IF NOT EXISTS guild_birthday_channels (
+            guild_id BIGINT PRIMARY KEY,
+            channel_id BIGINT NOT NULL,
+            set_by_user_id BIGINT
+        )
+    """)
+
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS birthdays (
             user_id BIGINT PRIMARY KEY,
             date TEXT NOT NULL
@@ -869,6 +877,50 @@ def save_guild_prefix(guild_id, prefix):
             "INSERT INTO guild_prefixes (guild_id, prefix) VALUES (%s, %s) "
             "ON CONFLICT (guild_id) DO UPDATE SET prefix = EXCLUDED.prefix",
             (int(guild_id), str(prefix))
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+        return True
+    except Exception:
+        return False
+
+def load_guild_birthday_channels():
+    _ensure_ready()
+    if not pg_ready:
+        return {}
+    try:
+        conn = pg_conn()
+        if conn is None:
+            return {}
+        cur = conn.cursor()
+        cur.execute("SELECT guild_id, channel_id, set_by_user_id FROM guild_birthday_channels")
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        return {
+            int(guild_id): {
+                "channel_id": int(channel_id),
+                "set_by_user_id": int(set_by_user_id) if set_by_user_id is not None else None,
+            }
+            for guild_id, channel_id, set_by_user_id in rows
+        }
+    except Exception:
+        return {}
+
+def save_guild_birthday_channel(guild_id, channel_id, set_by_user_id=None):
+    _ensure_ready()
+    if not pg_ready:
+        return False
+    try:
+        conn = pg_conn()
+        if conn is None:
+            return False
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO guild_birthday_channels (guild_id, channel_id, set_by_user_id) VALUES (%s, %s, %s) "
+            "ON CONFLICT (guild_id) DO UPDATE SET channel_id = EXCLUDED.channel_id, set_by_user_id = EXCLUDED.set_by_user_id",
+            (int(guild_id), int(channel_id), int(set_by_user_id) if set_by_user_id is not None else None)
         )
         conn.commit()
         cur.close()

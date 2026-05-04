@@ -8,6 +8,7 @@ import zlib
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 OUT = os.path.join(ROOT, "assets", "emojis")
 PNG_OUT = os.path.join(OUT, "png")
+UPLOAD_OUT = os.path.join(OUT, "upload")
 GIF_FRAMES = os.path.join(OUT, "gif_frames")
 SIZE = 128
 SCALE = 3
@@ -865,6 +866,377 @@ def qconfetti():
     c.sparkle(99, 34, 7)
     return c
 
+def qchess_piece(kind, white=True):
+    c = Canvas()
+    fill = ICE if white else BLUE_DARK
+    mid = SILVER if white else BLUE
+    edge = BLUE_MID if white else CYAN
+    accent = CYAN if white else ICE
+    shade = SILVER_DARK if white else (2, 14, 34, 255)
+
+    c.ellipse(64, 104, 36, 10, (2, 14, 34, 115))
+    c.rect(31, 91, 66, 10, mid, outline=edge, width=3)
+    c.ellipse(64, 91, 34, 9, fill, outline=edge, width=3)
+    c.rect(45, 70, 38, 24, fill, outline=edge, width=3)
+    c.ellipse(64, 70, 22, 8, mid, outline=edge, width=2)
+
+    if kind == "pawn":
+        c.circle(64, 43, 18, fill, outline=edge, width=4)
+        c.ellipse(64, 62, 20, 10, mid, outline=edge, width=3)
+    elif kind == "knight":
+        c.poly([(48, 67), (53, 39), (72, 25), (88, 43), (77, 50), (86, 68), (65, 70)], fill, outline=edge, width=4)
+        c.poly([(54, 39), (48, 25), (65, 34)], fill, outline=edge, width=3)
+        c.circle(70, 42, 3, edge)
+        c.line(58, 55, 77, 61, shade, 2)
+    elif kind == "bishop":
+        c.ellipse(64, 48, 20, 28, fill, outline=edge, width=4)
+        c.line(76, 30, 55, 63, accent, 4)
+        c.circle(64, 23, 6, accent, outline=edge, width=2)
+        c.ellipse(64, 71, 23, 9, mid, outline=edge, width=3)
+    elif kind == "rook":
+        c.rect(45, 35, 38, 35, fill, outline=edge, width=4)
+        for x in (45, 58, 71):
+            c.rect(x, 25, 10, 14, fill, outline=edge, width=2)
+        c.rect(42, 68, 44, 8, mid, outline=edge, width=3)
+    elif kind == "queen":
+        c.poly([(40, 64), (46, 33), (56, 55), (64, 26), (72, 55), (82, 33), (88, 64)], fill, outline=edge, width=4)
+        for x, y in [(46, 30), (64, 23), (82, 30)]:
+            c.circle(x, y, 6, accent, outline=edge, width=2)
+        c.rect(43, 63, 42, 9, mid, outline=edge, width=3)
+    elif kind == "king":
+        c.ellipse(64, 52, 20, 24, fill, outline=edge, width=4)
+        c.line(64, 20, 64, 43, accent, 5)
+        c.line(53, 30, 75, 30, accent, 5)
+        c.rect(45, 65, 38, 8, mid, outline=edge, width=3)
+
+    c.line(46, 95, 82, 95, ICE if not white else CYAN, 2)
+    c.sparkle(96, 33, 6)
+    return c
+
+def qc4_number(number):
+    c = Canvas()
+    c.circle(64, 64, 42, BLUE_DARK, outline=NAVY, width=4)
+    c.circle(64, 64, 34, BLUE, outline=CYAN, width=3)
+    c.circle(50, 46, 5, ICE)
+
+    digit_segments = {
+        1: "bc",
+        2: "abged",
+        3: "abgcd",
+        4: "fgbc",
+        5: "afgcd",
+        6: "afgecd",
+        7: "abc",
+    }
+    segments = digit_segments[number]
+    coords = {
+        "a": (48, 36, 80, 36),
+        "b": (82, 39, 82, 61),
+        "c": (82, 67, 82, 89),
+        "d": (48, 92, 80, 92),
+        "e": (46, 67, 46, 89),
+        "f": (46, 39, 46, 61),
+        "g": (49, 64, 79, 64),
+    }
+    for segment in segments:
+        c.line(*coords[segment], ICE, 7)
+        c.line(*coords[segment], CYAN, 3)
+    return c
+
+def qchess_white_pawn():
+    return qchess_piece("pawn", True)
+
+def qchess_white_knight():
+    return qchess_piece("knight", True)
+
+def qchess_white_bishop():
+    return qchess_piece("bishop", True)
+
+def qchess_white_rook():
+    return qchess_piece("rook", True)
+
+def qchess_white_queen():
+    return qchess_piece("queen", True)
+
+def qchess_white_king():
+    return qchess_piece("king", True)
+
+def qchess_black_pawn():
+    return qchess_piece("pawn", False)
+
+def qchess_black_knight():
+    return qchess_piece("knight", False)
+
+def qchess_black_bishop():
+    return qchess_piece("bishop", False)
+
+def qchess_black_rook():
+    return qchess_piece("rook", False)
+
+def qchess_black_queen():
+    return qchess_piece("queen", False)
+
+def qchess_black_king():
+    return qchess_piece("king", False)
+
+def qc4_1():
+    return qc4_number(1)
+
+def qc4_2():
+    return qc4_number(2)
+
+def qc4_3():
+    return qc4_number(3)
+
+def qc4_4():
+    return qc4_number(4)
+
+def qc4_5():
+    return qc4_number(5)
+
+def qc4_6():
+    return qc4_number(6)
+
+def qc4_7():
+    return qc4_number(7)
+
+def qgem_symbol(kind):
+    c = Canvas()
+    colors = {
+        "star": (GOLD, (185, 112, 22, 255)),
+        "diamond": (CYAN, BLUE_MID),
+        "crown": (GOLD, BLUE_DARK),
+        "jackpot": (PURPLE, BLUE_DARK),
+        "scratch": (SILVER, BLUE_MID),
+    }
+    fill, edge = colors[kind]
+    c.circle(64, 64, 43, BLUE_DARK, outline=NAVY, width=4)
+    if kind == "star":
+        pts = []
+        for i in range(10):
+            r = 34 if i % 2 == 0 else 14
+            a = -math.pi / 2 + i * math.pi / 5
+            pts.append((64 + math.cos(a) * r, 64 + math.sin(a) * r))
+        c.poly(pts, fill, outline=edge, width=3)
+    elif kind == "diamond":
+        c.poly([(64, 25), (99, 61), (64, 103), (29, 61)], fill, outline=edge, width=4)
+        c.line(43, 61, 85, 61, ICE, 2)
+        c.line(64, 27, 64, 101, ICE, 2)
+    elif kind == "crown":
+        c.poly([(30, 82), (38, 42), (55, 68), (64, 34), (73, 68), (90, 42), (98, 82)], fill, outline=edge, width=4)
+        c.rect(36, 79, 56, 12, fill, outline=edge, width=3)
+        for x in (38, 64, 90):
+            c.circle(x, 39 if x != 64 else 31, 6, ICE, outline=edge, width=2)
+    elif kind == "jackpot":
+        coin(c, 64, 64, 31)
+        c.text_q(64, 65, 35, fill)
+    elif kind == "scratch":
+        c.poly([(30, 42), (82, 27), (103, 82), (48, 101)], fill, outline=edge, width=4)
+        c.line(43, 57, 85, 45, CYAN, 3)
+        c.line(49, 77, 91, 65, BLUE_DARK, 3)
+        c.sparkle(95, 36, 7)
+    c.sparkle(99, 35, 6)
+    return c
+
+def qcolor_disc(fill, label=None):
+    c = Canvas()
+    c.circle(64, 64, 42, fill, outline=NAVY, width=4)
+    c.circle(52, 48, 6, ICE)
+    c.circle(64, 64, 28, TRANSPARENT, outline=(255, 255, 255, 90), width=2)
+    if label:
+        c.text_q(64, 66, 32, ICE if fill != ICE else BLUE)
+    return c
+
+def qtile(fill, edge=BLUE_DARK, q=False):
+    c = Canvas()
+    c.rect(28, 28, 72, 72, fill, outline=edge, width=5)
+    c.line(37, 39, 90, 39, ICE, 3)
+    if q:
+        c.text_q(64, 67, 30, CYAN)
+    return c
+
+def qcard_suit(kind):
+    c = Canvas()
+    c.rect(31, 19, 66, 90, ICE, outline=BLUE_DARK, width=4)
+    color = RED if kind in {"heart", "diamond"} else BLUE_DARK
+    if kind == "spade":
+        c.circle(53, 55, 16, color)
+        c.circle(75, 55, 16, color)
+        c.poly([(38, 62), (64, 30), (90, 62), (64, 86)], color)
+        c.line(64, 70, 56, 91, color, 7)
+        c.line(64, 70, 72, 91, color, 7)
+    elif kind == "heart":
+        c.circle(52, 52, 16, color)
+        c.circle(76, 52, 16, color)
+        c.poly([(36, 56), (92, 56), (64, 91)], color)
+    elif kind == "diamond":
+        c.poly([(64, 29), (91, 64), (64, 99), (37, 64)], color)
+    elif kind == "club":
+        c.circle(64, 43, 14, color)
+        c.circle(50, 64, 14, color)
+        c.circle(78, 64, 14, color)
+        c.line(64, 69, 56, 93, color, 7)
+        c.line(64, 69, 72, 93, color, 7)
+    c.sparkle(94, 27, 5)
+    return c
+
+def qpoll_number(number):
+    c = Canvas()
+    c.circle(64, 64, 42, BLUE_DARK, outline=NAVY, width=4)
+    c.circle(64, 64, 34, BLUE, outline=CYAN, width=3)
+    c.circle(50, 46, 5, ICE)
+
+    def draw_digit(digit, x_shift=0, y_shift=0, compact=False):
+        if compact:
+            coords = {
+                "a": (46 + x_shift, 42 + y_shift, 62 + x_shift, 42 + y_shift),
+                "b": (64 + x_shift, 44 + y_shift, 64 + x_shift, 60 + y_shift),
+                "c": (64 + x_shift, 66 + y_shift, 64 + x_shift, 82 + y_shift),
+                "d": (46 + x_shift, 84 + y_shift, 62 + x_shift, 84 + y_shift),
+                "e": (44 + x_shift, 66 + y_shift, 44 + x_shift, 82 + y_shift),
+                "f": (44 + x_shift, 44 + y_shift, 44 + x_shift, 60 + y_shift),
+                "g": (47 + x_shift, 63 + y_shift, 61 + x_shift, 63 + y_shift),
+            }
+            width_outer, width_inner = 5, 2
+        else:
+            coords = {
+                "a": (48 + x_shift, 36 + y_shift, 80 + x_shift, 36 + y_shift),
+                "b": (82 + x_shift, 39 + y_shift, 82 + x_shift, 61 + y_shift),
+                "c": (82 + x_shift, 67 + y_shift, 82 + x_shift, 89 + y_shift),
+                "d": (48 + x_shift, 92 + y_shift, 80 + x_shift, 92 + y_shift),
+                "e": (46 + x_shift, 67 + y_shift, 46 + x_shift, 89 + y_shift),
+                "f": (46 + x_shift, 39 + y_shift, 46 + x_shift, 61 + y_shift),
+                "g": (49 + x_shift, 64 + y_shift, 79 + x_shift, 64 + y_shift),
+            }
+            width_outer, width_inner = 7, 3
+        digit_segments = {
+            0: "abcdef",
+            1: "bc",
+            2: "abged",
+            3: "abgcd",
+            4: "fgbc",
+            5: "afgcd",
+            6: "afgecd",
+            7: "abc",
+            8: "abcdefg",
+            9: "abfgcd",
+        }
+        for segment in digit_segments[digit]:
+            c.line(*coords[segment], ICE, width_outer)
+            c.line(*coords[segment], CYAN, width_inner)
+
+    if number == 10:
+        draw_digit(1, x_shift=-18, compact=True)
+        draw_digit(0, x_shift=18, compact=True)
+    else:
+        draw_digit(number)
+    return c
+
+def qslot_star():
+    return qgem_symbol("star")
+
+def qslot_diamond():
+    return qgem_symbol("diamond")
+
+def qslot_crown():
+    return qgem_symbol("crown")
+
+def qslot_jackpot():
+    return qgem_symbol("jackpot")
+
+def qscratch_mark():
+    return qgem_symbol("scratch")
+
+def qmine_tile():
+    return qtile(BLUE_DARK, NAVY, False)
+
+def qmine_cursor():
+    return qtile(GOLD, BLUE_DARK, True)
+
+def qc4_empty_light():
+    return qtile(ICE, CYAN, False)
+
+def qc4_empty_dark():
+    return qtile(BLUE_DARK, NAVY, False)
+
+def qchess_dark():
+    return qtile(BLUE_DARK, NAVY, False)
+
+def qcard_spade():
+    return qcard_suit("spade")
+
+def qcard_heart():
+    return qcard_suit("heart")
+
+def qcard_diamond():
+    return qcard_suit("diamond")
+
+def qcard_club():
+    return qcard_suit("club")
+
+def qroulette_red():
+    return qcolor_disc(RED)
+
+def qroulette_black():
+    return qcolor_disc(NAVY)
+
+def qroulette_green():
+    return qcolor_disc(GREEN)
+
+def qwheel_red():
+    return qcolor_disc(RED, "Q")
+
+def qwheel_blue():
+    return qcolor_disc(BLUE, "Q")
+
+def qwheel_green():
+    return qcolor_disc(GREEN, "Q")
+
+def qwheel_orange():
+    return qcolor_disc(GOLD, "Q")
+
+def qwheel_purple():
+    return qcolor_disc(PURPLE, "Q")
+
+def qwheel_gold():
+    return qcolor_disc(GOLD, "Q")
+
+def qwheel_blank():
+    return qcolor_disc(SILVER_DARK, "Q")
+
+def qwheel_pink():
+    return qcolor_disc((255, 85, 170, 255), "Q")
+
+def qpoll_1():
+    return qpoll_number(1)
+
+def qpoll_2():
+    return qpoll_number(2)
+
+def qpoll_3():
+    return qpoll_number(3)
+
+def qpoll_4():
+    return qpoll_number(4)
+
+def qpoll_5():
+    return qpoll_number(5)
+
+def qpoll_6():
+    return qpoll_number(6)
+
+def qpoll_7():
+    return qpoll_number(7)
+
+def qpoll_8():
+    return qpoll_number(8)
+
+def qpoll_9():
+    return qpoll_number(9)
+
+def qpoll_10():
+    return qpoll_number(10)
+
 
 STATIC = {
     "QoinBag": qoin_bag,
@@ -927,13 +1299,135 @@ STATIC = {
     "QTarget": qtarget,
     "QCards": qcards,
     "QConfetti": qconfetti,
+    "QChessWhitePawn": qchess_white_pawn,
+    "QChessWhiteKnight": qchess_white_knight,
+    "QChessWhiteBishop": qchess_white_bishop,
+    "QChessWhiteRook": qchess_white_rook,
+    "QChessWhiteQueen": qchess_white_queen,
+    "QChessWhiteKing": qchess_white_king,
+    "QChessBlackPawn": qchess_black_pawn,
+    "QChessBlackKnight": qchess_black_knight,
+    "QChessBlackBishop": qchess_black_bishop,
+    "QChessBlackRook": qchess_black_rook,
+    "QChessBlackQueen": qchess_black_queen,
+    "QChessBlackKing": qchess_black_king,
+    "QC4One": qc4_1,
+    "QC4Two": qc4_2,
+    "QC4Three": qc4_3,
+    "QC4Four": qc4_4,
+    "QC4Five": qc4_5,
+    "QC4Six": qc4_6,
+    "QC4Seven": qc4_7,
+    "QSlotStar": qslot_star,
+    "QSlotDiamond": qslot_diamond,
+    "QSlotCrown": qslot_crown,
+    "QSlotJackpot": qslot_jackpot,
+    "QScratchMark": qscratch_mark,
+    "QMineTile": qmine_tile,
+    "QMineCursor": qmine_cursor,
+    "QC4EmptyLight": qc4_empty_light,
+    "QC4EmptyDark": qc4_empty_dark,
+    "QChessDark": qchess_dark,
+    "QCardSpade": qcard_spade,
+    "QCardHeart": qcard_heart,
+    "QCardDiamond": qcard_diamond,
+    "QCardClub": qcard_club,
+    "QRouletteRed": qroulette_red,
+    "QRouletteBlack": qroulette_black,
+    "QRouletteGreen": qroulette_green,
+    "QWheelRed": qwheel_red,
+    "QWheelBlue": qwheel_blue,
+    "QWheelGreen": qwheel_green,
+    "QWheelOrange": qwheel_orange,
+    "QWheelPurple": qwheel_purple,
+    "QWheelGold": qwheel_gold,
+    "QWheelBlank": qwheel_blank,
+    "QWheelPink": qwheel_pink,
+    "QPollOne": qpoll_1,
+    "QPollTwo": qpoll_2,
+    "QPollThree": qpoll_3,
+    "QPollFour": qpoll_4,
+    "QPollFive": qpoll_5,
+    "QPollSix": qpoll_6,
+    "QPollSeven": qpoll_7,
+    "QPollEight": qpoll_8,
+    "QPollNine": qpoll_9,
+    "QPollTen": qpoll_10,
 }
+
+STATIC_CATEGORIES = {
+    "general": {
+        "QAccept", "QDenied", "QReject", "QSuccess", "QWarning", "QTimer", "QTimeout",
+        "QBell", "QBook", "QGift", "QConfetti", "QThinking", "QTarget", "QBirthday",
+        "QAlarm", "QSleep", "QImage", "QAttachment",
+    },
+    "quewo": {
+        "QoinBag", "QoinChest", "QoinTransfer", "QXP", "QLevelUp", "QQuest", "QShop",
+        "QTicket", "QLuckyCharm", "QXPTonic", "QQuesoMagnet", "QDailySpice",
+        "QStreakPolish", "QGoldBadge", "QHighRoller", "QVelvetFrame", "QTicketCharm",
+        "QCooldownClock", "QRoyalCrown", "QStreakFire",
+    },
+    "moderation": {
+        "QHammer", "QTrash", "QEdit", "QLock", "QBroom", "QReaction", "QUserEdit",
+        "QRoles", "QVoice", "QPermissions",
+    },
+    "games/common": {
+        "QGameWin", "QGameTimeout", "QGameX", "QGameO", "QCards",
+    },
+    "games/coinflip": {
+        "QFlip",
+    },
+    "games/connect4": {
+        "QConnectBlack", "QConnectWhite", "QC4One", "QC4Two", "QC4Three", "QC4Four",
+        "QC4Five", "QC4Six", "QC4Seven", "QC4EmptyLight", "QC4EmptyDark",
+    },
+    "games/chess": {
+        "QChessWhitePawn", "QChessWhiteKnight", "QChessWhiteBishop", "QChessWhiteRook",
+        "QChessWhiteQueen", "QChessWhiteKing", "QChessBlackPawn", "QChessBlackKnight",
+        "QChessBlackBishop", "QChessBlackRook", "QChessBlackQueen", "QChessBlackKing",
+        "QChessDark",
+    },
+    "games/slots": {
+        "QSlots", "QSlotStar", "QSlotDiamond", "QSlotCrown", "QSlotJackpot",
+    },
+    "games/scratch": {
+        "QScratchMark",
+    },
+    "games/minesweeper": {
+        "QMine", "QMineTile", "QMineCursor",
+    },
+    "games/blackjack": {
+        "QCardSpade", "QCardHeart", "QCardDiamond", "QCardClub",
+    },
+    "games/roulette": {
+        "QRouletteRed", "QRouletteBlack", "QRouletteGreen",
+    },
+    "games/wheel": {
+        "QWheel", "QWheelRed", "QWheelBlue", "QWheelGreen", "QWheelOrange",
+        "QWheelPurple", "QWheelGold", "QWheelBlank", "QWheelPink",
+    },
+    "polls": {
+        "QPoll", "QPollOne", "QPollTwo", "QPollThree", "QPollFour", "QPollFive",
+        "QPollSix", "QPollSeven", "QPollEight", "QPollNine", "QPollTen",
+    },
+}
+
+
+def static_category(name):
+    for category, names in STATIC_CATEGORIES.items():
+        if name in names:
+            return category
+    return "general"
 
 
 def make_static():
     os.makedirs(PNG_OUT, exist_ok=True)
     for name, fn in STATIC.items():
-        save_png(fn(), os.path.join(PNG_OUT, f"{name}.png"))
+        canvas = fn()
+        save_png(canvas, os.path.join(PNG_OUT, f"{name}.png"))
+        category_dir = os.path.join(UPLOAD_OUT, "png", static_category(name))
+        os.makedirs(category_dir, exist_ok=True)
+        save_png(canvas, os.path.join(category_dir, f"{name}.png"))
 
 
 def make_frames():
@@ -958,8 +1452,25 @@ def make_frames():
             save_png(canvas, os.path.join(folder, f"{i:03d}.png"))
 
 
+def make_upload_gifs():
+    gif_src = os.path.join(OUT, "gif")
+    gif_dest = os.path.join(UPLOAD_OUT, "animated")
+    if not os.path.isdir(gif_src):
+        return
+    os.makedirs(gif_dest, exist_ok=True)
+    for filename in os.listdir(gif_src):
+        if not filename.endswith(".gif"):
+            continue
+        src_path = os.path.join(gif_src, filename)
+        dest_path = os.path.join(gif_dest, filename)
+        with open(src_path, "rb") as src, open(dest_path, "wb") as dest:
+            dest.write(src.read())
+
+
 if __name__ == "__main__":
     make_static()
     make_frames()
+    make_upload_gifs()
     print(PNG_OUT)
     print(GIF_FRAMES)
+    print(UPLOAD_OUT)
