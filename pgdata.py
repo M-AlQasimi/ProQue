@@ -52,18 +52,6 @@ def pg_init():
 
 def _create_tables(cur):
     cur.execute("""
-        CREATE TABLE IF NOT EXISTS bot_owners (
-            user_id BIGINT PRIMARY KEY
-        )
-    """)
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS bot_mods (
-            user_id BIGINT PRIMARY KEY
-        )
-    """)
-
-    cur.execute("""
         CREATE TABLE IF NOT EXISTS guild_log_config (
             guild_id BIGINT PRIMARY KEY,
             log_channel_id BIGINT NOT NULL,
@@ -185,22 +173,6 @@ def _create_tables(cur):
     """)
 
     cur.execute("""
-        CREATE TABLE IF NOT EXISTS guild_bot_owners (
-            guild_id BIGINT NOT NULL,
-            user_id BIGINT NOT NULL,
-            PRIMARY KEY (guild_id, user_id)
-        )
-    """)
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS guild_bot_mods (
-            guild_id BIGINT NOT NULL,
-            user_id BIGINT NOT NULL,
-            PRIMARY KEY (guild_id, user_id)
-        )
-    """)
-
-    cur.execute("""
         CREATE TABLE IF NOT EXISTS guild_bot_blacklist (
             guild_id BIGINT NOT NULL,
             user_id BIGINT NOT NULL,
@@ -272,24 +244,6 @@ def _migrate_bot_config(cur):
         return
 
     cur.execute("""
-        INSERT INTO bot_owners (user_id)
-        SELECT user_id_text::BIGINT
-        FROM bot_config, jsonb_array_elements_text(bot_config.value) AS user_id_text
-        WHERE bot_config.key = 'owners'
-          AND jsonb_typeof(bot_config.value) = 'array'
-          AND user_id_text ~ '^[0-9]+$'
-        ON CONFLICT DO NOTHING
-    """)
-    cur.execute("""
-        INSERT INTO bot_mods (user_id)
-        SELECT user_id_text::BIGINT
-        FROM bot_config, jsonb_array_elements_text(bot_config.value) AS user_id_text
-        WHERE bot_config.key = 'mods'
-          AND jsonb_typeof(bot_config.value) = 'array'
-          AND user_id_text ~ '^[0-9]+$'
-        ON CONFLICT DO NOTHING
-    """)
-    cur.execute("""
         INSERT INTO guild_log_config (guild_id, log_channel_id, reaction_log_channel_id)
         SELECT
             split_part(bot_config.key, ':', 2)::BIGINT,
@@ -345,18 +299,6 @@ def _save_id_set(table, id_set, column="user_id"):
         conn.close()
     except Exception:
         pass
-
-def load_owner_ids():
-    return _fetch_scoped_id_sets("guild_bot_owners")
-
-def save_owner_ids(guild_id, id_set):
-    _save_scoped_id_set("guild_bot_owners", guild_id, id_set)
-
-def load_mod_ids():
-    return _fetch_scoped_id_sets("guild_bot_mods")
-
-def save_mod_ids(guild_id, id_set):
-    _save_scoped_id_set("guild_bot_mods", guild_id, id_set)
 
 def _fetch_text_set(table, column):
     _ensure_ready()

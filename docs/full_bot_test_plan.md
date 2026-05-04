@@ -5,40 +5,31 @@ Use a test server. Some commands delete messages, change roles/channels, ban/kic
 ## Test Accounts
 
 - Superowner: the configured `super_owner_id`
-- Current owner: user in the bot owner list
-- Current mod: user in the bot mod list
-- Normal user: no bot owner/mod power and no Discord admin
-- Admin user: Discord Administrator permission, not bot owner/mod
+- Normal user: no Discord admin
+- Admin user: Discord Administrator permission
 - Server owner: actual Discord server owner
 
-For this round, test the current system as superowner, owner, mod, and normal user. Use the admin/server-owner cases as notes for the next permission refactor.
+The active permission model is superowner > actual server owner > Discord admins > normal users.
 
 ## Global Checks
 
 - Prefix: `bal` should not run. `.bal` should run unless prefix was changed.
 - Prefix command: `.prefix`, `.preifx`, `.prefix !`, then `!help`, `!bal`, and `.bal` should fail after the change.
 - Help: `.help`, `.help Quewo category`, `.help <command>`, `.econhelp`, `.quewohelp`, `.explain <command>`.
-- Disabled command flow: disable a harmless command, confirm normal/owner/mod cannot use it, confirm superowner can bypass, then re-enable.
-- Blacklist flow: blocked user cannot use commands.
+- Disabled command flow: disable a harmless command, confirm normal/admin/server-owner cannot use it, confirm superowner can bypass, then re-enable.
+- Blacklist flow: blocked normal user cannot use commands; admin-power users should still be able to recover.
 - Logs: set log channels, then trigger message delete/edit, role changes, channel changes, member ban/unban/kick, timeout, voice join/move/mute, reaction add/remove/clear.
 - Mentions in logs: user identities should be non-pinging mentions, not plain usernames.
 - Custom emojis: no command output should show raw custom emoji markdown unless Discord cannot render the emoji.
 
 ## Permission Matrix
 
-Expected current behavior before the admin refactor:
+Expected current behavior:
 
-- Superowner: can use every owner/mod/superowner command and bypass disabled commands.
-- Current owner: can use owner and mod commands, but not superowner-only owner-list commands.
-- Current mod: can use owner-or-mod commands only; owner-only commands should fail.
+- Superowner: can use every admin/superowner command and bypass disabled commands.
+- Server owner: can use admin-power commands and outranks admins, but cannot bypass disabled commands.
+- Admin user: can use admin-power commands, but cannot act on server owner or superowner.
 - Normal user: can use public commands only.
-
-After test results, refactor target:
-
-- Superowner highest if present in server.
-- Actual server owner higher than admins.
-- Discord admins get current owner power.
-- Remove bot owner/mod as the main permission model.
 
 ## Main Commands
 
@@ -73,8 +64,6 @@ After test results, refactor target:
 - `.setbdaychannel [channel]`
 - `.away`
 - `.find ...`
-- `.listowners`
-- `.listmods`
 - `.listtargets`
 - `.listcensors`
 - `.ask ...`
@@ -82,7 +71,7 @@ After test results, refactor target:
 - `.analyse ...`
 - `.translate ...`
 
-### Owner/Mod
+### Admin / Owner-Power
 
 - `.disable <command>`
 - `.enable <command>`
@@ -110,7 +99,7 @@ After test results, refactor target:
 - `.listblocks`
 - `.lists`
 
-### Owner-Only
+### Higher-Impact Admin / Owner-Power
 
 - `.setlogs`
 - `.deleterole <role>`
@@ -134,14 +123,6 @@ After test results, refactor target:
 - `.summon2 @member`
 - `.block @member`
 - `.unblock @member`
-
-### Superowner / Owner-Management
-
-- `.addowner @member`
-- `.removeowner @member`
-- `.clearowners`
-- `.addmod @member`
-- `.removemod @member`
 
 ### Prefix
 
@@ -184,12 +165,12 @@ Current expected:
 - `.quewohelp`
 - `.explain <command>`
 
-### Server Owner / Quewo Admin
+### Quewo Admin
 
 - `.editlottery <setting> <value>`
 - `.stoplottery`
 
-### Quewo Owner-Power / Superowner
+### Quewo Admin / Superowner
 
 - `.add @member|@role|@everyone <amount>`
 - `.remove @member <amount|all>`

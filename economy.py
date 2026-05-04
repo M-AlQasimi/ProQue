@@ -256,7 +256,11 @@ lottery_view_registered = False
 # --- Cooldown tracking ---
 _cooldowns = {}  # {(user_id, command): timestamp}
 _command_cooldowns = {}  # {user_id: timestamp}
-QUEWO_COOLDOWN_EXEMPT = {"cooldowns", "econhelp", "economyhelp", "quewohelp", "ehelp", "explain"}
+QUEWO_COOLDOWN_EXEMPT = {
+    "bal", "profile", "quests", "shop", "cooldowns", "transactions",
+    "lottery", "lotterystats", "daily", "weekly", "monthly",
+    "econhelp", "economyhelp", "quewohelp", "ehelp", "explain",
+}
 
 def get_db_connection():
     return psycopg2.connect(os.getenv("DATABASE_URL"), cursor_factory=RealDictCursor, connect_timeout=5)
@@ -1364,6 +1368,7 @@ async def quewo_command_cooldown_check(ctx):
     last_used = _command_cooldowns.get(ctx.author.id)
     cooldown = COOLDOWN_SECS
     if last_used and now - last_used < cooldown:
+        ctx.quewo_cooldown_blocked = True
         await ctx.send(f"{Q_TIMER_TICK} Chill for **{cooldown - (now - last_used):.1f}s** before using another Quewo command.")
         return False
     _command_cooldowns[ctx.author.id] = now
@@ -1383,16 +1388,34 @@ async def send_economy_log(ctx, title, fields, color=discord.Color.gold()):
 
 def is_super_owner(user_id, guild=None):
     super_owner_id = 885548126365171824
-    if user_id == super_owner_id:
-        return True
-    if guild is None or guild.owner_id != user_id:
+    return int(user_id) == super_owner_id
+
+def has_guild_admin_power(user_id, guild=None):
+    if guild is None:
         return False
-    return guild.get_member(super_owner_id) is None
+    member = guild.get_member(int(user_id))
+    permissions = getattr(member, "guild_permissions", None)
+    return bool(permissions and permissions.administrator)
 
 def has_economy_owner_power(user_id, guild=None):
     if is_super_owner(user_id, guild):
         return True
-    return guild is not None and guild.owner_id == user_id
+    return guild is not None and (guild.owner_id == int(user_id) or has_guild_admin_power(user_id, guild))
+
+def economy_permission_rank(user_id, guild=None):
+    user_id = int(user_id)
+    if is_super_owner(user_id, guild):
+        return 4
+    if guild is not None and guild.owner_id == user_id:
+        return 3
+    if has_guild_admin_power(user_id, guild):
+        return 2
+    return 0
+
+def can_economy_act_on(actor_id, target_id, guild=None):
+    if int(actor_id) == int(target_id):
+        return economy_permission_rank(actor_id, guild) > 0
+    return economy_permission_rank(actor_id, guild) > economy_permission_rank(target_id, guild)
 
 def is_superowner_id(user_id):
     return int(user_id) == 885548126365171824
@@ -1880,7 +1903,7 @@ async def lottery(ctx, action: str = None, amount: str = None):
     config = get_lottery_config(ctx.guild.id)
     if config is None:
         if not has_economy_owner_power(ctx.author.id, ctx.guild):
-            await ctx.send("Lottery is not set up yet. Ask the server owner to run `.lottery`.")
+            await ctx.send("Lottery is not set up yet. Ask the server owner or an admin to run `.lottery`.")
             return
 
         await ctx.send("Lottery setup: mention the lottery channel or send its channel ID.")
@@ -1938,7 +1961,7 @@ async def lottery(ctx, action: str = None, amount: str = None):
 
     if action and action.casefold() in {"setup", "config"}:
         if not has_economy_owner_power(ctx.author.id, ctx.guild):
-            await ctx.send(f"{Q_DENIED} Server owner only.")
+            await ctx.send(f"{Q_DENIED} Server owner or admin only.")
             return
         await ctx.send("To reconfigure, delete the current lottery config from the database or ask me to add a reset flow.")
         return
@@ -1962,7 +1985,7 @@ async def editlottery(ctx, setting: str = None, *, value: str = None):
     if not await ensure_db_ready(ctx):
         return
     if not has_economy_owner_power(ctx.author.id, ctx.guild):
-        await ctx.send(f"{Q_DENIED} Server owner only.")
+        await ctx.send(f"{Q_DENIED} Server owner or admin only.")
         return
 
     config = get_lottery_config(ctx.guild.id)
@@ -2058,7 +2081,7 @@ async def stoplottery(ctx):
     if not await ensure_db_ready(ctx):
         return
     if not has_economy_owner_power(ctx.author.id, ctx.guild):
-        await ctx.send(f"{Q_DENIED} Server owner only.")
+        await ctx.send(f"{Q_DENIED} Server owner or admin only.")
         return
 
     config = get_lottery_config(ctx.guild.id)
@@ -3347,7 +3370,7 @@ async def add(ctx, target: str, amount: str):
         return
 
     if not has_economy_owner_power(ctx.author.id, ctx.guild):
-        await ctx.send(f"{Q_DENIED} Bot owner only.")
+        await ctx.send(f"{Q_DENIED} Server owner or admin only.")
         return
 
     amount = parse_whole_number(amount)
@@ -3423,6 +3446,9 @@ async def add(ctx, target: str, amount: str):
     except commands.BadArgument:
         await ctx.send(f"{Q_DENIED} Use `.add @user <amount>`, `.add @role <amount>`, or `.add @everyone <amount>`.")
         return
+    if not can_economy_act_on(ctx.author.id, member.id, ctx.guild):
+        await ctx.send(f"{Q_DENIED} You can't edit that user's Quewo balance.")
+        return
 
     try:
         target_data = get_user(member.id)
@@ -3455,7 +3481,10 @@ async def remove(ctx, member: discord.Member, amount: str):
         return
 
     if not has_economy_owner_power(ctx.author.id, ctx.guild):
-        await ctx.send(f"{Q_DENIED} Bot owner only.")
+        await ctx.send(f"{Q_DENIED} Server owner or admin only.")
+        return
+    if not can_economy_act_on(ctx.author.id, member.id, ctx.guild):
+        await ctx.send(f"{Q_DENIED} You can't edit that user's Quewo balance.")
         return
 
     try:
@@ -4171,8 +4200,7 @@ async def wheel(ctx, amount: str):
 # EXPLAIN
 # =====================
 EXPLANATIONS = {
-    "owner": "Owners can use owner commands and manage mods. They are above mods; superowner/server-owner override is above owners.",
-    "mod": "Mods can use mod commands for moderation/tools. They are below owners and cannot manage owners or mods.",
+    "admin": "Admin power means superowner, actual server owner, or Discord Administrator. Server owner outranks admins, and superowner is highest.",
     "bal": "Shows balance, streaks, and total earned/won/lost. Use `.bal` or `.bal @user`.",
     "balance": "Alias for `.bal`. Shows balance, streaks, and total earned/won/lost.",
     "cash": "Alias for `.bal`. Shows balance, streaks, and total earned/won/lost.",
@@ -4184,8 +4212,8 @@ EXPLANATIONS = {
     "cooldowns": "Shows daily, weekly, monthly, and gambling cooldowns. Use `.cooldowns` or `.cd`.",
     "transactions": "Shows recent Quewo transactions. Use `.transactions` or `.transactions @user`.",
     "lottery": "Shows and refreshes the lottery ticket panel. First server run sets channel and draw period.",
-    "editlottery": "Server-owner command. Edits lottery price, duration, house cut, or channel, then refreshes the panel.",
-    "stoplottery": "Server-owner command. Stops this server's lottery and clears its tickets/config.",
+    "editlottery": "Server owner/admin command. Edits lottery price, duration, house cut, or channel, then refreshes the panel.",
+    "stoplottery": "Server owner/admin command. Stops this server's lottery and clears its tickets/config.",
     "lotterystats": "Shows lottery prize, tickets, players, next draw, paginated ticket holders, and panel link.",
     "buytick": "Legacy text command for buying lottery tickets. The lottery panel buttons are preferred.",
     "daily": "Claim a daily reward. Higher daily streak means a small bonus.",
@@ -4204,38 +4232,33 @@ EXPLANATIONS = {
     "give": "Transfers quesos to another user. Normal transfers burn 3% tax.",
     "lb": "Shows a paginated balance leaderboard.",
     "leaderboard": "Shows a paginated balance leaderboard.",
-    "add": "Owner command. Adds quesos to a user. Superowner can bulk add to @everyone or a role.",
-    "remove": "Owner command. Removes quesos from a user.",
+    "add": "Admin-power command. Adds quesos to a user. Superowner can bulk add to @everyone or a role.",
+    "remove": "Admin-power command. Removes quesos from a user.",
     "addtick": "Superowner command. Adds free lottery tickets to a user, role, or @everyone.",
     "settick": "Superowner command. Sets lottery tickets for a user, role, or @everyone.",
     "setquesos": "Superowner command. Sets balances for a user, role, or @everyone.",
-    "disable": "Superowner/server-owner override command. Disables one bot command.",
-    "enable": "Superowner/server-owner override command. Enables one disabled command.",
-    "disableall": "Superowner/server-owner override command. Disables all commands except enableall.",
-    "enableall": "Superowner/server-owner override command. Enables all commands again.",
+    "disable": "Admin-power command. Disables one bot command. Superowner can still bypass disabled commands.",
+    "enable": "Admin-power command. Enables one disabled command.",
+    "disableall": "Admin-power command. Disables all commands except enableall.",
+    "enableall": "Admin-power command. Enables all commands again.",
     "dclist": "Shows currently disabled commands.",
     "dsnipe": "Shows a recently deleted message in this channel.",
     "editsnipe": "Shows a recently edited message in this channel.",
     "rsnipe": "Shows a recently removed reaction.",
-    "setnick": "Owner/mod command. Changes a member's nickname.",
-    "shut": "Owner command. Silences a user's messages.",
-    "unshut": "Owner command. Unsilences a user's messages.",
-    "rshut": "Owner command. Silences a user's reactions.",
-    "unrshut": "Owner command. Unsilences a user's reactions.",
-    "lockdown": "Owner command. Locks this channel so only owners can talk.",
-    "unlock": "Owner command. Unlocks this channel.",
-    "rlockdown": "Owner command. Disables reactions in this channel.",
-    "runlock": "Owner command. Enables reactions in this channel.",
-    "addowner": "Superowner/server-owner override command. Adds bot owners.",
-    "removeowner": "Superowner/server-owner override command. Removes a bot owner.",
-    "clearowners": "Superowner/server-owner override command. Clears owners, then keeps the superowner.",
-    "addmod": "Owner command. Adds bot mods.",
-    "removemod": "Owner command. Removes a bot mod.",
-    "purge": "Owner/mod command. Deletes messages.",
-    "reactcount": "Owner/mod command. Counts reactions on a message.",
+    "setnick": "Admin-power command. Changes a member's nickname if they are below you in the permission order.",
+    "shut": "Admin-power command. Silences a user's messages if they are below you in the permission order.",
+    "unshut": "Admin-power command. Unsilences a user's messages.",
+    "rshut": "Admin-power command. Silences a user's reactions if they are below you in the permission order.",
+    "unrshut": "Admin-power command. Unsilences a user's reactions.",
+    "lockdown": "Admin-power command. Locks this channel so only admin-power users can speak.",
+    "unlock": "Admin-power command. Unlocks this channel.",
+    "rlockdown": "Admin-power command. Disables reactions in this channel.",
+    "runlock": "Admin-power command. Enables reactions in this channel.",
+    "purge": "Admin-power command. Deletes messages.",
+    "reactcount": "Admin-power command. Counts reactions on a message.",
     "sleep": "Marks you as sleeping until you send a message.",
-    "fsleep": "Superowner/server-owner override command. Marks members as sleeping.",
-    "wake": "Superowner/server-owner override command. Removes sleep mode from members.",
+    "fsleep": "Superowner command. Marks members as sleeping.",
+    "wake": "Superowner command. Removes sleep mode from members.",
     "afk": "Marks you AFK until you send a message.",
     "setbday": "Saves your birthday.",
     "removebday": "Removes your birthday.",
@@ -4243,9 +4266,7 @@ EXPLANATIONS = {
     "bdaychannel": "Alias for `.setbdaychannel`. Sets the server's birthday announcement channel.",
     "birthdaychannel": "Alias for `.setbdaychannel`. Sets the server's birthday announcement channel.",
     "away": "Shows AFK and sleeping users.",
-    "listowners": "Lists bot owners.",
-    "listmods": "Lists bot mods.",
-    "listbans": "Owner/mod command. Lists blacklisted users.",
+    "listbans": "Admin-power command. Lists blacklisted users.",
     "calc": "Calculates a math expression.",
     "ask": "Asks the AI a question.",
     "generate": "Generates text with AI.",
@@ -4273,10 +4294,10 @@ DETAILED_EXPLANATIONS = {
     "quests": "Main quests track long streak achievements: 30 daily claims, 8 weekly claims, and 5 monthly claims. Daily, weekly, and monthly random quests rotate by period and can be claimed from the `.quests` UI.",
     "shop": "Opens an interactive categorized Quewo shop. Select an item, press Buy, then enter the quantity. The bot checks your balance, item limit, and total price before purchasing.",
     "cooldowns": "Shows daily, weekly, monthly, and active gambling command cooldowns in one place.",
-    "transactions": "Shows recent money movement including shop purchases, quest rewards, level rewards, transfer tax, owner changes, and lottery activity.",
-    "lottery": f"Server lottery. First run asks the server owner for a channel and draw period, locks the channel, and posts a persistent ticket panel with buy buttons. Existing active lottery data is preserved when the panel is refreshed. The prize is the full current pot. Tickets cost {format_balance(LOTTERY_TICKET_COST)} and {int(LOTTERY_HOUSE_CUT * 100)}% is burned as a money sink.",
-    "editlottery": "Server-owner command. Use `.editlottery price 250000`, `.editlottery duration 12h`, `.editlottery cut 5`, or `.editlottery channel #lottery`. Duration resets the next draw timer. Channel posts a fresh lottery panel. Updates ping the lottery participant role.",
-    "stoplottery": "Server-owner command. Use `.stoplottery` to remove the lottery setup for this server, clear the current pot/tickets, and delete the participant role if the bot can. It leaves channels and panel messages alone.",
+    "transactions": "Shows recent money movement including shop purchases, quest rewards, level rewards, transfer tax, admin changes, and lottery activity.",
+    "lottery": f"Server lottery. First run asks the server owner or an admin for a channel and draw period, locks the channel, and posts a persistent ticket panel with buy buttons. Existing active lottery data is preserved when the panel is refreshed. The prize is the full current pot. Tickets cost {format_balance(LOTTERY_TICKET_COST)} and {int(LOTTERY_HOUSE_CUT * 100)}% is burned as a money sink.",
+    "editlottery": "Server owner/admin command. Use `.editlottery price 250000`, `.editlottery duration 12h`, `.editlottery cut 5`, or `.editlottery channel #lottery`. Duration resets the next draw timer. Channel posts a fresh lottery panel. Updates ping the lottery participant role.",
+    "stoplottery": "Server owner/admin command. Use `.stoplottery` to remove the lottery setup for this server, clear the current pot/tickets, and delete the participant role if the bot can. It leaves channels and panel messages alone.",
     "lotterystats": "Shows the current lottery prize pot, total ticket count, number of players, participant role, next draw time, panel link, and paginated ticket holders with approximate odds.",
     "buytick": f"Legacy text command for buying tickets for the configured server lottery. The lottery panel buttons are preferred because they send private confirmations and update the panel automatically. Each ticket costs {format_balance(LOTTERY_TICKET_COST)}. The prize is the full current lottery pot; every ticket is one entry.",
     "weekly": f"Gives a reward once every 7 days. Base reward is 20,000-30,000 {CURRENCY_EMOJI}. Your weekly streak adds a bonus after week 1.",
@@ -4291,9 +4312,9 @@ DETAILED_EXPLANATIONS = {
     "minesweeper": "Choose 3x3, 4x4, or 5x5, then reveal tiles. 3x3 has 1 bomb, 4x4 has 3 bombs, and 5x5 has 5 bombs. Reveal every safe tile to win. Each safe reveal raises the final multiplier by +0.15. Hitting a bomb or timing out loses the bet.",
     "minesweepeer": "Choose 3x3, 4x4, or 5x5, then reveal tiles. 3x3 has 1 bomb, 4x4 has 3 bombs, and 5x5 has 5 bombs. Reveal every safe tile to win. Each safe reveal raises the final multiplier by +0.15. Hitting a bomb or timing out loses the bet.",
     "wheel": "The wheel lands on a segment. ×2, ×3, and ×5 are wins. ×1 gives your stake back, ×0.5 loses half the bet, and BLANK changes nothing. Consecutive wheel wins add +1.5% payout each win and reset on loss or partial loss.",
-    "give": f"Moves quesos from you to another user. Normal transfers burn {int(TRANSFER_TAX_RATE * 100)}% as tax. Owner-power users can use `.give @user all`. The message shows sent amount, tax, received amount, and balances.",
-    "add": "Owner command. `.add @user <amount>` adds new quesos to one user. Superowner can use `.add @everyone <amount>` or `.add @role <amount>` to add that amount to every server member or every member with that role. It does not support `all`.",
-    "remove": "Owner command. Removes quesos from a user. `.remove @user all` removes their full balance. The balance cannot go below 0, and the message shows old and new balance.",
+    "give": f"Moves quesos from you to another user. Normal transfers burn {int(TRANSFER_TAX_RATE * 100)}% as tax. Admin-power users can use `.give @user all`. The message shows sent amount, tax, received amount, and balances.",
+    "add": "Admin-power command. `.add @user <amount>` adds new quesos to one user. Superowner can use `.add @everyone <amount>` or `.add @role <amount>` to add that amount to every server member or every member with that role. It does not support `all`.",
+    "remove": "Admin-power command. Removes quesos from a user. `.remove @user all` removes their full balance. The balance cannot go below 0, and the message shows old and new balance.",
     "addtick": "Superowner-only lottery admin command. Use `.addtick @user <tickets>`, `.addtick @role <tickets>`, or `.addtick @everyone <tickets>` to add free entries to the current lottery without changing the prize pot or charging users. The lottery panel refreshes after the change.",
     "settick": "Superowner-only lottery admin command. Use `.settick @user <tickets>`, `.settick @role <tickets>`, or `.settick @everyone <tickets>` to set current lottery entries to an exact number. Setting tickets does not charge users or change the prize pot. The lottery panel refreshes after the change.",
     "setquesos": f"Superowner-only Quewo admin command. Use `.setquesos @user <amount>`, `.setquesos @role <amount>`, or `.setquesos @everyone <amount>` to set balances to an exact {CURRENCY_EMOJI} amount. This sets balance directly instead of adding or removing a delta.",
@@ -4314,7 +4335,7 @@ ECONHELP_COMMANDS = [
     ("Lottery", ["lottery", "buytick", "lotterystats", "editlottery", "stoplottery"]),
     ("Gambling", ["cf", "roulette", "slots", "blackjack", "scratch", "ms", "wheel"]),
     ("Transfers", ["give"]),
-    ("Owner Quewo", ["add", "remove", "addtick", "settick", "setquesos"]),
+    ("Admin Quewo", ["add", "remove", "addtick", "settick", "setquesos"]),
     ("Help", ["econhelp", "explain"]),
 ]
 
@@ -4358,7 +4379,7 @@ async def explain(ctx, command_name: str = None):
     if not command_name:
         command_names = sorted({command.name for command in bot.commands})
         names = ", ".join(command_names)
-        await ctx.send(f"Use `{prefix}explain <command>`. Commands: {names}, mod, owner")
+        await ctx.send(f"Use `{prefix}explain <command>`. Commands: {names}, admin")
         return
 
     key = command_name.casefold().removeprefix(prefix.casefold()).lstrip(".")
@@ -4377,7 +4398,7 @@ async def explain(ctx, command_name: str = None):
         text = EXPLANATIONS.get(command.name)
     if command and not text:
         text = (command.help or "").strip().splitlines()[0] if command.help else "Runs this bot command."
-    if not text and key not in {"mod", "owner"}:
+    if not text and key != "admin":
         await ctx.send("I don't have a short explanation for that command.", delete_after=30)
         return
     detail = DETAILED_EXPLANATIONS.get(key)

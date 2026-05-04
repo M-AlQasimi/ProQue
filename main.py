@@ -80,8 +80,6 @@ from pgdata import (
     load_guild_birthday_channels,
     load_guild_prefixes,
     load_guild_log_config,
-    load_mod_ids,
-    load_owner_ids,
     load_reaction_shutdown_channels,
     load_reaction_watchlist,
     load_shutdown_channels,
@@ -104,8 +102,6 @@ from pgdata import (
     save_guild_birthday_channel,
     save_guild_prefix,
     save_guild_log_config,
-    save_mod_ids,
-    save_owner_ids,
     save_reaction_shutdown_channels,
     save_reaction_watchlist,
     save_shutdown_channels,
@@ -147,10 +143,6 @@ print(f"Bot is starting with intents: {bot.intents}")
 log_channel_id = None
 rlog_channel_id = None
 super_owner_id = 885548126365171824  
-# Loaded from PostgreSQL tables
-mods = load_mod_ids()
-owners = load_owner_ids()
-
 autoban_ids = load_autoban_ids()
 blacklisted_users = load_blacklisted_users()
 shutdown_channels = load_shutdown_channels()
@@ -272,12 +264,6 @@ def scoped_list(store, guild):
 
 def scoped_map(store, guild):
     return store.setdefault(scoped_id(guild), {})
-
-def guild_owners(guild):
-    return scoped_set(owners, guild)
-
-def guild_mods(guild):
-    return scoped_set(mods, guild)
 
 def guild_autoban_ids(guild):
     return scoped_set(autoban_ids, guild)
@@ -657,22 +643,35 @@ def keep_alive():
 def super_owner_in_guild(guild):
     return guild is not None and guild.get_member(super_owner_id) is not None
 
-def has_server_owner_override(user, guild):
-    if guild is None or user is None:
-        return False
-    return guild.owner_id == user.id and not super_owner_in_guild(guild)
-
 def has_super_owner_power(user, guild=None):
-    return user.id == super_owner_id or has_server_owner_override(user, guild)
+    return user is not None and user.id == super_owner_id
+
+def has_admin_power(user, guild=None):
+    if user is None or guild is None:
+        return False
+    permissions = getattr(user, "guild_permissions", None)
+    return bool(permissions and permissions.administrator)
 
 def has_owner_power(user, guild=None):
-    return has_super_owner_power(user, guild) or (guild is not None and guild.owner_id == user.id) or user.id in guild_owners(guild)
+    if user is None:
+        return False
+    return has_super_owner_power(user, guild) or (guild is not None and guild.owner_id == user.id) or has_admin_power(user, guild)
 
-def has_mod_power(user, guild=None):
-    return has_super_owner_power(user, guild) or user.id in guild_mods(guild)
+def permission_rank(user, guild=None):
+    if user is None:
+        return 0
+    if has_super_owner_power(user, guild):
+        return 4
+    if guild is not None and guild.owner_id == user.id:
+        return 3
+    if has_admin_power(user, guild):
+        return 2
+    return 0
 
-def has_owner_or_mod_power(user, guild=None):
-    return has_owner_power(user, guild) or user.id in guild_mods(guild)
+def can_act_on(actor, target, guild=None):
+    if target is None:
+        return True
+    return permission_rank(actor, guild) > permission_rank(target, guild)
 
 def can_manage_prefix(user, guild):
     if guild is None or user is None:
@@ -682,29 +681,14 @@ def can_manage_prefix(user, guild):
     permissions = getattr(user, "guild_permissions", None)
     return guild.owner_id == user.id or bool(permissions and permissions.administrator)
 
-def is_owner():
+def is_admin_power():
     async def predicate(ctx):
         return has_owner_power(ctx.author, ctx.guild)
-    return commands.check(predicate)
-
-def is_mod():
-    async def predicate(ctx):
-        return has_mod_power(ctx.author, ctx.guild)
-    return commands.check(predicate)
-
-def is_owner_or_mod():
-    async def predicate(ctx):
-        return has_owner_or_mod_power(ctx.author, ctx.guild)
     return commands.check(predicate)
 
 def is_super_owner():
     async def predicate(ctx):
         return has_super_owner_power(ctx.author, ctx.guild)
-    return commands.check(predicate)
-
-def is_super_owner_or_owner():
-    async def predicate(ctx):
-        return has_owner_power(ctx.author, ctx.guild)
     return commands.check(predicate)
 
 @tasks.loop(minutes=4)
@@ -847,7 +831,7 @@ async def on_guild_join(guild):
     await prompt_birthday_setup(guild)
 
 @bot.command()
-@is_owner()
+@is_admin_power()
 async def setlogs(ctx):
     await ctx.send("Starting log setup.")
     await prompt_log_setup(ctx.guild)
@@ -1224,7 +1208,7 @@ async def on_message(message):
 
         await message.channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
-    if message.author.id in guild_watchlist(message.guild) and message.author.id != super_owner_id:
+    if message.author.id in guild_watchlist(message.guild) and not has_owner_power(message.author, message.guild):
         try:
             await message.delete()
         except:
@@ -1260,6 +1244,8 @@ async def on_command_error(ctx, error):
 
     elif isinstance(error, commands.CheckFailure):
         print(f"Command check failed: {ctx.command} for {ctx.author} ({ctx.author.id}) - {type(error).__name__}: {error}")
+        if getattr(ctx, "quewo_cooldown_blocked", False):
+            return
         if ctx.author.id in guild_blacklisted_users(ctx.guild):
             await ctx.send(f"LMAO you're blocked you can't use ts {economy_q_reject}")
         else:
@@ -1279,7 +1265,7 @@ async def on_command_error(ctx, error):
 
     else:
         print(f"Unexpected error in {ctx.command}: {type(error).__name__} - {error}")
-        if ctx.author.id in guild_owners(ctx.guild):
+        if has_owner_power(ctx.author, ctx.guild):
             await ctx.send(f"Error: `{error}`")
         else:
             await ctx.send("You can't use that heh")
@@ -1295,7 +1281,7 @@ HELP_CATEGORIES = {
     "AI": ["ask", "generate", "analyse"],
     "Server Tools": ["dsnipe", "esnipe", "rsnipe", "rolesinfo", "roleinfo", "purge", "rpurge", "steal"],
     "Status": ["afk", "sleep", "wake", "away", "setbday", "removebday", "setbdaychannel"],
-    "Admin": ["setlogs", "prefix", "disable", "enable", "disableall", "enableall", "dclist", "addowner", "removeowner", "addmod", "removemod", "add", "remove", "addtick", "settick", "setquesos"],
+    "Admin": ["setlogs", "prefix", "disable", "enable", "disableall", "enableall", "dclist", "add", "remove", "addtick", "settick", "setquesos"],
 }
 
 def prefix_for_guild(guild):
@@ -2013,7 +1999,7 @@ async def globally_block_disabled(ctx):
 @bot.check
 async def block_blacklisted(ctx):
     blocked = guild_blacklisted_users(ctx.guild)
-    if ctx.author.id in blocked:
+    if ctx.author.id in blocked and not has_owner_power(ctx.author, ctx.guild):
         print(f"Blacklisted user blocked: {ctx.author} ({ctx.author.id}) in guild {ctx.guild.id if ctx.guild else 'DM'}")
         return False
     return True
@@ -2051,7 +2037,7 @@ async def prefix_command(ctx, new_prefix: str = None):
     await ctx.send(f"Prefix changed to `{new_prefix}`")
 
 @bot.command()
-@is_owner_or_mod()
+@is_admin_power()
 async def disable(ctx, cmd: str):
     if not has_owner_power(ctx.author, ctx.guild):
         return
@@ -2067,7 +2053,7 @@ async def disable(ctx, cmd: str):
     await ctx.send(f"Disabled **{command.name}**")
     
 @bot.command()
-@is_owner_or_mod()
+@is_admin_power()
 async def enable(ctx, cmd: str):
     if not has_owner_power(ctx.author, ctx.guild):
         return
@@ -2086,7 +2072,7 @@ async def enable(ctx, cmd: str):
         await ctx.send(f"**{command.name}** is not disabled.")
 
 @bot.command()
-@is_owner_or_mod()
+@is_admin_power()
 async def disableall(ctx):
     if not has_owner_power(ctx.author, ctx.guild):
         return
@@ -2098,7 +2084,7 @@ async def disableall(ctx):
     await ctx.send("Disabled **all commands**")
 
 @bot.command()
-@is_owner_or_mod()
+@is_admin_power()
 async def enableall(ctx):
     if not has_owner_power(ctx.author, ctx.guild):
         return
@@ -2108,7 +2094,7 @@ async def enableall(ctx):
     await ctx.send("Enabled **all commands**")
 
 @bot.command()
-@is_owner_or_mod()
+@is_admin_power()
 async def dclist(ctx):
     commands_for_guild = guild_disabled_commands(ctx.guild)
     if not commands_for_guild:
@@ -2210,7 +2196,7 @@ async def rsnipe(ctx, index: str = "1"):
         await ctx.send("Invalid index. Use a number like `.rsnipe 2` or `.rsnipe -3`.")
 
 @bot.command()
-@is_owner_or_mod()
+@is_admin_power()
 async def rolesinfo(ctx):
     try:
         roles = ctx.guild.roles[1:]
@@ -2282,7 +2268,7 @@ async def rolesinfo(ctx):
         await ctx.send(f"Error: `{type(e).__name__} - {e}`")
 
 @bot.command()
-@is_owner_or_mod()
+@is_admin_power()
 async def roleinfo(ctx, role: discord.Role):
     members = [member.mention for member in role.members]
     is_admin = role.permissions.administrator
@@ -2300,7 +2286,7 @@ async def roleinfo(ctx, role: discord.Role):
     await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
 @bot.command()
-@is_owner()
+@is_admin_power()
 async def deleterole(ctx, *roles: discord.Role):
     if not roles:
         return await ctx.send("Mention at least one role to delete.")
@@ -2324,7 +2310,7 @@ async def deleterole(ctx, *roles: discord.Role):
     await ctx.send(response or "No roles processed.")
 
 @bot.command()
-@is_owner_or_mod()
+@is_admin_power()
 async def test(ctx):
     await ctx.send("I'm alive heh")
 
@@ -3160,7 +3146,7 @@ async def c4(ctx, opponent: discord.Member):
     await update_c4_turn(game, ctx.channel)
 
 @bot.command()
-@is_owner_or_mod()
+@is_admin_power()
 async def endttt(ctx):
     if ctx.channel.id in ttt_games:
         ttt_games.pop(ctx.channel.id, None)
@@ -3174,8 +3160,10 @@ async def q(ctx):
     await ctx.send(f"**{answer}**")
 
 @bot.command()
-@is_owner_or_mod()
+@is_admin_power()
 async def setnick(ctx, member: discord.Member, *, nickname: str):
+    if not can_act_on(ctx.author, member, ctx.guild):
+        return await ctx.send("You can't change that user's nickname.")
     try:
         await member.edit(nick=nickname)
         await ctx.send(
@@ -3188,28 +3176,27 @@ async def setnick(ctx, member: discord.Member, *, nickname: str):
         await ctx.send(f"Error: {e}")
 
 @bot.command()
-@is_owner()
+@is_admin_power()
 async def shut(ctx, member: discord.Member):
     print(f"shut command used by {ctx.author} on {member}")
-    if member.id == super_owner_id:
-        return
+    if not can_act_on(ctx.author, member, ctx.guild):
+        return await ctx.send("You can't silence that user.")
     targets = guild_watchlist(ctx.guild)
     targets[member.id] = ctx.author.id
     save_watchlist(scoped_id(ctx.guild), targets)
     await ctx.send(f"<@{member.id}> has been silenced.", allowed_mentions=discord.AllowedMentions.none())
 
 @bot.command()
-@is_owner()
+@is_admin_power()
 async def unshut(ctx, member: discord.Member):
     targets = guild_watchlist(ctx.guild)
-    if member.id in guild_owners(ctx.guild):
-        if targets.get(member.id) == super_owner_id and not has_super_owner_power(ctx.author, ctx.guild):
-            return await ctx.send("Only 𝚀𝚞𝚎 can unshut that owner.")
+    if not can_act_on(ctx.author, member, ctx.guild) and targets.get(member.id) != ctx.author.id:
+        return await ctx.send("You can't unshut that user.")
     targets.pop(member.id, None)
     save_watchlist(scoped_id(ctx.guild), targets)
 
 @bot.command()
-@is_owner()
+@is_admin_power()
 async def clearwatchlist(ctx):
     if not has_super_owner_power(ctx.author, ctx.guild):
         return await ctx.send("Only 𝚀𝚞𝚎 can clear the watchlist.")
@@ -3218,37 +3205,36 @@ async def clearwatchlist(ctx):
     await ctx.send("Watchlist cleared.")
 
 @bot.command()
-@is_owner()
+@is_admin_power()
 async def rshut(ctx, member: discord.Member):
     """Silence a user's reactions."""
-    if member.id == super_owner_id:
-        return
+    if not can_act_on(ctx.author, member, ctx.guild):
+        return await ctx.send("You can't silence that user's reactions.")
     targets = guild_reaction_watchlist(ctx.guild)
     targets[member.id] = ctx.author.id
     save_reaction_watchlist(scoped_id(ctx.guild), targets)
     await ctx.send(f"<@{member.id}>'s reactions have been silenced.", allowed_mentions=discord.AllowedMentions.none())
 
 @bot.command()
-@is_owner()
+@is_admin_power()
 async def unrshut(ctx, member: discord.Member):
     """Allow a user's reactions again (silent unless protected owner)."""
     targets = guild_reaction_watchlist(ctx.guild)
-    if member.id in guild_owners(ctx.guild):
-        if targets.get(member.id) == super_owner_id and not has_super_owner_power(ctx.author, ctx.guild):
-            return await ctx.send("Only 𝚀𝚞𝚎 can unshut that owner.")
+    if not can_act_on(ctx.author, member, ctx.guild) and targets.get(member.id) != ctx.author.id:
+        return await ctx.send("You can't unshut that user.")
     targets.pop(member.id, None)
     save_reaction_watchlist(scoped_id(ctx.guild), targets)
 
 @bot.command()
-@is_owner()
+@is_admin_power()
 async def lockdown(ctx):
     channels = guild_shutdown_channels(ctx.guild)
     channels.add(ctx.channel.id)
     save_shutdown_channels(scoped_id(ctx.guild), channels)
-    await ctx.send("This channel is now in lockdown mode. Only owners can speak.")
+    await ctx.send("This channel is now in lockdown mode. Only admins can speak.")
 
 @bot.command()
-@is_owner()
+@is_admin_power()
 async def unlock(ctx):
     channels = guild_shutdown_channels(ctx.guild)
     channels.discard(ctx.channel.id)
@@ -3256,7 +3242,7 @@ async def unlock(ctx):
     await ctx.send("This channel has been unlocked. All users may speak now.")
 
 @bot.command()
-@is_owner()
+@is_admin_power()
 async def rlockdown(ctx):
     channels = guild_reaction_shutdown_channels(ctx.guild)
     channels.add(ctx.channel.id)
@@ -3264,194 +3250,17 @@ async def rlockdown(ctx):
     await ctx.send("Reactions are now disabled in this channel.", delete_after=5)
 
 @bot.command()
-@is_owner()
+@is_admin_power()
 async def runlock(ctx):
     channels = guild_reaction_shutdown_channels(ctx.guild)
     channels.discard(ctx.channel.id)
     save_reaction_shutdown_channels(scoped_id(ctx.guild), channels)
     await ctx.send("Reactions are now enabled in this channel.", delete_after=5)
 
-@bot.command()
-@is_super_owner()
-async def addowner(ctx, *users: discord.User):
-    owner_ids = guild_owners(ctx.guild)
-    added = []
-    already = []
-    for user in users:
-        if user.id in owner_ids:
-            already.append(user)
-        else:
-            owner_ids.add(user.id)
-            added.append(user)
-    if added:
-        save_owner_ids(scoped_id(ctx.guild), owner_ids)
-    
-    if len(added) == 1:
-        await ctx.send(f"<@{added[0].id}> has been added as an owner.", allowed_mentions=discord.AllowedMentions.none())
-    elif len(added) > 1:
-        mentions = ", ".join(f"<@{u.id}>" for u in added)
-        await ctx.send(f"{mentions} have been added as owners.", allowed_mentions=discord.AllowedMentions.none())
-
-    for user in already:
-        await ctx.send(f"<@{user.id}> is already an owner.", allowed_mentions=discord.AllowedMentions.none())
-
-@bot.command()
-@is_super_owner()
-async def removeowner(ctx, user: discord.User):
-    
-    owner_ids = guild_owners(ctx.guild)
-    if user.id in owner_ids:
-        owner_ids.remove(user.id)
-        save_owner_ids(scoped_id(ctx.guild), owner_ids)
-        await ctx.send(f"<@{user.id}> has been removed from owners.", allowed_mentions=discord.AllowedMentions.none())
-    else:
-        await ctx.send(f"<@{user.id}> is not an owner.", allowed_mentions=discord.AllowedMentions.none())
-
-@bot.command()
-@is_super_owner()
-async def clearowners(ctx):
-    owner_ids = guild_owners(ctx.guild)
-    owner_ids.clear()
-    owner_ids.add(super_owner_id)
-    save_owner_ids(scoped_id(ctx.guild), owner_ids)
-    await ctx.send("Cleared all owners.")
-
-@bot.command()
-@is_super_owner_or_owner()
-async def addmod(ctx, *users: discord.User):
-    global mods
-    mod_ids = guild_mods(ctx.guild)
-    added = []
-    already = []
-    for user in users:
-        if user.id in mod_ids:
-            already.append(user)
-        else:
-            mod_ids.add(user.id)
-            added.append(user)
-    if added:
-        save_mod_ids(scoped_id(ctx.guild), mod_ids)
-    
-    if len(added) == 1:
-        await ctx.send(f"<@{added[0].id}> has been added as a mod.", allowed_mentions=discord.AllowedMentions.none())
-    elif len(added) > 1:
-        mentions = ", ".join(f"<@{u.id}>" for u in added)
-        await ctx.send(f"{mentions} have been added as mods.", allowed_mentions=discord.AllowedMentions.none())
-
-    for user in already:
-        await ctx.send(f"<@{user.id}> is already a mod.", allowed_mentions=discord.AllowedMentions.none())
-
-@bot.command()
-@is_super_owner_or_owner()
-async def removemod(ctx, user: discord.User):
-    global mods
-    mod_ids = guild_mods(ctx.guild)
-    if user.id in mod_ids:
-        mod_ids.remove(user.id)
-        save_mod_ids(scoped_id(ctx.guild), mod_ids)
-        await ctx.send(f"<@{user.id}> has been removed from mods.", allowed_mentions=discord.AllowedMentions.none())
-    else:
-        await ctx.send(f"<@{user.id}> is not a mod.", allowed_mentions=discord.AllowedMentions.none())
-
-class OwnerModManagement(commands.Cog):
-    def __init__(self, bot):
-        self.bot = bot
-
-    async def cog_load(self):
-        pass
-
-    @app_commands.command(name="addowner", description="Add one or multiple owners")
-    async def addowner(self, interaction: discord.Interaction, users: str):
-        if not has_super_owner_power(interaction.user, interaction.guild):
-            return await interaction.response.send_message("Only 𝚀𝚞𝚎 can add owners.", ephemeral=True)
-
-        user_ids = []
-        for part in users.split():
-            if part.isdigit():
-                user_ids.append(int(part))
-            else:
-                if part.startswith('<@') and part.endswith('>'):
-                    part = part.replace('<@!', '').replace('<@', '').replace('>', '')
-                    if part.isdigit():
-                        user_ids.append(int(part))
-
-        added = []
-        already = []
-        owner_ids = guild_owners(interaction.guild)
-        for uid in user_ids:
-            user = self.bot.get_user(uid)
-            if not user:
-                continue
-            if uid in owner_ids:
-                already.append(user)
-            else:
-                owner_ids.add(uid)
-                added.append(user)
-
-        if added:
-            save_owner_ids(scoped_id(interaction.guild), owner_ids)
-
-        messages = []
-        if len(added) == 1:
-            messages.append(f"{added[0].mention} has been added as an owner.")
-        elif len(added) > 1:
-            mentions = ", ".join(u.mention for u in added)
-            messages.append(f"{mentions} have been added as owners.")
-        for user in already:
-            messages.append(f"{user.mention} is already an owner.")
-
-        await interaction.response.send_message("\n".join(messages) or "No valid users specified.", ephemeral=True)
-
-    @app_commands.command(name="addmod", description="Add one or multiple mods")
-    @commands.check_any(commands.is_owner(), commands.has_permissions(administrator=True))
-    async def addmod(self, interaction: discord.Interaction, users: str):
-        if not has_owner_power(interaction.user, interaction.guild):
-            return await interaction.response.send_message("Only owners and 𝚀𝚞𝚎 can add mods.", ephemeral=True)
-
-        user_ids = []
-        for part in users.split():
-            if part.isdigit():
-                user_ids.append(int(part))
-            else:
-                if part.startswith('<@') and part.endswith('>'):
-                    part = part.replace('<@!', '').replace('<@', '').replace('>', '')
-                    if part.isdigit():
-                        user_ids.append(int(part))
-
-        added = []
-        already = []
-        mod_ids = guild_mods(interaction.guild)
-        for uid in user_ids:
-            user = self.bot.get_user(uid)
-            if not user:
-                continue
-            if uid in mod_ids:
-                already.append(user)
-            else:
-                mod_ids.add(uid)
-                added.append(user)
-
-        if added:
-            save_mod_ids(scoped_id(interaction.guild), mod_ids)
-
-        messages = []
-        if len(added) == 1:
-            messages.append(f"{added[0].mention} has been added as a mod.")
-        elif len(added) > 1:
-            mentions = ", ".join(u.mention for u in added)
-            messages.append(f"{mentions} have been added as mods.")
-        for user in already:
-            messages.append(f"{user.mention} is already a mod.")
-
-        await interaction.response.send_message("\n".join(messages) or "No valid users specified.", ephemeral=True)
-
-async def setup(bot):
-    await bot.add_cog(OwnerModManagement(bot))
-
 from collections import Counter
 
 @bot.command()
-@is_owner_or_mod()
+@is_admin_power()
 async def purge(ctx, amount: int, member: discord.Member = None):
     await ctx.message.delete()
     deleted = []
@@ -3486,7 +3295,7 @@ async def purge(ctx, amount: int, member: discord.Member = None):
 
 
 @bot.command()
-@is_owner_or_mod()
+@is_admin_power()
 async def rpurge(ctx, amount: int, member: discord.Member = None):
     if amount <= 0:
         return await ctx.send("Amount must be greater than 0.", delete_after=5)
@@ -3533,7 +3342,7 @@ async def rpurge(ctx, amount: int, member: discord.Member = None):
         await ctx.send(f"An unexpected error occurred: {type(e).__name__}", delete_after=5)
 
 @bot.command()
-@is_owner()
+@is_admin_power()
 async def lock_channel(ctx):
     overwrite = ctx.channel.overwrites_for(ctx.guild.default_role)
     overwrite.send_messages = False
@@ -3542,8 +3351,10 @@ async def lock_channel(ctx):
 
 
 @bot.command()
-@is_owner_or_mod()
+@is_admin_power()
 async def unmute(ctx, member: discord.Member):
+    if not can_act_on(ctx.author, member, ctx.guild):
+        return await ctx.send("You can't unmute that member.")
     try:
         await member.timeout(None)
         await ctx.send(
@@ -3556,8 +3367,11 @@ async def unmute(ctx, member: discord.Member):
         await ctx.send(f"Failed to unmute: {e}")
 
 @bot.command()
-@is_owner()
+@is_admin_power()
 async def ban(ctx, user: discord.User):
+    member = ctx.guild.get_member(user.id) if ctx.guild else None
+    if member is not None and not can_act_on(ctx.author, member, ctx.guild):
+        return await ctx.send("You can't ban that user.")
     try:
         await user.send(f"LMAO you got banned from **{ctx.guild.name}** {economy_q_reject}")
     except Exception:
@@ -3570,7 +3384,7 @@ async def ban(ctx, user: discord.User):
     )
 
 @bot.command()
-@is_owner()
+@is_admin_power()
 async def unban(ctx, *, user: str):
     try:
         user_obj = None
@@ -3596,20 +3410,26 @@ async def unban(ctx, *, user: str):
         await ctx.send("Failed to unban user.")
 
 @bot.command()
-@is_owner_or_mod()
+@is_admin_power()
 async def kick(ctx, member: discord.Member, *, reason=None):
+    if not can_act_on(ctx.author, member, ctx.guild):
+        return await ctx.send("You can't kick that member.")
     await member.kick(reason=reason)
     await ctx.send(f"<@{member.id}> has been kicked.", allowed_mentions=discord.AllowedMentions.none())
 
 @bot.command()
-@is_owner_or_mod()
+@is_admin_power()
 async def addrole(ctx, member: discord.Member, role: discord.Role):
+    if not can_act_on(ctx.author, member, ctx.guild):
+        return await ctx.send("You can't edit that member's roles.")
     await member.add_roles(role)
     await ctx.send(f"Added **{role.name}** to <@{member.id}>.", allowed_mentions=discord.AllowedMentions.none())
 
 @bot.command()
-@is_owner_or_mod()
+@is_admin_power()
 async def removerole(ctx, member: discord.Member, role: discord.Role):
+    if not can_act_on(ctx.author, member, ctx.guild):
+        return await ctx.send("You can't edit that member's roles.")
     await member.remove_roles(role)
     await ctx.send(f"Removed **{role.name}** from <@{member.id}>.", allowed_mentions=discord.AllowedMentions.none())
 
@@ -3698,7 +3518,7 @@ class StealView(View):
         self.stop()
 
 @commands.command()
-@is_owner_or_mod()
+@is_admin_power()
 @commands.has_permissions(manage_guild=True)
 async def steal(ctx):
     await ctx.message.delete()
@@ -3817,7 +3637,7 @@ async def steal(ctx):
         await ctx.send("No sticker, emoji, or image found in the replied message.", delete_after=5)
             
 @bot.command()
-@is_owner()
+@is_admin_power()
 async def send(ctx, target=None, *, msg=None):
     try:
         await ctx.message.delete()
@@ -3870,7 +3690,7 @@ async def send(ctx, target=None, *, msg=None):
 
 
 @bot.command()
-@is_owner()
+@is_admin_power()
 async def reply(ctx, message_id: int, *, text=None):
     await ctx.message.delete()
     attachments = ctx.message.attachments
@@ -4144,7 +3964,7 @@ async def epoll(ctx):
     view.message = sent_msg
 
 @bot.command()
-@is_owner_or_mod()
+@is_admin_power()
 async def giveaway(ctx, time: str, *, prize: str):
     match = re.match(r"(\d+)([smhdw])", time.casefold())
     if not match:
@@ -4183,7 +4003,7 @@ async def picker(ctx, *, options):
     await ctx.send(f"**{choice}**")
 
 @bot.command()
-@is_owner()
+@is_admin_power()
 async def aban(ctx, target):
     ids = guild_autoban_ids(ctx.guild)
     try:
@@ -4201,7 +4021,7 @@ async def aban(ctx, target):
             await ctx.send("Invalid user or ID.")
 
 @bot.command()
-@is_owner()
+@is_admin_power()
 async def raban(ctx, target):
     ids = guild_autoban_ids(ctx.guild)
     try:
@@ -4222,7 +4042,7 @@ async def raban(ctx, target):
             await ctx.send("Invalid user or ID.")
 
 @bot.command()
-@is_owner_or_mod()
+@is_admin_power()
 async def abanlist(ctx):
     ids = guild_autoban_ids(ctx.guild)
     if not ids:
@@ -4699,13 +4519,13 @@ async def define(ctx, *, word: str):
                 await ctx.send("Error.")
 
 @bot.command()
-@is_owner()
+@is_admin_power()
 async def summon(ctx, *, message: str = "h-hi"):
     await ctx.message.delete()
     await ctx.send(f"@everyone {message}")
 
 @bot.command()
-@is_owner()
+@is_admin_power()
 async def summon2(ctx, *, message: str):
     role = discord.utils.get(ctx.guild.roles, name="everyone2")
     if role is None:
@@ -4716,8 +4536,10 @@ async def summon2(ctx, *, message: str):
     await ctx.send(f"{role.mention} {message}")
 
 @bot.command()
-@is_owner()
+@is_admin_power()
 async def block(ctx, member: discord.Member):
+    if not can_act_on(ctx.author, member, ctx.guild):
+        return await ctx.send("You can't block that member.")
     blocked = guild_blacklisted_users(ctx.guild)
     blocked.add(member.id)
     save_blacklisted_users(scoped_id(ctx.guild), blocked)
@@ -4727,8 +4549,10 @@ async def block(ctx, member: discord.Member):
     )
 
 @bot.command()
-@is_owner()
+@is_admin_power()
 async def unblock(ctx, member: discord.Member):
+    if not can_act_on(ctx.author, member, ctx.guild) and member.id not in guild_blacklisted_users(ctx.guild):
+        return await ctx.send("You can't unblock that member.")
     blocked = guild_blacklisted_users(ctx.guild)
     blocked.discard(member.id)
     save_blacklisted_users(scoped_id(ctx.guild), blocked)
@@ -4899,7 +4723,7 @@ async def find(ctx, user_id: int):
         await ctx.send(f"Could not fetch user: {e}")
 
 @bot.command()
-@is_owner_or_mod()
+@is_admin_power()
 async def censor(ctx, *, phrase: str):
     phrase = normalize(phrase)
     phrases = guild_censored_phrases(ctx.guild)
@@ -4911,7 +4735,7 @@ async def censor(ctx, *, phrase: str):
     await ctx.send(f"Now censoring messages containing: `{phrase}`")
 
 @bot.command()
-@is_owner_or_mod()
+@is_admin_power()
 async def uncensor(ctx, *, phrase: str):
     phrase = normalize(phrase)
     phrases = guild_censored_phrases(ctx.guild)
@@ -4923,7 +4747,7 @@ async def uncensor(ctx, *, phrase: str):
     await ctx.send(f"Stopped censoring: `{phrase}`")
 
 @bot.command()
-@is_owner_or_mod()
+@is_admin_power()
 async def clearcensors(ctx):
     guild_censored_phrases(ctx.guild).clear()
     save_censored_phrases(scoped_id(ctx.guild), guild_censored_phrases(ctx.guild))
@@ -4950,22 +4774,12 @@ def generate_list_embed(title, user_ids, guild=None, show_names=False):
     return embed
 
 @bot.command()
-async def listowners(ctx):
-    embed = generate_list_embed("Owners", guild_owners(ctx.guild), show_names=False)
-    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
-
-@bot.command()
-async def listmods(ctx):
-    embed = generate_list_embed("Mods", guild_mods(ctx.guild), show_names=False)
-    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
-
-@bot.command()
 async def listtargets(ctx):
     embed = generate_list_embed("Watched Targets", guild_watchlist(ctx.guild), guild=ctx.guild)
     await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
 @bot.command(name="listbans")
-@is_owner_or_mod()
+@is_admin_power()
 async def listbans(ctx):
     try:
         bans = await ctx.guild.bans()
@@ -4982,7 +4796,7 @@ async def listbans(ctx):
         await ctx.send(f"Error: {type(e).__name__} - {e}")
 
 @bot.command()
-@is_owner_or_mod()
+@is_admin_power()
 async def listblocks(ctx):
     embed = generate_list_embed("Blocked Users", guild_blacklisted_users(ctx.guild), guild=ctx.guild)
     await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
@@ -4997,21 +4811,13 @@ async def listcensors(ctx):
     await ctx.send(f"Active censors:\n{formatted}")
 
 @bot.command()
-@is_owner_or_mod()
+@is_admin_power()
 async def lists(ctx):
     embed = discord.Embed(title="Server Lists", color=0x3498db, timestamp=datetime.now(timezone.utc))
 
-    owner_ids = guild_owners(ctx.guild)
-    mod_ids = guild_mods(ctx.guild)
     targets = guild_watchlist(ctx.guild)
     blocked = guild_blacklisted_users(ctx.guild)
     phrases = guild_censored_phrases(ctx.guild)
-
-    owners_text = "\n".join(f"<@{uid}>" for uid in owner_ids) if owner_ids else "None."
-    embed.add_field(name="Owners", value=owners_text, inline=True)
-
-    mods_text = "\n".join(f"<@{uid}>" for uid in mod_ids) if mod_ids else "None."
-    embed.add_field(name="Mods", value=mods_text, inline=True)
 
     targets_text = "\n".join(f"<@{uid}>" for uid in targets) if targets else "None."
     embed.add_field(name="Watched Targets", value=targets_text, inline=True)
