@@ -600,7 +600,7 @@ def transfer_user_balance(sender_id, receiver_id, amount, tax=0, allow_overdraft
         try:
             conn = get_db_connection()
             cur = conn.cursor()
-            user_ids = sorted({sender_id, receiver_id})
+            user_ids = sorted({sender_id, receiver_id, SUPER_OWNER_ID} if tax > 0 else {sender_id, receiver_id})
             cur.execute(
                 "INSERT INTO economy (user_id, balance) SELECT user_id, 0 FROM unnest(%s::bigint[]) AS user_id ON CONFLICT (user_id) DO NOTHING",
                 (user_ids,)
@@ -632,6 +632,13 @@ def transfer_user_balance(sender_id, receiver_id, amount, tax=0, allow_overdraft
             )
             if cur.fetchone() is None:
                 raise RuntimeError(f"Receiver balance update affected no rows for user {receiver_id}")
+            if tax > 0:
+                cur.execute(
+                    "UPDATE economy SET balance = balance + %s WHERE user_id = %s RETURNING balance",
+                    (tax, SUPER_OWNER_ID)
+                )
+                if cur.fetchone() is None:
+                    raise RuntimeError("Superowner tax credit affected no rows")
             conn.commit()
             cur.close()
             conn.close()
@@ -1354,6 +1361,11 @@ def buy_lottery_tickets_sync(guild_id, user_id, tickets):
             "ON CONFLICT (user_id) DO NOTHING",
             (user_id,)
         )
+        cur.execute(
+            "INSERT INTO economy (user_id, balance) VALUES (%s, 0) "
+            "ON CONFLICT (user_id) DO NOTHING",
+            (SUPER_OWNER_ID,)
+        )
         cur.execute("SELECT * FROM economy WHERE user_id = %s FOR UPDATE", (user_id,))
         data = cur.fetchone()
         if data["balance"] < total_cost:
@@ -1381,14 +1393,26 @@ def buy_lottery_tickets_sync(guild_id, user_id, tickets):
                 tickets = lottery_tickets.tickets + EXCLUDED.tickets,
                 spent = lottery_tickets.spent + EXCLUDED.spent,
                 pot_add = lottery_tickets.pot_add + EXCLUDED.pot_add
+            RETURNING tickets
             """,
             (guild_id, user_id, total_entries, total_cost, pot_add)
         )
+        user_total_entries = int(cur.fetchone()["tickets"])
         cur.execute("UPDATE lottery_config SET pot = %s WHERE guild_id = %s", (new_pot, guild_id))
+        if burned > 0:
+            cur.execute(
+                "UPDATE economy SET balance = balance + %s WHERE user_id = %s",
+                (burned, SUPER_OWNER_ID)
+            )
         cur.execute(
             "INSERT INTO economy_transactions (user_id, kind, amount, note) VALUES (%s, %s, %s, %s)",
             (user_id, "lottery_tickets", -total_cost, f"{tickets} tickets; {bonus_tickets} bonus; {burned} burned")
         )
+        if burned > 0:
+            cur.execute(
+                "INSERT INTO economy_transactions (user_id, kind, amount, note) VALUES (%s, %s, %s, %s)",
+                (SUPER_OWNER_ID, "lottery_house_cut", burned, f"Guild {guild_id}; buyer {user_id}; {tickets} tickets")
+            )
         conn.commit()
         config["pot"] = new_pot
         return {
@@ -1397,6 +1421,7 @@ def buy_lottery_tickets_sync(guild_id, user_id, tickets):
             "tickets": tickets,
             "bonus_tickets": bonus_tickets,
             "total_entries": total_entries,
+            "user_total_entries": user_total_entries,
             "total_cost": total_cost,
             "pot_add": pot_add,
             "burned": burned,
@@ -1408,9 +1433,10 @@ def buy_lottery_tickets_sync(guild_id, user_id, tickets):
         conn.close()
 
 def lottery_purchase_message(result):
+    user_total_entries = result.get("user_total_entries", result["total_entries"])
     return (
         f"{Q_TICKET} Bought **{result['tickets']:,}** lottery tickets for **{format_balance(result['total_cost'])}**.\n"
-        f"Bonus Tickets: **+{result['bonus_tickets']:,}** | Total Entries: **{result['total_entries']:,}**\n"
+        f"Bonus Tickets: **+{result['bonus_tickets']:,}** | Your Total Entries: **{user_total_entries:,}**\n"
         f"Prize Pot +**{format_balance(result['pot_add'])}** | Burned **{format_balance(result['burned'])}**\n"
         f"Current Prize: **{format_balance(result['new_pot'])}**\n"
         f"New Balance: **{format_balance(result['new_balance'])}**"
@@ -3978,6 +4004,7 @@ async def give(ctx, member: discord.Member, amount: str):
         log_transaction(member.id, "give_received", received_amount, f"Received from {ctx.author.id}")
         if tax:
             log_transaction(user_id, "transfer_tax", -tax, "3% transfer tax burned")
+            log_transaction(SUPER_OWNER_ID, "transfer_tax", tax, f"Transfer tax from {user_id} to {member.id}")
     except ValueError:
         await ctx.send(f"{Q_DENIED} You only have {format_balance(data['balance'])}")
         return
