@@ -408,6 +408,8 @@ def init_db():
 
 def get_user(user_id):
     for attempt in range(3):
+        conn = None
+        cur = None
         try:
             conn = get_db_connection()
             cur = conn.cursor()
@@ -432,15 +434,31 @@ def get_user(user_id):
             conn.close()
             return user
         except psycopg2.OperationalError:
+            try:
+                if cur:
+                    cur.close()
+                if conn:
+                    conn.close()
+            except Exception:
+                pass
             if attempt < 2:
                 continue
             raise
 
 def update_user(user_id, **kwargs):
+    if not kwargs:
+        return get_user(user_id)
+
     for attempt in range(3):
+        conn = None
+        cur = None
         try:
             conn = get_db_connection()
             cur = conn.cursor()
+            cur.execute(
+                "INSERT INTO economy (user_id, balance) VALUES (%s, 0) ON CONFLICT (user_id) DO NOTHING",
+                (user_id,)
+            )
 
             set_clauses = []
             values = []
@@ -449,15 +467,178 @@ def update_user(user_id, **kwargs):
                 values.append(value)
 
             values.append(user_id)
-            query = f"UPDATE economy SET {', '.join(set_clauses)} WHERE user_id = %s"
+            query = f"UPDATE economy SET {', '.join(set_clauses)} WHERE user_id = %s RETURNING *"
             cur.execute(query, values)
+            updated = cur.fetchone()
+            if updated is None:
+                raise RuntimeError(f"Economy update affected no rows for user {user_id}")
             conn.commit()
             cur.close()
             conn.close()
-            return
+            return updated
         except psycopg2.OperationalError:
+            try:
+                if cur:
+                    cur.close()
+                if conn:
+                    conn.close()
+            except Exception:
+                pass
             if attempt < 2:
                 continue
+            raise
+        except Exception:
+            try:
+                if conn:
+                    conn.rollback()
+                if cur:
+                    cur.close()
+                if conn:
+                    conn.close()
+            except Exception:
+                pass
+            raise
+
+def add_user_balance(user_id, amount, earned_delta=0):
+    for attempt in range(3):
+        conn = None
+        cur = None
+        try:
+            conn = get_db_connection()
+            cur = conn.cursor()
+            cur.execute(
+                "INSERT INTO economy (user_id, balance) VALUES (%s, 0) ON CONFLICT (user_id) DO NOTHING",
+                (user_id,)
+            )
+            cur.execute(
+                "SELECT balance, total_earned FROM economy WHERE user_id = %s FOR UPDATE",
+                (user_id,)
+            )
+            row = cur.fetchone()
+            if row is None:
+                raise RuntimeError(f"Economy row missing after insert for user {user_id}")
+
+            old_balance = int(row["balance"])
+            old_total_earned = int(row["total_earned"])
+            new_balance = old_balance + int(amount)
+            new_total_earned = old_total_earned + int(earned_delta)
+            cur.execute(
+                """
+                UPDATE economy
+                SET balance = %s,
+                    total_earned = %s
+                WHERE user_id = %s
+                RETURNING balance, total_earned
+                """,
+                (new_balance, new_total_earned, user_id)
+            )
+            updated = cur.fetchone()
+            if updated is None:
+                raise RuntimeError(f"Economy balance update affected no rows for user {user_id}")
+            conn.commit()
+            cur.close()
+            conn.close()
+            return old_balance, int(updated["balance"])
+        except psycopg2.OperationalError:
+            try:
+                if cur:
+                    cur.close()
+                if conn:
+                    conn.close()
+            except Exception:
+                pass
+            if attempt < 2:
+                continue
+            raise
+        except Exception:
+            try:
+                if conn:
+                    conn.rollback()
+                if cur:
+                    cur.close()
+                if conn:
+                    conn.close()
+            except Exception:
+                pass
+            raise
+
+def transfer_user_balance(sender_id, receiver_id, amount, tax=0, allow_overdraft=False):
+    sender_id = int(sender_id)
+    receiver_id = int(receiver_id)
+    amount = int(amount)
+    tax = int(tax)
+    received_amount = amount - tax
+
+    for attempt in range(3):
+        conn = None
+        cur = None
+        try:
+            conn = get_db_connection()
+            cur = conn.cursor()
+            user_ids = sorted({sender_id, receiver_id})
+            cur.execute(
+                "INSERT INTO economy (user_id, balance) SELECT user_id, 0 FROM unnest(%s::bigint[]) AS user_id ON CONFLICT (user_id) DO NOTHING",
+                (user_ids,)
+            )
+            cur.execute(
+                "SELECT user_id, balance FROM economy WHERE user_id = ANY(%s::bigint[]) ORDER BY user_id FOR UPDATE",
+                (user_ids,)
+            )
+            rows = {int(row["user_id"]): row for row in cur.fetchall()}
+            if sender_id not in rows or receiver_id not in rows:
+                raise RuntimeError("Transfer row lock failed")
+
+            old_sender_balance = int(rows[sender_id]["balance"])
+            old_receiver_balance = int(rows[receiver_id]["balance"])
+            if old_sender_balance < amount and not allow_overdraft:
+                raise ValueError("insufficient_balance")
+
+            new_sender_balance = max(0, old_sender_balance - amount)
+            new_receiver_balance = old_receiver_balance + received_amount
+            cur.execute(
+                "UPDATE economy SET balance = %s WHERE user_id = %s RETURNING balance",
+                (new_sender_balance, sender_id)
+            )
+            if cur.fetchone() is None:
+                raise RuntimeError(f"Sender balance update affected no rows for user {sender_id}")
+            cur.execute(
+                "UPDATE economy SET balance = %s WHERE user_id = %s RETURNING balance",
+                (new_receiver_balance, receiver_id)
+            )
+            if cur.fetchone() is None:
+                raise RuntimeError(f"Receiver balance update affected no rows for user {receiver_id}")
+            conn.commit()
+            cur.close()
+            conn.close()
+            return {
+                "old_sender_balance": old_sender_balance,
+                "new_sender_balance": new_sender_balance,
+                "old_receiver_balance": old_receiver_balance,
+                "new_receiver_balance": new_receiver_balance,
+                "received_amount": received_amount,
+                "tax": tax,
+            }
+        except psycopg2.OperationalError:
+            try:
+                if cur:
+                    cur.close()
+                if conn:
+                    conn.close()
+            except Exception:
+                pass
+            if attempt < 2:
+                continue
+            raise
+        except Exception:
+            try:
+                if conn:
+                    conn.rollback()
+                if cur:
+                    cur.close()
+                if conn:
+                    conn.close()
+            except Exception:
+                pass
             raise
 
 def log_transaction(user_id, kind, amount, note=""):
@@ -495,20 +676,27 @@ def bulk_add_users(user_ids, amount, actor_id, note):
         SET balance = balance + %s,
             total_earned = total_earned + %s
         WHERE user_id = ANY(%s::bigint[])
+        RETURNING user_id
         """,
         (amount, amount, unique_ids)
     )
+    updated_ids = [int(row["user_id"]) for row in cur.fetchall()]
+    if len(updated_ids) != len(unique_ids):
+        conn.rollback()
+        cur.close()
+        conn.close()
+        raise RuntimeError(f"Bulk add updated {len(updated_ids)} of {len(unique_ids)} economy rows")
     cur.execute(
         """
         INSERT INTO economy_transactions (user_id, kind, amount, note)
         SELECT user_id, 'owner_add', %s, %s FROM unnest(%s::bigint[]) AS user_id
         """,
-        (amount, f"Bulk by {actor_id}: {note}", unique_ids)
+        (amount, f"Bulk by {actor_id}: {note}", updated_ids)
     )
     conn.commit()
     cur.close()
     conn.close()
-    return len(unique_ids)
+    return len(updated_ids)
 
 def bulk_set_balances(user_ids, amount, actor_id, note):
     unique_ids = sorted(set(int(user_id) for user_id in user_ids))
@@ -530,20 +718,27 @@ def bulk_set_balances(user_ids, amount, actor_id, note):
         UPDATE economy
         SET balance = %s
         WHERE user_id = ANY(%s::bigint[])
+        RETURNING user_id
         """,
         (amount, unique_ids)
     )
+    updated_ids = [int(row["user_id"]) for row in cur.fetchall()]
+    if len(updated_ids) != len(unique_ids):
+        conn.rollback()
+        cur.close()
+        conn.close()
+        raise RuntimeError(f"Bulk set updated {len(updated_ids)} of {len(unique_ids)} economy rows")
     cur.execute(
         """
         INSERT INTO economy_transactions (user_id, kind, amount, note)
         SELECT user_id, 'owner_set', %s, %s FROM unnest(%s::bigint[]) AS user_id
         """,
-        (amount, f"Set by {actor_id}: {note}", unique_ids)
+        (amount, f"Set by {actor_id}: {note}", updated_ids)
     )
     conn.commit()
     cur.close()
     conn.close()
-    return len(unique_ids)
+    return len(updated_ids)
 
 def get_recent_transactions(user_id, limit=10):
     conn = get_db_connection()
@@ -962,7 +1157,11 @@ def buy_lottery_tickets_sync(guild_id, user_id, tickets):
         new_balance = data["balance"] - total_cost
         new_pot = int(config["pot"] or 0) + pot_add
 
-        cur.execute("UPDATE economy SET balance = %s WHERE user_id = %s", (new_balance, user_id))
+        cur.execute("UPDATE economy SET balance = %s WHERE user_id = %s RETURNING balance", (new_balance, user_id))
+        updated = cur.fetchone()
+        if updated is None:
+            conn.rollback()
+            return {"ok": False, "message": f"{Q_DENIED} Ticket purchase failed because your balance row could not be updated."}
         cur.execute(
             """
             INSERT INTO lottery_tickets (guild_id, user_id, tickets, spent, pot_add)
@@ -3350,19 +3549,26 @@ async def give(ctx, member: discord.Member, amount: str):
         return
 
     try:
-        old_sender_balance = data['balance']
-        new_sender_balance = max(0, old_sender_balance - amount)
-        update_user(user_id, balance=new_sender_balance)
-        receiver_data = get_user(member.id)
-        old_receiver_balance = receiver_data['balance']
         tax = 0 if has_economy_owner_power(ctx.author.id, ctx.guild) else int(amount * TRANSFER_TAX_RATE)
-        received_amount = amount - tax
-        new_receiver_balance = old_receiver_balance + received_amount
-        update_user(member.id, balance=new_receiver_balance)
+        transfer = transfer_user_balance(
+            user_id,
+            member.id,
+            amount,
+            tax=tax,
+            allow_overdraft=has_economy_owner_power(ctx.author.id, ctx.guild),
+        )
+        old_sender_balance = transfer["old_sender_balance"]
+        new_sender_balance = transfer["new_sender_balance"]
+        old_receiver_balance = transfer["old_receiver_balance"]
+        new_receiver_balance = transfer["new_receiver_balance"]
+        received_amount = transfer["received_amount"]
         log_transaction(user_id, "give_sent", -amount, f"Sent to {member.id}; tax {tax}")
         log_transaction(member.id, "give_received", received_amount, f"Received from {ctx.author.id}")
         if tax:
             log_transaction(user_id, "transfer_tax", -tax, "3% transfer tax burned")
+    except ValueError:
+        await ctx.send(f"{Q_DENIED} You only have {format_balance(data['balance'])}")
+        return
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
@@ -3481,14 +3687,7 @@ async def add(ctx, target: str, amount: str):
         return
 
     try:
-        target_data = get_user(member.id)
-        old_balance = target_data['balance']
-        update_user(
-            member.id,
-            balance=old_balance + amount,
-            total_earned=target_data['total_earned'] + amount
-        )
-        new_balance = old_balance + amount
+        old_balance, new_balance = add_user_balance(member.id, amount, earned_delta=amount)
         log_transaction(member.id, "owner_add", amount, f"By {ctx.author.id}")
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")

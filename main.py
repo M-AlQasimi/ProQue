@@ -1640,7 +1640,7 @@ async def finalize_poll(msg, poll_data):
             set_embed_field(embed, idx, opt, str(count), inline=True)
 
         embed.color = discord.Color.green()
-        embed.set_footer(text=f"Poll Ended {economy_q_poll}")
+        embed.set_footer(text="Poll ended")
         embed.timestamp = datetime.now(timezone.utc)
 
         await poll_msg.edit(embed=embed)
@@ -2689,7 +2689,7 @@ def chess_status(game):
     board = game["board"]
     current = chess_current_player(game)
     color = "White" if board.turn == chess_lib.WHITE else "Black"
-    status = f"{render_chess_board(game)}\n\n{economy_q_cards} **Chess**\n{color} to move: <@{current.id}>"
+    status = f"{economy_q_cards} **Chess** - {color} to move: <@{current.id}>"
     if board.is_check():
         status += f"\n{economy_q_warning} Check."
     selected = game.get("selected_from")
@@ -2697,6 +2697,16 @@ def chess_status(game):
         status += f"\nSelected: `{chess_lib.square_name(selected)}`"
     status += "\nUse the menus below to select a piece and a legal move."
     return status
+
+def chess_embed(game, result_text=None):
+    embed = discord.Embed(
+        title=f"{economy_q_cards} Chess",
+        description=render_chess_board(game),
+        color=discord.Color.blurple()
+    )
+    if result_text:
+        embed.add_field(name="Result", value=result_text, inline=False)
+    return embed
 
 def parse_chess_move(board, raw_move):
     text = raw_move.strip()
@@ -2745,6 +2755,7 @@ class ChessFromSelect(Select):
         game["view"] = new_view
         await interaction.response.edit_message(
             content=chess_status(game),
+            embed=chess_embed(game),
             view=new_view,
             allowed_mentions=discord.AllowedMentions(users=True)
         )
@@ -2789,8 +2800,10 @@ class ChessResignButton(Button):
         winner = game["black"] if interaction.user.id == game["white"].id else game["white"]
         view.disable_all_items()
         chess_games.pop(game["channel_id"], None)
+        result_text = f"{economy_q_game_win} <@{winner.id}> wins by resignation."
         await interaction.response.edit_message(
-            content=f"{render_chess_board(game)}\n\n{economy_q_game_win} <@{winner.id}> wins by resignation.",
+            content=result_text,
+            embed=chess_embed(game, result_text),
             view=view,
             allowed_mentions=discord.AllowedMentions(users=True)
         )
@@ -2810,6 +2823,7 @@ class ChessClearSelectionButton(Button):
         game["view"] = new_view
         await interaction.response.edit_message(
             content=chess_status(game),
+            embed=chess_embed(game),
             view=new_view,
             allowed_mentions=discord.AllowedMentions(users=True)
         )
@@ -2849,8 +2863,10 @@ class ChessView(View):
             winner = self.game["black"] if board.turn == chess_lib.WHITE else self.game["white"]
             self.disable_all_items()
             chess_games.pop(self.game["channel_id"], None)
+            result_text = f"{economy_q_game_win} Checkmate. <@{winner.id}> wins!"
             return await interaction.response.edit_message(
-                content=f"{render_chess_board(self.game)}\n\n{economy_q_game_win} Checkmate. <@{winner.id}> wins!",
+                content=result_text,
+                embed=chess_embed(self.game, result_text),
                 view=self,
                 allowed_mentions=discord.AllowedMentions(users=True)
             )
@@ -2858,8 +2874,10 @@ class ChessView(View):
         if board.is_stalemate() or board.is_insufficient_material() or board.can_claim_draw():
             self.disable_all_items()
             chess_games.pop(self.game["channel_id"], None)
+            result_text = "Game drawn."
             return await interaction.response.edit_message(
-                content=f"{render_chess_board(self.game)}\n\nGame drawn.",
+                content=result_text,
+                embed=chess_embed(self.game, result_text),
                 view=self,
                 allowed_mentions=discord.AllowedMentions.none()
             )
@@ -2868,6 +2886,7 @@ class ChessView(View):
         self.game["view"] = new_view
         await interaction.response.edit_message(
             content=chess_status(self.game),
+            embed=chess_embed(self.game),
             view=new_view,
             allowed_mentions=discord.AllowedMentions(users=True)
         )
@@ -2901,7 +2920,12 @@ async def chess(ctx, opponent: discord.Member):
         "view": None,
     }
     game["view"] = ChessView(game)
-    msg = await ctx.send(chess_status(game), view=game["view"], allowed_mentions=discord.AllowedMentions(users=True))
+    msg = await ctx.send(
+        chess_status(game),
+        embed=chess_embed(game),
+        view=game["view"],
+        allowed_mentions=discord.AllowedMentions(users=True)
+    )
     game["message"] = msg
     chess_games[ctx.channel.id] = game
 
@@ -2924,16 +2948,20 @@ async def chess_move(ctx, *, move: str):
     game["selected_from"] = None
     if board.is_checkmate():
         winner = game["black"] if board.turn == chess_lib.WHITE else game["white"]
+        result_text = f"{economy_q_game_win} Checkmate. <@{winner.id}> wins!"
         await game["message"].edit(
-            content=f"{render_chess_board(game)}\n\n{economy_q_game_win} Checkmate. <@{winner.id}> wins!",
+            content=result_text,
+            embed=chess_embed(game, result_text),
             view=None,
             allowed_mentions=discord.AllowedMentions(users=True)
         )
         chess_games.pop(ctx.channel.id, None)
         return
     if board.is_stalemate() or board.is_insufficient_material() or board.can_claim_draw():
+        result_text = "Game drawn."
         await game["message"].edit(
-            content=f"{render_chess_board(game)}\n\nGame drawn.",
+            content=result_text,
+            embed=chess_embed(game, result_text),
             view=None,
             allowed_mentions=discord.AllowedMentions.none()
         )
@@ -2941,7 +2969,7 @@ async def chess_move(ctx, *, move: str):
         return
 
     game["view"] = ChessView(game)
-    await game["message"].edit(content=chess_status(game), view=game["view"], allowed_mentions=discord.AllowedMentions(users=True))
+    await game["message"].edit(content=chess_status(game), embed=chess_embed(game), view=game["view"], allowed_mentions=discord.AllowedMentions(users=True))
 
 @bot.command()
 async def resign(ctx):
@@ -2952,8 +2980,10 @@ async def resign(ctx):
         return await ctx.send("Only a chess player can resign.")
 
     winner = game["black"] if ctx.author.id == game["white"].id else game["white"]
+    result_text = f"{economy_q_game_win} <@{winner.id}> wins by resignation."
     await game["message"].edit(
-        content=f"{render_chess_board(game)}\n\n{economy_q_game_win} <@{winner.id}> wins by resignation.",
+        content=result_text,
+        embed=chess_embed(game, result_text),
         view=None,
         allowed_mentions=discord.AllowedMentions(users=True)
     )
@@ -3600,8 +3630,7 @@ async def steal(ctx):
 
     if sticker:
         try:
-            buffer = BytesIO()
-            await sticker.read(buffer)
+            buffer = BytesIO(await sticker.read())
             buffer.seek(0)
             preview_url = str(sticker.url)
             embed = discord.Embed(title="Sticker Detected", color=discord.Color.blurple())
@@ -3823,14 +3852,13 @@ async def poll(ctx, *, args):
 
     number_emojis = POLL_NUMBER_EMOJIS
 
-    embed = discord.Embed(title=question, color=discord.Color.blue())
+    embed = discord.Embed(title=f"{economy_q_poll} {question}", color=discord.Color.blue())
     for opt in options:
         embed.add_field(name=opt, value="0", inline=True)
-    footer_text = f"Poll {economy_q_poll}"
     if end_time:
-        footer_text += f" | Ending at {discord.utils.format_dt(end_time, 'f')}"
+        embed.add_field(name="Ends", value=discord.utils.format_dt(end_time, "f"), inline=False)
         embed.timestamp = end_time
-    embed.set_footer(text=footer_text)
+    embed.set_footer(text="Poll")
 
     msg = await ctx.send(embed=embed)
 
