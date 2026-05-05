@@ -371,6 +371,15 @@ def init_db():
                     PRIMARY KEY (guild_id, user_id)
                 )
             """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS lottery_status_messages (
+                    guild_id BIGINT NOT NULL,
+                    channel_id BIGINT NOT NULL,
+                    message_id BIGINT NOT NULL,
+                    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (guild_id, channel_id, message_id)
+                )
+            """)
             cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS balance BIGINT DEFAULT 0")
             cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS daily_streak INTEGER DEFAULT 0")
             cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS weekly_streak INTEGER DEFAULT 0")
@@ -921,6 +930,44 @@ def update_lottery_config(guild_id, **kwargs):
     cur.close()
     conn.close()
 
+def save_lottery_status_message(guild_id, channel_id, message_id):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO lottery_status_messages (guild_id, channel_id, message_id)
+        VALUES (%s, %s, %s)
+        ON CONFLICT (guild_id, channel_id, message_id) DO NOTHING
+        """,
+        (int(guild_id), int(channel_id), int(message_id))
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+
+def delete_lottery_status_message(guild_id, channel_id, message_id):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "DELETE FROM lottery_status_messages WHERE guild_id = %s AND channel_id = %s AND message_id = %s",
+        (int(guild_id), int(channel_id), int(message_id))
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+
+def lottery_status_message_rows(guild_id):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT channel_id, message_id FROM lottery_status_messages WHERE guild_id = %s",
+        (int(guild_id),)
+    )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
+
 def lottery_ticket_rows(guild_id):
     conn = get_db_connection()
     cur = conn.cursor()
@@ -1167,15 +1214,32 @@ def build_lottery_embed(guild, config):
     return embed
 
 def remember_lottery_status_message(guild_id, message):
-    lottery_status_messages.setdefault(int(guild_id), set()).add((message.channel.id, message.id))
+    guild_id = int(guild_id)
+    lottery_status_messages.setdefault(guild_id, set()).add((message.channel.id, message.id))
+    try:
+        save_lottery_status_message(guild_id, message.channel.id, message.id)
+    except Exception as e:
+        print(f"Lottery status message save failed: {type(e).__name__} - {e}")
 
 def forget_lottery_status_message(guild_id, channel_id, message_id):
+    guild_id = int(guild_id)
     messages = lottery_status_messages.get(int(guild_id))
-    if not messages:
-        return
-    messages.discard((int(channel_id), int(message_id)))
-    if not messages:
-        lottery_status_messages.pop(int(guild_id), None)
+    if messages:
+        messages.discard((int(channel_id), int(message_id)))
+        if not messages:
+            lottery_status_messages.pop(guild_id, None)
+    try:
+        delete_lottery_status_message(guild_id, channel_id, message_id)
+    except Exception as e:
+        print(f"Lottery status message delete failed: {type(e).__name__} - {e}")
+
+def load_lottery_status_messages(guild_id):
+    try:
+        rows = lottery_status_message_rows(guild_id)
+    except Exception as e:
+        print(f"Lottery status message load failed: {type(e).__name__} - {e}")
+        return set()
+    return {(int(row["channel_id"]), int(row["message_id"])) for row in rows}
 
 async def build_lottery_status_embed(guild, config, panel_message=None):
     embed = await asyncio.to_thread(build_lottery_embed, guild, config)
@@ -1187,6 +1251,9 @@ async def refresh_lottery_status_messages(guild, config=None, panel_message=None
     if not guild:
         return
     guild_id = int(guild.id)
+    saved = load_lottery_status_messages(guild_id)
+    if saved:
+        lottery_status_messages.setdefault(guild_id, set()).update(saved)
     tracked = list(lottery_status_messages.get(guild_id, set()))
     if not tracked:
         return
@@ -1197,6 +1264,7 @@ async def refresh_lottery_status_messages(guild, config=None, panel_message=None
         return
 
     embed = await build_lottery_status_embed(guild, config, panel_message)
+    view = LotteryPanelView()
     for channel_id, message_id in tracked:
         channel = guild.get_channel(channel_id)
         if channel is None and bot:
@@ -1209,7 +1277,7 @@ async def refresh_lottery_status_messages(guild, config=None, panel_message=None
             continue
         try:
             message = await channel.fetch_message(message_id)
-            await message.edit(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+            await message.edit(embed=embed, view=view, allowed_mentions=discord.AllowedMentions.none())
         except Exception:
             forget_lottery_status_message(guild_id, channel_id, message_id)
 
@@ -2328,7 +2396,7 @@ async def lottery(ctx, action: str = None, amount: str = None):
     panel = await refresh_lottery_message(ctx.guild, config)
     current_config = await asyncio.to_thread(get_lottery_config, ctx.guild.id)
     embed = await build_lottery_status_embed(ctx.guild, current_config, panel)
-    status_message = await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+    status_message = await ctx.send(embed=embed, view=LotteryPanelView(), allowed_mentions=discord.AllowedMentions.none())
     remember_lottery_status_message(ctx.guild.id, status_message)
 
 @commands.command()

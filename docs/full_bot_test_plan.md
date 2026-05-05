@@ -205,6 +205,7 @@ Current expected:
 - First setup asks for channel and period.
 - Lottery channel permissions are applied.
 - Panel restores after restart.
+- `.lottery` status/check messages include the ticket UI and stay synced after restart.
 - Buy 1/5/10/custom buttons update pot/message.
 - Private/ephemeral ticket confirmation works.
 - Ticket role assignment.
