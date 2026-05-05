@@ -3183,7 +3183,10 @@ async def gamble(ctx, amount: str, choice: str = None):
                 self.choice = None
 
             async def interaction_check(self, interaction):
-                return interaction.user.id == ctx.author.id
+                if interaction.user.id != ctx.author.id:
+                    await interaction.response.send_message("Use your own coin flip prompt.", ephemeral=True)
+                    return False
+                return True
 
             async def choose(self, interaction, selected):
                 self.choice = selected
@@ -3314,7 +3317,10 @@ async def roulette(ctx, amount: str, color: str = None):
                 self.color = None
 
             async def interaction_check(self, interaction):
-                return interaction.user.id == ctx.author.id
+                if interaction.user.id != ctx.author.id:
+                    await interaction.response.send_message("Use your own roulette prompt.", ephemeral=True)
+                    return False
+                return True
 
             async def choose(self, interaction, selected_color):
                 self.color = selected_color
@@ -3706,7 +3712,10 @@ async def blackjack(ctx, amount: str):
             self.done = False
 
         async def interaction_check(self, interaction):
-            return interaction.user.id == ctx.author.id
+            if interaction.user.id != ctx.author.id:
+                await interaction.response.send_message("Use your own blackjack game.", ephemeral=True)
+                return False
+            return True
 
         async def on_timeout(self):
             if not self.done:
@@ -4377,7 +4386,10 @@ async def minesweeper(ctx, amount: str):
             self.grid = None
 
         async def interaction_check(self, interaction):
-            return interaction.user.id == ctx.author.id
+            if interaction.user.id != ctx.author.id:
+                await interaction.response.send_message("Use your own Mine Hunt prompt.", ephemeral=True)
+                return False
+            return True
 
         async def choose(self, interaction, grid_size):
             self.grid = grid_size
@@ -4539,7 +4551,10 @@ async def minesweeper(ctx, amount: str):
                     self.add_item(MSCell(r, c))
 
         async def interaction_check(self, interaction):
-            return interaction.user.id == ctx.author.id
+            if interaction.user.id != ctx.author.id:
+                await interaction.response.send_message("Use your own Mine Hunt game.", ephemeral=True)
+                return False
+            return True
 
         async def on_timeout(self):
             nonlocal game_over, game_won, revealed_count, multiplier

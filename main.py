@@ -440,7 +440,10 @@ async def prompt_log_setup(guild):
             self.same = None
 
         async def interaction_check(self, interaction):
-            return requester is None or interaction.user.id == requester.id
+            if requester is not None and interaction.user.id != requester.id:
+                await interaction.response.send_message("Only the person who added me can choose this.", ephemeral=True)
+                return False
+            return True
 
         @discord.ui.button(label="Same channel", style=discord.ButtonStyle.success)
         async def same_channel(self, interaction, button):
@@ -2649,7 +2652,10 @@ class GameBetView(View):
         self.choice = None
 
     async def interaction_check(self, interaction):
-        return interaction.user.id == self.ctx.author.id
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message("Use your own bet prompt.", ephemeral=True)
+            return False
+        return True
 
     @discord.ui.button(label="Yes", style=discord.ButtonStyle.success)
     async def yes(self, interaction: discord.Interaction, button: Button):
@@ -3048,6 +3054,7 @@ class ChessResignButton(Button):
         game = view.game
         if interaction.user.id not in {game["white"].id, game["black"].id}:
             return await interaction.response.send_message("Only chess players can resign.", ephemeral=True)
+        await interaction.response.defer()
         winner = game["black"] if interaction.user.id == game["white"].id else game["white"]
         game["ended"] = True
         await stop_chess_clock(game)
@@ -3055,7 +3062,7 @@ class ChessResignButton(Button):
         chess_games.pop(game["channel_id"], None)
         payout_text = await settle_game_bet(game, winner)
         result_text = f"{economy_q_game_win} <@{winner.id}> wins by resignation.{payout_text}"
-        await interaction.response.edit_message(
+        await interaction.edit_original_response(
             content=result_text,
             embed=chess_embed(game, result_text),
             view=view,
@@ -3160,6 +3167,7 @@ class ChessView(View):
             item.disabled = True
 
     async def play_move(self, interaction, move):
+        await interaction.response.defer()
         board = self.game["board"]
         apply_chess_elapsed(self.game)
         board.push(move)
@@ -3174,7 +3182,7 @@ class ChessView(View):
             chess_games.pop(self.game["channel_id"], None)
             payout_text = await settle_game_bet(self.game, winner)
             result_text = f"{economy_q_game_win} Checkmate. <@{winner.id}> wins!{payout_text}"
-            return await interaction.response.edit_message(
+            return await interaction.edit_original_response(
                 content=result_text,
                 embed=chess_embed(self.game, result_text),
                 view=self,
@@ -3188,7 +3196,7 @@ class ChessView(View):
             chess_games.pop(self.game["channel_id"], None)
             payout_text = await settle_game_bet(self.game, None)
             result_text = f"Game drawn.{payout_text}"
-            return await interaction.response.edit_message(
+            return await interaction.edit_original_response(
                 content=result_text,
                 embed=chess_embed(self.game, result_text),
                 view=self,
@@ -3198,7 +3206,7 @@ class ChessView(View):
         new_view = ChessView(self.game)
         self.game["view"] = new_view
         await start_chess_clock(self.game)
-        await interaction.response.edit_message(
+        await interaction.edit_original_response(
             content=chess_status(self.game),
             embed=chess_embed(self.game),
             view=new_view,
@@ -3458,7 +3466,10 @@ class Connect4Button(Button):
             traceback_str = traceback.format_exc()
             print(f"[ERROR in Connect4 callback]\n{traceback_str}")
             try:
-                await interaction.response.send_message(f"Error:\n```{e}```", ephemeral=True)
+                if interaction.response.is_done():
+                    await interaction.followup.send(f"Error:\n```{e}```", ephemeral=True)
+                else:
+                    await interaction.response.send_message(f"Error:\n```{e}```", ephemeral=True)
             except Exception as err:
                 print(f"Failed to send error: {err}")
 
@@ -4260,7 +4271,10 @@ class ConfirmEndPollView(View):
                 pass
 
     async def interaction_check(self, interaction):
-        return interaction.user.id == self.ctx.author.id or interaction.user.id == super_owner_id
+        if interaction.user.id == self.ctx.author.id or interaction.user.id == super_owner_id:
+            return True
+        await interaction.response.send_message("Only the poll owner or superowner can use this.", ephemeral=True)
+        return False
 
     @discord.ui.button(label="Yes", style=discord.ButtonStyle.danger)
     async def yes_button(self, interaction, button):
@@ -4613,10 +4627,14 @@ class CancelConfirmView(View):
                 pass
 
     async def interaction_check(self, interaction):
-        return interaction.user.id == self.ctx.author.id or interaction.user.id == super_owner_id
+        if interaction.user.id == self.ctx.author.id or interaction.user.id == super_owner_id:
+            return True
+        await interaction.response.send_message("Only the timer owner or superowner can use this.", ephemeral=True)
+        return False
 
     @discord.ui.button(label="Yes", style=discord.ButtonStyle.danger)
     async def yes_button(self, interaction, button):
+        await interaction.response.defer()
         timer_task = self.timer_data.get("task")
         if timer_task and not timer_task.done():
             timer_task.cancel()
@@ -4646,7 +4664,7 @@ class CancelConfirmView(View):
             except:
                 pass
 
-        await interaction.response.edit_message(
+        await interaction.edit_original_response(
             content=f"Timer cancelled with `{remaining_text}` left: [Timer]({self.timer_data['message'].jump_url})",
             view=None
         )
