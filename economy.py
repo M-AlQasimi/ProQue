@@ -19,6 +19,7 @@ bot = None
 MAX_BET = 200_000
 COOLDOWN_SECS = 10
 STREAK_MULTIPLIER = 0.015  # 1.5% per consecutive win
+SUPER_OWNER_ID = 885548126365171824
 CURRENCY_EMOJI = "<:Qoins:1500255107428782100>"
 QASH_EMOJI = "<:Qash:1500235432011497703>"
 Q_DENIED = "<:QDenied:1500427032020914266>"
@@ -172,7 +173,7 @@ SHOP_ITEMS = {
         "category": "Leveling",
         "name": "XP Tonic",
         "emoji": Q_XP_TONIC,
-        "cost": 275_000,
+        "cost": 300_000,
         "max_qty": 5,
         "description": "Passive: +5% chat XP per tonic. Max 5.",
     },
@@ -180,7 +181,7 @@ SHOP_ITEMS = {
         "category": "Leveling",
         "name": "Queso Magnet",
         "emoji": Q_QUESO_MAGNET,
-        "cost": 500_000,
+        "cost": 1_250_000,
         "max_qty": 5,
         "description": "Passive: +5% level-up queso rewards per magnet. Max 5.",
     },
@@ -228,7 +229,7 @@ SHOP_ITEMS = {
         "category": "Lottery",
         "name": "Ticket Charm",
         "emoji": Q_TICKET_CHARM,
-        "cost": 600_000,
+        "cost": 1_500_000,
         "max_qty": 5,
         "description": "Passive: +2% bonus lottery entries per charm when buying tickets. Max 5.",
     },
@@ -236,7 +237,7 @@ SHOP_ITEMS = {
         "category": "Utility",
         "name": "Cooldown Clock",
         "emoji": Q_COOLDOWN_CLOCK,
-        "cost": 500_000,
+        "cost": 1_000_000,
         "max_qty": 5,
         "description": "Passive: -4% Quewo gambling cooldown per clock. Max 5.",
     },
@@ -244,7 +245,7 @@ SHOP_ITEMS = {
         "category": "Gambling",
         "name": "Fortune Vial",
         "emoji": Q_FORTUNE_VIAL,
-        "cost": 1_500_000,
+        "cost": 1_000_000,
         "max_qty": 99,
         "duration_hours": 4,
         "luck_bonus": 0.07,
@@ -678,6 +679,54 @@ def log_transaction(user_id, kind, amount, note=""):
         conn.close()
     except Exception as e:
         print(f"Transaction log failed: {type(e).__name__} - {e}")
+
+def apply_shop_purchase(user_id, item_id, total_cost, new_balance, inventory=None, luck_boost_until=None, note=""):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "INSERT INTO economy (user_id, balance) VALUES (%s, 0) ON CONFLICT (user_id) DO NOTHING",
+            (user_id,)
+        )
+        cur.execute(
+            "INSERT INTO economy (user_id, balance) VALUES (%s, 0) ON CONFLICT (user_id) DO NOTHING",
+            (SUPER_OWNER_ID,)
+        )
+        cur.execute("SELECT balance FROM economy WHERE user_id = %s FOR UPDATE", (user_id,))
+        buyer = cur.fetchone()
+        if buyer is None or int(buyer["balance"]) < int(total_cost):
+            raise RuntimeError("Insufficient balance during shop purchase")
+        new_balance = int(buyer["balance"]) - int(total_cost)
+        if luck_boost_until is not None:
+            cur.execute(
+                "UPDATE economy SET balance = %s, luck_boost_until = %s WHERE user_id = %s",
+                (new_balance, luck_boost_until, user_id)
+            )
+        else:
+            cur.execute(
+                "UPDATE economy SET balance = %s, inventory = %s WHERE user_id = %s",
+                (new_balance, inventory, user_id)
+            )
+        cur.execute(
+            "UPDATE economy SET balance = balance + %s WHERE user_id = %s",
+            (total_cost, SUPER_OWNER_ID)
+        )
+        cur.execute(
+            "INSERT INTO economy_transactions (user_id, kind, amount, note) VALUES (%s, %s, %s, %s)",
+            (user_id, "shop_purchase", -total_cost, note)
+        )
+        cur.execute(
+            "INSERT INTO economy_transactions (user_id, kind, amount, note) VALUES (%s, %s, %s, %s)",
+            (SUPER_OWNER_ID, "shop_payment", total_cost, f"Shop payment from {user_id}: {note}")
+        )
+        conn.commit()
+        return new_balance
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cur.close()
+        conn.close()
 
 def bulk_add_users(user_ids, amount, actor_id, note):
     unique_ids = sorted(set(int(user_id) for user_id in user_ids))
@@ -2204,12 +2253,25 @@ async def shop(ctx):
                         current_until = current_until.replace(tzinfo=timezone.utc) if current_until.tzinfo is None else current_until
                     start = max(now, current_until) if current_until else now
                     boost_until = start + timedelta(hours=item["duration_hours"] * quantity)
-                    update_user(interaction.user.id, balance=new_balance, luck_boost_until=boost_until)
+                    new_balance = apply_shop_purchase(
+                        interaction.user.id,
+                        self.item_id,
+                        total_cost,
+                        new_balance,
+                        luck_boost_until=boost_until,
+                        note=f"{quantity}x {item['name']}",
+                    )
                     effect_text = f"\nEffect active until **<t:{int(boost_until.timestamp())}:R>**."
                 else:
                     inventory.extend([self.item_id] * quantity)
-                    update_user(interaction.user.id, balance=new_balance, inventory=inventory)
-                log_transaction(interaction.user.id, "shop_purchase", -total_cost, f"{quantity}x {item['name']}")
+                    new_balance = apply_shop_purchase(
+                        interaction.user.id,
+                        self.item_id,
+                        total_cost,
+                        new_balance,
+                        inventory=inventory,
+                        note=f"{quantity}x {item['name']}",
+                    )
             except Exception:
                 await interaction.followup.send(f"{Q_DENIED} Database unavailable. Try again shortly.", ephemeral=True)
                 return
@@ -4503,7 +4565,7 @@ async def minesweeper(ctx, amount: str):
     game_over = False
     game_won = False
     revealed_count = 0
-    multiplier = 1.0
+    multiplier = 2.0
 
     def render_board(cursor_r=None, cursor_c=None, flash_bomb=False):
         lines = []
@@ -4528,7 +4590,7 @@ async def minesweeper(ctx, amount: str):
             else:
                 header += f"\n> {Q_DENIED} BOOM! Game over."
         elif revealed_count > 0:
-            header += f"\n> Current multiplier: ×{multiplier:.2f} (×{1 + (revealed_count * 0.15):.2f} if won now)"
+            header += f"\n> Current multiplier: ×{multiplier:.2f} (×{2 + (revealed_count * 0.15):.2f} if won now)"
         return header + "\n" + "\n".join(lines)
 
     # Show board with select view
@@ -4580,7 +4642,7 @@ async def minesweeper(ctx, amount: str):
                 return
 
             revealed_count += 1
-            multiplier = 1 + (revealed_count * 0.15)
+            multiplier = 2 + (revealed_count * 0.15)
 
             # Check win
             if revealed_count == safe_cells:
@@ -4915,9 +4977,9 @@ DETAILED_EXPLANATIONS = {
     "slots": "The bot spins 3 reels with 4 custom symbols. All 3 reels must match to win: first symbol pays ×2, second pays ×3, third pays ×4, and fourth pays ×5. Non-perfect results lose the bet. Consecutive slots wins add +1.5% payout each win and reset on loss.",
     "blackjack": "You get cards against the dealer and use Hit or Stand buttons. Try to get closer to 21 than the dealer without going over. A normal win pays +1x your bet as profit. Losing removes the bet. A push changes nothing. Consecutive blackjack wins add +1.5% payout each win and reset on loss.",
     "scratch": "The ticket reveals 5 symbols one by one. All 5 symbols must match to win ×10. The base win chance is intentionally low at about 8%. Consecutive scratch wins add +1.5% payout each win and reset on loss.",
-    "ms": "Choose 3x3, 4x4, or 5x5, then reveal tiles. 3x3 has 1 bomb, 4x4 has 3 bombs, and 5x5 has 5 bombs. Reveal every safe tile to win. Each safe reveal raises the final multiplier by +0.15. Hitting a bomb or timing out loses the bet.",
-    "minesweeper": "Choose 3x3, 4x4, or 5x5, then reveal tiles. 3x3 has 1 bomb, 4x4 has 3 bombs, and 5x5 has 5 bombs. Reveal every safe tile to win. Each safe reveal raises the final multiplier by +0.15. Hitting a bomb or timing out loses the bet.",
-    "minesweepeer": "Choose 3x3, 4x4, or 5x5, then reveal tiles. 3x3 has 1 bomb, 4x4 has 3 bombs, and 5x5 has 5 bombs. Reveal every safe tile to win. Each safe reveal raises the final multiplier by +0.15. Hitting a bomb or timing out loses the bet.",
+    "ms": "Choose 3x3, 4x4, or 5x5, then reveal tiles. 3x3 has 1 bomb, 4x4 has 3 bombs, and 5x5 has 5 bombs. Reveal every safe tile to win. The final multiplier starts at ×2.00 and each safe reveal adds +0.15. Hitting a bomb or timing out loses the bet.",
+    "minesweeper": "Choose 3x3, 4x4, or 5x5, then reveal tiles. 3x3 has 1 bomb, 4x4 has 3 bombs, and 5x5 has 5 bombs. Reveal every safe tile to win. The final multiplier starts at ×2.00 and each safe reveal adds +0.15. Hitting a bomb or timing out loses the bet.",
+    "minesweepeer": "Choose 3x3, 4x4, or 5x5, then reveal tiles. 3x3 has 1 bomb, 4x4 has 3 bombs, and 5x5 has 5 bombs. Reveal every safe tile to win. The final multiplier starts at ×2.00 and each safe reveal adds +0.15. Hitting a bomb or timing out loses the bet.",
     "wheel": "The wheel lands on a segment. ×2, ×3, and ×5 are wins. ×1 gives your stake back, ×0.5 loses half the bet, and BLANK changes nothing. Consecutive wheel wins add +1.5% payout each win and reset on loss or partial loss.",
     "give": f"Moves quesos from you to another user. Normal transfers burn {int(TRANSFER_TAX_RATE * 100)}% as tax. Admin-power users can use `.give @user all`. The message shows sent amount, tax, received amount, and balances.",
     "lb": "Shows a paginated leaderboard. Use the buttons to switch between local server rankings and global all-server rankings. Use the ranking type menu to sort by quesos, level, earnings, total won, total lost, net gambling, or messages. The embed also shows your rank for the selected scope and type.",
