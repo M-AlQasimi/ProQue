@@ -1041,6 +1041,29 @@ async def refresh_lottery_message(guild, config=None, create_if_missing=True):
     await asyncio.to_thread(update_lottery_config, guild.id, message_id=message.id)
     return message
 
+async def clear_lottery_channel(channel):
+    if channel is None:
+        return 0
+    try:
+        deleted = await channel.purge(limit=None, reason="Lottery round finished")
+        return len(deleted)
+    except Exception as e:
+        print(f"Lottery channel purge failed, trying manual delete: {type(e).__name__} - {e}")
+
+    deleted_count = 0
+    try:
+        async for message in channel.history(limit=None):
+            try:
+                await message.delete()
+                deleted_count += 1
+                if deleted_count % 10 == 0:
+                    await asyncio.sleep(1)
+            except Exception as e:
+                print(f"Lottery message delete skipped: {type(e).__name__} - {e}")
+    except Exception as e:
+        print(f"Lottery channel manual clear failed: {type(e).__name__} - {e}")
+    return deleted_count
+
 async def restore_lottery_panels():
     global lottery_view_registered
     if not bot:
@@ -2335,18 +2358,25 @@ async def process_lottery_draw(config):
         role = await recreate_lottery_role(guild, config.get("role_id"))
         set_lottery_role(guild.id, role.id if role else None)
         updated_config = await asyncio.to_thread(get_lottery_config, guild.id)
-        await refresh_lottery_message(guild, updated_config)
     except Exception as e:
         print(f"Lottery draw failed: {type(e).__name__} - {e}")
         return
 
     if channel:
+        deleted_count = await clear_lottery_channel(channel)
         await channel.send(
             f"{Q_CONFETTI} Lottery winner: {user_mention(winner_id)} won the prize: **{format_balance(pot)}**!\n"
             f"Next draw: <t:{int(next_draw.timestamp())}:R>\n"
+            f"Cleared **{deleted_count:,}** old lottery messages.\n"
             "A fresh participant role has been created for the new round.",
-            allowed_mentions=discord.AllowedMentions.none()
+            allowed_mentions=discord.AllowedMentions(users=True)
         )
+        try:
+            await asyncio.to_thread(update_lottery_config, guild.id, message_id=None)
+            updated_config["message_id"] = None
+        except Exception as e:
+            print(f"Lottery message id reset failed: {type(e).__name__} - {e}")
+    await refresh_lottery_message(guild, updated_config)
 
 async def lottery_draw_loop():
     await bot.wait_until_ready()
@@ -2874,7 +2904,7 @@ async def roulette(ctx, amount: str, color: str = None):
         f"{Q_WHEEL_SPIN} **ROULETTE**\n"
         f"─────────────────\n"
         f"{Q_TARGET} Pick: **{emoji_map[color]} {color.upper()}**\n"
-        f"`[ spinning... ]`"
+        f"[ spinning... ]"
     )
     spin_frames = [
         f"{Q_ROULETTE_RED} {Q_ROULETTE_BLACK} {Q_ROULETTE_GREEN}",
@@ -2889,7 +2919,7 @@ async def roulette(ctx, amount: str, color: str = None):
                 f"{Q_WHEEL_SPIN} **ROULETTE**\n"
                 f"─────────────────\n"
                 f"{Q_TARGET} Pick: **{emoji_map[color]} {color.upper()}**\n"
-                f"`[ {frame} ]`"
+                f"[ {frame} ]"
             )
         )
 
@@ -3746,7 +3776,7 @@ async def scratch(ctx, amount: str):
         return (
             f"{QOIN_CHEST} **SCRATCH CARD**\n"
             f"─────────────────\n"
-            f"`{cells_line}`\n"
+            f"{cells_line}\n"
             f"─────────────────\n"
             f"{extra or f'Bet: **{format_balance(amount)}**\n_Revealing cells..._'}"
         )
@@ -3778,7 +3808,7 @@ async def scratch(ctx, amount: str):
                 content=(
                     f"{QOIN_CHEST} **SCRATCH CARD — WIN!**\n"
                     f"─────────────────\n"
-                    f"`{'  '.join(cell_states)}`\n"
+                    f"{'  '.join(cell_states)}\n"
                     f"─────────────────\n"
                     f">>> {Q_SUCCESS} **{match_count}/5 {best_symbol} matched!**\n"
                     f"Multiplier: ×{multiplier}  |  Streak bonus: ×{mult:.2f}\n"
@@ -3798,7 +3828,7 @@ async def scratch(ctx, amount: str):
                 content=(
                     f"{QOIN_CHEST} **SCRATCH CARD**\n"
                     f"─────────────────\n"
-                    f"`{'  '.join(cell_states)}`\n"
+                    f"{'  '.join(cell_states)}\n"
                     f"─────────────────\n"
                     f">>> {Q_DENIED} **{match_count}/5 matched** — no prize\n"
                     f"Lost: **{format_balance(amount)}**\n"
@@ -4268,6 +4298,10 @@ EXPLANATIONS = {
     "away": "Shows AFK and sleeping users.",
     "listbans": "Admin-power command. Lists blacklisted users.",
     "calc": "Calculates a math expression.",
+    "poll": "Creates a reaction poll. Use `.poll question`, `.poll question | option | option`, or add a final `| 10m`/`| 2h`/`| 1d` timer.",
+    "epoll": "Ends one of your active polls. Admin-power users can end any active poll in the server.",
+    "giveaway": "Admin-power command. Starts a timed giveaway with a custom reaction entry.",
+    "steal": "Admin-power command. Copies a custom emoji or sticker into this server if the bot has permission.",
     "ask": "Asks the AI a question.",
     "generate": "Generates text with AI.",
     "analyse": "Analyzes provided text or content.",

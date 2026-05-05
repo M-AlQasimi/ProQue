@@ -190,7 +190,7 @@ CHESS_PIECE_EMOJIS = {
     "q": "<:QChessBlackQueen:1500858439197397034>",
     "k": "<:QChessBlackKing:1500858433786609874>",
 }
-CHESS_LIGHT = "⬜"
+CHESS_LIGHT = "<:QC4EmptyLight:1500878748537585715>"
 CHESS_DARK = "<:QChessDark:1500878861653770271>"
 POLL_NUMBER_EMOJIS = [
     "<:QPollOne:1500881606389530724>",
@@ -212,8 +212,21 @@ def custom_emoji(markdown):
         return discord.PartialEmoji.from_str(markdown)
     except Exception:
         return None
+
+def reaction_emoji(markdown):
+    return custom_emoji(markdown) or markdown
+
+def same_emoji(left, right):
+    return str(left) == str(right)
+
+def set_embed_field(embed, index, name, value, inline=True):
+    if index < len(embed.fields):
+        embed.set_field_at(index, name=name, value=value, inline=inline)
+    else:
+        embed.add_field(name=name, value=value, inline=inline)
 active_timers = load_active_timers()
 active_polls = load_active_polls()
+runtime_state_restored = False
 user_mentions = {}
 daily_cooldown = {}
 weekly_cooldown = {}
@@ -264,6 +277,9 @@ def scoped_list(store, guild):
 
 def scoped_map(store, guild):
     return store.setdefault(scoped_id(guild), {})
+
+def normalize(text):
+    return (text or "").casefold()
 
 def guild_autoban_ids(guild):
     return scoped_set(autoban_ids, guild)
@@ -623,7 +639,13 @@ async def safe_send(destination, *args, **kwargs):
 
 async def safe_add_reaction(message, emoji):
     try:
-        await message.add_reaction(emoji)
+        await message.add_reaction(reaction_emoji(emoji))
+    except discord.HTTPException:
+        pass
+
+async def safe_delete_message(message):
+    try:
+        await message.delete()
     except discord.HTTPException:
         pass
 
@@ -697,7 +719,7 @@ async def keep_alive_task():
 
 @bot.event
 async def on_ready():
-    global birthday_task
+    global birthday_task, runtime_state_restored
     print(f'ProQue is online as {bot.user}')
     if not keep_alive_task.is_running():
         keep_alive_task.start()
@@ -716,7 +738,9 @@ async def on_ready():
         print(f"Quewo system loaded ({len(loaded_economy_commands)}/{len(economy_command_names)} commands)")
     except Exception as e:
         print(f"Quewo system not loaded: {e}")
-    await restore_persistent_runtime_state()
+    if not runtime_state_restored:
+        await restore_persistent_runtime_state()
+        runtime_state_restored = True
     print("Bot ready, waiting to sync slash commands...")
 
 
@@ -1272,16 +1296,25 @@ async def on_command_error(ctx, error):
 
 HELP_CATEGORIES = {
     "Quewo": [
-        "bal", "profile", "quests", "daily", "weekly", "monthly", "cooldowns", "transactions", "shop", "lottery", "editlottery", "stoplottery", "lotterystats", "buytick", "econhelp",
-        "cf", "roulette", "slots", "blackjack", "scratch", "ms", "wheel",
-        "give", "lb", "addtick", "settick", "setquesos",
+        "bal", "profile", "quests", "shop", "cooldowns", "transactions", "lottery", "lotterystats", "buytick",
+        "daily", "weekly", "monthly", "cf", "roulette", "slots", "blackjack", "scratch", "ms", "wheel",
+        "give", "lb", "econhelp", "explain",
     ],
     "Games": ["ttt", "c4", "chess", "move", "resign", "q", "picker"],
-    "Utility": ["help", "explain", "userinfo", "pfp", "calc", "define", "timer", "ctimer", "alarm", "poll", "epoll", "translate"],
+    "Utility": ["help", "userinfo", "pfp", "calc", "define", "timer", "ctimer", "alarm", "poll", "epoll", "translate", "find"],
     "AI": ["ask", "generate", "analyse"],
-    "Server Tools": ["dsnipe", "esnipe", "rsnipe", "rolesinfo", "roleinfo", "purge", "rpurge", "steal"],
-    "Status": ["afk", "sleep", "wake", "away", "setbday", "removebday", "setbdaychannel"],
-    "Admin": ["setlogs", "prefix", "disable", "enable", "disableall", "enableall", "dclist", "add", "remove", "addtick", "settick", "setquesos"],
+    "Server Tools": [
+        "dsnipe", "esnipe", "rsnipe", "rolesinfo", "roleinfo", "purge", "rpurge", "steal",
+        "giveaway", "listbans", "listblocks", "listtargets", "listcensors", "lists",
+    ],
+    "Status": ["afk", "sleep", "wake", "fsleep", "away", "setbday", "removebday", "setbdaychannel"],
+    "Admin": [
+        "setlogs", "prefix", "disable", "enable", "disableall", "enableall", "dclist", "test", "testlog",
+        "endttt", "setnick", "unmute", "kick", "ban", "unban", "addrole", "removerole", "deleterole",
+        "lock", "lockdown", "unlock", "rlockdown", "runlock", "shut", "unshut", "clearwatchlist", "rshut", "unrshut",
+        "send", "reply", "aban", "raban", "abanlist", "summon", "summon2", "block", "unblock",
+        "censor", "uncensor", "clearcensors", "editlottery", "stoplottery", "add", "remove", "addtick", "settick", "setquesos",
+    ],
 }
 
 def prefix_for_guild(guild):
@@ -1543,61 +1576,81 @@ async def update_poll_counts(message):
     
     options = poll_data.get("options", ["Yes", "No"])
     use_numbers = poll_data.get("use_numbers", False)
-    number_emojis = POLL_NUMBER_EMOJIS
-    
     for idx, opt in enumerate(options):
-        if use_numbers:
-            count = 0
-            emoji = number_emojis[idx]
-            for reaction in message.reactions:
-                if str(reaction.emoji) == emoji:
-                    count = reaction.count - 1
-            embed.set_field_at(idx, name=opt, value=str(count), inline=True)
-        else:
-            if opt.lower() == "yes":
-                count = sum(r.count - 1 for r in message.reactions if str(r.emoji) == economy_q_accept)
-            elif opt.lower() == "no":
-                count = sum(r.count - 1 for r in message.reactions if str(r.emoji) == economy_q_reject)
-            embed.set_field_at(idx, name=opt, value=str(count), inline=True)
+        count = poll_reaction_count(message, idx, use_numbers, opt)
+        set_embed_field(embed, idx, opt, str(count), inline=True)
 
-    await message.edit(embed=embed)
+    try:
+        await message.edit(embed=embed)
+    except discord.HTTPException as e:
+        print(f"Poll count update skipped: {type(e).__name__} - {e}")
+
+def poll_reaction_count(message, option_index, use_numbers, option_name=None):
+    if use_numbers:
+        if option_index >= len(POLL_NUMBER_EMOJIS):
+            return 0
+        target = POLL_NUMBER_EMOJIS[option_index]
+    elif option_name and option_name.lower() == "yes":
+        target = economy_q_accept
+    elif option_name and option_name.lower() == "no":
+        target = economy_q_reject
+    else:
+        return 0
+
+    for reaction in message.reactions:
+        if same_emoji(reaction.emoji, target):
+            return max(0, reaction.count - 1)
+    return 0
+
+def parse_poll_duration(value):
+    if not value:
+        return None
+    raw = value.strip().lower()
+    if not re.fullmatch(r"(?:\d+\s*[dhm]\s*)+", raw):
+        return None
+    days = hours = minutes = 0
+    for amount, unit in re.findall(r"(\d+)\s*([dhm])", raw):
+        amount = int(amount)
+        if unit == "d":
+            days += amount
+        elif unit == "h":
+            hours += amount
+        elif unit == "m":
+            minutes += amount
+    delta = timedelta(days=days, hours=hours, minutes=minutes)
+    return delta if delta.total_seconds() > 0 else None
 
 async def finalize_poll(msg, poll_data):
     """Updates the poll embed with final results."""
+    poll_msg = None
     try:
         poll_msg = await bot.get_channel(poll_data["channel_id"]).fetch_message(msg.id)
     except:
+        active_polls.pop(msg.id, None)
+        remove_active_poll(msg.id)
         return
 
-    embed = poll_msg.embeds[0] if poll_msg.embeds else discord.Embed(title=poll_data["question"])
-    options = poll_data.get("options", ["Yes", "No"])
-    use_numbers = poll_data.get("use_numbers", False)
-    number_emojis = POLL_NUMBER_EMOJIS
+    try:
+        embed = poll_msg.embeds[0] if poll_msg.embeds else discord.Embed(title=poll_data["question"])
+        options = poll_data.get("options", ["Yes", "No"])
+        use_numbers = poll_data.get("use_numbers", False)
 
-    for idx, opt in enumerate(options):
-        if use_numbers:
-            count = 0
-            emoji = number_emojis[idx]
-            for reaction in poll_msg.reactions:
-                if str(reaction.emoji) == emoji:
-                    count = reaction.count - 1
-            embed.set_field_at(idx, name=opt, value=str(count), inline=True)
-        else:
-            if opt.lower() == "yes":
-                count = sum(r.count - 1 for r in poll_msg.reactions if str(r.emoji) == economy_q_accept)
-            elif opt.lower() == "no":
-                count = sum(r.count - 1 for r in poll_msg.reactions if str(r.emoji) == economy_q_reject)
-            embed.set_field_at(idx, name=opt, value=str(count), inline=True)
+        for idx, opt in enumerate(options):
+            count = poll_reaction_count(poll_msg, idx, use_numbers, opt)
+            set_embed_field(embed, idx, opt, str(count), inline=True)
 
-    embed.color = discord.Color.green()
-    embed.set_footer(text=f"Poll Ended {economy_q_poll}")
-    embed.timestamp = datetime.now(timezone.utc)
+        embed.color = discord.Color.green()
+        embed.set_footer(text=f"Poll Ended {economy_q_poll}")
+        embed.timestamp = datetime.now(timezone.utc)
 
-    await poll_msg.edit(embed=embed)
-    author = await bot.fetch_user(poll_data["author_id"])
-    await poll_msg.reply(f"{author.mention} your poll has ended!", mention_author=True)
-    active_polls.pop(msg.id, None)
-    remove_active_poll(msg.id)
+        await poll_msg.edit(embed=embed)
+        author = await bot.fetch_user(poll_data["author_id"])
+        await poll_msg.reply(f"{author.mention} your poll has ended!", mention_author=True)
+    except Exception as e:
+        print(f"Poll finalize warning: {type(e).__name__} - {e}")
+    finally:
+        active_polls.pop(msg.id, None)
+        remove_active_poll(msg.id)
 
 async def restore_persistent_runtime_state():
     now = datetime.now(timezone.utc)
@@ -3262,7 +3315,7 @@ from collections import Counter
 @bot.command()
 @is_admin_power()
 async def purge(ctx, amount: int, member: discord.Member = None):
-    await ctx.message.delete()
+    await safe_delete_message(ctx.message)
     deleted = []
     try:
         if member is None:
@@ -3300,7 +3353,7 @@ async def rpurge(ctx, amount: int, member: discord.Member = None):
     if amount <= 0:
         return await ctx.send("Amount must be greater than 0.", delete_after=5)
 
-    await ctx.message.delete()
+    await safe_delete_message(ctx.message)
     removed = 0
     reaction_owners = []
 
@@ -3341,7 +3394,7 @@ async def rpurge(ctx, amount: int, member: discord.Member = None):
         print(f"[RPURGE ERROR] {type(e).__name__} - {e}")
         await ctx.send(f"An unexpected error occurred: {type(e).__name__}", delete_after=5)
 
-@bot.command()
+@bot.command(name="lock")
 @is_admin_power()
 async def lock_channel(ctx):
     overwrite = ctx.channel.overwrites_for(ctx.guild.default_role)
@@ -3517,11 +3570,10 @@ class StealView(View):
         await interaction.response.send_message(f"{economy_q_reject} Cancelled.", ephemeral=True)
         self.stop()
 
-@commands.command()
+@bot.command()
 @is_admin_power()
-@commands.has_permissions(manage_guild=True)
 async def steal(ctx):
-    await ctx.message.delete()
+    await safe_delete_message(ctx.message)
     
     ref = ctx.message.reference
     if not ref:
@@ -3639,10 +3691,7 @@ async def steal(ctx):
 @bot.command()
 @is_admin_power()
 async def send(ctx, target=None, *, msg=None):
-    try:
-        await ctx.message.delete()
-    except discord.HTTPException:
-        pass
+    await safe_delete_message(ctx.message)
     attachments = ctx.message.attachments
 
     target_channel = ctx.channel
@@ -3692,7 +3741,7 @@ async def send(ctx, target=None, *, msg=None):
 @bot.command()
 @is_admin_power()
 async def reply(ctx, message_id: int, *, text=None):
-    await ctx.message.delete()
+    await safe_delete_message(ctx.message)
     attachments = ctx.message.attachments
 
     msg = None
@@ -3742,40 +3791,37 @@ async def poll(ctx, *, args):
     if ctx.guild is None:
         return await ctx.send("Polls can only be used in a server.")
 
-    parts = [p.strip() for p in args.split("|")]
+    parts = [p.strip() for p in args.split("|") if p.strip()]
+    if not parts:
+        return await ctx.send("Use `.poll question` or `.poll question | option | option [| time]`.")
     question = parts[0]
-    time_str = parts[1] if len(parts) >= 2 else None
-    options_str = parts[2] if len(parts) >= 3 else None
 
-    end_time = None
-    if time_str:
-        try:
-            d = h = m = 0
-            matches = re.findall(r"(\d+)\s*(d|h|m)", time_str.lower())
-            for value, unit in matches:
-                if unit == "d":
-                    d = int(value)
-                elif unit == "h":
-                    h = int(value)
-                elif unit == "m":
-                    m = int(value)
-            delta = timedelta(days=d, hours=h, minutes=m)
-            end_time = datetime.now(timezone.utc) + delta
-        except:
-            end_time = None
+    remaining = parts[1:]
+    time_str = None
+    delta = None
+    if remaining:
+        possible_delta = parse_poll_duration(remaining[-1])
+        if possible_delta:
+            delta = possible_delta
+            time_str = remaining.pop()
 
     default_options = ["Yes", "No"]
-    number_emojis = POLL_NUMBER_EMOJIS
-    if options_str:
-        raw_options = [o.strip() for o in options_str.split(",") if o.strip()]
-        if len(raw_options) > 10:
-            await ctx.send("Maximum 10 options allowed.")
-            return
-        options = raw_options
-        use_numbers = True
-    else:
+    if not remaining:
         options = default_options
         use_numbers = False
+    else:
+        if len(remaining) < 2:
+            return await ctx.send("Custom polls need at least 2 options. Example: `.poll Best color? | Blue | Red`")
+        if len(remaining) > len(POLL_NUMBER_EMOJIS):
+            return await ctx.send(f"Maximum {len(POLL_NUMBER_EMOJIS)} options allowed.")
+        options = remaining
+        use_numbers = True
+
+    end_time = None
+    if delta:
+        end_time = datetime.now(timezone.utc) + delta
+
+    number_emojis = POLL_NUMBER_EMOJIS
 
     embed = discord.Embed(title=question, color=discord.Color.blue())
     for opt in options:
@@ -3790,10 +3836,10 @@ async def poll(ctx, *, args):
 
     if use_numbers:
         for i in range(len(options)):
-            await msg.add_reaction(number_emojis[i])
+            await msg.add_reaction(reaction_emoji(number_emojis[i]))
     else:
-        await msg.add_reaction(economy_q_accept)
-        await msg.add_reaction(economy_q_reject)
+        await msg.add_reaction(reaction_emoji(economy_q_accept))
+        await msg.add_reaction(reaction_emoji(economy_q_reject))
 
     active_polls[msg.id] = {
         "question": question,
@@ -3810,7 +3856,7 @@ async def poll(ctx, *, args):
 
     if end_time:
         async def end_poll_task():
-            await asyncio.sleep((end_time - datetime.now(timezone.utc)).total_seconds())
+            await asyncio.sleep(max(0, (end_time - datetime.now(timezone.utc)).total_seconds()))
             poll_data = active_polls.get(msg.id)
             if not poll_data or poll_data.get("ended"):
                 return
@@ -3867,16 +3913,7 @@ class ConfirmEndPollView(View):
         except:
             await interaction.response.edit_message(content="Poll message not found.", view=None)
             return
-        yes_count = sum(r.count - 1 for r in poll_msg.reactions if str(r.emoji) == economy_q_accept)
-        no_count = sum(r.count - 1 for r in poll_msg.reactions if str(r.emoji) == economy_q_reject)
-        final_embed = discord.Embed(title=poll_data["question"], color=discord.Color.green())
-        final_embed.add_field(name="Yes", value=str(yes_count), inline=True)
-        final_embed.add_field(name="No", value=str(no_count), inline=True)
-        final_embed.set_footer(text=f"Poll Ended {economy_q_poll}")
-        final_embed.timestamp = datetime.now(timezone.utc)
-        await poll_msg.edit(embed=final_embed)
-        author = await bot.fetch_user(poll_data["author_id"])
-        await poll_msg.reply(f"{author.mention} your poll has ended!", mention_author=True)
+        await finalize_poll(poll_msg, poll_data)
         if self.parent_view and self.parent_view.message:
             self.parent_view.disable_all_items()
             try:
@@ -3933,11 +3970,11 @@ class EndPollSelectView(View):
     def __init__(self, ctx, polls_list):
         super().__init__(timeout=60)
         self.ctx = ctx
-        self.polls_list = polls_list
+        self.polls_list = polls_list[:25]
         self.message = None
         options = [
-            discord.SelectOption(label=f"{data['question'][:50]}...", value=str(msg_id))
-            for msg_id, data in polls_list
+            discord.SelectOption(label=(data["question"][:97] + "..." if len(data["question"]) > 100 else data["question"]), value=str(msg_id))
+            for msg_id, data in self.polls_list
         ]
         self.add_item(EndPollSelect(ctx, options, parent_view=self))
 
@@ -3951,16 +3988,18 @@ class EndPollSelectView(View):
 
 
 @bot.command()
-@commands.has_permissions(manage_messages=True)
 async def epoll(ctx):
-    if ctx.author.id == super_owner_id:
+    if ctx.guild is None:
+        return await ctx.send("Polls can only be ended in a server.")
+    if has_owner_power(ctx.author, ctx.guild):
         polls_list = list(active_polls.items())
     else:
         polls_list = [(pid, pdata) for pid, pdata in active_polls.items() if pdata["author_id"] == ctx.author.id]
     if not polls_list:
         return await ctx.send("No active polls found.")
     view = EndPollSelectView(ctx, polls_list)
-    sent_msg = await ctx.send("Select a poll to end:", view=view)
+    note = " Showing the first 25 active polls." if len(polls_list) > 25 else ""
+    sent_msg = await ctx.send(f"Select a poll to end:{note}", view=view)
     view.message = sent_msg
 
 @bot.command()
@@ -3975,7 +4014,7 @@ async def giveaway(ctx, time: str, *, prize: str):
     embed = discord.Embed(title=f"{economy_q_gift} Giveaway!", description=f"Prize: **{prize}**\nReact with {economy_q_confetti} to enter!", color=0x00ff00)
     embed.set_footer(text=f"Ends in {time}")
     msg = await ctx.send(embed=embed)
-    await msg.add_reaction(economy_q_confetti)
+    await msg.add_reaction(reaction_emoji(economy_q_confetti))
     end_time = datetime.now(timezone.utc) + timedelta(seconds=seconds)
     while seconds > 0:
         if seconds <= 60:
@@ -3984,7 +4023,8 @@ async def giveaway(ctx, time: str, *, prize: str):
         await asyncio.sleep(1)
         seconds = int((end_time - datetime.now(timezone.utc)).total_seconds())
     new_msg = await ctx.channel.fetch_message(msg.id)
-    users = [u async for u in new_msg.reactions[0].users() if not u.bot]
+    entry_reaction = next((r for r in new_msg.reactions if same_emoji(r.emoji, economy_q_confetti)), None)
+    users = [u async for u in entry_reaction.users() if not u.bot] if entry_reaction else []
     if users:
         winner = random.choice(users)
         await ctx.send(
@@ -4521,7 +4561,7 @@ async def define(ctx, *, word: str):
 @bot.command()
 @is_admin_power()
 async def summon(ctx, *, message: str = "h-hi"):
-    await ctx.message.delete()
+    await safe_delete_message(ctx.message)
     await ctx.send(f"@everyone {message}")
 
 @bot.command()

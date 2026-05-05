@@ -48,7 +48,7 @@ Expected current behavior:
 - `.dsnipe`
 - `.esnipe`
 - `.rsnipe`
-- `.poll <question> | <option> | <option> [time]`
+- `.poll <question> | <option> | <option> [| time]`
 - `.picker ...`
 - `.timer <time> [title]`
 - `.ctimer`
@@ -196,7 +196,7 @@ Current expected:
 - Leaderboard pagination.
 - Transactions pagination/limits.
 - Chat XP background award and level-up embed.
-- Owner/superowner amount override behavior.
+- Admin/superowner amount override behavior.
 
 ### Lottery
 
@@ -208,7 +208,7 @@ Current expected:
 - Ticket role assignment.
 - `.lotterystats` pagination.
 - Minimum-player refund path.
-- Winner path pays pot and resets round.
+- Winner path pays pot, clears the lottery channel, posts the winner message, then posts a fresh lottery panel.
 - `.editlottery price/duration/cut/channel`.
 - `.stoplottery`.
 - `.addtick`, `.settick`, `.setquesos` with user, role, and everyone.
