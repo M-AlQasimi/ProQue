@@ -1409,8 +1409,8 @@ async def on_message(message):
             embed.add_field(name="Mentions received", value=f"You received **{len(mentions_list)}** mentions:", inline=False)
             for uid, link, ts in mentions_list:
                 embed.add_field(
-                    name=f"<@{uid}>",
-                    value=f"<t:{ts}:R> — [Click to view message]({link})",
+                    name="Mention",
+                    value=f"<@{uid}> — <t:{ts}:R> — [Click to view message]({link})",
                     inline=True
                 )
 
@@ -1468,8 +1468,8 @@ async def on_message(message):
             embed.add_field(name="Mentions received", value=f"You received **{len(mentions_list)}** mentions:", inline=False)
             for uid, link, ts in mentions_list:
                 embed.add_field(
-                    name=f"<@{uid}>",
-                    value=f"<t:{ts}:R> — [Click to view message]({link})",
+                    name="Mention",
+                    value=f"<@{uid}> — <t:{ts}:R> — [Click to view message]({link})",
                     inline=True
                 )
 
@@ -2634,7 +2634,6 @@ async def userinfo(ctx, member: discord.Member = None):
     embed = discord.Embed(title="User Info", color=0x3498db)
     embed.set_thumbnail(url=member.display_avatar.url)
     embed.add_field(name="User", value=log_user(member), inline=True)
-    embed.add_field(name="Username", value=f"`{member}`", inline=True)
     embed.add_field(name="ID", value=member.id, inline=True)
     embed.add_field(
         name="Joined Server",
@@ -4643,7 +4642,7 @@ async def abanlist(ctx):
         if member:
             results.append(f"<@{uid}>")
         else:
-            results.append(f"User ID: {uid}")
+            results.append(f"<@{uid}>")
     await ctx.send("Autoban List:\n" + "\n".join(results), allowed_mentions=discord.AllowedMentions.none())
 
 def parse_time_string(time_str: str) -> int:
@@ -5378,7 +5377,7 @@ def generate_list_embed(title, user_ids, guild=None, show_names=False):
                 mention = f"<@{member.id}>"
                 lines.append(mention)
             else:
-                lines.append(f"User ID: `{uid}`")
+                lines.append(f"<@{uid}>")
         else:
             lines.append(f"<@{uid}>")
     embed.description = "\n".join(lines)
