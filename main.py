@@ -185,6 +185,7 @@ C4_COLUMN_LABELS = "".join(C4_NUMBER_EMOJIS)
 TURN_TIMEOUT_SECONDS = 30
 TURN_COUNTDOWN_EDIT_POINTS = {30, 20, 10, 5, 4, 3, 2, 1}
 CHESS_CLOCK_SECONDS = 10 * 60
+CHESS_CLOCK_LIVE_INTERVAL = 5
 
 CHESS_PIECE_EMOJIS = {
     "P": "<:QChessWhitePawn:1500858450010312855>",
@@ -202,6 +203,16 @@ CHESS_PIECE_EMOJIS = {
 }
 CHESS_LIGHT = "<:QC4EmptyLight:1500878748537585715>"
 CHESS_DARK = "<:QChessDark:1500878861653770271>"
+CHESS_FILE_EMOJIS = {
+    "a": "<:QChessFileA:1501277403647967312>",
+    "b": "<:QChessFileB:1501277406751752403>",
+    "c": "<:QChessFileC:1501277408471289926>",
+    "d": "<:QChessFileD:1501277410291879966>",
+    "e": "<:QChessFileE:1501277412229382406>",
+    "f": "<:QChessFileF:1501277413857034401>",
+    "g": "<:QChessFileG:1501277426406264863>",
+    "h": "<:QChessFileH:1501277428293832884>",
+}
 POLL_NUMBER_EMOJIS = [
     "<:QPollOne:1500881606389530724>",
     "<:QPollTwo:1500878993954705690>",
@@ -214,6 +225,7 @@ POLL_NUMBER_EMOJIS = [
     "<:QPollNine:1500884000355389563>",
     "<:QPollTen:1500884002507329636>",
 ]
+CHESS_RANK_EMOJIS = POLL_NUMBER_EMOJIS[:8]
 C4_EMPTY_LIGHT = "<:QC4EmptyLight:1500878748537585715>"
 C4_EMPTY_DARK = "<:QC4EmptyDark:1500878746956202136>"
 
@@ -978,49 +990,82 @@ async def activity(ctx):
     if not await can_manage_activity_channel(ctx.author, ctx.guild):
         return await ctx.send("Only the person who added me, an admin, the server owner, or the superowner can set the activity channel.")
 
+    def resolve_activity_channel(raw):
+        match = re.search(r"\d{15,25}", str(raw or ""))
+        if not match:
+            return None
+        channel_id = int(match.group(0))
+        channel = ctx.guild.get_channel(channel_id)
+        if channel is None and hasattr(ctx.guild, "get_thread"):
+            channel = ctx.guild.get_thread(channel_id)
+        if channel is None:
+            channel = bot.get_channel(channel_id)
+        if channel is None or getattr(channel, "guild", None) != ctx.guild:
+            return None
+        return channel
+
+    async def save_activity_channel(selected_channel, user_id):
+        bot_member = ctx.guild.get_member(bot.user.id) or ctx.guild.me
+        permission_channel = selected_channel
+        if not hasattr(permission_channel, "permissions_for") and getattr(selected_channel, "parent", None) is not None:
+            permission_channel = selected_channel.parent
+        if not hasattr(permission_channel, "permissions_for"):
+            return False, "I can't check permissions for that channel.", None
+        perms = permission_channel.permissions_for(bot_member)
+        if not perms.view_channel or not perms.send_messages:
+            return False, "I can't send activity reports in that channel.", None
+        next_report = datetime.now(timezone.utc) + timedelta(hours=24)
+        saved = await asyncio.to_thread(
+            save_guild_activity_channel,
+            ctx.guild.id,
+            selected_channel.id,
+            user_id,
+            next_report,
+        )
+        if not saved:
+            return False, "Activity channel save failed because the database is unavailable.", None
+        guild_activity_channels[ctx.guild.id] = {
+            "channel_id": selected_channel.id,
+            "set_by_user_id": user_id,
+            "next_report": next_report,
+        }
+        return True, (
+            f"{economy_q_activity} Activity reports will be sent in {selected_channel.mention} every 24 hours.\n"
+            f"First report: <t:{int(next_report.timestamp())}:R>"
+        ), next_report
+
     class ActivityChannelSelect(discord.ui.ChannelSelect):
         def __init__(self):
+            channel_types = [discord.ChannelType.text]
+            for channel_type_name in ("news", "public_thread", "private_thread"):
+                channel_type = getattr(discord.ChannelType, channel_type_name, None)
+                if channel_type is not None:
+                    channel_types.append(channel_type)
             super().__init__(
                 placeholder="Select activity report channel",
                 min_values=1,
                 max_values=1,
-                channel_types=[discord.ChannelType.text],
+                channel_types=channel_types,
             )
 
         async def callback(self, interaction):
             selected_channel = self.values[0]
-            bot_member = ctx.guild.get_member(bot.user.id) or ctx.guild.me
-            perms = selected_channel.permissions_for(bot_member)
-            if not perms.view_channel or not perms.send_messages:
-                return await interaction.response.send_message("I can't send activity reports in that channel.", ephemeral=True)
             await interaction.response.defer()
-            next_report = datetime.now(timezone.utc) + timedelta(hours=24)
-            saved = await asyncio.to_thread(
-                save_guild_activity_channel,
-                ctx.guild.id,
-                selected_channel.id,
-                interaction.user.id,
-                next_report,
-            )
-            if not saved:
-                return await interaction.followup.send("Activity channel save failed because the database is unavailable.", ephemeral=True)
-            guild_activity_channels[ctx.guild.id] = {
-                "channel_id": selected_channel.id,
-                "set_by_user_id": interaction.user.id,
-                "next_report": next_report,
-            }
+            ok, message, _ = await save_activity_channel(selected_channel, interaction.user.id)
+            if not ok:
+                return await interaction.followup.send(message, ephemeral=True)
+            self.view.saved = True
             await interaction.edit_original_response(
-                content=(
-                    f"{economy_q_activity} Activity reports will be sent in {selected_channel.mention} every 24 hours.\n"
-                    f"First report: <t:{int(next_report.timestamp())}:R>"
-                ),
+                content=message,
                 view=None,
                 allowed_mentions=discord.AllowedMentions.none(),
             )
+            self.view.stop()
 
     class ActivityChannelView(discord.ui.View):
         def __init__(self):
             super().__init__(timeout=120)
+            self.saved = False
             self.add_item(ActivityChannelSelect())
 
         async def interaction_check(self, interaction):
@@ -1029,7 +1074,58 @@ async def activity(ctx):
                 return False
             return True
 
-    await ctx.send(f"{economy_q_activity} Choose the daily activity report channel.", view=ActivityChannelView())
+    view = ActivityChannelView()
+    prompt = await ctx.send(
+        f"{economy_q_activity} Choose the daily activity report channel, or reply to this message with the channel ID/mention.",
+        view=view
+    )
+
+    def id_reply_check(message):
+        return (
+            message.author.id == ctx.author.id
+            and message.guild == ctx.guild
+            and message.channel.id == ctx.channel.id
+        )
+
+    reply_task = asyncio.create_task(bot.wait_for("message", check=id_reply_check, timeout=120))
+    view_task = asyncio.create_task(view.wait())
+    done, pending = await asyncio.wait({reply_task, view_task}, return_when=asyncio.FIRST_COMPLETED)
+    for task in pending:
+        task.cancel()
+    for task in pending:
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    if view.saved:
+        return
+    if reply_task in done:
+        try:
+            reply = reply_task.result()
+        except asyncio.TimeoutError:
+            reply = None
+        if reply is None:
+            for item in view.children:
+                item.disabled = True
+            await prompt.edit(content=f"{economy_q_timer} Activity channel setup timed out.", view=view)
+            return
+        selected_channel = resolve_activity_channel(reply.content)
+        if selected_channel is None:
+            await prompt.edit(content="I couldn't find that channel in this server. Run `.activity` again and send a channel ID or mention.", view=None)
+            return
+        ok, message, _ = await save_activity_channel(selected_channel, ctx.author.id)
+        for item in view.children:
+            item.disabled = True
+        if ok:
+            await prompt.edit(content=message, view=None, allowed_mentions=discord.AllowedMentions.none())
+        else:
+            await prompt.edit(content=message, view=view)
+        return
+
+    for item in view.children:
+        item.disabled = True
+    await prompt.edit(content=f"{economy_q_timer} Activity channel setup timed out.", view=view)
 
 @bot.event
 async def on_guild_remove(guild):
@@ -2804,20 +2900,32 @@ class AcceptView(View):
                 allowed_mentions=discord.AllowedMentions.none()
             )
 
+def chess_rank_label(rank):
+    if 1 <= rank <= len(CHESS_RANK_EMOJIS):
+        return CHESS_RANK_EMOJIS[rank - 1]
+    return str(rank)
+
+def chess_file_label(file_index):
+    name = chr(ord("a") + file_index)
+    return CHESS_FILE_EMOJIS.get(name, name)
+
 def render_chess_board(game):
     board = game["board"]
     lines = []
-    for rank in range(7, -1, -1):
+    black_perspective = board.turn == chess_lib.BLACK
+    rank_order = range(8) if black_perspective else range(7, -1, -1)
+    file_order = range(7, -1, -1) if black_perspective else range(8)
+    for rank in rank_order:
         cells = []
-        for file in range(8):
+        for file in file_order:
             square = chess_lib.square(file, rank)
             piece = board.piece_at(square)
             if piece:
                 cells.append(CHESS_PIECE_EMOJIS[piece.symbol()])
             else:
                 cells.append(CHESS_LIGHT if (rank + file) % 2 == 0 else CHESS_DARK)
-        lines.append(f"{rank + 1} " + "".join(cells))
-    lines.append("  a b c d e f g h")
+        lines.append(chess_rank_label(rank + 1) + "".join(cells))
+    lines.append("".join(chess_file_label(file) for file in file_order))
     return "\n".join(lines)
 
 def chess_current_player(game):
@@ -2843,6 +2951,14 @@ def chess_clock_line(game):
     black_time = format_chess_clock(chess_clock_remaining(game, game["black"]))
     return f"White <@{game['white'].id}>: **{white_time}** | Black <@{game['black'].id}>: **{black_time}**"
 
+def chess_message_kwargs(game, result_text=None, view=None):
+    return {
+        "content": result_text or chess_status(game),
+        "embed": chess_embed(game, result_text),
+        "view": game.get("view") if view is None else view,
+        "allowed_mentions": discord.AllowedMentions.none(),
+    }
+
 def apply_chess_elapsed(game):
     current = chess_current_player(game)
     started = game.get("last_turn_started")
@@ -2866,6 +2982,44 @@ async def stop_chess_clock(game):
             pass
     game["clock_task"] = None
 
+async def stop_chess_live_clock(game):
+    task = game.get("live_clock_task")
+    if task and not task.done():
+        if task is asyncio.current_task():
+            game["live_clock_task"] = None
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+    game["live_clock_task"] = None
+
+async def start_chess_live_clock(game):
+    if game.get("live_clock_task") and not game["live_clock_task"].done():
+        return
+
+    async def live_task():
+        try:
+            while not game.get("ended"):
+                await asyncio.sleep(CHESS_CLOCK_LIVE_INTERVAL)
+                active = chess_games.get(game["channel_id"])
+                if active is not game or game.get("ended"):
+                    return
+                message = game.get("message")
+                if not message:
+                    continue
+                try:
+                    await message.edit(**chess_message_kwargs(game))
+                except discord.NotFound:
+                    return
+                except Exception as e:
+                    print(f"Chess live clock edit error: {type(e).__name__} - {e}")
+        except asyncio.CancelledError:
+            raise
+
+    game["live_clock_task"] = asyncio.create_task(live_task())
+
 async def start_chess_clock(game):
     await stop_chess_clock(game)
     if game.get("ended"):
@@ -2886,6 +3040,7 @@ async def start_chess_clock(game):
             winner = chess_opponent(game, loser)
             game["ended"] = True
             await stop_chess_clock(game)
+            await stop_chess_live_clock(game)
             if game.get("view"):
                 game["view"].disable_all_items()
             payout_text = await settle_game_bet(game, winner)
@@ -3058,6 +3213,7 @@ class ChessResignButton(Button):
         winner = game["black"] if interaction.user.id == game["white"].id else game["white"]
         game["ended"] = True
         await stop_chess_clock(game)
+        await stop_chess_live_clock(game)
         view.disable_all_items()
         chess_games.pop(game["channel_id"], None)
         payout_text = await settle_game_bet(game, winner)
@@ -3178,6 +3334,7 @@ class ChessView(View):
             winner = self.game["black"] if board.turn == chess_lib.WHITE else self.game["white"]
             self.game["ended"] = True
             await stop_chess_clock(self.game)
+            await stop_chess_live_clock(self.game)
             self.disable_all_items()
             chess_games.pop(self.game["channel_id"], None)
             payout_text = await settle_game_bet(self.game, winner)
@@ -3192,6 +3349,7 @@ class ChessView(View):
         if board.is_stalemate() or board.is_insufficient_material() or board.can_claim_draw():
             self.game["ended"] = True
             await stop_chess_clock(self.game)
+            await stop_chess_live_clock(self.game)
             self.disable_all_items()
             chess_games.pop(self.game["channel_id"], None)
             payout_text = await settle_game_bet(self.game, None)
@@ -3253,6 +3411,7 @@ async def chess(ctx, opponent: discord.Member):
         },
         "last_turn_started": None,
         "clock_task": None,
+        "live_clock_task": None,
         "ended": False,
     }
     game["view"] = ChessView(game)
@@ -3265,6 +3424,7 @@ async def chess(ctx, opponent: discord.Member):
     game["message"] = msg
     chess_games[ctx.channel.id] = game
     await start_chess_clock(game)
+    await start_chess_live_clock(game)
 
 @bot.command(name="move", aliases=["chessmove"])
 async def chess_move(ctx, *, move: str):
@@ -3289,6 +3449,7 @@ async def chess_move(ctx, *, move: str):
         winner = game["black"] if board.turn == chess_lib.WHITE else game["white"]
         game["ended"] = True
         await stop_chess_clock(game)
+        await stop_chess_live_clock(game)
         payout_text = await settle_game_bet(game, winner)
         result_text = f"{economy_q_game_win} Checkmate. <@{winner.id}> wins!{payout_text}"
         await game["message"].edit(
@@ -3302,6 +3463,7 @@ async def chess_move(ctx, *, move: str):
     if board.is_stalemate() or board.is_insufficient_material() or board.can_claim_draw():
         game["ended"] = True
         await stop_chess_clock(game)
+        await stop_chess_live_clock(game)
         payout_text = await settle_game_bet(game, None)
         result_text = f"Game drawn.{payout_text}"
         await game["message"].edit(
@@ -3315,6 +3477,7 @@ async def chess_move(ctx, *, move: str):
 
     game["view"] = ChessView(game)
     await start_chess_clock(game)
+    await start_chess_live_clock(game)
     await game["message"].edit(content=chess_status(game), embed=chess_embed(game), view=game["view"], allowed_mentions=discord.AllowedMentions(users=True))
 
 @bot.command()
@@ -3328,6 +3491,7 @@ async def resign(ctx):
     winner = game["black"] if ctx.author.id == game["white"].id else game["white"]
     game["ended"] = True
     await stop_chess_clock(game)
+    await stop_chess_live_clock(game)
     payout_text = await settle_game_bet(game, winner)
     result_text = f"{economy_q_game_win} <@{winner.id}> wins by resignation.{payout_text}"
     await game["message"].edit(

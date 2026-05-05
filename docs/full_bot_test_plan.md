@@ -154,7 +154,7 @@ Current expected:
 - `.weekly`
 - `.monthly`
 - `.cf <amount> <h/t>`
-- `.roulette <amount> [red/black/green]`
+- `.roulette <amount> [red/black/green]` (matching color pays x3)
 - `.slots <amount>`
 - `.blackjack <amount>`
 - `.scratch <amount>`
@@ -231,10 +231,12 @@ Current expected:
 - Chess UI only lets the current player move.
 - Chess UI source menu lists movable pieces, then legal destination/move choices.
 - Chess asks for move confirmation before applying the selected move.
-- Chess tracks 10-minute total clocks for both players and awards timeout wins.
+- Chess tracks live 10-minute total clocks for both players and awards timeout wins.
+- Chess board flips to the current player's perspective.
+- Chess board uses custom number labels and custom file-letter labels after file-letter markdowns are uploaded.
 - Chess rejects illegal fallback notation moves.
 - Chess detects checkmate, stalemate/draw, resignation, and settles bets.
-- Chess piece custom emoji placeholders should be replaced after Discord markdowns are uploaded.
+- Chess custom emoji placeholders should be replaced after Discord markdowns are uploaded.
 
 ### Timers, Polls, Giveaway
 
@@ -254,7 +256,7 @@ Current expected:
 - Forced sleep/wake permission behavior.
 - Birthday set/remove and midnight birthday announcement.
 - Birthday channel setup and per-server announcement only when the birthday user is still in that server.
-- Activity channel setup and 24-hour top-5 activity report.
+- Activity channel setup by dropdown or channel ID/mention reply, and 24-hour top-5 activity report.
 - `.away` output.
 
 ### Moderation / Server Tools

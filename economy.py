@@ -2823,10 +2823,6 @@ class BalanceRankView(discord.ui.View):
     async def local_user_ids(self):
         if not self.ctx.guild:
             return [self.ctx.author.id]
-        try:
-            await self.ctx.guild.chunk(cache=True)
-        except Exception:
-            pass
         ids = {member.id for member in self.ctx.guild.members if not member.bot}
         ids.add(self.ctx.author.id)
         return list(ids)
@@ -3370,9 +3366,10 @@ async def roulette(ctx, amount: str, color: str = None):
         await ctx.send(f"{Q_DENIED} You only have {format_balance(data['balance'])}")
         return
 
-    outcomes = ['red'] * 18 + ['black'] * 18 + ['green'] * 2
-    result = color if random.random() < active_luck_bonus(data) else random.choice(outcomes)
-    multipliers = {'red': 2, 'black': 2, 'green': 10}
+    colors = ["red", "black", "green"]
+    win_chance = chance_with_luck(0.34, data, cap=0.45)
+    result = color if random.random() < win_chance else random.choice([entry for entry in colors if entry != color])
+    multipliers = {'red': 3, 'black': 3, 'green': 3}
     emoji_map = {'red': Q_ROULETTE_RED, 'black': Q_ROULETTE_BLACK, 'green': Q_ROULETTE_GREEN}
     streak = data.get('roulette_streak', 0)
     mult = payout_multiplier(data, streak)
@@ -3382,11 +3379,12 @@ async def roulette(ctx, amount: str, color: str = None):
         f"{Q_TARGET} Pick: **{emoji_map[color]} {color.upper()}**\n"
         f"[ spinning... ]"
     )
+    side_colors = [entry for entry in colors if entry != result]
     spin_frames = [
         f"{Q_ROULETTE_RED} {Q_ROULETTE_BLACK} {Q_ROULETTE_GREEN}",
         f"{Q_ROULETTE_BLACK} {Q_ROULETTE_GREEN} {Q_ROULETTE_RED}",
         f"{Q_ROULETTE_GREEN} {Q_ROULETTE_RED} {Q_ROULETTE_BLACK}",
-        f"{Q_ROULETTE_BLACK} {Q_ROULETTE_RED} {Q_ROULETTE_BLACK}",
+        f"{emoji_map[side_colors[0]]} {emoji_map[result]} {emoji_map[side_colors[1]]}",
     ]
     for frame in spin_frames:
         await asyncio.sleep(0.8)
@@ -4821,7 +4819,7 @@ EXPLANATIONS = {
     "preifx": "Typo alias for `.prefix`. Shows or changes this server's command prefix.",
     "ttt": "Starts Tic Tac Toe against another user. If the challenger sets a bet, the opponent must accept that bet too.",
     "c4": "Starts Connect 4 against another user. If the challenger sets a bet, the opponent must accept that bet too.",
-    "chess": "Starts a chess game against another user with move confirmation, optional bets, and 10-minute player clocks.",
+    "chess": "Starts a chess game against another user with move confirmation, optional bets, live 10-minute player clocks, and a board that flips by turn.",
     "move": "Fallback chess command. Makes a chess move with notation like `.move e2e4` or `.move Nf3`.",
     "chessmove": "Alias for `.move`. Makes a chess move with notation like `.move e2e4` or `.move Nf3`.",
     "resign": "Resigns the active chess game in this channel.",
@@ -4845,7 +4843,7 @@ DETAILED_EXPLANATIONS = {
     "monthly": f"Gives a reward once every 30 days. Base reward is 40,000-60,000 {CURRENCY_EMOJI}. Your monthly streak adds a bigger bonus after month 1.",
     "cf": "Pick heads or tails with `.cf <amount> h`, `.cf <amount> t`, `.flip <amount> heads`, or `.flip <amount> tails`. If you do not pick, the bot asks you. Winning pays ×2 before streak bonus, so betting 100 wins 200 total and gives +100 profit. Losing removes the bet. Consecutive coinflip wins add +1.5% payout each win and reset on loss.",
     "flip": "Pick heads or tails with `.cf <amount> h`, `.cf <amount> t`, `.flip <amount> heads`, or `.flip <amount> tails`. If you do not pick, the bot asks you. Winning pays ×2 before streak bonus, so betting 100 wins 200 total and gives +100 profit. Losing removes the bet. Consecutive coinflip wins add +1.5% payout each win and reset on loss.",
-    "roulette": "Pick red, black, green, or use the button menu if you leave the color blank. Red and black pay ×2. Green pays ×10 because it is rarer. The bet is removed from the payout result, so a 100 bet on red winning gives 200 total and +100 profit. Consecutive roulette wins add +1.5% payout each win and reset on loss.",
+    "roulette": "Pick red, black, green, or use the button menu if you leave the color blank. Matching your color pays ×3. The bet is removed from the payout result, so a 100 bet winning gives 300 total and +200 profit. Consecutive roulette wins add +1.5% payout each win and reset on loss.",
     "slots": "The bot spins 3 reels with 4 custom symbols. All 3 reels must match to win: first symbol pays ×2, second pays ×3, third pays ×4, and fourth pays ×5. Non-perfect results lose the bet. Consecutive slots wins add +1.5% payout each win and reset on loss.",
     "blackjack": "You get cards against the dealer and use Hit or Stand buttons. Try to get closer to 21 than the dealer without going over. A normal win pays +1x your bet as profit. Losing removes the bet. A push changes nothing. Consecutive blackjack wins add +1.5% payout each win and reset on loss.",
     "scratch": "The ticket reveals 5 symbols one by one. All 5 symbols must match to win ×10. The base win chance is intentionally low at about 8%. Consecutive scratch wins add +1.5% payout each win and reset on loss.",
@@ -4867,7 +4865,7 @@ DETAILED_EXPLANATIONS = {
     "activity": "Sets the daily activity report channel for this server. Every 24 hours, the bot posts the top 5 members by tracked messages since the last report, then resets that server's activity window.",
     "ttt": "Challenge a user to Tic Tac Toe. The opponent accepts the game first. If the challenger enables a bet and enters an amount, the opponent gets a second accept/decline prompt for that exact bet before the game starts.",
     "c4": "Challenge a user to Connect 4. The opponent accepts the game first. If the challenger enables a bet and enters an amount, the opponent gets a second accept/decline prompt for that exact bet before the game starts. The board shows column numbers below the grid.",
-    "chess": "Challenge a user to chess. The opponent accepts first. If the challenger enables a bet and enters an amount, the opponent gets a second accept/decline prompt. The board uses dropdown UI controls: choose one of your pieces, choose a legal move, then confirm or cancel. Each player has a 10-minute total clock. Movement legality, check, checkmate, stalemate, draw detection, and time-loss handling are enforced.",
+    "chess": "Challenge a user to chess. The opponent accepts first. If the challenger enables a bet and enters an amount, the opponent gets a second accept/decline prompt. The board uses dropdown UI controls: choose one of your pieces, choose a legal move, then confirm or cancel. Each player has a live 10-minute total clock, and the board flips to the current player's perspective. Movement legality, check, checkmate, stalemate, draw detection, and time-loss handling are enforced.",
     "move": "Fallback chess command for manual notation. Use UCI like `.move e2e4` or SAN like `.move Nf3`. The clickable chess UI is preferred.",
     "chessmove": "Fallback chess command for manual notation. Use UCI like `.chessmove e2e4` or SAN like `.chessmove Nf3`. The clickable chess UI is preferred.",
     "resign": "Ends the active chess game in this channel and awards the win to the other player.",

@@ -1267,6 +1267,52 @@ def qpoll_9():
 def qpoll_10():
     return qpoll_number(10)
 
+def qchess_file_letter(letter):
+    c = Canvas()
+    c.rect(20, 26, 88, 78, (8, 31, 60, 245), outline=NAVY, width=4)
+    c.rect(28, 34, 72, 62, BLUE_DARK, outline=CYAN, width=3)
+    c.circle(42, 47, 5, ICE)
+    c.sparkle(93, 36, 5)
+
+    strokes = {
+        "A": [((42, 86), (54, 43)), ((54, 43), (74, 86)), ((49, 69), (67, 69))],
+        "B": [((44, 43), (44, 86)), ((44, 43), (67, 43)), ((67, 43), (75, 51)), ((75, 51), (67, 61)), ((44, 61), (67, 61)), ((67, 61), (77, 72)), ((77, 72), (67, 86)), ((44, 86), (67, 86))],
+        "C": [((76, 49), (66, 43)), ((66, 43), (48, 48)), ((48, 48), (42, 64)), ((42, 64), (48, 81)), ((48, 81), (66, 86)), ((66, 86), (76, 80))],
+        "D": [((44, 43), (44, 86)), ((44, 43), (65, 43)), ((65, 43), (78, 57)), ((78, 57), (78, 72)), ((78, 72), (65, 86)), ((44, 86), (65, 86))],
+        "E": [((74, 43), (44, 43)), ((44, 43), (44, 86)), ((44, 86), (76, 86)), ((44, 64), (70, 64))],
+        "F": [((44, 43), (44, 86)), ((44, 43), (76, 43)), ((44, 64), (70, 64))],
+        "G": [((77, 50), (66, 43)), ((66, 43), (48, 48)), ((48, 48), (42, 64)), ((42, 64), (48, 81)), ((48, 81), (67, 86)), ((67, 86), (78, 76)), ((78, 76), (78, 66)), ((78, 66), (64, 66))],
+        "H": [((44, 43), (44, 86)), ((78, 43), (78, 86)), ((44, 64), (78, 64))],
+    }
+    for x1, y1, x2, y2 in [(a[0], a[1], b[0], b[1]) for a, b in strokes[letter]]:
+        c.line(x1, y1, x2, y2, ICE, 8)
+        c.line(x1, y1, x2, y2, CYAN, 4)
+    return c
+
+def qchess_file_a():
+    return qchess_file_letter("A")
+
+def qchess_file_b():
+    return qchess_file_letter("B")
+
+def qchess_file_c():
+    return qchess_file_letter("C")
+
+def qchess_file_d():
+    return qchess_file_letter("D")
+
+def qchess_file_e():
+    return qchess_file_letter("E")
+
+def qchess_file_f():
+    return qchess_file_letter("F")
+
+def qchess_file_g():
+    return qchess_file_letter("G")
+
+def qchess_file_h():
+    return qchess_file_letter("H")
+
 
 STATIC = {
     "QoinBag": qoin_bag,
@@ -1385,6 +1431,14 @@ STATIC = {
     "QPollEight": qpoll_8,
     "QPollNine": qpoll_9,
     "QPollTen": qpoll_10,
+    "QChessFileA": qchess_file_a,
+    "QChessFileB": qchess_file_b,
+    "QChessFileC": qchess_file_c,
+    "QChessFileD": qchess_file_d,
+    "QChessFileE": qchess_file_e,
+    "QChessFileF": qchess_file_f,
+    "QChessFileG": qchess_file_g,
+    "QChessFileH": qchess_file_h,
 }
 
 STATIC_CATEGORIES = {
@@ -1417,7 +1471,8 @@ STATIC_CATEGORIES = {
         "QChessWhitePawn", "QChessWhiteKnight", "QChessWhiteBishop", "QChessWhiteRook",
         "QChessWhiteQueen", "QChessWhiteKing", "QChessBlackPawn", "QChessBlackKnight",
         "QChessBlackBishop", "QChessBlackRook", "QChessBlackQueen", "QChessBlackKing",
-        "QChessDark",
+        "QChessDark", "QChessFileA", "QChessFileB", "QChessFileC", "QChessFileD",
+        "QChessFileE", "QChessFileF", "QChessFileG", "QChessFileH",
     },
     "games/slots": {
         "QSlots", "QSlotStar", "QSlotDiamond", "QSlotCrown", "QSlotJackpot",
