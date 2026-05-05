@@ -4970,15 +4970,31 @@ async def away(ctx):
 
 @bot.command()
 async def find(ctx, user_id: int):
-    try:
-        user = await bot.fetch_user(user_id)
-        mention_text = f"<@{user.id}>"
-        await ctx.send(
-            f"User found: {mention_text} (`{user.id}`)",
-            allowed_mentions=discord.AllowedMentions(users=False)
+    member = ctx.guild.get_member(user_id) if ctx.guild else None
+    if member is None and ctx.guild:
+        try:
+            member = await ctx.guild.fetch_member(user_id)
+        except discord.NotFound:
+            member = None
+        except discord.HTTPException as e:
+            return await ctx.send(f"Could not fetch server member: {e}")
+
+    if member is None:
+        try:
+            user = await bot.fetch_user(user_id)
+        except discord.NotFound:
+            return await ctx.send(f"User not found: `{user_id}`")
+        except discord.HTTPException as e:
+            return await ctx.send(f"Could not fetch user: {e}")
+        return await ctx.send(
+            f"User found globally: {user.mention} (`{user.id}`)",
+            allowed_mentions=discord.AllowedMentions.none()
         )
-    except Exception as e:
-        await ctx.send(f"Could not fetch user: {e}")
+
+    await ctx.send(
+        f"User found: {member.mention} (`{member.id}`)",
+        allowed_mentions=discord.AllowedMentions.none()
+    )
 
 @bot.command()
 @is_admin_power()

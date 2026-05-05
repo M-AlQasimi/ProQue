@@ -2648,6 +2648,58 @@ async def db_keepalive_loop():
             print(f"Database keep-alive loop error: {type(e).__name__} - {e}")
         await asyncio.sleep(240)
 
+LEADERBOARD_RANK_TYPES = {
+    "quesos": {
+        "label": "Quesos",
+        "description": "Rank by current balance.",
+        "order": "balance DESC, user_id ASC",
+        "title": "Quesos Leaderboard",
+        "formatter": lambda row: format_balance(row["balance"]),
+    },
+    "level": {
+        "label": "Level",
+        "description": "Rank by level, then XP.",
+        "order": "level DESC, xp DESC, user_id ASC",
+        "title": "Level Leaderboard",
+        "formatter": lambda row: f"Level **{int(row['level'] or 1):,}** - XP **{int(row['xp'] or 0):,}**",
+    },
+    "earned": {
+        "label": "Earnings",
+        "description": "Rank by total earned.",
+        "order": "total_earned DESC, user_id ASC",
+        "title": "Earnings Leaderboard",
+        "formatter": lambda row: format_balance(row["total_earned"]),
+    },
+    "won": {
+        "label": "Total Won",
+        "description": "Rank by gambling winnings.",
+        "order": "total_won DESC, user_id ASC",
+        "title": "Wins Leaderboard",
+        "formatter": lambda row: format_balance(row["total_won"]),
+    },
+    "lost": {
+        "label": "Total Lost",
+        "description": "Rank by gambling losses.",
+        "order": "total_lost DESC, user_id ASC",
+        "title": "Losses Leaderboard",
+        "formatter": lambda row: format_balance(row["total_lost"]),
+    },
+    "net": {
+        "label": "Net Gambling",
+        "description": "Rank by won minus lost.",
+        "order": "(total_won - total_lost) DESC, user_id ASC",
+        "title": "Net Gambling Leaderboard",
+        "formatter": lambda row: format_balance((row["total_won"] or 0) - (row["total_lost"] or 0)),
+    },
+    "messages": {
+        "label": "Messages",
+        "description": "Rank by Quewo-tracked messages.",
+        "order": "messages_sent DESC, user_id ASC",
+        "title": "Messages Leaderboard",
+        "formatter": lambda row: f"**{int(row['messages_sent'] or 0):,}** messages",
+    },
+}
+
 class BalanceRankView(discord.ui.View):
     def __init__(self, ctx, order, title, icon):
         super().__init__(timeout=180)
@@ -2655,9 +2707,13 @@ class BalanceRankView(discord.ui.View):
         self.order = order
         self.title = title
         self.icon = icon
+        self.scope = "local"
+        self.rank_type = "quesos"
         self.page = 0
         self.per_page = 10
         self.total = 0
+        self.author_rank = None
+        self.author_data = None
         self.message = None
         self.update_buttons()
 
@@ -2673,15 +2729,67 @@ class BalanceRankView(discord.ui.View):
         self.prev_page.disabled = self.page <= 0
         self.next_page.disabled = self.page >= max_page
         self.last_page.disabled = self.page >= max_page
+        self.local_scope.disabled = self.scope == "local"
+        self.global_scope.disabled = self.scope == "global"
+        self.local_scope.style = discord.ButtonStyle.primary if self.scope == "local" else discord.ButtonStyle.secondary
+        self.global_scope.style = discord.ButtonStyle.primary if self.scope == "global" else discord.ButtonStyle.secondary
+        for item in self.children:
+            if isinstance(item, discord.ui.Select) and getattr(item, "custom_id", None) == "leaderboard_rank_type":
+                for option in item.options:
+                    option.default = option.value == self.rank_type
 
-    def fetch_page(self):
+    async def local_user_ids(self):
+        if not self.ctx.guild:
+            return [self.ctx.author.id]
+        try:
+            await self.ctx.guild.chunk(cache=True)
+        except Exception:
+            pass
+        ids = {member.id for member in self.ctx.guild.members if not member.bot}
+        ids.add(self.ctx.author.id)
+        return list(ids)
+
+    def fetch_page(self, local_ids=None):
         conn = get_db_connection()
         cur = conn.cursor()
-        cur.execute("SELECT COUNT(*) AS count FROM economy")
+        where = ""
+        params = []
+        if local_ids is not None:
+            where = "WHERE user_id = ANY(%s)"
+            params.append(local_ids)
+
+        self.author_data = get_user(self.ctx.author.id)
+        rank_config = LEADERBOARD_RANK_TYPES[self.rank_type]
+        order_clause = rank_config["order"]
+
+        cur.execute(f"SELECT COUNT(*) AS count FROM economy {where}", params)
         self.total = cur.fetchone()["count"]
+
+        if local_ids is not None and self.ctx.author.id not in local_ids:
+            self.author_rank = None
+        else:
+            rank_where = "WHERE user_id = %s"
+            rank_params = [self.ctx.author.id]
+            cte_params = list(params)
+            cur.execute(
+                f"""
+                WITH ranked AS (
+                    SELECT
+                        user_id,
+                        ROW_NUMBER() OVER (ORDER BY {order_clause}) AS rank
+                    FROM economy
+                    {where}
+                )
+                SELECT rank FROM ranked {rank_where}
+                """,
+                cte_params + rank_params
+            )
+            rank_row = cur.fetchone()
+            self.author_rank = int(rank_row["rank"]) if rank_row else None
+
         cur.execute(
-            f"SELECT user_id, balance FROM economy ORDER BY balance {self.order}, user_id ASC LIMIT %s OFFSET %s",
-            (self.per_page, self.page * self.per_page)
+            f"SELECT * FROM economy {where} ORDER BY {order_clause} LIMIT %s OFFSET %s",
+            params + [self.per_page, self.page * self.per_page]
         )
         rows = cur.fetchall()
         cur.close()
@@ -2692,29 +2800,69 @@ class BalanceRankView(discord.ui.View):
         max_page = max(1, ((self.total - 1) // self.per_page) + 1)
         start_rank = self.page * self.per_page + 1
         end_rank = min(self.total, self.page * self.per_page + len(rows))
-        embed = discord.Embed(title=f"{self.icon} {self.title}", color=discord.Color.gold())
+        scope_label = "Local" if self.scope == "local" else "Global"
+        rank_config = LEADERBOARD_RANK_TYPES[self.rank_type]
+        embed = discord.Embed(title=f"{self.icon} {scope_label} {rank_config['title']}", color=discord.Color.gold())
         if not rows:
             embed.description = "No balances found yet."
         else:
-            embed.description = f"Showing **#{start_rank}-{end_rank}** of **{self.total}**."
+            lines = [f"Showing **#{start_rank}-{end_rank}** of **{self.total}**."]
+            if self.author_rank is not None and self.author_data:
+                lines.append(f"Your rank: **#{self.author_rank}** - {rank_config['formatter'](self.author_data)}")
+            lines.append("")
             for i, row in enumerate(rows, start_rank):
-                embed.add_field(
-                    name=f"{i}. {user_mention(row['user_id'])}",
-                    value=format_balance(row["balance"]),
-                    inline=False
-                )
+                lines.append(f"**{i}.** {user_mention(row['user_id'])} - {rank_config['formatter'](row)}")
+            embed.description = "\n".join(lines)
         embed.set_footer(text=f"Page {self.page + 1}/{max_page}")
         return embed
 
     async def render(self):
         try:
-            rows = await asyncio.to_thread(self.fetch_page)
+            local_ids = await self.local_user_ids() if self.scope == "local" else None
+            rows = await asyncio.to_thread(self.fetch_page, local_ids)
         except Exception:
             return None
         self.update_buttons()
         return self.build_embed(rows)
 
-    @discord.ui.button(label="First", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="Local", style=discord.ButtonStyle.primary, row=0)
+    async def local_scope(self, interaction, button):
+        self.scope = "local"
+        self.page = 0
+        embed = await self.render()
+        if embed is None:
+            return await interaction.response.send_message("Database unavailable. Try again shortly.", ephemeral=True)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="Global", style=discord.ButtonStyle.secondary, row=0)
+    async def global_scope(self, interaction, button):
+        self.scope = "global"
+        self.page = 0
+        embed = await self.render()
+        if embed is None:
+            return await interaction.response.send_message("Database unavailable. Try again shortly.", ephemeral=True)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.select(
+        custom_id="leaderboard_rank_type",
+        placeholder="Ranking type",
+        min_values=1,
+        max_values=1,
+        row=2,
+        options=[
+            discord.SelectOption(label=config["label"], value=key, description=config["description"])
+            for key, config in LEADERBOARD_RANK_TYPES.items()
+        ],
+    )
+    async def rank_type_select(self, interaction, select):
+        self.rank_type = select.values[0]
+        self.page = 0
+        embed = await self.render()
+        if embed is None:
+            return await interaction.response.send_message("Database unavailable. Try again shortly.", ephemeral=True)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="First", style=discord.ButtonStyle.secondary, row=1)
     async def first_page(self, interaction, button):
         self.page = 0
         embed = await self.render()
@@ -2722,7 +2870,7 @@ class BalanceRankView(discord.ui.View):
             return await interaction.response.send_message("Database unavailable. Try again shortly.", ephemeral=True)
         await interaction.response.edit_message(embed=embed, view=self)
 
-    @discord.ui.button(label="Prev", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="Prev", style=discord.ButtonStyle.secondary, row=1)
     async def prev_page(self, interaction, button):
         self.page = max(0, self.page - 1)
         embed = await self.render()
@@ -2730,7 +2878,7 @@ class BalanceRankView(discord.ui.View):
             return await interaction.response.send_message("Database unavailable. Try again shortly.", ephemeral=True)
         await interaction.response.edit_message(embed=embed, view=self)
 
-    @discord.ui.button(label="Next", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="Next", style=discord.ButtonStyle.secondary, row=1)
     async def next_page(self, interaction, button):
         self.page += 1
         embed = await self.render()
@@ -2738,7 +2886,7 @@ class BalanceRankView(discord.ui.View):
             return await interaction.response.send_message("Database unavailable. Try again shortly.", ephemeral=True)
         await interaction.response.edit_message(embed=embed, view=self)
 
-    @discord.ui.button(label="Last", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="Last", style=discord.ButtonStyle.secondary, row=1)
     async def last_page(self, interaction, button):
         self.page = max(0, (self.total - 1) // self.per_page)
         embed = await self.render()
@@ -4510,8 +4658,8 @@ EXPLANATIONS = {
     "minesweepeer": "Pick a grid size, reveal safe tiles, avoid bombs.",
     "wheel": "Spin the wheel for a multiplier or blank result.",
     "give": "Transfers quesos to another user. Normal transfers burn 3% tax.",
-    "lb": "Shows a paginated balance leaderboard.",
-    "leaderboard": "Shows a paginated balance leaderboard.",
+    "lb": "Shows a paginated local/global leaderboard with ranking types for quesos, level, earnings, wins, losses, net gambling, and messages.",
+    "leaderboard": "Shows a paginated local/global leaderboard with ranking types for quesos, level, earnings, wins, losses, net gambling, and messages.",
     "add": "Admin-power command. Adds quesos to a user. Superowner can bulk add to @everyone or a role.",
     "remove": "Admin-power command. Removes quesos from a user.",
     "addtick": "Superowner command. Adds free lottery tickets to a user, role, or @everyone.",
@@ -4597,6 +4745,8 @@ DETAILED_EXPLANATIONS = {
     "minesweepeer": "Choose 3x3, 4x4, or 5x5, then reveal tiles. 3x3 has 1 bomb, 4x4 has 3 bombs, and 5x5 has 5 bombs. Reveal every safe tile to win. Each safe reveal raises the final multiplier by +0.15. Hitting a bomb or timing out loses the bet.",
     "wheel": "The wheel lands on a segment. ×2, ×3, and ×5 are wins. ×1 gives your stake back, ×0.5 loses half the bet, and BLANK changes nothing. Consecutive wheel wins add +1.5% payout each win and reset on loss or partial loss.",
     "give": f"Moves quesos from you to another user. Normal transfers burn {int(TRANSFER_TAX_RATE * 100)}% as tax. Admin-power users can use `.give @user all`. The message shows sent amount, tax, received amount, and balances.",
+    "lb": "Shows a paginated leaderboard. Use the buttons to switch between local server rankings and global all-server rankings. Use the ranking type menu to sort by quesos, level, earnings, total won, total lost, net gambling, or messages. The embed also shows your rank for the selected scope and type.",
+    "leaderboard": "Alias for `.lb`. Shows local/global paginated rankings with selectable ranking types and your rank.",
     "add": "Admin-power command. `.add @user <amount>` adds new quesos to one user. Superowner can use `.add @everyone <amount>` or `.add @role <amount>` to add that amount to every server member or every member with that role. It does not support `all`.",
     "remove": "Admin-power command. Removes quesos from a user. `.remove @user all` removes their full balance. The balance cannot go below 0, and the message shows old and new balance.",
     "addtick": "Superowner-only lottery admin command. Use `.addtick @user <tickets>`, `.addtick @role <tickets>`, or `.addtick @everyone <tickets>` to add free entries to the current lottery without changing the prize pot or charging users. The lottery panel refreshes after the change.",

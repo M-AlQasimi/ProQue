@@ -63,7 +63,7 @@ Expected current behavior:
 - `.removebday`
 - `.setbdaychannel [channel]`
 - `.away`
-- `.find ...`
+- `.find <user id>` (server member first, global Discord user fallback)
 - `.listtargets`
 - `.listcensors`
 - `.ask ...`
@@ -160,7 +160,7 @@ Current expected:
 - `.ms <amount>`
 - `.wheel <amount>`
 - `.give @member <amount>`
-- `.lb`
+- `.lb` (local/global leaderboard UI, ranking type menu, page buttons, caller rank)
 - `.econhelp`
 - `.quewohelp`
 - `.explain <command>`
