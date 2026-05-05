@@ -63,6 +63,7 @@ Expected current behavior:
 - `.removebday`
 - `.setbdaychannel [channel]`
 - `.activity`
+- `.activitystats` / `.astats`
 - `.away`
 - `.find <user id>` (server member first, global Discord user fallback)
 - `.listtargets`
@@ -96,6 +97,8 @@ Expected current behavior:
 - `.censor <phrase>`
 - `.uncensor <phrase>`
 - `.clearcensors`
+- `.editactivity <setting> <value>`
+- `.stopactivity`
 - `.listbans`
 - `.listblocks`
 - `.lists`
@@ -257,7 +260,12 @@ Current expected:
 - Forced sleep/wake permission behavior.
 - Birthday set/remove and midnight birthday announcement.
 - Birthday channel setup and per-server announcement only when the birthday user is still in that server.
-- Activity channel setup by dropdown or channel ID/mention reply, and 24-hour top-5 activity report.
+- Activity status embed on repeated `.activity` or `.activitystats`.
+- Activity channel setup/change with `.activity setup`, dropdown or channel ID/mention reply.
+- `.editactivity channel #channel` moves reports while keeping the current next report time.
+- `.editactivity next 12h` resets the next report timer.
+- `.stopactivity` disables reports and clears the current activity window.
+- 24-hour top-5 activity report.
 - `.away` output.
 
 ### Moderation / Server Tools

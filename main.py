@@ -72,6 +72,7 @@ from economy import (
 from pgdata import (
     add_guild_activity_counts,
     clear_guild_activity_counts,
+    delete_guild_activity_channel,
     get_guild_activity_top,
     load_afk_users as pg_load_afk_users,
     load_active_polls,
@@ -822,23 +823,150 @@ async def flush_activity_buffer():
 
 def activity_report_embed(guild, rows):
     embed = discord.Embed(
-        title=f"{economy_q_activity} Daily Activity",
-        description="Most active members in the last 24 hours.",
+        title=f"{economy_q_activity} Daily Activity Report",
+        description="Top server activity from the last 24 hours.",
         color=discord.Color.blurple(),
         timestamp=datetime.now(timezone.utc)
     )
     if not rows:
         embed.description = "No activity was tracked in the last 24 hours."
+        embed.set_footer(text=f"{guild.name} • next report in 24 hours")
         return embed
 
     lines = []
     for index, row in enumerate(rows, 1):
+        rank = POLL_NUMBER_EMOJIS[index - 1] if index <= len(POLL_NUMBER_EMOJIS) else f"**{index}.**"
         lines.append(
-            f"**{index}.** <@{row['user_id']}> - **{row['activity_score']:,}** activity "
-            f"({row['messages']:,} messages, {row['reactions']:,} reactions, {row['voice_events']:,} voice)"
+            f"{rank} <@{row['user_id']}> — **{row['activity_score']:,}** activity\n"
+            f"> {row['messages']:,} messages • {row['reactions']:,} reactions • {row['voice_events']:,} voice"
         )
-    embed.add_field(name="Top 5", value="\n".join(lines), inline=False)
-    embed.set_footer(text=f"{guild.name} activity report")
+    total_messages = sum(row["messages"] for row in rows)
+    total_reactions = sum(row["reactions"] for row in rows)
+    total_voice = sum(row["voice_events"] for row in rows)
+    embed.add_field(name="Leaderboard", value="\n".join(lines), inline=False)
+    embed.add_field(name="Messages", value=f"**{total_messages:,}**", inline=True)
+    embed.add_field(name="Reactions", value=f"**{total_reactions:,}**", inline=True)
+    embed.add_field(name="Voice", value=f"**{total_voice:,}**", inline=True)
+    embed.set_footer(text=f"{guild.name} • next report in 24 hours")
+    return embed
+
+def activity_setup_embed(guild):
+    embed = discord.Embed(
+        title=f"{economy_q_activity} Activity Report Setup",
+        description="Choose where the daily activity report should be posted.",
+        color=discord.Color.blurple(),
+        timestamp=datetime.now(timezone.utc)
+    )
+    embed.add_field(name="Report Window", value="Every 24 hours", inline=True)
+    embed.add_field(name="Tracks", value="Messages, reactions, and voice activity", inline=True)
+    embed.add_field(name="Channel", value="Use the dropdown, or reply here with a channel ID/mention.", inline=False)
+    embed.set_footer(text=guild.name)
+    return embed
+
+def activity_saved_embed(guild, channel, next_report, user_id):
+    embed = discord.Embed(
+        title=f"{economy_q_activity} Activity Reports Enabled",
+        description="Daily activity reports are now configured for this server.",
+        color=discord.Color.green(),
+        timestamp=datetime.now(timezone.utc)
+    )
+    embed.add_field(name="Report Channel", value=channel.mention, inline=True)
+    embed.add_field(name="First Report", value=f"<t:{int(next_report.timestamp())}:R>", inline=True)
+    embed.add_field(name="Set By", value=f"<@{user_id}>", inline=True)
+    embed.set_footer(text=guild.name)
+    return embed
+
+def activity_setup_error_embed(message):
+    embed = discord.Embed(
+        title=f"{economy_q_warning} Activity Setup",
+        description=message,
+        color=discord.Color.orange(),
+        timestamp=datetime.now(timezone.utc)
+    )
+    return embed
+
+def resolve_activity_report_channel(guild, raw, mentioned_channels=None):
+    for channel in mentioned_channels or []:
+        if getattr(channel, "guild", None) == guild:
+            return channel
+    match = re.search(r"\d{15,25}", str(raw or ""))
+    if not match:
+        return None
+    channel_id = int(match.group(0))
+    channel = guild.get_channel(channel_id)
+    if channel is None and hasattr(guild, "get_thread"):
+        channel = guild.get_thread(channel_id)
+    if channel is None:
+        channel = bot.get_channel(channel_id)
+    if channel is None or getattr(channel, "guild", None) != guild:
+        return None
+    return channel
+
+async def save_activity_report_config(guild, selected_channel, user_id, next_report=None):
+    bot_member = guild.get_member(bot.user.id) or guild.me
+    permission_channel = selected_channel
+    if not hasattr(permission_channel, "permissions_for") and getattr(selected_channel, "parent", None) is not None:
+        permission_channel = selected_channel.parent
+    if not hasattr(permission_channel, "permissions_for"):
+        return False, "I can't check permissions for that channel.", None
+    perms = permission_channel.permissions_for(bot_member)
+    if not perms.view_channel or not perms.send_messages:
+        return False, "I can't send activity reports in that channel.", None
+    next_report = next_report or (datetime.now(timezone.utc) + timedelta(hours=24))
+    saved = await asyncio.to_thread(
+        save_guild_activity_channel,
+        guild.id,
+        selected_channel.id,
+        user_id,
+        next_report,
+    )
+    if not saved:
+        return False, "Activity channel save failed because the database is unavailable.", None
+    guild_activity_channels[guild.id] = {
+        "channel_id": selected_channel.id,
+        "set_by_user_id": user_id,
+        "next_report": next_report,
+    }
+    return True, "", next_report
+
+async def activity_status_embed(guild, config):
+    await flush_activity_buffer()
+    rows = await asyncio.to_thread(get_guild_activity_top, guild.id, 5)
+    channel = guild.get_channel(config["channel_id"]) or bot.get_channel(config["channel_id"])
+    next_report = config.get("next_report")
+    if next_report and next_report.tzinfo is None:
+        next_report = next_report.replace(tzinfo=timezone.utc)
+
+    embed = discord.Embed(
+        title=f"{economy_q_activity} Activity Report Status",
+        description="Daily activity reports are enabled for this server.",
+        color=discord.Color.blurple(),
+        timestamp=datetime.now(timezone.utc)
+    )
+    embed.add_field(
+        name="Report Channel",
+        value=channel.mention if channel else f"`{config['channel_id']}`",
+        inline=True
+    )
+    embed.add_field(
+        name="Next Report",
+        value=f"<t:{int(next_report.timestamp())}:R>" if next_report else "Not scheduled",
+        inline=True
+    )
+    if config.get("set_by_user_id"):
+        embed.add_field(name="Set By", value=f"<@{config['set_by_user_id']}>", inline=True)
+
+    if rows:
+        lines = [
+            f"**{index}.** <@{row['user_id']}> - **{row['activity_score']:,}** "
+            f"({row['messages']:,} messages, {row['reactions']:,} reactions, {row['voice_events']:,} voice)"
+            for index, row in enumerate(rows, 1)
+        ]
+        embed.add_field(name="Current Top 5", value="\n".join(lines), inline=False)
+    else:
+        embed.add_field(name="Current Top 5", value="No activity tracked in the current window yet.", inline=False)
+
+    embed.set_footer(text="Use .activity setup to change the report channel.")
     return embed
 
 async def send_activity_report(guild_id, config):
@@ -983,56 +1111,26 @@ async def set_birthday_channel(ctx, channel: discord.TextChannel = None):
     )
 
 @bot.command(name="activity")
-async def activity(ctx):
+async def activity(ctx, action: str = None):
     """Sets this server's daily activity report channel."""
     if ctx.guild is None:
         return await ctx.send("Activity reports only work in servers.")
+
+    saved_configs = await asyncio.to_thread(load_guild_activity_channels)
+    if saved_configs:
+        guild_activity_channels.update(saved_configs)
+
+    existing_config = guild_activity_channels.get(ctx.guild.id)
+    setup_requested = action and action.casefold() in {"setup", "set", "config", "channel", "reset"}
+    if existing_config and not setup_requested:
+        embed = await activity_status_embed(ctx.guild, existing_config)
+        return await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
     if not await can_manage_activity_channel(ctx.author, ctx.guild):
         return await ctx.send("Only the person who added me, an admin, the server owner, or the superowner can set the activity channel.")
 
-    def resolve_activity_channel(raw):
-        match = re.search(r"\d{15,25}", str(raw or ""))
-        if not match:
-            return None
-        channel_id = int(match.group(0))
-        channel = ctx.guild.get_channel(channel_id)
-        if channel is None and hasattr(ctx.guild, "get_thread"):
-            channel = ctx.guild.get_thread(channel_id)
-        if channel is None:
-            channel = bot.get_channel(channel_id)
-        if channel is None or getattr(channel, "guild", None) != ctx.guild:
-            return None
-        return channel
-
     async def save_activity_channel(selected_channel, user_id):
-        bot_member = ctx.guild.get_member(bot.user.id) or ctx.guild.me
-        permission_channel = selected_channel
-        if not hasattr(permission_channel, "permissions_for") and getattr(selected_channel, "parent", None) is not None:
-            permission_channel = selected_channel.parent
-        if not hasattr(permission_channel, "permissions_for"):
-            return False, "I can't check permissions for that channel.", None
-        perms = permission_channel.permissions_for(bot_member)
-        if not perms.view_channel or not perms.send_messages:
-            return False, "I can't send activity reports in that channel.", None
-        next_report = datetime.now(timezone.utc) + timedelta(hours=24)
-        saved = await asyncio.to_thread(
-            save_guild_activity_channel,
-            ctx.guild.id,
-            selected_channel.id,
-            user_id,
-            next_report,
-        )
-        if not saved:
-            return False, "Activity channel save failed because the database is unavailable.", None
-        guild_activity_channels[ctx.guild.id] = {
-            "channel_id": selected_channel.id,
-            "set_by_user_id": user_id,
-            "next_report": next_report,
-        }
-        return True, (
-            f"{economy_q_activity} Activity reports will be sent in {selected_channel.mention} every 24 hours.\n"
-            f"First report: <t:{int(next_report.timestamp())}:R>"
-        ), next_report
+        return await save_activity_report_config(ctx.guild, selected_channel, user_id)
 
     class ActivityChannelSelect(discord.ui.ChannelSelect):
         def __init__(self):
@@ -1051,12 +1149,12 @@ async def activity(ctx):
         async def callback(self, interaction):
             selected_channel = self.values[0]
             await interaction.response.defer()
-            ok, message, _ = await save_activity_channel(selected_channel, interaction.user.id)
+            ok, message, next_report = await save_activity_channel(selected_channel, interaction.user.id)
             if not ok:
                 return await interaction.followup.send(message, ephemeral=True)
             self.view.saved = True
             await interaction.edit_original_response(
-                content=message,
+                embed=activity_saved_embed(ctx.guild, selected_channel, next_report, interaction.user.id),
                 view=None,
                 allowed_mentions=discord.AllowedMentions.none(),
             )
@@ -1076,7 +1174,7 @@ async def activity(ctx):
 
     view = ActivityChannelView()
     prompt = await ctx.send(
-        f"{economy_q_activity} Choose the daily activity report channel, or reply to this message with the channel ID/mention.",
+        embed=activity_setup_embed(ctx.guild),
         view=view
     )
 
@@ -1108,24 +1206,140 @@ async def activity(ctx):
         if reply is None:
             for item in view.children:
                 item.disabled = True
-            await prompt.edit(content=f"{economy_q_timer} Activity channel setup timed out.", view=view)
+            await prompt.edit(embed=activity_setup_error_embed("Activity channel setup timed out."), view=view)
             return
-        selected_channel = resolve_activity_channel(reply.content)
+        selected_channel = resolve_activity_report_channel(ctx.guild, reply.content, reply.channel_mentions)
         if selected_channel is None:
-            await prompt.edit(content="I couldn't find that channel in this server. Run `.activity` again and send a channel ID or mention.", view=None)
+            await prompt.edit(
+                embed=activity_setup_error_embed("I couldn't find that channel in this server. Run `.activity setup` again and send a channel ID or mention."),
+                view=None
+            )
             return
-        ok, message, _ = await save_activity_channel(selected_channel, ctx.author.id)
+        ok, message, next_report = await save_activity_channel(selected_channel, ctx.author.id)
         for item in view.children:
             item.disabled = True
         if ok:
-            await prompt.edit(content=message, view=None, allowed_mentions=discord.AllowedMentions.none())
+            await prompt.edit(
+                embed=activity_saved_embed(ctx.guild, selected_channel, next_report, ctx.author.id),
+                view=None,
+                allowed_mentions=discord.AllowedMentions.none()
+            )
         else:
-            await prompt.edit(content=message, view=view)
+            await prompt.edit(embed=activity_setup_error_embed(message), view=view)
         return
 
     for item in view.children:
         item.disabled = True
-    await prompt.edit(content=f"{economy_q_timer} Activity channel setup timed out.", view=view)
+    await prompt.edit(embed=activity_setup_error_embed("Activity channel setup timed out."), view=view)
+
+@bot.command(name="activitystats", aliases=["astats"])
+async def activitystats(ctx):
+    """Shows this server's activity report status."""
+    if ctx.guild is None:
+        return await ctx.send("Activity reports only work in servers.")
+
+    saved_configs = await asyncio.to_thread(load_guild_activity_channels)
+    if saved_configs:
+        guild_activity_channels.update(saved_configs)
+    config = guild_activity_channels.get(ctx.guild.id)
+    if not config:
+        return await ctx.send(f"{economy_q_warning} Activity reports are not set up. Use `.activity setup` first.")
+
+    embed = await activity_status_embed(ctx.guild, config)
+    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
+@bot.command(name="editactivity", aliases=["activityedit"])
+async def editactivity(ctx, setting: str = None, *, value: str = None):
+    """Edits this server's activity report settings."""
+    if ctx.guild is None:
+        return await ctx.send("Activity report editing only works in servers.")
+    if not await can_manage_activity_channel(ctx.author, ctx.guild):
+        return await ctx.send("Only the person who added me, an admin, the server owner, or the superowner can edit activity reports.")
+
+    saved_configs = await asyncio.to_thread(load_guild_activity_channels)
+    if saved_configs:
+        guild_activity_channels.update(saved_configs)
+    config = guild_activity_channels.get(ctx.guild.id)
+    if not config:
+        return await ctx.send(f"{economy_q_warning} Activity reports are not set up. Use `.activity setup` first.")
+
+    if not setting or not value:
+        return await ctx.send(
+            "Use `.editactivity <setting> <value>`.\n"
+            "Settings: `channel`, `next`.\n"
+            "Examples: `.editactivity channel #activity`, `.editactivity next 12h`"
+        )
+
+    setting = setting.casefold()
+    if setting in {"channel", "chan"}:
+        selected_channel = resolve_activity_report_channel(ctx.guild, value, ctx.message.channel_mentions)
+        if selected_channel is None:
+            return await ctx.send(f"{economy_q_warning} Mention a channel or send its channel ID.")
+        next_report = config.get("next_report") or (datetime.now(timezone.utc) + timedelta(hours=24))
+        if next_report.tzinfo is None:
+            next_report = next_report.replace(tzinfo=timezone.utc)
+        ok, message, _ = await save_activity_report_config(ctx.guild, selected_channel, ctx.author.id, next_report)
+        if not ok:
+            return await ctx.send(f"{economy_q_warning} {message}")
+        embed = activity_saved_embed(ctx.guild, selected_channel, next_report, ctx.author.id)
+        embed.title = f"{economy_q_activity} Activity Channel Updated"
+        embed.description = "Daily activity reports were moved to a new channel."
+        return await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
+    if setting in {"next", "time", "timer", "delay", "reset"}:
+        delay = parse_poll_duration(value)
+        if delay is None or delay.total_seconds() < 300:
+            return await ctx.send(f"{economy_q_warning} Invalid time. Use at least 5 minutes, like `30m`, `12h`, or `1d`.")
+        next_report = datetime.now(timezone.utc) + delay
+        channel = resolve_activity_report_channel(ctx.guild, str(config["channel_id"]))
+        if channel is None:
+            return await ctx.send(f"{economy_q_warning} Saved activity channel no longer exists. Use `.editactivity channel #channel`.")
+        ok, message, _ = await save_activity_report_config(ctx.guild, channel, config.get("set_by_user_id") or ctx.author.id, next_report)
+        if not ok:
+            return await ctx.send(f"{economy_q_warning} {message}")
+        return await ctx.send(
+            f"{economy_q_activity} Next activity report set for <t:{int(next_report.timestamp())}:R>.",
+            allowed_mentions=discord.AllowedMentions.none()
+        )
+
+    await ctx.send(f"{economy_q_warning} Unknown setting. Use `channel` or `next`.")
+
+@bot.command(name="stopactivity", aliases=["activitystop"])
+async def stopactivity(ctx):
+    """Stops this server's activity reports and clears the current activity window."""
+    if ctx.guild is None:
+        return await ctx.send("Activity report stopping only works in servers.")
+    if not await can_manage_activity_channel(ctx.author, ctx.guild):
+        return await ctx.send("Only the person who added me, an admin, the server owner, or the superowner can stop activity reports.")
+
+    saved_configs = await asyncio.to_thread(load_guild_activity_channels)
+    if saved_configs:
+        guild_activity_channels.update(saved_configs)
+    config = guild_activity_channels.get(ctx.guild.id)
+    if not config:
+        return await ctx.send("Activity reports are not set up in this server.")
+
+    channel = resolve_activity_report_channel(ctx.guild, str(config["channel_id"]))
+    await flush_activity_buffer()
+    deleted = await asyncio.to_thread(delete_guild_activity_channel, ctx.guild.id)
+    if not deleted:
+        return await ctx.send(f"{economy_q_warning} Activity report config could not be deleted because the database is unavailable.")
+    await asyncio.to_thread(clear_guild_activity_counts, ctx.guild.id)
+    guild_activity_channels.pop(ctx.guild.id, None)
+    for key in list(activity_buffer):
+        if key[0] == ctx.guild.id:
+            activity_buffer.pop(key, None)
+
+    embed = discord.Embed(
+        title=f"{economy_q_activity} Activity Reports Stopped",
+        description="Daily activity reports are now disabled for this server.",
+        color=discord.Color.orange(),
+        timestamp=datetime.now(timezone.utc)
+    )
+    embed.add_field(name="Old Channel", value=channel.mention if channel else f"`{config['channel_id']}`", inline=True)
+    embed.add_field(name="Current Window", value="Cleared", inline=True)
+    embed.set_footer(text="Use .activity setup to enable reports again.")
+    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
 @bot.event
 async def on_guild_remove(guild):
@@ -1552,13 +1766,14 @@ HELP_CATEGORIES = {
         "dsnipe", "esnipe", "rsnipe", "rolesinfo", "roleinfo", "purge", "rpurge", "steal",
         "giveaway", "listbans", "listblocks", "listtargets", "listcensors", "lists",
     ],
-    "Status": ["afk", "sleep", "wake", "fsleep", "away", "setbday", "removebday", "setbdaychannel", "activity"],
+    "Status": ["afk", "sleep", "wake", "fsleep", "away", "setbday", "removebday", "setbdaychannel", "activity", "activitystats"],
     "Admin": [
         "setlogs", "prefix", "disable", "enable", "disableall", "enableall", "dclist", "test", "testlog",
         "endttt", "setnick", "unmute", "kick", "ban", "unban", "addrole", "removerole", "deleterole",
         "lock", "lockdown", "unlock", "rlockdown", "runlock", "shut", "unshut", "clearwatchlist", "rshut", "unrshut",
         "send", "reply", "aban", "raban", "abanlist", "summon", "summon2", "block", "unblock",
-        "censor", "uncensor", "clearcensors", "editlottery", "stoplottery", "add", "remove", "addtick", "settick", "setquesos",
+        "censor", "uncensor", "clearcensors", "editlottery", "stoplottery", "editactivity", "stopactivity",
+        "add", "remove", "addtick", "settick", "setquesos",
     ],
 }
 

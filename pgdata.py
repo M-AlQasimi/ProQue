@@ -962,6 +962,23 @@ def update_guild_activity_next_report(guild_id, next_report):
     except Exception:
         return False
 
+def delete_guild_activity_channel(guild_id):
+    _ensure_ready()
+    if not pg_ready:
+        return False
+    try:
+        conn = pg_conn()
+        if conn is None:
+            return False
+        cur = conn.cursor()
+        cur.execute("DELETE FROM guild_activity_config WHERE guild_id = %s", (int(guild_id),))
+        conn.commit()
+        cur.close()
+        conn.close()
+        return True
+    except Exception:
+        return False
+
 def add_guild_activity_counts(counts):
     _ensure_ready()
     if not pg_ready or not counts:
