@@ -31,6 +31,7 @@ from economy import (
     format_balance as economy_format_balance,
     get_user as economy_get_user,
     Q_ACCEPT as economy_q_accept,
+    Q_ACTIVITY as economy_q_activity,
     Q_ALARM as economy_q_alarm,
     Q_ATTACHMENT as economy_q_attachment,
     Q_BELL as economy_q_bell,
@@ -69,6 +70,9 @@ from economy import (
     update_user as economy_update_user,
 )
 from pgdata import (
+    add_guild_activity_counts,
+    clear_guild_activity_counts,
+    get_guild_activity_top,
     load_afk_users as pg_load_afk_users,
     load_active_polls,
     load_active_timers,
@@ -77,6 +81,7 @@ from pgdata import (
     load_birthdays as pg_load_birthdays,
     load_censored_phrases,
     load_disabled_commands,
+    load_guild_activity_channels,
     load_guild_birthday_channels,
     load_guild_prefixes,
     load_guild_log_config,
@@ -99,6 +104,7 @@ from pgdata import (
     save_birthday,
     save_censored_phrases,
     save_disabled_commands,
+    save_guild_activity_channel,
     save_guild_birthday_channel,
     save_guild_prefix,
     save_guild_log_config,
@@ -106,10 +112,12 @@ from pgdata import (
     save_reaction_watchlist,
     save_shutdown_channels,
     save_sleeping_user,
+    update_guild_activity_next_report,
     save_watchlist,
 )
 last_message_time = 0
 birthday_task = None
+activity_task = None
 app = Flask('')
 
 # PostgreSQL is the single source of truth
@@ -150,6 +158,7 @@ reaction_shutdown_channels = load_reaction_shutdown_channels()
 disabled_commands = load_disabled_commands()
 guild_prefixes = load_guild_prefixes()
 guild_birthday_channels = load_guild_birthday_channels()
+guild_activity_channels = load_guild_activity_channels()
 censored_phrases = load_censored_phrases()
 watchlist = load_watchlist()
 reaction_watchlist = load_reaction_watchlist()
@@ -229,6 +238,7 @@ active_timers = load_active_timers()
 active_polls = load_active_polls()
 runtime_state_restored = False
 user_mentions = {}
+activity_buffer = Counter()
 daily_cooldown = {}
 weekly_cooldown = {}
 monthly_cooldown = {}
@@ -596,11 +606,12 @@ async def prompt_birthday_setup(guild):
             perms = selected_channel.permissions_for(bot_member)
             if not perms.view_channel or not perms.send_messages:
                 return await interaction.response.send_message("I can't send birthday messages in that channel.", ephemeral=True)
+            await interaction.response.defer()
             saved = await asyncio.to_thread(save_guild_birthday_channel, guild.id, selected_channel.id, interaction.user.id)
             if not saved:
-                return await interaction.response.send_message("Birthday channel save failed because the database is unavailable.", ephemeral=True)
+                return await interaction.followup.send("Birthday channel save failed because the database is unavailable.", ephemeral=True)
             guild_birthday_channels[guild.id] = {"channel_id": selected_channel.id, "set_by_user_id": interaction.user.id}
-            await interaction.response.edit_message(
+            await interaction.edit_original_response(
                 content=f"{economy_q_birthday} Birthday channel saved: {selected_channel.mention}",
                 view=None,
                 allowed_mentions=discord.AllowedMentions.none(),
@@ -720,12 +731,14 @@ async def keep_alive_task():
 
 @bot.event
 async def on_ready():
-    global birthday_task, runtime_state_restored
+    global birthday_task, activity_task, runtime_state_restored
     print(f'ProQue is online as {bot.user}')
     if not keep_alive_task.is_running():
         keep_alive_task.start()
     if birthday_task is None or birthday_task.done():
         birthday_task = asyncio.create_task(birthday_check_loop())
+    if activity_task is None or activity_task.done():
+        activity_task = asyncio.create_task(activity_report_loop())
     # Load economy cog
     try:
         await economy_setup(bot, send_log)
@@ -783,6 +796,72 @@ async def birthday_check_loop():
 
         await asyncio.sleep(60)
 
+async def flush_activity_buffer():
+    if not activity_buffer:
+        return
+    pending = dict(activity_buffer)
+    activity_buffer.clear()
+    ok = await asyncio.to_thread(add_guild_activity_counts, pending)
+    if not ok:
+        activity_buffer.update(pending)
+
+def activity_report_embed(guild, rows):
+    embed = discord.Embed(
+        title=f"{economy_q_activity} Daily Activity",
+        description="Most active members in the last 24 hours.",
+        color=discord.Color.blurple(),
+        timestamp=datetime.now(timezone.utc)
+    )
+    if not rows:
+        embed.description = "No activity was tracked in the last 24 hours."
+        return embed
+
+    lines = []
+    for index, row in enumerate(rows, 1):
+        lines.append(
+            f"**{index}.** <@{row['user_id']}> - **{row['activity_score']:,}** activity "
+            f"({row['messages']:,} messages, {row['reactions']:,} reactions, {row['voice_events']:,} voice)"
+        )
+    embed.add_field(name="Top 5", value="\n".join(lines), inline=False)
+    embed.set_footer(text=f"{guild.name} activity report")
+    return embed
+
+async def send_activity_report(guild_id, config):
+    guild = bot.get_guild(int(guild_id))
+    if guild is None:
+        return
+    channel = guild.get_channel(config["channel_id"]) or bot.get_channel(config["channel_id"])
+    if channel is None:
+        return
+    try:
+        await flush_activity_buffer()
+        rows = await asyncio.to_thread(get_guild_activity_top, guild.id, 5)
+        await channel.send(embed=activity_report_embed(guild, rows), allowed_mentions=discord.AllowedMentions.none())
+        await asyncio.to_thread(clear_guild_activity_counts, guild.id)
+    except Exception as e:
+        print(f"Activity report failed for guild {guild.id}: {type(e).__name__} - {e}")
+        return
+
+    next_report = datetime.now(timezone.utc) + timedelta(hours=24)
+    config["next_report"] = next_report
+    await asyncio.to_thread(update_guild_activity_next_report, guild.id, next_report)
+
+async def activity_report_loop():
+    await bot.wait_until_ready()
+    last_flush = time.time()
+    while not bot.is_closed():
+        now = datetime.now(timezone.utc)
+        if time.time() - last_flush >= 60:
+            await flush_activity_buffer()
+            last_flush = time.time()
+        for guild_id, config in list(guild_activity_channels.items()):
+            next_report = config.get("next_report")
+            if next_report and next_report.tzinfo is None:
+                next_report = next_report.replace(tzinfo=timezone.utc)
+            if not next_report or now >= next_report:
+                await send_activity_report(guild_id, config)
+        await asyncio.sleep(30)
+
 async def can_manage_birthday_channel(user, guild):
     if guild is None or user is None:
         return False
@@ -795,6 +874,9 @@ async def can_manage_birthday_channel(user, guild):
         return True
     adder = await find_bot_adder(guild)
     return adder is not None and adder.id == user.id
+
+async def can_manage_activity_channel(user, guild):
+    return await can_manage_birthday_channel(user, guild)
 
 
 @bot.event
@@ -884,6 +966,67 @@ async def set_birthday_channel(ctx, channel: discord.TextChannel = None):
         f"{economy_q_birthday} Birthday announcements will be sent in {channel.mention}.",
         allowed_mentions=discord.AllowedMentions.none()
     )
+
+@bot.command(name="activity")
+async def activity(ctx):
+    """Sets this server's daily activity report channel."""
+    if ctx.guild is None:
+        return await ctx.send("Activity reports only work in servers.")
+    if not await can_manage_activity_channel(ctx.author, ctx.guild):
+        return await ctx.send("Only the person who added me, an admin, the server owner, or the superowner can set the activity channel.")
+
+    class ActivityChannelSelect(discord.ui.ChannelSelect):
+        def __init__(self):
+            super().__init__(
+                placeholder="Select activity report channel",
+                min_values=1,
+                max_values=1,
+                channel_types=[discord.ChannelType.text],
+            )
+
+        async def callback(self, interaction):
+            selected_channel = self.values[0]
+            bot_member = ctx.guild.get_member(bot.user.id) or ctx.guild.me
+            perms = selected_channel.permissions_for(bot_member)
+            if not perms.view_channel or not perms.send_messages:
+                return await interaction.response.send_message("I can't send activity reports in that channel.", ephemeral=True)
+            await interaction.response.defer()
+            next_report = datetime.now(timezone.utc) + timedelta(hours=24)
+            saved = await asyncio.to_thread(
+                save_guild_activity_channel,
+                ctx.guild.id,
+                selected_channel.id,
+                interaction.user.id,
+                next_report,
+            )
+            if not saved:
+                return await interaction.followup.send("Activity channel save failed because the database is unavailable.", ephemeral=True)
+            guild_activity_channels[ctx.guild.id] = {
+                "channel_id": selected_channel.id,
+                "set_by_user_id": interaction.user.id,
+                "next_report": next_report,
+            }
+            await interaction.edit_original_response(
+                content=(
+                    f"{economy_q_activity} Activity reports will be sent in {selected_channel.mention} every 24 hours.\n"
+                    f"First report: <t:{int(next_report.timestamp())}:R>"
+                ),
+                view=None,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+
+    class ActivityChannelView(discord.ui.View):
+        def __init__(self):
+            super().__init__(timeout=120)
+            self.add_item(ActivityChannelSelect())
+
+        async def interaction_check(self, interaction):
+            if interaction.user.id != ctx.author.id:
+                await interaction.response.send_message("Only the setup user can choose this.", ephemeral=True)
+                return False
+            return True
+
+    await ctx.send(f"{economy_q_activity} Choose the daily activity report channel.", view=ActivityChannelView())
 
 @bot.event
 async def on_guild_remove(guild):
@@ -1241,6 +1384,8 @@ async def on_message(message):
         return
 
     if message.guild and message.author.id not in guild_blacklisted_users(message.guild):
+        if message.guild.id in guild_activity_channels:
+            activity_buffer[(message.guild.id, message.author.id, "messages")] += 1
         now_ts = time.time()
         last_xp = chat_xp_memory.get(message.author.id, 0)
         if now_ts - last_xp >= 60:
@@ -1308,7 +1453,7 @@ HELP_CATEGORIES = {
         "dsnipe", "esnipe", "rsnipe", "rolesinfo", "roleinfo", "purge", "rpurge", "steal",
         "giveaway", "listbans", "listblocks", "listtargets", "listcensors", "lists",
     ],
-    "Status": ["afk", "sleep", "wake", "fsleep", "away", "setbday", "removebday", "setbdaychannel"],
+    "Status": ["afk", "sleep", "wake", "fsleep", "away", "setbday", "removebday", "setbdaychannel", "activity"],
     "Admin": [
         "setlogs", "prefix", "disable", "enable", "disableall", "enableall", "dclist", "test", "testlog",
         "endttt", "setnick", "unmute", "kick", "ban", "unban", "addrole", "removerole", "deleterole",
@@ -1764,6 +1909,9 @@ async def on_reaction_remove(reaction, user):
 async def on_reaction_add(reaction, user):
     if user.bot and user.id != super_owner_id:
         return
+    guild = reaction.message.guild
+    if guild and guild.id in guild_activity_channels and user.id not in guild_blacklisted_users(guild):
+        activity_buffer[(guild.id, user.id, "reactions")] += 1
 
     if reaction.message.channel.id in guild_reaction_shutdown_channels(reaction.message.guild) and not has_owner_power(user, reaction.message.guild):
         try:
@@ -2014,6 +2162,9 @@ async def on_member_remove(member):
         
 @bot.event
 async def on_voice_state_update(member, before, after):
+    if not member.bot and member.guild.id in guild_activity_channels and before.channel != after.channel:
+        activity_buffer[(member.guild.id, member.id, "voice_events")] += 1
+
     changes = []
     if not before.channel and after.channel:
         changes.append(f"{economy_q_voice} **Joined voice:** {after.channel.mention}")
@@ -3725,7 +3876,7 @@ class NameModal(Modal):
         if not name:
             await interaction.response.send_message("Please enter a name.", ephemeral=True)
             return
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        await interaction.response.defer()
         
         # Sanitize name - Discord emoji/sticker names only allow alphanumeric, underscores
         name = re.sub(r'[^\w]+', '_', name)
@@ -4113,10 +4264,11 @@ class ConfirmEndPollView(View):
 
     @discord.ui.button(label="Yes", style=discord.ButtonStyle.danger)
     async def yes_button(self, interaction, button):
+        await interaction.response.defer()
         poll_id = self.poll_id
         poll_data = active_polls.pop(poll_id, None)
         if not poll_data:
-            await interaction.response.edit_message(content="Poll no longer exists.", view=None)
+            await interaction.edit_original_response(content="Poll no longer exists.", view=None)
             return
         remove_active_poll(poll_id)
         end_task = poll_data.get("end_task")
@@ -4124,12 +4276,12 @@ class ConfirmEndPollView(View):
             end_task.cancel()
         channel = bot.get_channel(poll_data["channel_id"])
         if not channel:
-            await interaction.response.edit_message(content="Poll channel not found.", view=None)
+            await interaction.edit_original_response(content="Poll channel not found.", view=None)
             return
         try:
             poll_msg = await channel.fetch_message(poll_id)
         except:
-            await interaction.response.edit_message(content="Poll message not found.", view=None)
+            await interaction.edit_original_response(content="Poll message not found.", view=None)
             return
         await finalize_poll(poll_msg, poll_data)
         if self.parent_view and self.parent_view.message:
@@ -4141,7 +4293,7 @@ class ConfirmEndPollView(View):
                 )
             except:
                 pass
-        await interaction.response.edit_message(
+        await interaction.edit_original_response(
             content=f"Poll ended: [{poll_data['question']}]({poll_msg.jump_url})",
             view=None
         )
@@ -4172,16 +4324,18 @@ class EndPollSelect(Select):
         if poll_id not in active_polls:
             await interaction.response.send_message("Poll no longer exists.", ephemeral=True)
             return
+        await interaction.response.defer(ephemeral=True, thinking=True)
         poll_data = active_polls[poll_id]
         self.parent_view.disable_all_items()
         await interaction.message.edit(view=self.parent_view)
         confirm_view = ConfirmEndPollView(poll_id, self.ctx, poll_data, parent_view=self.parent_view)
-        await interaction.response.send_message(
+        confirm_msg = await interaction.followup.send(
             f"Are you sure you want to end this poll? [Jump to poll message](https://discord.com/channels/{poll_data['guild_id']}/{poll_data['channel_id']}/{poll_id})",
             view=confirm_view,
-            ephemeral=True
+            ephemeral=True,
+            wait=True
         )
-        confirm_view.message = await interaction.original_response()
+        confirm_view.message = confirm_msg
 
 
 class EndPollSelectView(View):
@@ -4559,7 +4713,8 @@ class CancelSelectView(View):
         confirm_msg = await interaction.followup.send(
             f"Are you sure you want to cancel: [Jump to timer message]({timer_data['message'].jump_url})?",
             view=confirm_view,
-            ephemeral=True
+            ephemeral=True,
+            wait=True
         )
         confirm_view.message = confirm_msg
 

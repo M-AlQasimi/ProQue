@@ -75,6 +75,28 @@ def _create_tables(cur):
     """)
 
     cur.execute("""
+        CREATE TABLE IF NOT EXISTS guild_activity_config (
+            guild_id BIGINT PRIMARY KEY,
+            channel_id BIGINT NOT NULL,
+            set_by_user_id BIGINT,
+            next_report TIMESTAMP NOT NULL
+        )
+    """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS guild_activity_counts (
+            guild_id BIGINT NOT NULL,
+            user_id BIGINT NOT NULL,
+            messages BIGINT NOT NULL DEFAULT 0,
+            reactions BIGINT NOT NULL DEFAULT 0,
+            voice_events BIGINT NOT NULL DEFAULT 0,
+            PRIMARY KEY (guild_id, user_id)
+        )
+    """)
+    cur.execute("ALTER TABLE guild_activity_counts ADD COLUMN IF NOT EXISTS reactions BIGINT NOT NULL DEFAULT 0")
+    cur.execute("ALTER TABLE guild_activity_counts ADD COLUMN IF NOT EXISTS voice_events BIGINT NOT NULL DEFAULT 0")
+
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS birthdays (
             user_id BIGINT PRIMARY KEY,
             date TEXT NOT NULL
@@ -864,6 +886,159 @@ def save_guild_birthday_channel(guild_id, channel_id, set_by_user_id=None):
             "ON CONFLICT (guild_id) DO UPDATE SET channel_id = EXCLUDED.channel_id, set_by_user_id = EXCLUDED.set_by_user_id",
             (int(guild_id), int(channel_id), int(set_by_user_id) if set_by_user_id is not None else None)
         )
+        conn.commit()
+        cur.close()
+        conn.close()
+        return True
+    except Exception:
+        return False
+
+def load_guild_activity_channels():
+    _ensure_ready()
+    if not pg_ready:
+        return {}
+    try:
+        conn = pg_conn()
+        if conn is None:
+            return {}
+        cur = conn.cursor()
+        cur.execute("SELECT guild_id, channel_id, set_by_user_id, next_report FROM guild_activity_config")
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        from datetime import timezone
+        return {
+            int(guild_id): {
+                "channel_id": int(channel_id),
+                "set_by_user_id": int(set_by_user_id) if set_by_user_id is not None else None,
+                "next_report": next_report.replace(tzinfo=timezone.utc) if next_report.tzinfo is None else next_report,
+            }
+            for guild_id, channel_id, set_by_user_id, next_report in rows
+        }
+    except Exception:
+        return {}
+
+def save_guild_activity_channel(guild_id, channel_id, set_by_user_id=None, next_report=None):
+    _ensure_ready()
+    if not pg_ready:
+        return False
+    try:
+        from datetime import datetime, timedelta, timezone
+        if next_report is None:
+            next_report = datetime.now(timezone.utc) + timedelta(hours=24)
+        conn = pg_conn()
+        if conn is None:
+            return False
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO guild_activity_config (guild_id, channel_id, set_by_user_id, next_report) VALUES (%s, %s, %s, %s) "
+            "ON CONFLICT (guild_id) DO UPDATE SET channel_id = EXCLUDED.channel_id, set_by_user_id = EXCLUDED.set_by_user_id, next_report = EXCLUDED.next_report",
+            (int(guild_id), int(channel_id), int(set_by_user_id) if set_by_user_id is not None else None, next_report)
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+        return True
+    except Exception:
+        return False
+
+def update_guild_activity_next_report(guild_id, next_report):
+    _ensure_ready()
+    if not pg_ready:
+        return False
+    try:
+        conn = pg_conn()
+        if conn is None:
+            return False
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE guild_activity_config SET next_report = %s WHERE guild_id = %s",
+            (next_report, int(guild_id))
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+        return True
+    except Exception:
+        return False
+
+def add_guild_activity_counts(counts):
+    _ensure_ready()
+    if not pg_ready or not counts:
+        return False
+    try:
+        conn = pg_conn()
+        if conn is None:
+            return False
+        cur = conn.cursor()
+        for key, amount in counts.items():
+            if amount <= 0:
+                continue
+            if len(key) == 2:
+                guild_id, user_id = key
+                column = "messages"
+            else:
+                guild_id, user_id, column = key
+            if column not in {"messages", "reactions", "voice_events"}:
+                continue
+            cur.execute(
+                f"INSERT INTO guild_activity_counts (guild_id, user_id, {column}) VALUES (%s, %s, %s) "
+                f"ON CONFLICT (guild_id, user_id) DO UPDATE SET {column} = guild_activity_counts.{column} + EXCLUDED.{column}",
+                (int(guild_id), int(user_id), int(amount))
+            )
+        conn.commit()
+        cur.close()
+        conn.close()
+        return True
+    except Exception:
+        return False
+
+def get_guild_activity_top(guild_id, limit=5):
+    _ensure_ready()
+    if not pg_ready:
+        return []
+    try:
+        conn = pg_conn()
+        if conn is None:
+            return []
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT user_id, messages, reactions, voice_events,
+                   (messages + reactions + voice_events) AS activity_score
+            FROM guild_activity_counts
+            WHERE guild_id = %s
+            ORDER BY activity_score DESC, messages DESC, user_id ASC
+            LIMIT %s
+            """,
+            (int(guild_id), int(limit))
+        )
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        return [
+            {
+                "user_id": int(user_id),
+                "messages": int(messages),
+                "reactions": int(reactions),
+                "voice_events": int(voice_events),
+                "activity_score": int(activity_score),
+            }
+            for user_id, messages, reactions, voice_events, activity_score in rows
+        ]
+    except Exception:
+        return []
+
+def clear_guild_activity_counts(guild_id):
+    _ensure_ready()
+    if not pg_ready:
+        return False
+    try:
+        conn = pg_conn()
+        if conn is None:
+            return False
+        cur = conn.cursor()
+        cur.execute("DELETE FROM guild_activity_counts WHERE guild_id = %s", (int(guild_id),))
         conn.commit()
         cur.close()
         conn.close()

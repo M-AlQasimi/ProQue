@@ -426,6 +426,36 @@ def qlucky_charm():
     return c
 
 
+def qfortune_vial():
+    c = Canvas()
+    c.rect(50, 20, 28, 13, SILVER, outline=BLUE_DARK, width=2)
+    c.rect(45, 32, 38, 14, ICE, outline=CYAN, width=2)
+    c.poly([(42, 45), (86, 45), (92, 101), (36, 101)], BLUE_MID, outline=BLUE_DARK, width=4)
+    c.poly([(45, 64), (87, 56), (88, 94), (40, 94)], CYAN, outline=BLUE, width=2)
+    c.circle(64, 76, 20, ICE, outline=BLUE_DARK, width=3)
+    c.text_q(64, 77, 22, BLUE_MID)
+    for x, y in [(48, 57), (77, 63), (56, 91)]:
+        c.circle(x, y, 4, GOLD, outline=BLUE_DARK, width=1)
+    c.sparkle(95, 34, 7)
+    c.sparkle(32, 74, 5)
+    return c
+
+
+def qactivity():
+    c = Canvas()
+    c.rect(27, 42, 74, 54, NAVY, outline=BLUE_DARK, width=4)
+    bars = [(39, 78, 14), (55, 65, 27), (71, 53, 39), (87, 35, 57)]
+    for x, y, h in bars:
+        c.rect(x, y, 10, h, BLUE, outline=CYAN, width=1.5)
+    c.line(34, 84, 52, 70, CYAN, 3)
+    c.line(52, 70, 68, 57, CYAN, 3)
+    c.line(68, 57, 90, 32, CYAN, 3)
+    c.poly([(90, 32), (79, 34), (88, 43)], CYAN, outline=BLUE_DARK, width=1.5)
+    coin(c, 37, 38, 14)
+    c.sparkle(100, 25, 6)
+    return c
+
+
 def qxp_tonic():
     c = Canvas()
     c.rect(52, 25, 24, 14, SILVER, outline=BLUE_DARK, width=2)
@@ -1255,6 +1285,8 @@ STATIC = {
     "QDenied": qdenied,
     "QTimer": qtimer,
     "QLuckyCharm": qlucky_charm,
+    "QFortuneVial": qfortune_vial,
+    "QActivity": qactivity,
     "QXPTonic": qxp_tonic,
     "QQuesoMagnet": qqueso_magnet,
     "QDailySpice": qdaily_spice,
@@ -1359,13 +1391,13 @@ STATIC_CATEGORIES = {
     "general": {
         "QAccept", "QDenied", "QReject", "QSuccess", "QWarning", "QTimer", "QTimeout",
         "QBell", "QBook", "QGift", "QConfetti", "QThinking", "QTarget", "QBirthday",
-        "QAlarm", "QSleep", "QImage", "QAttachment",
+        "QAlarm", "QSleep", "QImage", "QAttachment", "QActivity",
     },
     "quewo": {
         "QoinBag", "QoinChest", "QoinTransfer", "QXP", "QLevelUp", "QQuest", "QShop",
         "QTicket", "QLuckyCharm", "QXPTonic", "QQuesoMagnet", "QDailySpice",
         "QStreakPolish", "QGoldBadge", "QHighRoller", "QVelvetFrame", "QTicketCharm",
-        "QCooldownClock", "QRoyalCrown", "QStreakFire",
+        "QCooldownClock", "QRoyalCrown", "QStreakFire", "QFortuneVial",
     },
     "moderation": {
         "QHammer", "QTrash", "QEdit", "QLock", "QBroom", "QReaction", "QUserEdit",

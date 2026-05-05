@@ -62,6 +62,7 @@ Expected current behavior:
 - `.setbday <dd/mm>`
 - `.removebday`
 - `.setbdaychannel [channel]`
+- `.activity`
 - `.away`
 - `.find <user id>` (server member first, global Discord user fallback)
 - `.listtargets`
@@ -185,6 +186,7 @@ Current expected:
 - New user balance row creation.
 - Balance formatting with Qoins custom emoji.
 - Shop buy flow, item limit, insufficient funds.
+- Fortune Vial purchase, temporary luck boost timer, and boosted game outcomes.
 - Inventory/profile display.
 - Quest claim/refresh buttons.
 - Daily/weekly/monthly cooldowns and streaks.
@@ -252,6 +254,7 @@ Current expected:
 - Forced sleep/wake permission behavior.
 - Birthday set/remove and midnight birthday announcement.
 - Birthday channel setup and per-server announcement only when the birthday user is still in that server.
+- Activity channel setup and 24-hour top-5 activity report.
 - `.away` output.
 
 ### Moderation / Server Tools

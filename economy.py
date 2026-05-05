@@ -52,6 +52,8 @@ Q_VELVET_FRAME = "<:QVelvetFrame:1500502979306852484>"
 Q_TICKET_CHARM = "<:QTicketCharm:1500502975746146356>"
 Q_COOLDOWN_CLOCK = "<:QCooldownClock:1500502940107149403>"
 Q_ROYAL_CROWN = "<:QRoyalCrown:1500502964048232570>"
+Q_FORTUNE_VIAL = "<:QFortuneVial:1501257715823935548>"
+Q_ACTIVITY = "<:QActivity:1501257801996042430>"
 Q_ACCEPT = "<:QAccept:1500516711114477709>"
 Q_ALARM = "<:QAlarm:1500516713094054008>"
 Q_ATTACHMENT = "<:QAttachment:1500516714641887402>"
@@ -238,6 +240,16 @@ SHOP_ITEMS = {
         "max_qty": 5,
         "description": "-4% gambling cooldown per clock.",
     },
+    "fortune_vial": {
+        "category": "Gambling",
+        "name": "Fortune Vial",
+        "emoji": Q_FORTUNE_VIAL,
+        "cost": 2_000_000,
+        "max_qty": 99,
+        "duration_hours": 4,
+        "luck_bonus": 0.07,
+        "description": "+7% win-chance boost for 4 hours per vial. Time stacks.",
+    },
     "royal_crown": {
         "category": "Cosmetics",
         "name": "Royal Q Crown",
@@ -321,7 +333,8 @@ def init_db():
                     inventory TEXT[] DEFAULT '{}',
                     achievements TEXT[] DEFAULT '{}',
                     quest_claims TEXT[] DEFAULT '{}',
-                    steal_blacklist BIGINT[] DEFAULT '{}'
+                    steal_blacklist BIGINT[] DEFAULT '{}',
+                    luck_boost_until TIMESTAMP
                 )
             """)
             cur.execute("""
@@ -382,6 +395,7 @@ def init_db():
             cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS achievements TEXT[] DEFAULT '{}'")
             cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS quest_claims TEXT[] DEFAULT '{}'")
             cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS steal_blacklist BIGINT[] DEFAULT '{}'")
+            cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS luck_boost_until TIMESTAMP")
             cur.execute("ALTER TABLE lottery_config ADD COLUMN IF NOT EXISTS thread_id BIGINT")
             cur.execute("ALTER TABLE lottery_config ADD COLUMN IF NOT EXISTS message_id BIGINT")
             cur.execute("ALTER TABLE lottery_config ADD COLUMN IF NOT EXISTS role_id BIGINT")
@@ -782,6 +796,38 @@ def achievement_ids(data):
 
 def quest_claim_ids(data):
     return list(data.get("quest_claims") or [])
+
+def claim_completed_quests_sync(user_id):
+    current = get_user(user_id)
+    total_reward = 0
+    achievements = achievement_ids(current)
+    claims = quest_claim_ids(current)
+
+    for quest_id, quest in MAIN_QUESTS.items():
+        if quest_id not in achievements and int(current.get(quest["field"]) or 0) >= quest["target"]:
+            achievements.append(quest_id)
+            total_reward += quest["reward"]
+            log_transaction(user_id, "achievement", quest["reward"], quest["name"])
+
+    for period in ["daily", "weekly", "monthly"]:
+        for quest_name, _, metric, target, reward in selected_period_quests(user_id, period):
+            claim_id = quest_claim_id(period, quest_name)
+            if claim_id not in claims and quest_progress(current, metric) >= target:
+                claims.append(claim_id)
+                total_reward += reward
+                log_transaction(user_id, f"{period}_quest", reward, quest_name)
+
+    if total_reward <= 0:
+        return current, total_reward, current
+
+    update_user(
+        user_id,
+        achievements=achievements,
+        quest_claims=claims,
+        balance=current["balance"] + total_reward,
+        total_earned=current["total_earned"] + total_reward
+    )
+    return current, total_reward, get_user(user_id)
 
 def maybe_award_main_quest(user_id, data, quest_id):
     quest = MAIN_QUESTS[quest_id]
@@ -1512,6 +1558,28 @@ def level_reward_multiplier(data):
 def claim_reward_multiplier(data):
     return 1 + item_bonus(data, "daily_spice", 0.02, 10)
 
+def active_luck_bonus(data):
+    boost_until = data.get("luck_boost_until") if data else None
+    if not boost_until:
+        return 0.0
+    boost_until = boost_until.replace(tzinfo=timezone.utc) if boost_until.tzinfo is None else boost_until
+    if boost_until <= datetime.now(timezone.utc):
+        return 0.0
+    return SHOP_ITEMS["fortune_vial"]["luck_bonus"]
+
+def luck_boost_text(data):
+    boost_until = data.get("luck_boost_until") if data else None
+    if not boost_until:
+        return None
+    boost_until = boost_until.replace(tzinfo=timezone.utc) if boost_until.tzinfo is None else boost_until
+    remaining = int((boost_until - datetime.now(timezone.utc)).total_seconds())
+    if remaining <= 0:
+        return None
+    return f"{item_display_name(SHOP_ITEMS['fortune_vial'])} active for **{format_duration(remaining)}**"
+
+def chance_with_luck(base_chance, data, cap=0.95):
+    return min(cap, base_chance + active_luck_bonus(data))
+
 def item_display_name(item):
     emoji = (item.get("emoji") or "").strip()
     return f"{emoji} {item['name']}" if emoji else item["name"]
@@ -1559,6 +1627,9 @@ def build_profile_embed(user, data):
     embed.add_field(name=f"{Q_XP} XP", value=f"{xp:,}/{needed:,}", inline=True)
     embed.add_field(name="Messages", value=f"{data.get('messages_sent') or 0:,}", inline=True)
     embed.add_field(name="Net Gambling", value=format_balance(net), inline=True)
+    boost_text = luck_boost_text(data)
+    if boost_text:
+        embed.add_field(name="Luck Boost", value=boost_text, inline=False)
     embed.add_field(name="Items", value=", ".join(items) if items else "None", inline=False)
     return embed
 
@@ -1798,6 +1869,10 @@ async def send_nonpositive_amount_error(ctx, raw_amount):
     await ctx.send(f"{Q_DENIED} Amount must be positive.")
 
 # --- Helpers ---
+async def reply_to_command(ctx, *args, **kwargs):
+    kwargs.setdefault("mention_author", False)
+    return await ctx.reply(*args, **kwargs)
+
 async def send_error(ctx, text):
     if text == "Database unavailable. Try again shortly.":
         await ensure_db_ready(ctx, force=True)
@@ -1915,43 +1990,19 @@ async def quests(ctx):
 
         @discord.ui.button(label="Claim Completed", style=discord.ButtonStyle.success)
         async def claim_completed(self, interaction, button):
+            await interaction.response.defer()
             try:
-                current = get_user(interaction.user.id)
-                total_reward = 0
-                achievements = achievement_ids(current)
-                claims = quest_claim_ids(current)
-
-                for quest_id, quest in MAIN_QUESTS.items():
-                    if quest_id not in achievements and int(current.get(quest["field"]) or 0) >= quest["target"]:
-                        achievements.append(quest_id)
-                        total_reward += quest["reward"]
-                        log_transaction(interaction.user.id, "achievement", quest["reward"], quest["name"])
-
-                for period in ["daily", "weekly", "monthly"]:
-                    for quest_name, _, metric, target, reward in selected_period_quests(interaction.user.id, period):
-                        claim_id = quest_claim_id(period, quest_name)
-                        if claim_id not in claims and quest_progress(current, metric) >= target:
-                            claims.append(claim_id)
-                            total_reward += reward
-                            log_transaction(interaction.user.id, f"{period}_quest", reward, quest_name)
-
-                if total_reward <= 0:
-                    await interaction.response.send_message("No completed quests to claim yet.", ephemeral=True)
-                    return
-
-                update_user(
-                    interaction.user.id,
-                    achievements=achievements,
-                    quest_claims=claims,
-                    balance=current["balance"] + total_reward,
-                    total_earned=current["total_earned"] + total_reward
-                )
-                updated = get_user(interaction.user.id)
-            except Exception:
-                await interaction.response.send_message(f"{Q_DENIED} Database unavailable. Try again shortly.", ephemeral=True)
+                _, total_reward, updated = await asyncio.to_thread(claim_completed_quests_sync, interaction.user.id)
+            except Exception as e:
+                print(f"Quest claim UI error: {type(e).__name__} - {e}")
+                await interaction.followup.send(f"{Q_DENIED} Database unavailable. Try again shortly.", ephemeral=True)
                 return
 
-            await interaction.response.edit_message(
+            if total_reward <= 0:
+                await interaction.followup.send("No completed quests to claim yet.", ephemeral=True)
+                return
+
+            await interaction.edit_original_response(
                 content=f"{Q_SUCCESS} Claimed **{format_balance(total_reward)}** in quest rewards.",
                 embed=build_quests_embed(interaction.user, updated),
                 view=self,
@@ -1960,8 +2011,15 @@ async def quests(ctx):
 
         @discord.ui.button(label="Refresh", style=discord.ButtonStyle.secondary)
         async def refresh(self, interaction, button):
-            await interaction.response.edit_message(
-                embed=build_quests_embed(interaction.user, get_user(interaction.user.id)),
+            await interaction.response.defer()
+            try:
+                updated = await asyncio.to_thread(get_user, interaction.user.id)
+            except Exception as e:
+                print(f"Quest refresh UI error: {type(e).__name__} - {e}")
+                await interaction.followup.send(f"{Q_DENIED} Database unavailable. Try again shortly.", ephemeral=True)
+                return
+            await interaction.edit_original_response(
+                embed=build_quests_embed(interaction.user, updated),
                 view=self,
                 allowed_mentions=discord.AllowedMentions.none()
             )
@@ -1993,9 +2051,12 @@ async def shop(ctx):
             for item_id, item in SHOP_ITEMS.items():
                 if item["category"] != category:
                     continue
-                owned = item_count(data, item_id)
-                max_qty = item.get("max_qty", 1)
-                owned_text = f"{owned}/{max_qty}" if max_qty > 1 else ("owned" if owned else "not owned")
+                if "duration_hours" in item:
+                    owned_text = luck_boost_text(data) or "not active"
+                else:
+                    owned = item_count(data, item_id)
+                    max_qty = item.get("max_qty", 1)
+                    owned_text = f"{owned}/{max_qty}" if max_qty > 1 else ("owned" if owned else "not owned")
                 marker = "→ " if item_id == selected_item_id else ""
                 lines.append(
                     f"{marker}**{item_display_name(item)}** - {format_balance(item['cost'])}\n"
@@ -2035,18 +2096,27 @@ async def shop(ctx):
             try:
                 data = get_user(interaction.user.id)
                 inventory = user_inventory(data)
-                owned = inventory.count(self.item_id)
-                max_qty = item.get("max_qty", 1)
-                remaining_allowed = max_qty - owned
-                if remaining_allowed <= 0:
-                    await interaction.followup.send(f"{Q_DENIED} You already own the max amount of **{item_name}**.", ephemeral=True)
-                    return
-                if quantity > remaining_allowed:
-                    await interaction.followup.send(
-                        f"{Q_DENIED} You can only buy **{remaining_allowed}** more **{item_name}**.",
-                        ephemeral=True
-                    )
-                    return
+                if "duration_hours" in item:
+                    max_qty = item.get("max_qty", 99)
+                    if quantity > max_qty:
+                        await interaction.followup.send(
+                            f"{Q_DENIED} You can buy at most **{max_qty}** **{item_name}** at once.",
+                            ephemeral=True
+                        )
+                        return
+                else:
+                    owned = inventory.count(self.item_id)
+                    max_qty = item.get("max_qty", 1)
+                    remaining_allowed = max_qty - owned
+                    if remaining_allowed <= 0:
+                        await interaction.followup.send(f"{Q_DENIED} You already own the max amount of **{item_name}**.", ephemeral=True)
+                        return
+                    if quantity > remaining_allowed:
+                        await interaction.followup.send(
+                            f"{Q_DENIED} You can only buy **{remaining_allowed}** more **{item_name}**.",
+                            ephemeral=True
+                        )
+                        return
 
                 total_cost = item["cost"] * quantity
                 if data["balance"] < total_cost:
@@ -2057,9 +2127,20 @@ async def shop(ctx):
                     )
                     return
 
-                inventory.extend([self.item_id] * quantity)
                 new_balance = data["balance"] - total_cost
-                update_user(interaction.user.id, balance=new_balance, inventory=inventory)
+                effect_text = ""
+                if "duration_hours" in item:
+                    now = datetime.now(timezone.utc)
+                    current_until = data.get("luck_boost_until") if self.item_id == "fortune_vial" else None
+                    if current_until:
+                        current_until = current_until.replace(tzinfo=timezone.utc) if current_until.tzinfo is None else current_until
+                    start = max(now, current_until) if current_until else now
+                    boost_until = start + timedelta(hours=item["duration_hours"] * quantity)
+                    update_user(interaction.user.id, balance=new_balance, luck_boost_until=boost_until)
+                    effect_text = f"\nEffect active until **<t:{int(boost_until.timestamp())}:R>**."
+                else:
+                    inventory.extend([self.item_id] * quantity)
+                    update_user(interaction.user.id, balance=new_balance, inventory=inventory)
                 log_transaction(interaction.user.id, "shop_purchase", -total_cost, f"{quantity}x {item['name']}")
             except Exception:
                 await interaction.followup.send(f"{Q_DENIED} Database unavailable. Try again shortly.", ephemeral=True)
@@ -2067,7 +2148,7 @@ async def shop(ctx):
 
             await interaction.followup.send(
                 f"{Q_SUCCESS} Bought **{quantity}x {item_name}** for **{format_balance(total_cost)}**.\n"
-                f"New Balance: **{format_balance(new_balance)}**",
+                f"New Balance: **{format_balance(new_balance)}**{effect_text}",
                 ephemeral=True
             )
 
@@ -2549,7 +2630,8 @@ async def buytick(ctx, amount: str = "1"):
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
 
-    await ctx.send(
+    await reply_to_command(
+        ctx,
         lottery_purchase_message(result),
         allowed_mentions=discord.AllowedMentions.none()
     )
@@ -2820,28 +2902,30 @@ class BalanceRankView(discord.ui.View):
         try:
             local_ids = await self.local_user_ids() if self.scope == "local" else None
             rows = await asyncio.to_thread(self.fetch_page, local_ids)
-        except Exception:
+            self.update_buttons()
+            return self.build_embed(rows)
+        except Exception as e:
+            print(f"Leaderboard render error: {type(e).__name__} - {e}")
             return None
-        self.update_buttons()
-        return self.build_embed(rows)
+
+    async def refresh_interaction(self, interaction):
+        await interaction.response.defer()
+        embed = await self.render()
+        if embed is None:
+            return await interaction.followup.send("Database unavailable. Try again shortly.", ephemeral=True)
+        await interaction.edit_original_response(embed=embed, view=self)
 
     @discord.ui.button(label="Local", style=discord.ButtonStyle.primary, row=0)
     async def local_scope(self, interaction, button):
         self.scope = "local"
         self.page = 0
-        embed = await self.render()
-        if embed is None:
-            return await interaction.response.send_message("Database unavailable. Try again shortly.", ephemeral=True)
-        await interaction.response.edit_message(embed=embed, view=self)
+        await self.refresh_interaction(interaction)
 
     @discord.ui.button(label="Global", style=discord.ButtonStyle.secondary, row=0)
     async def global_scope(self, interaction, button):
         self.scope = "global"
         self.page = 0
-        embed = await self.render()
-        if embed is None:
-            return await interaction.response.send_message("Database unavailable. Try again shortly.", ephemeral=True)
-        await interaction.response.edit_message(embed=embed, view=self)
+        await self.refresh_interaction(interaction)
 
     @discord.ui.select(
         custom_id="leaderboard_rank_type",
@@ -2857,42 +2941,27 @@ class BalanceRankView(discord.ui.View):
     async def rank_type_select(self, interaction, select):
         self.rank_type = select.values[0]
         self.page = 0
-        embed = await self.render()
-        if embed is None:
-            return await interaction.response.send_message("Database unavailable. Try again shortly.", ephemeral=True)
-        await interaction.response.edit_message(embed=embed, view=self)
+        await self.refresh_interaction(interaction)
 
     @discord.ui.button(label="First", style=discord.ButtonStyle.secondary, row=1)
     async def first_page(self, interaction, button):
         self.page = 0
-        embed = await self.render()
-        if embed is None:
-            return await interaction.response.send_message("Database unavailable. Try again shortly.", ephemeral=True)
-        await interaction.response.edit_message(embed=embed, view=self)
+        await self.refresh_interaction(interaction)
 
     @discord.ui.button(label="Prev", style=discord.ButtonStyle.secondary, row=1)
     async def prev_page(self, interaction, button):
         self.page = max(0, self.page - 1)
-        embed = await self.render()
-        if embed is None:
-            return await interaction.response.send_message("Database unavailable. Try again shortly.", ephemeral=True)
-        await interaction.response.edit_message(embed=embed, view=self)
+        await self.refresh_interaction(interaction)
 
     @discord.ui.button(label="Next", style=discord.ButtonStyle.secondary, row=1)
     async def next_page(self, interaction, button):
         self.page += 1
-        embed = await self.render()
-        if embed is None:
-            return await interaction.response.send_message("Database unavailable. Try again shortly.", ephemeral=True)
-        await interaction.response.edit_message(embed=embed, view=self)
+        await self.refresh_interaction(interaction)
 
     @discord.ui.button(label="Last", style=discord.ButtonStyle.secondary, row=1)
     async def last_page(self, interaction, button):
         self.page = max(0, (self.total - 1) // self.per_page)
-        embed = await self.render()
-        if embed is None:
-            return await interaction.response.send_message("Database unavailable. Try again shortly.", ephemeral=True)
-        await interaction.response.edit_message(embed=embed, view=self)
+        await self.refresh_interaction(interaction)
 
     async def on_timeout(self):
         for item in self.children:
@@ -2939,7 +3008,7 @@ async def daily(ctx):
         if elapsed < 86400:
             hours_left = int((86400 - elapsed) / 3600)
             minutes_left = int(((86400 - elapsed) % 3600) / 60)
-            await ctx.send(f"{Q_TIMER} You can claim daily in **{hours_left}h {minutes_left}m**")
+            await reply_to_command(ctx, f"{Q_TIMER} You can claim daily in **{hours_left}h {minutes_left}m**")
             return
 
     streak = data['daily_streak'] + 1
@@ -2964,7 +3033,7 @@ async def daily(ctx):
     updated = get_user(user_id)
     achievement_reward = maybe_award_main_quest(user_id, updated, "daily_30")
     extra = f"\n{Q_QUEST} Main quest complete: **{format_balance(achievement_reward)}**!" if achievement_reward else ""
-    await ctx.send(f"{QOIN_BAG} You claimed **{format_balance(reward)}**!\nStreak: **{streak}** days (+{streak_bonus} bonus){extra}")
+    await reply_to_command(ctx, f"{QOIN_BAG} You claimed **{format_balance(reward)}**!\nStreak: **{streak}** days (+{streak_bonus} bonus){extra}")
 
 @commands.command()
 async def weekly(ctx):
@@ -2986,7 +3055,7 @@ async def weekly(ctx):
 
         if elapsed < 604800:
             days_left = int((604800 - elapsed) / 86400)
-            await ctx.send(f"{Q_TIMER} You can claim weekly in **{days_left}** days")
+            await reply_to_command(ctx, f"{Q_TIMER} You can claim weekly in **{days_left}** days")
             return
 
     streak = data['weekly_streak'] + 1
@@ -3011,7 +3080,7 @@ async def weekly(ctx):
     updated = get_user(user_id)
     achievement_reward = maybe_award_main_quest(user_id, updated, "weekly_8")
     extra = f"\n{Q_QUEST} Main quest complete: **{format_balance(achievement_reward)}**!" if achievement_reward else ""
-    await ctx.send(f"{QOIN_BAG} You claimed **{format_balance(reward)}**!\nWeekly streak: **{streak}** weeks (+{streak_bonus} bonus){extra}")
+    await reply_to_command(ctx, f"{QOIN_BAG} You claimed **{format_balance(reward)}**!\nWeekly streak: **{streak}** weeks (+{streak_bonus} bonus){extra}")
 
 @commands.command()
 async def monthly(ctx):
@@ -3033,7 +3102,7 @@ async def monthly(ctx):
 
         if elapsed < 2592000:
             days_left = int((2592000 - elapsed) / 86400)
-            await ctx.send(f"{Q_TIMER} You can claim monthly in **{days_left}** days")
+            await reply_to_command(ctx, f"{Q_TIMER} You can claim monthly in **{days_left}** days")
             return
 
     streak = data['monthly_streak'] + 1
@@ -3058,7 +3127,7 @@ async def monthly(ctx):
     updated = get_user(user_id)
     achievement_reward = maybe_award_main_quest(user_id, updated, "monthly_5")
     extra = f"\n{Q_QUEST} Main quest complete: **{format_balance(achievement_reward)}**!" if achievement_reward else ""
-    await ctx.send(f"{QOIN_BAG} You claimed **{format_balance(reward)}**!\nMonthly streak: **{streak}** months (+{streak_bonus} bonus){extra}")
+    await reply_to_command(ctx, f"{QOIN_BAG} You claimed **{format_balance(reward)}**!\nMonthly streak: **{streak}** months (+{streak_bonus} bonus){extra}")
 
 # =====================
 # COIN FLIP
@@ -3145,7 +3214,10 @@ async def gamble(ctx, amount: str, choice: str = None):
 
     streak = data.get('gamble_streak', 0)
     mult = payout_multiplier(data, streak)
-    coin_result = random.choice(["HEADS", "TAILS"])
+    if random.random() < chance_with_luck(0.5, data):
+        coin_result = chosen_side
+    else:
+        coin_result = "TAILS" if chosen_side == "HEADS" else "HEADS"
     win = coin_result == chosen_side
     flip_msg = await ctx.send(
         f"{Q_FLIP_SPIN} **COIN FLIP**\n"
@@ -3293,7 +3365,7 @@ async def roulette(ctx, amount: str, color: str = None):
         return
 
     outcomes = ['red'] * 18 + ['black'] * 18 + ['green'] * 2
-    result = random.choice(outcomes)
+    result = color if random.random() < active_luck_bonus(data) else random.choice(outcomes)
     multipliers = {'red': 2, 'black': 2, 'green': 10}
     emoji_map = {'red': Q_ROULETTE_RED, 'black': Q_ROULETTE_BLACK, 'green': Q_ROULETTE_GREEN}
     streak = data.get('roulette_streak', 0)
@@ -3412,7 +3484,7 @@ async def slots(ctx, amount: str):
         (Q_SLOT_JACKPOT, 5),
     ]
     symbol_weights = [40, 30, 20, 10]
-    if random.random() < 0.18:
+    if random.random() < chance_with_luck(0.18, data):
         chosen_symbol, result_multiplier = random.choices(slot_symbols, weights=symbol_weights)[0]
         final_reels = [chosen_symbol, chosen_symbol, chosen_symbol]
     else:
@@ -3578,6 +3650,10 @@ async def blackjack(ctx, amount: str):
     mult = payout_multiplier(data, streak)
 
     async def final_outcome(player_final, dealer_final, win_type, amount_delta, new_streak):
+        if amount_delta < 0 and random.random() < active_luck_bonus(data):
+            win_type = "Fortune Reversal"
+            amount_delta = amount
+            new_streak = streak + 1
         try:
             if amount_delta > 0:
                 winnings = int(amount_delta * mult)
@@ -3772,7 +3848,8 @@ async def give(ctx, member: discord.Member, amount: str):
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
 
-    await ctx.send(
+    await reply_to_command(
+        ctx,
         f"{QOIN_TRANSFER} You sent **{format_balance(amount)}** to **{user_mention(member.id)}**\n"
         f"Tax Burned: **{format_balance(tax)}**\n"
         f"Received: **{format_balance(received_amount)}**\n"
@@ -3832,7 +3909,8 @@ async def add(ctx, target: str, amount: str):
             await send_error(ctx, "Database unavailable. Try again shortly.")
             return
 
-        await ctx.send(
+        await reply_to_command(
+            ctx,
             f"{Q_SUCCESS} Added **{format_balance(amount)}** to **{count}** server members.",
             allowed_mentions=discord.AllowedMentions.none()
         )
@@ -3864,7 +3942,8 @@ async def add(ctx, target: str, amount: str):
             await send_error(ctx, "Database unavailable. Try again shortly.")
             return
 
-        await ctx.send(
+        await reply_to_command(
+            ctx,
             f"{Q_SUCCESS} Added **{format_balance(amount)}** to **{count}** members with **{role.name}**.",
             allowed_mentions=discord.AllowedMentions.none()
         )
@@ -3892,7 +3971,8 @@ async def add(ctx, target: str, amount: str):
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
 
-    await ctx.send(
+    await reply_to_command(
+        ctx,
         f"{Q_SUCCESS} Added **{format_balance(amount)}** to **{user_mention(member.id)}**\n"
         f"Balance: **{format_balance(old_balance)}** → **{format_balance(new_balance)}**",
         allowed_mentions=discord.AllowedMentions.none()
@@ -3938,7 +4018,8 @@ async def remove(ctx, member: discord.Member, amount: str):
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
 
-    await ctx.send(
+    await reply_to_command(
+        ctx,
         f"{Q_SUCCESS} Removed **{format_balance(amount)}** from **{user_mention(member.id)}**\n"
         f"Balance: **{format_balance(old_balance)}** → **{format_balance(new_balance)}**",
         allowed_mentions=discord.AllowedMentions.none()
@@ -3993,7 +4074,8 @@ async def addtick(ctx, target: str, amount: str):
         return
 
     total_added = amount * count
-    await ctx.send(
+    await reply_to_command(
+        ctx,
         f"{Q_SUCCESS} Added **{amount:,}** free {Q_TICKET} tickets to **{count:,}** target(s): {targets['label']}.\n"
         f"Total Entries Added: **{total_added:,}**",
         allowed_mentions=discord.AllowedMentions.none()
@@ -4048,7 +4130,8 @@ async def settick(ctx, target: str, amount: str):
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
 
-    await ctx.send(
+    await reply_to_command(
+        ctx,
         f"{Q_SUCCESS} Set {Q_TICKET} tickets to **{amount:,}** for **{count:,}** target(s): {targets['label']}.",
         allowed_mentions=discord.AllowedMentions.none()
     )
@@ -4092,7 +4175,8 @@ async def setquesos(ctx, target: str, amount: str):
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
 
-    await ctx.send(
+    await reply_to_command(
+        ctx,
         f"{Q_SUCCESS} Set balance to **{format_balance(amount)}** for **{count:,}** target(s): {targets['label']}.",
         allowed_mentions=discord.AllowedMentions.none()
     )
@@ -4148,7 +4232,7 @@ async def scratch(ctx, amount: str):
         await ctx.send(f"{Q_DENIED} You only have {format_balance(data['balance'])}")
         return
 
-    if random.random() < SCRATCH_WIN_CHANCE:
+    if random.random() < chance_with_luck(SCRATCH_WIN_CHANCE, data, cap=0.25):
         win_symbol = random.choice(SCRATCH_SYMBOLS)
         ticket = [win_symbol] * 5
     else:
@@ -4326,6 +4410,8 @@ async def minesweeper(ctx, amount: str):
 
     rows = cols = size_view.grid
     bomb_count = {3: 1, 4: 3, 5: 5}.get(rows, max(1, rows - 2))
+    if active_luck_bonus(data) and bomb_count > 1:
+        bomb_count -= 1
 
     total_cells = rows * cols
     safe_cells = total_cells - bomb_count
@@ -4531,7 +4617,14 @@ async def wheel(ctx, amount: str):
         return
 
     # Pre-select outcome
-    segment_idx = random.choices(range(len(WHEEL_SEGMENTS)), weights=WHEEL_WEIGHTS)[0]
+    if random.random() < active_luck_bonus(data):
+        winning_segments = [
+            i for i, segment in enumerate(WHEEL_SEGMENTS)
+            if segment[0] not in {"×0.5", "×1", "BLANK"}
+        ]
+        segment_idx = random.choice(winning_segments)
+    else:
+        segment_idx = random.choices(range(len(WHEEL_SEGMENTS)), weights=WHEEL_WEIGHTS)[0]
     label, color_hex, emoji = WHEEL_SEGMENTS[segment_idx]
 
     def render_wheel(spinning=True, offset=0, landed_idx=None):
@@ -4693,6 +4786,7 @@ EXPLANATIONS = {
     "setbdaychannel": "Sets the server's birthday announcement channel.",
     "bdaychannel": "Alias for `.setbdaychannel`. Sets the server's birthday announcement channel.",
     "birthdaychannel": "Alias for `.setbdaychannel`. Sets the server's birthday announcement channel.",
+    "activity": "Sets this server's daily activity report channel. The report posts the top 5 active members every 24 hours.",
     "away": "Shows AFK and sleeping users.",
     "listbans": "Admin-power command. Lists blacklisted users.",
     "calc": "Calculates a math expression.",
@@ -4755,6 +4849,7 @@ DETAILED_EXPLANATIONS = {
     "prefix": "Changes the command prefix for this server. Use `.prefix !` or `.preifx !`. If the superowner is in the server, only the superowner can change it. If not, the server owner or admins can change it.",
     "preifx": "Typo alias for `.prefix`. Changes the command prefix for this server.",
     "setbdaychannel": "Sets the birthday announcement channel for this server. Users keep one birthday date globally, and the bot announces it in every server where they are still a member and a birthday channel is configured.",
+    "activity": "Sets the daily activity report channel for this server. Every 24 hours, the bot posts the top 5 members by tracked messages since the last report, then resets that server's activity window.",
     "ttt": "Challenge a user to Tic Tac Toe. The opponent accepts the game first. If the challenger enables a bet and enters an amount, the opponent gets a second accept/decline prompt for that exact bet before the game starts.",
     "c4": "Challenge a user to Connect 4. The opponent accepts the game first. If the challenger enables a bet and enters an amount, the opponent gets a second accept/decline prompt for that exact bet before the game starts. The board shows column numbers below the grid.",
     "chess": "Challenge a user to chess. The opponent accepts first. If the challenger enables a bet and enters an amount, the opponent gets a second accept/decline prompt. The board uses dropdown UI controls: choose one of your pieces, choose a legal move, then confirm or cancel. Each player has a 10-minute total clock. Movement legality, check, checkmate, stalemate, draw detection, and time-loss handling are enforced.",
