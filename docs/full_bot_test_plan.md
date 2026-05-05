@@ -225,10 +225,13 @@ Current expected:
 - C4 win/draw/timeout payout.
 - C4 does not freeze after repeated moves or full columns.
 - Chess challenge accept/decline.
+- Chess bet proposer prompt, opponent bet accept/decline.
 - Chess UI only lets the current player move.
 - Chess UI source menu lists movable pieces, then legal destination/move choices.
+- Chess asks for move confirmation before applying the selected move.
+- Chess tracks 10-minute total clocks for both players and awards timeout wins.
 - Chess rejects illegal fallback notation moves.
-- Chess detects checkmate, stalemate/draw, and resignation.
+- Chess detects checkmate, stalemate/draw, resignation, and settles bets.
 - Chess piece custom emoji placeholders should be replaced after Discord markdowns are uploaded.
 
 ### Timers, Polls, Giveaway

@@ -175,6 +175,7 @@ C4_NUMBER_EMOJIS = [
 C4_COLUMN_LABELS = "".join(C4_NUMBER_EMOJIS)
 TURN_TIMEOUT_SECONDS = 30
 TURN_COUNTDOWN_EDIT_POINTS = {30, 20, 10, 5, 4, 3, 2, 1}
+CHESS_CLOCK_SECONDS = 10 * 60
 
 CHESS_PIECE_EMOJIS = {
     "P": "<:QChessWhitePawn:1500858450010312855>",
@@ -2665,6 +2666,87 @@ def render_chess_board(game):
 def chess_current_player(game):
     return game["white"] if game["board"].turn == chess_lib.WHITE else game["black"]
 
+def chess_opponent(game, player):
+    return game["black"] if player.id == game["white"].id else game["white"]
+
+def format_chess_clock(seconds):
+    seconds = max(0, int(seconds))
+    minutes, secs = divmod(seconds, 60)
+    return f"{minutes}:{secs:02d}"
+
+def chess_clock_remaining(game, player):
+    remaining = float(game["clocks"].get(player.id, CHESS_CLOCK_SECONDS))
+    current = chess_current_player(game)
+    if player.id == current.id and game.get("last_turn_started") is not None:
+        remaining -= time.monotonic() - game["last_turn_started"]
+    return max(0, remaining)
+
+def chess_clock_line(game):
+    white_time = format_chess_clock(chess_clock_remaining(game, game["white"]))
+    black_time = format_chess_clock(chess_clock_remaining(game, game["black"]))
+    return f"White <@{game['white'].id}>: **{white_time}** | Black <@{game['black'].id}>: **{black_time}**"
+
+def apply_chess_elapsed(game):
+    current = chess_current_player(game)
+    started = game.get("last_turn_started")
+    if started is None:
+        game["last_turn_started"] = time.monotonic()
+        return
+    elapsed = time.monotonic() - started
+    game["clocks"][current.id] = max(0, float(game["clocks"].get(current.id, CHESS_CLOCK_SECONDS)) - elapsed)
+    game["last_turn_started"] = time.monotonic()
+
+async def stop_chess_clock(game):
+    task = game.get("clock_task")
+    if task and not task.done():
+        if task is asyncio.current_task():
+            game["clock_task"] = None
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+    game["clock_task"] = None
+
+async def start_chess_clock(game):
+    await stop_chess_clock(game)
+    if game.get("ended"):
+        return
+    current = chess_current_player(game)
+    game["last_turn_started"] = time.monotonic()
+
+    async def timeout_task(player_id=current.id, channel_id=game["channel_id"]):
+        try:
+            await asyncio.sleep(chess_clock_remaining(game, current))
+            active = chess_games.get(channel_id)
+            if active is not game or game.get("ended"):
+                return
+            if chess_current_player(game).id != player_id:
+                return
+            game["clocks"][player_id] = 0
+            loser = game["white"] if game["white"].id == player_id else game["black"]
+            winner = chess_opponent(game, loser)
+            game["ended"] = True
+            await stop_chess_clock(game)
+            if game.get("view"):
+                game["view"].disable_all_items()
+            payout_text = await settle_game_bet(game, winner)
+            result_text = f"{economy_q_game_timeout} <@{loser.id}> ran out of time.\n{economy_q_game_win} <@{winner.id}> wins on time!{payout_text}"
+            await game["message"].edit(
+                content=result_text,
+                embed=chess_embed(game, result_text),
+                view=game.get("view"),
+                allowed_mentions=discord.AllowedMentions(users=True)
+            )
+            chess_games.pop(channel_id, None)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            print(f"Chess clock error: {type(e).__name__} - {e}")
+
+    game["clock_task"] = asyncio.create_task(timeout_task())
+
 def chess_move_label(board, move):
     try:
         return board.san(move)
@@ -2695,6 +2777,11 @@ def chess_status(game):
     selected = game.get("selected_from")
     if selected is not None:
         status += f"\nSelected: `{chess_lib.square_name(selected)}`"
+    pending = game.get("pending_move")
+    if pending is not None:
+        status += f"\nPending move: **{chess_move_label(board, pending)}**. Confirm or cancel below."
+    status += f"\n{chess_clock_line(game)}"
+    status += game_bet_line(game)
     status += "\nUse the menus below to select a piece and a legal move."
     return status
 
@@ -2704,6 +2791,10 @@ def chess_embed(game, result_text=None):
         description=render_chess_board(game),
         color=discord.Color.blurple()
     )
+    embed.add_field(name="Clock", value=chess_clock_line(game), inline=False)
+    bet_line = game_bet_line(game).strip()
+    if bet_line:
+        embed.add_field(name="Bet", value=bet_line.removeprefix("Bet: "), inline=False)
     if result_text:
         embed.add_field(name="Result", value=result_text, inline=False)
     return embed
@@ -2751,6 +2842,7 @@ class ChessFromSelect(Select):
         if selected < 0:
             return await interaction.response.send_message("No legal moves are available.", ephemeral=True)
         game["selected_from"] = selected
+        game["pending_move"] = None
         new_view = ChessView(game)
         game["view"] = new_view
         await interaction.response.edit_message(
@@ -2786,7 +2878,15 @@ class ChessMoveSelect(Select):
         move = chess_lib.Move.from_uci(self.values[0])
         if move not in game["board"].legal_moves:
             return await interaction.response.send_message("That move is no longer legal.", ephemeral=True)
-        await view.play_move(interaction, move)
+        game["pending_move"] = move
+        new_view = ChessView(game)
+        game["view"] = new_view
+        await interaction.response.edit_message(
+            content=chess_status(game),
+            embed=chess_embed(game),
+            view=new_view,
+            allowed_mentions=discord.AllowedMentions(users=True)
+        )
 
 class ChessResignButton(Button):
     def __init__(self):
@@ -2798,9 +2898,12 @@ class ChessResignButton(Button):
         if interaction.user.id not in {game["white"].id, game["black"].id}:
             return await interaction.response.send_message("Only chess players can resign.", ephemeral=True)
         winner = game["black"] if interaction.user.id == game["white"].id else game["white"]
+        game["ended"] = True
+        await stop_chess_clock(game)
         view.disable_all_items()
         chess_games.pop(game["channel_id"], None)
-        result_text = f"{economy_q_game_win} <@{winner.id}> wins by resignation."
+        payout_text = await settle_game_bet(game, winner)
+        result_text = f"{economy_q_game_win} <@{winner.id}> wins by resignation.{payout_text}"
         await interaction.response.edit_message(
             content=result_text,
             embed=chess_embed(game, result_text),
@@ -2819,6 +2922,53 @@ class ChessClearSelectionButton(Button):
         if interaction.user.id != current.id:
             return await interaction.response.send_message("Not your turn.", ephemeral=True)
         game["selected_from"] = None
+        game["pending_move"] = None
+        new_view = ChessView(game)
+        game["view"] = new_view
+        await interaction.response.edit_message(
+            content=chess_status(game),
+            embed=chess_embed(game),
+            view=new_view,
+            allowed_mentions=discord.AllowedMentions(users=True)
+        )
+
+class ChessConfirmMoveButton(Button):
+    def __init__(self):
+        super().__init__(label="Confirm Move", style=discord.ButtonStyle.success, row=4)
+
+    async def callback(self, interaction: discord.Interaction):
+        view = self.view
+        game = view.game
+        current = chess_current_player(game)
+        if interaction.user.id != current.id:
+            return await interaction.response.send_message("Not your turn.", ephemeral=True)
+        move = game.get("pending_move")
+        if move is None:
+            return await interaction.response.send_message("No pending move to confirm.", ephemeral=True)
+        if move not in game["board"].legal_moves:
+            game["pending_move"] = None
+            game["selected_from"] = None
+            new_view = ChessView(game)
+            game["view"] = new_view
+            return await interaction.response.edit_message(
+                content=chess_status(game),
+                embed=chess_embed(game),
+                view=new_view,
+                allowed_mentions=discord.AllowedMentions(users=True)
+            )
+        await view.play_move(interaction, move)
+
+class ChessCancelMoveButton(Button):
+    def __init__(self):
+        super().__init__(label="Cancel", style=discord.ButtonStyle.secondary, row=4)
+
+    async def callback(self, interaction: discord.Interaction):
+        view = self.view
+        game = view.game
+        current = chess_current_player(game)
+        if interaction.user.id != current.id:
+            return await interaction.response.send_message("Not your turn.", ephemeral=True)
+        game["pending_move"] = None
         new_view = ChessView(game)
         game["view"] = new_view
         await interaction.response.edit_message(
@@ -2830,7 +2980,7 @@ class ChessClearSelectionButton(Button):
 
 class ChessView(View):
     def __init__(self, game):
-        super().__init__(timeout=900)
+        super().__init__(timeout=None)
         self.game = game
         self.add_item(ChessFromSelect(game))
         selected = game.get("selected_from")
@@ -2841,6 +2991,10 @@ class ChessView(View):
                 if row >= 4:
                     break
                 self.add_item(ChessMoveSelect(game, moves[idx:idx + 25], row=row))
+        if game.get("pending_move") is not None:
+            self.add_item(ChessConfirmMoveButton())
+            self.add_item(ChessCancelMoveButton())
+        elif selected is not None:
             self.add_item(ChessClearSelectionButton())
         self.add_item(ChessResignButton())
 
@@ -2856,14 +3010,19 @@ class ChessView(View):
 
     async def play_move(self, interaction, move):
         board = self.game["board"]
+        apply_chess_elapsed(self.game)
         board.push(move)
         self.game["selected_from"] = None
+        self.game["pending_move"] = None
 
         if board.is_checkmate():
             winner = self.game["black"] if board.turn == chess_lib.WHITE else self.game["white"]
+            self.game["ended"] = True
+            await stop_chess_clock(self.game)
             self.disable_all_items()
             chess_games.pop(self.game["channel_id"], None)
-            result_text = f"{economy_q_game_win} Checkmate. <@{winner.id}> wins!"
+            payout_text = await settle_game_bet(self.game, winner)
+            result_text = f"{economy_q_game_win} Checkmate. <@{winner.id}> wins!{payout_text}"
             return await interaction.response.edit_message(
                 content=result_text,
                 embed=chess_embed(self.game, result_text),
@@ -2872,9 +3031,12 @@ class ChessView(View):
             )
 
         if board.is_stalemate() or board.is_insufficient_material() or board.can_claim_draw():
+            self.game["ended"] = True
+            await stop_chess_clock(self.game)
             self.disable_all_items()
             chess_games.pop(self.game["channel_id"], None)
-            result_text = "Game drawn."
+            payout_text = await settle_game_bet(self.game, None)
+            result_text = f"Game drawn.{payout_text}"
             return await interaction.response.edit_message(
                 content=result_text,
                 embed=chess_embed(self.game, result_text),
@@ -2884,6 +3046,7 @@ class ChessView(View):
 
         new_view = ChessView(self.game)
         self.game["view"] = new_view
+        await start_chess_clock(self.game)
         await interaction.response.edit_message(
             content=chess_status(self.game),
             embed=chess_embed(self.game),
@@ -2910,14 +3073,28 @@ async def chess(ctx, opponent: discord.Member):
     if not view.accepted:
         return
 
+    bet_amount = await ask_game_bet(ctx, opponent, "Chess")
+    if bet_amount is None:
+        return
+
     game = {
         "white": ctx.author,
         "black": opponent,
+        "players": [ctx.author, opponent],
         "board": chess_lib.Board(),
         "channel_id": ctx.channel.id,
         "message": None,
         "selected_from": None,
+        "pending_move": None,
         "view": None,
+        "bet_amount": bet_amount,
+        "clocks": {
+            ctx.author.id: CHESS_CLOCK_SECONDS,
+            opponent.id: CHESS_CLOCK_SECONDS,
+        },
+        "last_turn_started": None,
+        "clock_task": None,
+        "ended": False,
     }
     game["view"] = ChessView(game)
     msg = await ctx.send(
@@ -2928,6 +3105,7 @@ async def chess(ctx, opponent: discord.Member):
     )
     game["message"] = msg
     chess_games[ctx.channel.id] = game
+    await start_chess_clock(game)
 
 @bot.command(name="move", aliases=["chessmove"])
 async def chess_move(ctx, *, move: str):
@@ -2944,11 +3122,16 @@ async def chess_move(ctx, *, move: str):
     if parsed is None:
         return await ctx.send(f"Illegal move. Use the chess UI or something like `{ctx.prefix}move e2e4`.")
 
+    apply_chess_elapsed(game)
     board.push(parsed)
     game["selected_from"] = None
+    game["pending_move"] = None
     if board.is_checkmate():
         winner = game["black"] if board.turn == chess_lib.WHITE else game["white"]
-        result_text = f"{economy_q_game_win} Checkmate. <@{winner.id}> wins!"
+        game["ended"] = True
+        await stop_chess_clock(game)
+        payout_text = await settle_game_bet(game, winner)
+        result_text = f"{economy_q_game_win} Checkmate. <@{winner.id}> wins!{payout_text}"
         await game["message"].edit(
             content=result_text,
             embed=chess_embed(game, result_text),
@@ -2958,7 +3141,10 @@ async def chess_move(ctx, *, move: str):
         chess_games.pop(ctx.channel.id, None)
         return
     if board.is_stalemate() or board.is_insufficient_material() or board.can_claim_draw():
-        result_text = "Game drawn."
+        game["ended"] = True
+        await stop_chess_clock(game)
+        payout_text = await settle_game_bet(game, None)
+        result_text = f"Game drawn.{payout_text}"
         await game["message"].edit(
             content=result_text,
             embed=chess_embed(game, result_text),
@@ -2969,6 +3155,7 @@ async def chess_move(ctx, *, move: str):
         return
 
     game["view"] = ChessView(game)
+    await start_chess_clock(game)
     await game["message"].edit(content=chess_status(game), embed=chess_embed(game), view=game["view"], allowed_mentions=discord.AllowedMentions(users=True))
 
 @bot.command()
@@ -2980,7 +3167,10 @@ async def resign(ctx):
         return await ctx.send("Only a chess player can resign.")
 
     winner = game["black"] if ctx.author.id == game["white"].id else game["white"]
-    result_text = f"{economy_q_game_win} <@{winner.id}> wins by resignation."
+    game["ended"] = True
+    await stop_chess_clock(game)
+    payout_text = await settle_game_bet(game, winner)
+    result_text = f"{economy_q_game_win} <@{winner.id}> wins by resignation.{payout_text}"
     await game["message"].edit(
         content=result_text,
         embed=chess_embed(game, result_text),
