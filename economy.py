@@ -252,6 +252,7 @@ economy_log_callback = None
 lottery_task = None
 db_keepalive_task = None
 lottery_view_registered = False
+lottery_status_messages = {}
 
 # --- Cooldown tracking ---
 _cooldowns = {}  # {(user_id, command): timestamp}
@@ -1119,6 +1120,53 @@ def build_lottery_embed(guild, config):
     embed.set_footer(text="At least 5 unique players are needed, or tickets are refunded.")
     return embed
 
+def remember_lottery_status_message(guild_id, message):
+    lottery_status_messages.setdefault(int(guild_id), set()).add((message.channel.id, message.id))
+
+def forget_lottery_status_message(guild_id, channel_id, message_id):
+    messages = lottery_status_messages.get(int(guild_id))
+    if not messages:
+        return
+    messages.discard((int(channel_id), int(message_id)))
+    if not messages:
+        lottery_status_messages.pop(int(guild_id), None)
+
+async def build_lottery_status_embed(guild, config, panel_message=None):
+    embed = await asyncio.to_thread(build_lottery_embed, guild, config)
+    if panel_message:
+        embed.add_field(name="Lottery Panel", value=f"[Open Panel]({panel_message.jump_url})", inline=False)
+    return embed
+
+async def refresh_lottery_status_messages(guild, config=None, panel_message=None):
+    if not guild:
+        return
+    guild_id = int(guild.id)
+    tracked = list(lottery_status_messages.get(guild_id, set()))
+    if not tracked:
+        return
+    if config is None:
+        config = await asyncio.to_thread(get_lottery_config, guild_id)
+    if not config:
+        lottery_status_messages.pop(guild_id, None)
+        return
+
+    embed = await build_lottery_status_embed(guild, config, panel_message)
+    for channel_id, message_id in tracked:
+        channel = guild.get_channel(channel_id)
+        if channel is None and bot:
+            try:
+                channel = await bot.fetch_channel(channel_id)
+            except Exception:
+                channel = None
+        if channel is None:
+            forget_lottery_status_message(guild_id, channel_id, message_id)
+            continue
+        try:
+            message = await channel.fetch_message(message_id)
+            await message.edit(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+        except Exception:
+            forget_lottery_status_message(guild_id, channel_id, message_id)
+
 def buy_lottery_tickets_sync(guild_id, user_id, tickets):
     if tickets <= 0:
         return {"ok": False, "message": f"{Q_DENIED} Ticket amount must be positive."}
@@ -1230,6 +1278,7 @@ async def refresh_lottery_message(guild, config=None, create_if_missing=True):
         try:
             message = await channel.fetch_message(message_id)
             await message.edit(embed=embed, view=view, allowed_mentions=discord.AllowedMentions.none())
+            await refresh_lottery_status_messages(guild, config, message)
             return message
         except Exception as e:
             print(f"Lottery panel refresh will recreate message: {type(e).__name__} - {e}")
@@ -1238,6 +1287,8 @@ async def refresh_lottery_message(guild, config=None, create_if_missing=True):
         return None
     message = await channel.send(embed=embed, view=view, allowed_mentions=discord.AllowedMentions.none())
     await asyncio.to_thread(update_lottery_config, guild.id, message_id=message.id)
+    config["message_id"] = message.id
+    await refresh_lottery_status_messages(guild, config, message)
     return message
 
 async def clear_lottery_channel(channel):
@@ -2194,10 +2245,10 @@ async def lottery(ctx, action: str = None, amount: str = None):
         return
 
     panel = await refresh_lottery_message(ctx.guild, config)
-    embed = await asyncio.to_thread(build_lottery_embed, ctx.guild, get_lottery_config(ctx.guild.id))
-    if panel:
-        embed.add_field(name="Lottery Panel", value=f"[Open Panel]({panel.jump_url})", inline=False)
-    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+    current_config = await asyncio.to_thread(get_lottery_config, ctx.guild.id)
+    embed = await build_lottery_status_embed(ctx.guild, current_config, panel)
+    status_message = await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+    remember_lottery_status_message(ctx.guild.id, status_message)
 
 @commands.command()
 async def editlottery(ctx, setting: str = None, *, value: str = None):
