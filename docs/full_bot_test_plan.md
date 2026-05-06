@@ -59,7 +59,7 @@ Expected: logs use non-pinging mentions like `<@id>`, not plain usernames/nickna
 
 ### Custom Emojis
 
-- Run `.bal`, `.shop`, `.inventory`, `.lottery`, `.scratch 1000`, `.tower 1000`, `.vault 1000`, `.memory 1000`, `.slots 1000`, `.roulette 1000 red`, `.ms 1000`, `.wheel 1000`, `.poll test | one | two`.
+- Run `.bal`, `.shop`, `.inventory`, `.lottery`, `.scratch 1000`, `.tower 1000`, `.vault 1000`, `.memory 1000`, `.slots 1000`, `.roulette 1000 red`, `.ms 1000`, `.wheel 1000`, `.poll Test question? one two`.
 
 Expected: no raw custom emoji markdown appears unless Discord cannot render that emoji.
 
@@ -83,17 +83,26 @@ Run:
 - `.esnipe`
 - `.rsnipe`
 - `.picker apple banana orange`
+- `.picker "ice cream" pizza sushi`
+- `.picker` then use the setup UI.
 - `.timer 1m test`
+- `.timer test 1m`
+- `.timer` then use the setup UI.
 - `.ctimer`
 - `.alarm 1m test alarm`
+- `.alarm test alarm 1m`
+- `.alarm` then use the setup UI.
 - `.calc 2+2*5`
+- `.calc` then use the setup UI.
 - `.define test`
+- `.define` then use the setup UI.
 - `.afk testing`
 - `.away`
 - `.sleep`
 - `.wake @normal`
 - `.fsleep @normal 1m`
 - `.setbday 01/01`
+- `.setbday` then use the setup UI.
 - `.removebday`
 - `.setbdaychannel #channel`
 - `.activity`
@@ -150,6 +159,8 @@ Run safe versions first:
 - `.rpurge 1`
 - `.steal` by replying to an emoji/sticker/image
 - `.giveaway 1m test prize`
+- `.giveaway test prize 1m`
+- `.giveaway` then use the setup UI.
 - `.listbans`
 - `.listblocks`
 - `.lists`
@@ -309,6 +320,8 @@ Run:
 - `.rpurge 1`
 - `.steal`
 - `.giveaway 1m test prize`
+- `.giveaway test prize 1m`
+- `.giveaway` then use the setup UI.
 - `.listbans`
 - `.listblocks`
 - `.lists`
@@ -407,6 +420,8 @@ Run:
 - `.rpurge 1`
 - `.steal`
 - `.giveaway 1m test prize`
+- `.giveaway test prize 1m`
+- `.giveaway` then use the setup UI.
 - `.listbans`
 - `.listblocks`
 - `.lists`
@@ -496,18 +511,29 @@ Run:
 - `.dsnipe`
 - `.esnipe`
 - `.rsnipe`
+- `.poll test question? one two`
+- `.poll yes no test? yes no 1m`
 - `.poll test question | one | two`
-- `.poll yes no test | yes | no | 1m`
+- `.poll` then use the setup UI.
 - `.picker apple banana orange`
+- `.picker "ice cream" pizza sushi`
+- `.picker` then use the setup UI.
 - `.timer 1m test`
+- `.timer test 1m`
+- `.timer` then use the setup UI.
 - `.ctimer`
 - `.alarm 1m test alarm`
+- `.alarm test alarm 1m`
+- `.alarm` then use the setup UI.
 - `.calc 2+2`
+- `.calc` then use the setup UI.
 - `.define test`
+- `.define` then use the setup UI.
 - `.afk testing`
 - `.sleep`
 - `.wake @normal`
 - `.setbday 01/01`
+- `.setbday` then use the setup UI.
 - `.removebday`
 - `.activity`
 - `.activitystats`

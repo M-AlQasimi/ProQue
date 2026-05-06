@@ -6,6 +6,7 @@ import operator
 import os
 import random
 import re
+import shlex
 import time
 import traceback
 
@@ -2341,11 +2342,18 @@ async def on_command_error(ctx, error):
 
     elif isinstance(error, commands.MissingRequiredArgument):
         print(f"Command missing argument: {ctx.command} for {ctx.author} ({ctx.author.id}) - {error}")
-        await ctx.send("Missing required argument.")
+        prefix = getattr(ctx, "prefix", prefix_for_guild(ctx.guild))
+        usage = f"{prefix}{ctx.command.qualified_name}"
+        if ctx.command.signature:
+            usage += f" {ctx.command.signature}"
+        await ctx.send(
+            f"Missing `{error.param.name}`.\nUse: `{usage}`\nTry `{prefix}help {ctx.command.qualified_name}` or `{prefix}explain {ctx.command.qualified_name}`."
+        )
 
     elif isinstance(error, commands.BadArgument):
         print(f"Command bad argument: {ctx.command} for {ctx.author} ({ctx.author.id}) - {error}")
-        await ctx.send("Invalid input. Check your arguments.")
+        prefix = getattr(ctx, "prefix", prefix_for_guild(ctx.guild))
+        await ctx.send(f"Invalid input. Try `{prefix}help {ctx.command.qualified_name}` or `{prefix}explain {ctx.command.qualified_name}`.")
 
     else:
         print(f"Unexpected error in {ctx.command}: {type(error).__name__} - {error}")
@@ -2667,19 +2675,221 @@ def parse_poll_duration(value):
     if not value:
         return None
     raw = value.strip().lower()
-    if not re.fullmatch(r"(?:\d+\s*[dhm]\s*)+", raw):
+    if not re.fullmatch(r"(?:\d+\s*[wdhms]\s*)+", raw):
         return None
-    days = hours = minutes = 0
-    for amount, unit in re.findall(r"(\d+)\s*([dhm])", raw):
+    weeks = days = hours = minutes = seconds = 0
+    for amount, unit in re.findall(r"(\d+)\s*([wdhms])", raw):
         amount = int(amount)
-        if unit == "d":
+        if unit == "w":
+            weeks += amount
+        elif unit == "d":
             days += amount
         elif unit == "h":
             hours += amount
         elif unit == "m":
             minutes += amount
-    delta = timedelta(days=days, hours=hours, minutes=minutes)
+        elif unit == "s":
+            seconds += amount
+    delta = timedelta(weeks=weeks, days=days, hours=hours, minutes=minutes, seconds=seconds)
     return delta if delta.total_seconds() > 0 else None
+
+def duration_seconds(value):
+    delta = parse_poll_duration(value)
+    if not delta:
+        return None
+    return int(delta.total_seconds())
+
+def is_duration_piece(value):
+    return bool(re.fullmatch(r"\d+\s*[wdhms]", value.strip().lower()))
+
+def split_edge_duration(raw):
+    text = raw.strip()
+    tokens = split_friendly_words(text)
+    if not tokens:
+        return None, None
+
+    leading = []
+    for token in tokens:
+        if not is_duration_piece(token):
+            break
+        leading.append(token)
+    if leading:
+        duration_text = " ".join(leading)
+        rest = " ".join(tokens[len(leading):]).strip()
+        return duration_text, rest
+
+    trailing = []
+    for token in reversed(tokens):
+        if not is_duration_piece(token):
+            break
+        trailing.append(token)
+    if trailing:
+        trailing.reverse()
+        duration_text = " ".join(trailing)
+        rest = " ".join(tokens[:len(tokens) - len(trailing)]).strip()
+        return duration_text, rest
+
+    return None, text
+
+def split_friendly_words(value):
+    try:
+        return shlex.split(value)
+    except ValueError:
+        return value.split()
+
+def split_simple_options(value):
+    raw = value.strip()
+    if "|" in raw:
+        return [p.strip() for p in raw.split("|") if p.strip()]
+    if "," in raw:
+        return [p.strip() for p in raw.split(",") if p.strip()]
+    return [p.strip() for p in split_friendly_words(raw) if p.strip()]
+
+def parse_poll_input(args):
+    raw = (args or "").strip()
+    if not raw:
+        return None, None, None
+
+    if "|" in raw:
+        parts = [p.strip() for p in raw.split("|") if p.strip()]
+        question = parts[0] if parts else None
+        remaining = parts[1:]
+        delta = parse_poll_duration(remaining[-1]) if remaining else None
+        if delta:
+            remaining.pop()
+        options = remaining if remaining else None
+        return question, options, delta
+
+    delta = None
+    tokens = split_friendly_words(raw)
+    if tokens:
+        possible_delta = parse_poll_duration(tokens[-1])
+        if possible_delta:
+            delta = possible_delta
+            raw = raw[:raw.rfind(tokens[-1])].strip()
+            tokens = tokens[:-1]
+
+    if "?" in raw:
+        question, _, options_text = raw.partition("?")
+        question = (question.strip() + "?").strip()
+        options = split_simple_options(options_text) if options_text.strip() else None
+        return question, options or None, delta
+
+    if "," in raw:
+        parts = [p.strip() for p in raw.split(",") if p.strip()]
+        if len(parts) >= 3:
+            return parts[0], parts[1:], delta
+
+    return raw, None, delta
+
+async def send_poll_message(channel, guild, author, question, options=None, delta=None):
+    default_options = ["Yes", "No"]
+    if not options:
+        options = default_options
+        use_numbers = False
+    else:
+        options = [str(opt).strip() for opt in options if str(opt).strip()]
+        if len(options) < 2:
+            raise ValueError("Custom polls need at least 2 options.")
+        if len(options) > len(POLL_NUMBER_EMOJIS):
+            raise ValueError(f"Maximum {len(POLL_NUMBER_EMOJIS)} options allowed.")
+        use_numbers = True
+
+    end_time = datetime.now(timezone.utc) + delta if delta else None
+
+    embed = discord.Embed(title=f"{economy_q_poll} {question}", color=discord.Color.blue())
+    for opt in options:
+        embed.add_field(name=opt, value="0", inline=True)
+    if end_time:
+        embed.add_field(
+            name="Ends",
+            value=f"{discord.utils.format_dt(end_time, 'R')} ({discord.utils.format_dt(end_time, 'f')})",
+            inline=False
+        )
+        embed.timestamp = end_time
+    embed.set_footer(text="Poll")
+
+    msg = await channel.send(embed=embed)
+
+    if use_numbers:
+        for i in range(len(options)):
+            await msg.add_reaction(reaction_emoji(POLL_NUMBER_EMOJIS[i]))
+    else:
+        await msg.add_reaction(reaction_emoji(economy_q_accept))
+        await msg.add_reaction(reaction_emoji(economy_q_reject))
+
+    active_polls[msg.id] = {
+        "question": question,
+        "channel_id": channel.id,
+        "author_id": author.id,
+        "guild_id": guild.id,
+        "options": options,
+        "use_numbers": use_numbers,
+        "end_time": end_time,
+        "end_task": None,
+        "ended": False
+    }
+    save_active_poll(msg.id, active_polls[msg.id])
+
+    if end_time:
+        async def end_poll_task():
+            await asyncio.sleep(max(0, (end_time - datetime.now(timezone.utc)).total_seconds()))
+            poll_data = active_polls.get(msg.id)
+            if not poll_data or poll_data.get("ended"):
+                return
+            poll_data["ended"] = True
+            save_active_poll(msg.id, poll_data)
+            await finalize_poll(msg, poll_data)
+
+        task = asyncio.create_task(end_poll_task())
+        active_polls[msg.id]["end_task"] = task
+    return msg
+
+class PollSetupModal(Modal):
+    def __init__(self, author_id):
+        super().__init__(title="Create Poll")
+        self.author_id = author_id
+        self.question = TextInput(label="Question", placeholder="Best color?", max_length=200)
+        self.options = TextInput(
+            label="Options",
+            placeholder="Leave blank for Yes/No, or enter: Blue, Red, Green",
+            required=False,
+            style=discord.TextStyle.paragraph,
+            max_length=800
+        )
+        self.duration = TextInput(label="Auto-end time", placeholder="Optional: 10m, 2h, 1d", required=False, max_length=30)
+        self.add_item(self.question)
+        self.add_item(self.options)
+        self.add_item(self.duration)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if interaction.user.id != self.author_id:
+            return await interaction.response.send_message("Use your own setup UI.", ephemeral=True)
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        delta = parse_poll_duration(str(self.duration.value).strip()) if str(self.duration.value).strip() else None
+        if str(self.duration.value).strip() and not delta:
+            return await interaction.followup.send("Use a duration like `10m`, `2h`, or `1d`.", ephemeral=True)
+        options = split_simple_options(str(self.options.value)) if str(self.options.value).strip() else None
+        try:
+            msg = await send_poll_message(interaction.channel, interaction.guild, interaction.user, str(self.question.value).strip(), options, delta)
+        except ValueError as e:
+            return await interaction.followup.send(str(e), ephemeral=True)
+        await interaction.followup.send(f"Poll created: {msg.jump_url}", ephemeral=True)
+
+class OpenPollSetupButton(Button):
+    def __init__(self):
+        super().__init__(label="Create Poll", style=discord.ButtonStyle.primary, emoji=reaction_emoji(economy_q_poll))
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.view.author_id:
+            return await interaction.response.send_message("Use your own setup UI.", ephemeral=True)
+        await interaction.response.send_modal(PollSetupModal(self.view.author_id))
+
+class SingleUserSetupView(View):
+    def __init__(self, author_id, button):
+        super().__init__(timeout=180)
+        self.author_id = author_id
+        self.add_item(button)
 
 async def finalize_poll(msg, poll_data):
     """Updates the poll embed with final results."""
@@ -5165,88 +5375,21 @@ async def reply(ctx, message_id: int, *, text=None):
         )
 
 @bot.command()
-async def poll(ctx, *, args):
+async def poll(ctx, *, args: str = None):
+    """Create a poll. Examples: .poll Is this good? yes no 10m OR .poll Question | A | B | 10m"""
     if ctx.guild is None:
         return await ctx.send("Polls can only be used in a server.")
 
-    parts = [p.strip() for p in args.split("|") if p.strip()]
-    if not parts:
-        return await ctx.send("Use `.poll question` or `.poll question | option | option [| time]`.")
-    question = parts[0]
-
-    remaining = parts[1:]
-    time_str = None
-    delta = None
-    if remaining:
-        possible_delta = parse_poll_duration(remaining[-1])
-        if possible_delta:
-            delta = possible_delta
-            time_str = remaining.pop()
-
-    default_options = ["Yes", "No"]
-    if not remaining:
-        options = default_options
-        use_numbers = False
-    else:
-        if len(remaining) < 2:
-            return await ctx.send("Custom polls need at least 2 options. Example: `.poll Best color? | Blue | Red`")
-        if len(remaining) > len(POLL_NUMBER_EMOJIS):
-            return await ctx.send(f"Maximum {len(POLL_NUMBER_EMOJIS)} options allowed.")
-        options = remaining
-        use_numbers = True
-
-    end_time = None
-    if delta:
-        end_time = datetime.now(timezone.utc) + delta
-
-    number_emojis = POLL_NUMBER_EMOJIS
-
-    embed = discord.Embed(title=f"{economy_q_poll} {question}", color=discord.Color.blue())
-    for opt in options:
-        embed.add_field(name=opt, value="0", inline=True)
-    if end_time:
-        embed.add_field(
-            name="Ends",
-            value=f"{discord.utils.format_dt(end_time, 'R')} ({discord.utils.format_dt(end_time, 'f')})",
-            inline=False
+    question, remaining, delta = parse_poll_input(args)
+    if not question:
+        return await ctx.send(
+            "Set up your poll here, or type `.poll Best color? blue red 10m`.",
+            view=SingleUserSetupView(ctx.author.id, OpenPollSetupButton())
         )
-        embed.timestamp = end_time
-    embed.set_footer(text="Poll")
-
-    msg = await ctx.send(embed=embed)
-
-    if use_numbers:
-        for i in range(len(options)):
-            await msg.add_reaction(reaction_emoji(number_emojis[i]))
-    else:
-        await msg.add_reaction(reaction_emoji(economy_q_accept))
-        await msg.add_reaction(reaction_emoji(economy_q_reject))
-
-    active_polls[msg.id] = {
-        "question": question,
-        "channel_id": ctx.channel.id,
-        "author_id": ctx.author.id,
-        "guild_id": ctx.guild.id,
-        "options": options,
-        "use_numbers": use_numbers,
-        "end_time": end_time,
-        "end_task": None,
-        "ended": False
-    }
-    save_active_poll(msg.id, active_polls[msg.id])
-
-    if end_time:
-        async def end_poll_task():
-            await asyncio.sleep(max(0, (end_time - datetime.now(timezone.utc)).total_seconds()))
-            poll_data = active_polls.get(msg.id)
-            if not poll_data or poll_data.get("ended"):
-                return
-            poll_data["ended"] = True
-            save_active_poll(msg.id, poll_data)
-            await finalize_poll(msg, poll_data)
-
-        task = asyncio.create_task(end_poll_task())
-        active_polls[msg.id]["end_task"] = task
+    try:
+        await send_poll_message(ctx.channel, ctx.guild, ctx.author, question, remaining, delta)
+    except ValueError as e:
+        await ctx.send(str(e))
 
 
 class ConfirmEndPollView(View):
@@ -5389,15 +5532,7 @@ async def epoll(ctx):
     sent_msg = await ctx.send(f"Select a poll to end:{note}", view=view)
     view.message = sent_msg
 
-@bot.command()
-@is_admin_power()
-async def giveaway(ctx, time: str, *, prize: str):
-    match = re.match(r"(\d+)([smhdw])", time.casefold())
-    if not match:
-        return await ctx.send("Invalid time format. Use s/m/h/d/w.")
-    amount, unit = int(match[1]), match[2]
-    unit_map = {'s': 1, 'm': 60, 'h': 3600, 'd': 86400, 'w': 604800}
-    seconds = amount * unit_map[unit]
+async def run_giveaway(channel, seconds, prize):
     end_time = datetime.now(timezone.utc) + timedelta(seconds=seconds)
     embed = discord.Embed(
         title=f"{economy_q_gift} Giveaway!",
@@ -5410,31 +5545,129 @@ async def giveaway(ctx, time: str, *, prize: str):
     )
     embed.timestamp = end_time
     embed.set_footer(text="Ends at")
-    msg = await ctx.send(embed=embed)
+    msg = await channel.send(embed=embed)
     await msg.add_reaction(reaction_emoji(economy_q_confetti))
-    while seconds > 0:
-        if seconds <= 60:
-            embed.set_footer(text=f"Ends in {seconds}s")
-            await msg.edit(embed=embed)
+
+    remaining = seconds
+    while remaining > 0:
+        if remaining <= 60:
+            embed.set_footer(text=f"Ends in {remaining}s")
+            try:
+                await msg.edit(embed=embed)
+            except discord.HTTPException:
+                pass
         await asyncio.sleep(1)
-        seconds = int((end_time - datetime.now(timezone.utc)).total_seconds())
-    new_msg = await ctx.channel.fetch_message(msg.id)
+        remaining = int((end_time - datetime.now(timezone.utc)).total_seconds())
+
+    try:
+        new_msg = await channel.fetch_message(msg.id)
+    except discord.HTTPException:
+        return
     entry_reaction = next((r for r in new_msg.reactions if same_emoji(r.emoji, economy_q_confetti)), None)
     users = [u async for u in entry_reaction.users() if not u.bot] if entry_reaction else []
     if users:
         winner = random.choice(users)
-        await ctx.send(
-            f"{economy_q_confetti} Congratulations {winner.mention}! You won **{prize}**!",
-        )
+        await channel.send(f"{economy_q_confetti} Congratulations {winner.mention}! You won **{prize}**!")
     else:
-        await ctx.send("No one entered the giveaway.")
-    await msg.clear_reactions()
+        await channel.send("No one entered the giveaway.")
+    try:
+        await msg.clear_reactions()
+    except discord.HTTPException:
+        pass
+
+async def start_giveaway(channel, raw):
+    duration_text, prize = split_edge_duration(raw)
+    seconds = duration_seconds(duration_text) if duration_text else None
+    if not seconds:
+        raise ValueError("Use a time like `30s`, `10m`, `2h`, `1d`, or `1w`.")
+    if not prize:
+        raise ValueError("Add a prize name. Example: `.giveaway 10m Nitro`")
+    asyncio.create_task(run_giveaway(channel, seconds, prize))
+    return seconds, prize
+
+class GiveawaySetupModal(Modal):
+    def __init__(self, author_id):
+        super().__init__(title="Create Giveaway")
+        self.author_id = author_id
+        self.duration = TextInput(label="Time", placeholder="10m, 2h, 1d", max_length=30)
+        self.prize = TextInput(label="Prize", placeholder="Nitro, role, custom prize", max_length=160)
+        self.add_item(self.duration)
+        self.add_item(self.prize)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if interaction.user.id != self.author_id:
+            return await interaction.response.send_message("Use your own setup UI.", ephemeral=True)
+        try:
+            seconds, prize = await start_giveaway(interaction.channel, f"{self.duration.value} {self.prize.value}".strip())
+        except ValueError as e:
+            return await interaction.response.send_message(str(e), ephemeral=True)
+        await interaction.response.send_message(f"Giveaway started for **{prize}**. Ends in {format_remaining(seconds)}.", ephemeral=True)
+
+class OpenGiveawaySetupButton(Button):
+    def __init__(self):
+        super().__init__(label="Create Giveaway", style=discord.ButtonStyle.primary, emoji=reaction_emoji(economy_q_gift))
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.view.author_id:
+            return await interaction.response.send_message("Use your own setup UI.", ephemeral=True)
+        await interaction.response.send_modal(GiveawaySetupModal(self.view.author_id))
 
 @bot.command()
-async def picker(ctx, *, options):
-    opts = [o.strip() for o in options.split(",") if o.strip()]
-    if not opts:
-        return await ctx.send("Please provide options separated by commas.")
+@is_admin_power()
+async def giveaway(ctx, time: str = None, *, prize: str = None):
+    """Start a giveaway. Examples: .giveaway 10m Nitro OR .giveaway Nitro 10m"""
+    raw = f"{time or ''} {prize or ''}".strip()
+    if not raw:
+        return await ctx.send(
+            "Set up your giveaway here, or type `.giveaway 10m prize`.",
+            view=SingleUserSetupView(ctx.author.id, OpenGiveawaySetupButton())
+        )
+    try:
+        seconds, parsed_prize = await start_giveaway(ctx.channel, raw)
+    except ValueError as e:
+        return await ctx.send(str(e))
+    await ctx.send(f"{economy_q_accept} Giveaway started for **{parsed_prize}**. Ends in {format_remaining(seconds)}.", delete_after=5)
+
+class PickerSetupModal(Modal):
+    def __init__(self, author_id):
+        super().__init__(title="Pick Random Option")
+        self.author_id = author_id
+        self.options = TextInput(
+            label="Options",
+            placeholder='apple banana orange, or "ice cream", pizza, sushi',
+            style=discord.TextStyle.paragraph,
+            max_length=1000
+        )
+        self.add_item(self.options)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if interaction.user.id != self.author_id:
+            return await interaction.response.send_message("Use your own setup UI.", ephemeral=True)
+        opts = split_simple_options(str(self.options.value))
+        if len(opts) < 2:
+            return await interaction.response.send_message("Add at least 2 options.", ephemeral=True)
+        await interaction.response.send_message(f"**{random.choice(opts)}**")
+
+class OpenPickerSetupButton(Button):
+    def __init__(self):
+        super().__init__(label="Add Options", style=discord.ButtonStyle.primary, emoji=reaction_emoji(economy_q_thinking))
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.view.author_id:
+            return await interaction.response.send_message("Use your own setup UI.", ephemeral=True)
+        await interaction.response.send_modal(PickerSetupModal(self.view.author_id))
+
+@bot.command()
+async def picker(ctx, *, options: str = None):
+    """Pick one option. Supports spaces, commas, pipes, and quoted multi-word options."""
+    if not options:
+        return await ctx.send(
+            "Add options here, or type `.picker apple banana orange`.",
+            view=SingleUserSetupView(ctx.author.id, OpenPickerSetupButton())
+        )
+    opts = split_simple_options(options)
+    if len(opts) < 2:
+        return await ctx.send("Add at least 2 options. Example: `.picker apple banana orange`.")
     choice = random.choice(opts)
     await ctx.send(f"**{choice}**")
 
@@ -5503,6 +5736,79 @@ def parse_time_string(time_str: str) -> int:
         total_seconds += int(amount) * unit_map.get(unit, 0)
     return total_seconds
 
+def is_timer_duration_piece(value):
+    return bool(re.fullmatch(r"\d+\s*[smhd]", value.strip().lower()))
+
+def parse_timer_input(raw):
+    text = raw.strip()
+    if not text:
+        return None, None
+
+    quote_match = re.match(r'^(\S+)\s+[\"“”\'‘’](.+?)[\"“”\'‘’]$', text)
+    if quote_match:
+        return quote_match.group(1), quote_match.group(2)
+
+    tokens = split_friendly_words(text)
+    if not tokens:
+        return None, None
+
+    leading = []
+    for token in tokens:
+        if not is_timer_duration_piece(token):
+            break
+        leading.append(token)
+    if leading:
+        time_str = " ".join(leading)
+        title = " ".join(tokens[len(leading):]) or None
+        return time_str, title
+
+    trailing = []
+    for token in reversed(tokens):
+        if not is_timer_duration_piece(token):
+            break
+        trailing.append(token)
+    if trailing:
+        trailing.reverse()
+        time_str = " ".join(trailing)
+        title = " ".join(tokens[:len(tokens) - len(trailing)]) or None
+        return time_str, title
+
+    parts = text.split(maxsplit=1)
+    return parts[0], parts[1] if len(parts) > 1 else None
+
+def parse_alarm_datetime(raw):
+    text = raw.strip()
+    if not text:
+        return None
+
+    seconds = duration_seconds(text)
+    if seconds:
+        return datetime.now(timezone.utc) + timedelta(seconds=seconds)
+
+    formats = [
+        "%d/%m/%Y %H:%M",
+        "%d/%m/%y %H:%M",
+        "%d/%m/%Y",
+        "%d/%m/%y",
+        "%d/%m %H:%M",
+        "%d/%m",
+    ]
+    now = datetime.now(timezone.utc)
+    for fmt in formats:
+        try:
+            parsed = datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+        if "%Y" not in fmt and "%y" not in fmt:
+            parsed = parsed.replace(year=now.year)
+        if "%H" not in fmt:
+            parsed = parsed.replace(hour=9, minute=0)
+        parsed = parsed.replace(tzinfo=timezone.utc)
+        if parsed <= now and ("%Y" not in fmt and "%y" not in fmt):
+            parsed = parsed.replace(year=parsed.year + 1)
+        return parsed
+    return None
+
 def format_remaining(seconds: int) -> str:
     if seconds < 0:
         seconds = 0
@@ -5562,29 +5868,10 @@ async def timer_countdown_message(channel, guild, message, end_time, time_str, t
 async def timer_countdown(ctx, message, end_time, time_str, title, owner_id):
     await timer_countdown_message(ctx.channel, ctx.guild, message, end_time, time_str, title, owner_id)
 
-@bot.command()
-async def timer(ctx, *, args: str):
-    if ctx.guild is None:
-        return await ctx.send("Timers can only be used in a server.")
-
-    args = args.strip()
-    if not args:
-        return await ctx.send("Invalid format. Use `.timer 10m` or `.timer 10m Title here`")
-
-    quote_match = re.match(r'^(\S+)\s+[\"“”\'‘’](.+?)[\"“”\'‘’]$', args)
-    if quote_match:
-        time_str = quote_match.group(1)
-        title = quote_match.group(2)
-    else:
-        parts = args.split(maxsplit=1)
-        time_str = parts[0]
-        title = parts[1] if len(parts) > 1 else None
-
+async def start_timer_for_user(channel, guild, author, time_str, title):
     seconds = parse_time_string(time_str)
     if seconds is None or seconds <= 0:
-        return await ctx.send(
-            "Invalid time format. Use `1h 20m`, `30s`, `2d 5h`, etc. Supported units: s, m, h, d."
-        )
+        raise ValueError("Use a time like `30s`, `10m`, `1h 20m`, or `2d`.")
 
     title_display = title if title else "Timer"
     end_time = datetime.now(timezone.utc) + timedelta(seconds=seconds)
@@ -5596,16 +5883,16 @@ async def timer(ctx, *, args: str):
     )
     embed.set_footer(text="Ends at:")
     embed.timestamp = end_time
-    message = await ctx.send(embed=embed)
+    message = await channel.send(embed=embed)
 
     task = asyncio.create_task(
-        timer_countdown(ctx, message, end_time, time_str, title, ctx.author.id)
+        timer_countdown_message(channel, guild, message, end_time, time_str, title, author.id)
     )
 
     active_timers[message.id] = {
-        "owner_id": ctx.author.id,
-        "channel_id": ctx.channel.id,
-        "guild_id": ctx.guild.id,
+        "owner_id": author.id,
+        "channel_id": channel.id,
+        "guild_id": guild.id if guild else 0,
         "message": message,
         "title": title,
         "time_str": time_str,
@@ -5613,6 +5900,60 @@ async def timer(ctx, *, args: str):
         "task": task
     }
     save_active_timer(message.id, active_timers[message.id])
+    return message
+
+class TimerSetupModal(Modal):
+    def __init__(self, author_id):
+        super().__init__(title="Create Timer")
+        self.author_id = author_id
+        self.duration = TextInput(label="Time", placeholder="10m, 1h 20m, 30s", max_length=40)
+        self.title_input = TextInput(label="Title", placeholder="Optional: study, food, break", required=False, max_length=120)
+        self.add_item(self.duration)
+        self.add_item(self.title_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if interaction.user.id != self.author_id:
+            return await interaction.response.send_message("Use your own setup UI.", ephemeral=True)
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            message = await start_timer_for_user(
+                interaction.channel,
+                interaction.guild,
+                interaction.user,
+                str(self.duration.value).strip(),
+                str(self.title_input.value).strip() or None
+            )
+        except ValueError as e:
+            return await interaction.followup.send(str(e), ephemeral=True)
+        await interaction.followup.send(f"Timer created: {message.jump_url}", ephemeral=True)
+
+class OpenTimerSetupButton(Button):
+    def __init__(self):
+        super().__init__(label="Create Timer", style=discord.ButtonStyle.primary, emoji=reaction_emoji(economy_q_timer))
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.view.author_id:
+            return await interaction.response.send_message("Use your own setup UI.", ephemeral=True)
+        await interaction.response.send_modal(TimerSetupModal(self.view.author_id))
+
+@bot.command()
+async def timer(ctx, *, args: str = None):
+    """Start a timer. Examples: .timer 10m, .timer 10m study, .timer study 10m"""
+    if ctx.guild is None:
+        return await ctx.send("Timers can only be used in a server.")
+
+    args = (args or "").strip()
+    if not args:
+        return await ctx.send(
+            "Set up your timer here, or type `.timer 10m study`.",
+            view=SingleUserSetupView(ctx.author.id, OpenTimerSetupButton())
+        )
+
+    time_str, title = parse_timer_input(args)
+    try:
+        await start_timer_for_user(ctx.channel, ctx.guild, ctx.author, time_str, title)
+    except ValueError as e:
+        await ctx.send(str(e))
 
 
 class CancelConfirmView(View):
@@ -5797,21 +6138,94 @@ async def ctimer(ctx):
     sent_msg = await ctx.send("Select a timer to cancel:", view=view)
     view.message = sent_msg
 
+async def alarm_wait_and_send(channel, user_id, alarm_time, title):
+    await asyncio.sleep(max(0, (alarm_time - datetime.now(timezone.utc)).total_seconds()))
+    if title:
+        await channel.send(f"{economy_q_bell} <@{user_id}> **{title}**")
+    else:
+        await channel.send(f"{economy_q_bell} <@{user_id}> Here's your alarm.")
+
+async def schedule_alarm_for_user(channel, author, raw):
+    raw = (raw or "").strip()
+    if not raw:
+        raise ValueError("Use a time like `1h`, `30m`, `25/12`, or `25/12/2026 18:30`.")
+
+    tokens = split_friendly_words(raw)
+    title = None
+    alarm_time = None
+
+    for span in (2, 1):
+        if len(tokens) >= span:
+            candidate = " ".join(tokens[:span])
+            parsed = parse_alarm_datetime(candidate)
+            if parsed:
+                alarm_time = parsed
+                title = raw[len(candidate):].strip() or None
+                break
+    if alarm_time is None and tokens:
+        candidate = tokens[-1]
+        parsed = parse_alarm_datetime(candidate)
+        if parsed:
+            alarm_time = parsed
+            title = raw[:raw.rfind(candidate)].strip() or None
+    if alarm_time is None:
+        raise ValueError("Use a time like `1h`, `30m`, `25/12`, or `25/12/2026 18:30`.")
+    if alarm_time <= datetime.now(timezone.utc):
+        raise ValueError("Alarm time must be in the future.")
+
+    asyncio.create_task(alarm_wait_and_send(channel, author.id, alarm_time, title))
+    return alarm_time, title
+
+class AlarmSetupModal(Modal):
+    def __init__(self, author_id):
+        super().__init__(title="Create Alarm")
+        self.author_id = author_id
+        self.when = TextInput(label="When", placeholder="1h, 30m, 25/12 18:00", max_length=60)
+        self.title_input = TextInput(label="Reminder", placeholder="Optional: check oven", required=False, max_length=140)
+        self.add_item(self.when)
+        self.add_item(self.title_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if interaction.user.id != self.author_id:
+            return await interaction.response.send_message("Use your own setup UI.", ephemeral=True)
+        raw = f"{self.when.value} {self.title_input.value}".strip()
+        try:
+            alarm_time, title = await schedule_alarm_for_user(interaction.channel, interaction.user, raw)
+        except ValueError as e:
+            return await interaction.response.send_message(str(e), ephemeral=True)
+        title_text = f" for **{title}**" if title else ""
+        await interaction.response.send_message(
+            f"{economy_q_alarm} Alarm set{title_text}: {discord.utils.format_dt(alarm_time, 'R')} ({discord.utils.format_dt(alarm_time, 'f')}).",
+            ephemeral=True
+        )
+
+class OpenAlarmSetupButton(Button):
+    def __init__(self):
+        super().__init__(label="Create Alarm", style=discord.ButtonStyle.primary, emoji=reaction_emoji(economy_q_alarm))
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.view.author_id:
+            return await interaction.response.send_message("Use your own setup UI.", ephemeral=True)
+        await interaction.response.send_modal(AlarmSetupModal(self.view.author_id))
+
 @bot.command()
-async def alarm(ctx, date: str):
+async def alarm(ctx, *, args: str = None):
+    """Set an alarm. Examples: .alarm 1h check oven OR .alarm 25/12 18:00"""
+    raw = (args or "").strip()
+    if not raw:
+        return await ctx.send(
+            "Set up your alarm here, or type `.alarm 1h reminder`.",
+            view=SingleUserSetupView(ctx.author.id, OpenAlarmSetupButton())
+        )
     try:
-        alarm_time = datetime.strptime(date, "%d/%m/%Y").replace(tzinfo=timezone.utc)
-    except ValueError:
-        return await ctx.send("Invalid date format. Use DD/MM/YYYY.")
-    
-    now = datetime.now(timezone.utc)
-    if alarm_time <= now:
-        return await ctx.send("Date must be in the future.")
-    
-    delta = (alarm_time - now).total_seconds()
-    await ctx.send(f"{economy_q_alarm} Alarm set for {date}, {ctx.author.mention}. I'll ping you then.")
-    await asyncio.sleep(delta)
-    await ctx.send(f"{economy_q_bell} {ctx.author.mention} It's **{date}**! Here's your alarm.")
+        alarm_time, title = await schedule_alarm_for_user(ctx.channel, ctx.author, raw)
+    except ValueError as e:
+        return await ctx.send(str(e))
+    title_text = f" for **{title}**" if title else ""
+    await ctx.send(
+        f"{economy_q_alarm} Alarm set{title_text}: {discord.utils.format_dt(alarm_time, 'R')} ({discord.utils.format_dt(alarm_time, 'f')}).",
+        allowed_mentions=discord.AllowedMentions.none()
+    )
 
 _allowed_funcs = {
     'sin': math.sin, 'cos': math.cos, 'tan': math.tan,
@@ -5920,44 +6334,108 @@ def safe_eval(expr: str):
     visitor = _SafeEval()
     return visitor.visit(tree)
 
-@bot.command(name="calc")
-async def calc(ctx, *, expression: str):
-    try:
-        expr = expression.replace('^', '**')
-        result = safe_eval(expr)
-        if isinstance(result, float):
-            if math.isinf(result):
-                resa = "Infinity"
-            elif math.isnan(result):
-                resa = "NaN"
-            else:
-                resa = repr(result)
+def calculate_expression_text(expression):
+    expr = expression.replace('^', '**')
+    result = safe_eval(expr)
+    if isinstance(result, float):
+        if math.isinf(result):
+            resa = "Infinity"
+        elif math.isnan(result):
+            resa = "NaN"
         else:
             resa = repr(result)
-        await ctx.send(f"Input: `{expression}`\nResult: `{resa}`")
+    else:
+        resa = repr(result)
+    return f"Input: `{expression}`\nResult: `{resa}`"
+
+class CalcSetupModal(Modal):
+    def __init__(self, author_id):
+        super().__init__(title="Calculator")
+        self.author_id = author_id
+        self.expression = TextInput(label="Expression", placeholder="2+2*5, sqrt(144), sin(pi/2)", max_length=300)
+        self.add_item(self.expression)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if interaction.user.id != self.author_id:
+            return await interaction.response.send_message("Use your own setup UI.", ephemeral=True)
+        try:
+            response = calculate_expression_text(str(self.expression.value))
+        except Exception as e:
+            response = f"Error: {e}"
+        await interaction.response.send_message(response)
+
+class OpenCalcSetupButton(Button):
+    def __init__(self):
+        super().__init__(label="Calculate", style=discord.ButtonStyle.primary)
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.view.author_id:
+            return await interaction.response.send_message("Use your own setup UI.", ephemeral=True)
+        await interaction.response.send_modal(CalcSetupModal(self.view.author_id))
+
+@bot.command(name="calc")
+async def calc(ctx, *, expression: str = None):
+    if not expression:
+        return await ctx.send(
+            "Enter an expression here, or type `.calc 2+2*5`.",
+            view=SingleUserSetupView(ctx.author.id, OpenCalcSetupButton())
+        )
+    try:
+        await ctx.send(calculate_expression_text(expression))
     except Exception as e:
         await ctx.send(f"Error: {e}")
 
-@bot.command()
-async def define(ctx, *, word: str):
+async def define_word_text(word):
     async with aiohttp.ClientSession() as session:
         url = f"https://api.dictionaryapi.dev/api/v2/entries/en/{word}"
         async with session.get(url) as resp:
             if resp.status != 200:
-                return await ctx.send("Couldn't find that word.")
+                return None
             data = await resp.json()
-            try:
-                definitions = []
-                for meaning in data[0]["meanings"]:
-                    part_of_speech = meaning["partOfSpeech"]
-                    for d in meaning["definitions"]:
-                        definition = d["definition"]
-                        definitions.append(f"**({part_of_speech})** {definition}")
-                unique_defs = list(dict.fromkeys(definitions))
-                response = f"{economy_q_book} **Definition of `{word}`:**\n" + "\n".join(unique_defs[:3])
-                await ctx.send(response)
-            except:
-                await ctx.send("Error.")
+    definitions = []
+    for meaning in data[0]["meanings"]:
+        part_of_speech = meaning["partOfSpeech"]
+        for d in meaning["definitions"]:
+            definition = d["definition"]
+            definitions.append(f"**({part_of_speech})** {definition}")
+    unique_defs = list(dict.fromkeys(definitions))
+    return f"{economy_q_book} **Definition of `{word}`:**\n" + "\n".join(unique_defs[:3])
+
+class DefineSetupModal(Modal):
+    def __init__(self, author_id):
+        super().__init__(title="Define Word")
+        self.author_id = author_id
+        self.word = TextInput(label="Word", placeholder="example", max_length=80)
+        self.add_item(self.word)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if interaction.user.id != self.author_id:
+            return await interaction.response.send_message("Use your own setup UI.", ephemeral=True)
+        await interaction.response.defer()
+        response = await define_word_text(str(self.word.value).strip())
+        await interaction.followup.send(response or "Couldn't find that word.")
+
+class OpenDefineSetupButton(Button):
+    def __init__(self):
+        super().__init__(label="Define", style=discord.ButtonStyle.primary, emoji=reaction_emoji(economy_q_book))
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.view.author_id:
+            return await interaction.response.send_message("Use your own setup UI.", ephemeral=True)
+        await interaction.response.send_modal(DefineSetupModal(self.view.author_id))
+
+@bot.command()
+async def define(ctx, *, word: str = None):
+    if not word:
+        return await ctx.send(
+            "Enter a word here, or type `.define example`.",
+            view=SingleUserSetupView(ctx.author.id, OpenDefineSetupButton())
+        )
+    try:
+        response = await define_word_text(word.strip())
+        await ctx.send(response or "Couldn't find that word.")
+    except Exception:
+        await ctx.send("Error.")
 
 @bot.command()
 @is_admin_power()
@@ -6068,15 +6546,46 @@ async def afk(ctx, *, reason="AFK"):
 
     reason_text = f": **{reason}**" if reason.lower() != "afk" else ""
     await ctx.send(f"{ctx.author.mention} You're now AFK {reason_text}", allowed_mentions=discord.AllowedMentions.none())
+
+def save_user_birthday(user_id, date):
+    datetime.strptime(date, "%d/%m")
+    birthdays[str(user_id)] = {"date": date}
+    save_birthday(user_id, date)
+
+class BirthdaySetupModal(Modal):
+    def __init__(self, author_id):
+        super().__init__(title="Set Birthday")
+        self.author_id = author_id
+        self.date = TextInput(label="Birthday", placeholder="DD/MM, example: 25/12", max_length=5)
+        self.add_item(self.date)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if interaction.user.id != self.author_id:
+            return await interaction.response.send_message("Use your own setup UI.", ephemeral=True)
+        try:
+            save_user_birthday(interaction.user.id, str(self.date.value).strip())
+        except ValueError:
+            return await interaction.response.send_message("Use `DD/MM`, example: `25/12`.", ephemeral=True)
+        await interaction.response.send_message(f"{economy_q_accept} Birthday saved!", ephemeral=True)
+
+class OpenBirthdaySetupButton(Button):
+    def __init__(self):
+        super().__init__(label="Set Birthday", style=discord.ButtonStyle.primary, emoji=reaction_emoji(economy_q_birthday))
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.view.author_id:
+            return await interaction.response.send_message("Use your own setup UI.", ephemeral=True)
+        await interaction.response.send_modal(BirthdaySetupModal(self.view.author_id))
+
 @bot.command()
-async def setbday(ctx, date):
+async def setbday(ctx, date: str = None):
+    if not date:
+        return await ctx.send(
+            "Set your birthday here, or type `.setbday 25/12`.",
+            view=SingleUserSetupView(ctx.author.id, OpenBirthdaySetupButton())
+        )
     try:
-        datetime.strptime(date, "%d/%m")
-
-        user_id = str(ctx.author.id)
-        birthdays[user_id] = {"date": date}
-        save_birthday(ctx.author.id, date)
-
+        save_user_birthday(ctx.author.id, date)
         await ctx.send(f"{economy_q_accept} Birthday saved!")
     except ValueError:
         await ctx.send("Invalid date format. Use DD/MM.")
@@ -6584,59 +7093,144 @@ async def analyse_command(ctx):
         await ctx.send(f"Error: {str(e)[:100]}")
 
 # === TRANSLATE COMMAND ===
+LANGUAGE_ALIASES = {
+    "arabic": "ar", "ar": "ar",
+    "english": "en", "en": "en",
+    "spanish": "es", "es": "es",
+    "french": "fr", "fr": "fr",
+    "german": "de", "de": "de",
+    "italian": "it", "italy": "it", "it": "it",
+    "portuguese": "pt", "pt": "pt",
+    "russian": "ru", "ru": "ru",
+    "japanese": "ja", "jp": "ja", "ja": "ja",
+    "korean": "ko", "ko": "ko",
+    "chinese": "zh-cn", "mandarin": "zh-cn", "zh": "zh-cn", "zh-cn": "zh-cn",
+    "hindi": "hi", "hi": "hi",
+    "turkish": "tr", "tr": "tr",
+    "dutch": "nl", "nl": "nl",
+    "urdu": "ur", "ur": "ur",
+}
+
+def normalize_language_code(value):
+    if not value:
+        return None
+    cleaned = value.strip().lower().replace("_", "-")
+    return LANGUAGE_ALIASES.get(cleaned, cleaned if re.fullmatch(r"[a-z]{2,3}(?:-[a-z]{2,4})?", cleaned) else None)
+
+def parse_translate_args(raw):
+    text = raw.strip()
+    if not text:
+        return "auto", "en", ""
+
+    match = re.match(r"^to\s+([a-zA-Z-]+)$", text, flags=re.I)
+    if match:
+        target = normalize_language_code(match.group(1))
+        if target:
+            return "auto", target, ""
+
+    match = re.match(r"^to\s+([a-zA-Z-]+)\s+(.+)$", text, flags=re.I)
+    if match:
+        target = normalize_language_code(match.group(1))
+        if target:
+            return "auto", target, match.group(2).strip()
+
+    match = re.match(r"^(.+?)\s+to\s+([a-zA-Z-]+)$", text, flags=re.I)
+    if match:
+        target = normalize_language_code(match.group(2))
+        if target:
+            return "auto", target, match.group(1).strip()
+
+    first, _, rest = text.partition(" ")
+    if "|" in first and rest:
+        left, right = first.split("|", 1)
+        source = normalize_language_code(left) or "auto"
+        target = normalize_language_code(right) or "en"
+        return source, target, rest.strip()
+
+    target = normalize_language_code(first)
+    if target and rest:
+        return "auto", target, rest.strip()
+
+    return "auto", "en", text
+
+async def translate_text_api(source_lang, target_lang, text):
+    async with aiohttp.ClientSession() as session:
+        params = {
+            "client": "gtx",
+            "sl": source_lang,
+            "tl": target_lang,
+            "dt": "t",
+            "q": text,
+        }
+        async with session.get("https://translate.googleapis.com/translate_a/single", params=params) as resp:
+            if resp.status != 200:
+                raise RuntimeError(f"Error: {resp.status}")
+            data = await resp.json()
+    result = "".join(part[0] for part in data[0] if part and part[0])
+    detected_lang = data[2] if len(data) > 2 and data[2] else source_lang
+    response = f"**Detected: {detected_lang.upper()} → {target_lang.upper()}**\n{result}"
+    return response[:1897] + "..." if len(response) > 1900 else response
+
+class TranslateSetupModal(Modal):
+    def __init__(self, author_id):
+        super().__init__(title="Translate")
+        self.author_id = author_id
+        self.text = TextInput(label="Text", placeholder="hello", style=discord.TextStyle.paragraph, max_length=1500)
+        self.language = TextInput(label="To", placeholder="English, Spanish, Italian, ar, fr...", required=False, max_length=40)
+        self.add_item(self.text)
+        self.add_item(self.language)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if interaction.user.id != self.author_id:
+            return await interaction.response.send_message("Use your own setup UI.", ephemeral=True)
+        target_lang = normalize_language_code(str(self.language.value).strip()) or "en"
+        await interaction.response.defer()
+        try:
+            response = await translate_text_api("auto", target_lang, str(self.text.value).strip())
+        except Exception as e:
+            response = f"Error: {str(e)[:100]}"
+        await interaction.followup.send(response)
+
+class OpenTranslateSetupButton(Button):
+    def __init__(self):
+        super().__init__(label="Translate", style=discord.ButtonStyle.primary)
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.view.author_id:
+            return await interaction.response.send_message("Use your own setup UI.", ephemeral=True)
+        await interaction.response.send_modal(TranslateSetupModal(self.view.author_id))
+
 @bot.command(name="translate")
 async def translate_command(ctx, *, args: str = None):
-    """Translate - reply to a message or provide text. Auto-detects language, translates to English."""
+    """Translate text. Examples: .translate hello to Italian OR reply with .translate to Spanish"""
 
     source_lang = "auto"
     target_lang = "en"
 
     if args:
-        raw = args.strip()
-        first, _, rest = raw.partition(" ")
-        if "|" in first and rest:
-            left, right = first.split("|", 1)
-            source_lang = left.strip().lower() or "auto"
-            target_lang = right.strip().lower() or "en"
-            text = rest.strip()
-        elif re.fullmatch(r"[a-zA-Z]{2,3}(?:-[a-zA-Z]{2,4})?", first) and rest:
-            target_lang = first.lower()
-            text = rest.strip()
-        else:
-            text = raw
+        source_lang, target_lang, text = parse_translate_args(args)
+        if not text and ctx.message.reference and ctx.message.reference.resolved:
+            ref_msg = ctx.message.reference.resolved
+            text = ref_msg.content
+            if not text:
+                return await ctx.send("No text found in the replied message.")
     elif ctx.message.reference and ctx.message.reference.resolved:
         ref_msg = ctx.message.reference.resolved
         text = ref_msg.content
         if not text:
             return await ctx.send("No text found in the replied message.")
     else:
-        return await ctx.send("Reply to a message or provide text: `.translate [text]`")
+        return await ctx.send(
+            "Translate text here, or type `.translate hello to Italian`.",
+            view=SingleUserSetupView(ctx.author.id, OpenTranslateSetupButton())
+        )
     
     await safe_add_reaction(ctx.message, economy_q_timer_tick)
     
     try:
-        async with aiohttp.ClientSession() as session:
-            params = {
-                "client": "gtx",
-                "sl": source_lang,
-                "tl": target_lang,
-                "dt": "t",
-                "q": text,
-            }
-            async with session.get("https://translate.googleapis.com/translate_a/single", params=params) as resp:
-                if resp.status != 200:
-                    await safe_remove_reaction(ctx.message, economy_q_timer_tick, bot.user)
-                    return await ctx.send(f"Error: {resp.status}")
-
-                data = await resp.json()
-                result = "".join(part[0] for part in data[0] if part and part[0])
-                detected_lang = data[2] if len(data) > 2 and data[2] else source_lang
-                response = f"**Detected: {detected_lang.upper()} → {target_lang.upper()}**\n{result}"
-                if len(response) > 1900:
-                    response = response[:1897] + "..."
-
-                await safe_remove_reaction(ctx.message, economy_q_timer_tick, bot.user)
-                await ctx.send(response)
+        response = await translate_text_api(source_lang, target_lang, text)
+        await safe_remove_reaction(ctx.message, economy_q_timer_tick, bot.user)
+        await ctx.send(response)
             
     except Exception as e:
         await safe_remove_reaction(ctx.message, economy_q_timer_tick, bot.user)
