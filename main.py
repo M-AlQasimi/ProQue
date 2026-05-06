@@ -1484,6 +1484,19 @@ async def maybe_handle_wordle_guess(message):
     )
     return True
 
+async def wordle_prior_attempts_for_user(message):
+    attempts = 0
+    try:
+        async for prior in message.channel.history(limit=None, before=message.created_at):
+            if prior.author.id != message.author.id:
+                continue
+            if re.fullmatch(r"[A-Za-z]{5}", prior.content.strip()):
+                attempts += 1
+    except Exception as e:
+        print(f"Wordle prior attempt count skipped: {type(e).__name__} - {e}")
+        return None
+    return attempts
+
 async def complete_wordle_round(message, config, answer, score):
     guild = message.guild
     channel = guild.get_channel(int(config["channel_id"]))
@@ -1493,11 +1506,13 @@ async def complete_wordle_round(message, config, answer, score):
         except Exception:
             channel = None
 
-    await asyncio.to_thread(economy_add_user_balance, message.author.id, 1_000_000, 1_000_000)
+    prior_attempts = await wordle_prior_attempts_for_user(message)
+    reward = 5_000_000 if prior_attempts == 0 else 1_000_000
+    await asyncio.to_thread(economy_add_user_balance, message.author.id, reward, reward)
     definition = await fetch_wordle_definition(answer)
     definition_line = f"\n**Definition:** {definition}" if definition else ""
     await message.reply(
-        f"{economy_q_accept} `{answer}` {score}\nSolved. +**{economy_format_balance(1_000_000)}**",
+        f"{economy_q_accept} `{answer}` {score}\nSolved. +**{economy_format_balance(reward)}**",
         mention_author=False,
         allowed_mentions=discord.AllowedMentions.none()
     )
@@ -1512,7 +1527,7 @@ async def complete_wordle_round(message, config, answer, score):
         if perms.manage_messages:
             await clear_wordle_channel(channel)
         winner_text = (
-            f"{WORDLE_EMOJI} <@{message.author.id}> guessed **{answer}** and won **{economy_format_balance(1_000_000)}**."
+            f"{WORDLE_EMOJI} <@{message.author.id}> guessed **{answer}** and won **{economy_format_balance(reward)}**."
             f"{definition_line}"
         )
         await channel.send(winner_text, allowed_mentions=discord.AllowedMentions(users=True))

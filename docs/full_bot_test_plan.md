@@ -133,7 +133,7 @@ Run with another test user:
 
 Expected: challenges, accept/decline, bet accept/decline, turns, payouts, and timeouts work.
 
-Expected for Wordle: setup posts the main message, creates a Wordle thread, creates the `Daily Wordle` role, reaction add/remove gives/removes the role, guesses get tile replies in the thread, correct guesses award 1m quesos, clear/resend the main channel message, post a short definition, and start a new round.
+Expected for Wordle: setup posts the main message, creates a Wordle thread, creates the `Daily Wordle` role, reaction add/remove gives/removes the role, guesses get tile replies in the thread, correct guesses award 5m quesos on that user's first valid attempt or 1m after that, clear/resend the main channel message, post a short definition, and start a new round.
 
 ### Admin Commands
 
@@ -670,7 +670,7 @@ Run these after role tests because they need multiple users, waiting, or restart
 - Wordle setup reaction gives the role; removing the reaction removes the role.
 - Wordle posts a new daily puzzle in the configured thread and pings the role.
 - Wordle accepts 5-letter guesses in the configured thread and replies with tile results.
-- Wordle correct guess awards 1m quesos, posts a short definition, clears/resends the main channel message, and starts a new word immediately.
+- Wordle correct guess awards 5m quesos on that user's first valid attempt or 1m after that, posts a short definition, clears/resends the main channel message, and starts a new word immediately.
 - Wordle does not treat normal 5-letter guesses as commands.
 - Wordle words do not repeat for the server until the saved word list is exhausted.
 - TTT challenge accept/decline/timeout.
