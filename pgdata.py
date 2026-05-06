@@ -96,8 +96,6 @@ def _create_tables(cur):
     cur.execute("ALTER TABLE guild_activity_counts ADD COLUMN IF NOT EXISTS reactions BIGINT NOT NULL DEFAULT 0")
     cur.execute("ALTER TABLE guild_activity_counts ADD COLUMN IF NOT EXISTS voice_events BIGINT NOT NULL DEFAULT 0")
 
-    _create_wordle_tables(cur)
-
     cur.execute("""
         CREATE TABLE IF NOT EXISTS birthdays (
             user_id BIGINT PRIMARY KEY,
@@ -261,40 +259,6 @@ def _create_tables(cur):
             PRIMARY KEY (guild_id, user_id)
         )
     """)
-
-def _create_wordle_tables(cur):
-    try:
-        cur.execute("SAVEPOINT wordle_tables")
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS guild_wordle_config (
-                guild_id BIGINT PRIMARY KEY,
-                channel_id BIGINT NOT NULL,
-                role_id BIGINT,
-                message_id BIGINT,
-                thread_id BIGINT,
-                set_by_user_id BIGINT,
-                current_word TEXT,
-                current_date TEXT
-            )
-        """)
-        cur.execute("ALTER TABLE guild_wordle_config ADD COLUMN IF NOT EXISTS thread_id BIGINT")
-
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS guild_wordle_used_words (
-                guild_id BIGINT NOT NULL,
-                word TEXT NOT NULL,
-                used_date TEXT NOT NULL,
-                PRIMARY KEY (guild_id, word)
-            )
-        """)
-        cur.execute("RELEASE SAVEPOINT wordle_tables")
-    except Exception as e:
-        try:
-            cur.execute("ROLLBACK TO SAVEPOINT wordle_tables")
-            cur.execute("RELEASE SAVEPOINT wordle_tables")
-        except Exception:
-            pass
-        print(f"Wordle tables unavailable; continuing without Wordle persistence: {type(e).__name__} - {e}")
 
 def _migrate_bot_config(cur):
     cur.execute("SELECT to_regclass('public.bot_config')")
@@ -1008,136 +972,6 @@ def delete_guild_activity_channel(guild_id):
             return False
         cur = conn.cursor()
         cur.execute("DELETE FROM guild_activity_config WHERE guild_id = %s", (int(guild_id),))
-        conn.commit()
-        cur.close()
-        conn.close()
-        return True
-    except Exception:
-        return False
-
-def load_guild_wordle_configs():
-    _ensure_ready()
-    if not pg_ready:
-        return {}
-    try:
-        conn = pg_conn()
-        if conn is None:
-            return {}
-        cur = conn.cursor()
-        cur.execute("SELECT guild_id, channel_id, role_id, message_id, thread_id, set_by_user_id, current_word, current_date FROM guild_wordle_config")
-        rows = cur.fetchall()
-        cur.close()
-        conn.close()
-        return {
-            int(guild_id): {
-                "channel_id": int(channel_id),
-                "role_id": int(role_id) if role_id is not None else None,
-                "message_id": int(message_id) if message_id is not None else None,
-                "thread_id": int(thread_id) if thread_id is not None else None,
-                "set_by_user_id": int(set_by_user_id) if set_by_user_id is not None else None,
-                "current_word": current_word,
-                "current_date": current_date,
-            }
-            for guild_id, channel_id, role_id, message_id, thread_id, set_by_user_id, current_word, current_date in rows
-        }
-    except Exception:
-        return {}
-
-def save_guild_wordle_config(guild_id, channel_id, role_id=None, message_id=None, set_by_user_id=None, current_word=None, current_date=None, thread_id=None):
-    _ensure_ready()
-    if not pg_ready:
-        return False
-    try:
-        conn = pg_conn()
-        if conn is None:
-            return False
-        cur = conn.cursor()
-        cur.execute(
-            """
-            INSERT INTO guild_wordle_config (guild_id, channel_id, role_id, message_id, thread_id, set_by_user_id, current_word, current_date)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (guild_id) DO UPDATE SET
-                channel_id = EXCLUDED.channel_id,
-                role_id = EXCLUDED.role_id,
-                message_id = EXCLUDED.message_id,
-                thread_id = COALESCE(EXCLUDED.thread_id, guild_wordle_config.thread_id),
-                set_by_user_id = EXCLUDED.set_by_user_id,
-                current_word = COALESCE(EXCLUDED.current_word, guild_wordle_config.current_word),
-                current_date = COALESCE(EXCLUDED.current_date, guild_wordle_config.current_date)
-            """,
-            (
-                int(guild_id),
-                int(channel_id),
-                int(role_id) if role_id is not None else None,
-                int(message_id) if message_id is not None else None,
-                int(thread_id) if thread_id is not None else None,
-                int(set_by_user_id) if set_by_user_id is not None else None,
-                current_word,
-                current_date,
-            )
-        )
-        conn.commit()
-        cur.close()
-        conn.close()
-        return True
-    except Exception:
-        return False
-
-def update_guild_wordle_daily(guild_id, word, date_str):
-    _ensure_ready()
-    if not pg_ready:
-        return False
-    try:
-        conn = pg_conn()
-        if conn is None:
-            return False
-        cur = conn.cursor()
-        cur.execute(
-            "UPDATE guild_wordle_config SET current_word = %s, current_date = %s WHERE guild_id = %s",
-            (word, date_str, int(guild_id))
-        )
-        cur.execute(
-            """
-            INSERT INTO guild_wordle_used_words (guild_id, word, used_date)
-            VALUES (%s, %s, %s)
-            ON CONFLICT (guild_id, word) DO NOTHING
-            """,
-            (int(guild_id), word, date_str)
-        )
-        conn.commit()
-        cur.close()
-        conn.close()
-        return True
-    except Exception:
-        return False
-
-def load_guild_wordle_used_words(guild_id):
-    _ensure_ready()
-    if not pg_ready:
-        return set()
-    try:
-        conn = pg_conn()
-        if conn is None:
-            return set()
-        cur = conn.cursor()
-        cur.execute("SELECT word FROM guild_wordle_used_words WHERE guild_id = %s", (int(guild_id),))
-        rows = cur.fetchall()
-        cur.close()
-        conn.close()
-        return {str(row[0]).upper() for row in rows}
-    except Exception:
-        return set()
-
-def delete_guild_wordle_config(guild_id):
-    _ensure_ready()
-    if not pg_ready:
-        return False
-    try:
-        conn = pg_conn()
-        if conn is None:
-            return False
-        cur = conn.cursor()
-        cur.execute("DELETE FROM guild_wordle_config WHERE guild_id = %s", (int(guild_id),))
         conn.commit()
         cur.close()
         conn.close()

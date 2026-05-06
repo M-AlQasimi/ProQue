@@ -5626,7 +5626,7 @@ async def wheel(ctx, amount: str):
 # =====================
 EXPLANATIONS = {
     "admin": "Admin power means superowner, actual server owner, or Discord Administrator. Server owner outranks admins, and superowner is highest.",
-    "settings": "Admin-power command. Opens a server setup dashboard for prefix, logs, birthdays, activity reports, Wordle, lottery status, and disabled commands.",
+    "settings": "Admin-power command. Opens a server setup dashboard for prefix, logs, birthdays, activity reports, lottery status, and disabled commands.",
     "setup": "Alias for `.settings`. Opens the server setup dashboard.",
     "config": "Alias for `.settings`. Opens the server setup dashboard.",
     "games": "Shows the bot's games, short rules, bet support, and how to start each one.",
@@ -5811,8 +5811,8 @@ DETAILED_EXPLANATIONS = {
     "define": "Looks up English dictionary definitions. Use `.define example`, or run `.define` to enter the word through a UI.",
     "setbday": "Saves your birthday as day/month. Use `.setbday 25/12`, or run `.setbday` to enter it through a UI. Birthday announcements use the server's configured birthday channel.",
     "translate": "Translates provided text or the message you reply to. Friendly forms work: `.translate hello to Italian`, `.translate to Spanish hello`, `.translate it hello`, or reply to a message with `.translate to Spanish`. If no target is given, it translates to English.",
-    "settings": "Admin-power server setup dashboard. It summarizes prefix, logs, reaction logs, birthday channel, activity reports, Wordle, lottery, and disabled command count. Buttons let admins refresh the dashboard, change the prefix, rerun log setup, or set birthdays/activity/Wordle to the current channel.",
-    "games": "Shows a central game menu with quick usage for Tic Tac Toe, Connect 4, chess, Wordle, Tower, Vault, Memory, Minesweeper, and Picker. The select menu gives the start command for each game.",
+    "settings": "Admin-power server setup dashboard. It summarizes prefix, logs, reaction logs, birthday channel, activity reports, lottery, and disabled command count. Buttons let admins refresh the dashboard, change the prefix, rerun log setup, or set birthdays/activity to the current channel.",
+    "games": "Shows a central game menu with quick usage for Tic Tac Toe, Connect 4, chess, Tower, Vault, Memory, Minesweeper, and Picker. The select menu gives the start command for each game.",
     "ttt": "Challenge a user to Tic Tac Toe. The opponent accepts the game first. If the challenger enables a bet and enters an amount, the opponent gets a second accept/decline prompt for that exact bet before the game starts.",
     "c4": "Challenge a user to Connect 4. The opponent accepts the game first. If the challenger enables a bet and enters an amount, the opponent gets a second accept/decline prompt for that exact bet before the game starts. The board shows column numbers below the grid.",
     "chess": "Challenge a user to chess. The opponent accepts first. If the challenger enables a bet and enters an amount, the opponent gets a second accept/decline prompt. The board uses dropdown UI controls: choose one of your pieces, choose a legal move, then confirm or cancel. Each player has a live 10-minute total clock, and the board flips to the current player's perspective. Movement legality, check, checkmate, stalemate, draw detection, and time-loss handling are enforced.",

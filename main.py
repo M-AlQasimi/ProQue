@@ -80,10 +80,7 @@ from pgdata import (
     add_guild_activity_counts,
     clear_guild_activity_counts,
     delete_guild_activity_channel,
-    delete_guild_wordle_config,
     get_guild_activity_top,
-    load_guild_wordle_configs,
-    load_guild_wordle_used_words,
     load_afk_users as pg_load_afk_users,
     load_active_polls,
     load_active_timers,
@@ -119,19 +116,16 @@ from pgdata import (
     save_guild_birthday_channel,
     save_guild_prefix,
     save_guild_log_config,
-    save_guild_wordle_config,
     save_reaction_shutdown_channels,
     save_reaction_watchlist,
     save_shutdown_channels,
     save_sleeping_user,
     update_guild_activity_next_report,
-    update_guild_wordle_daily,
     save_watchlist,
 )
 last_message_time = 0
 birthday_task = None
 activity_task = None
-wordle_task = None
 app = Flask('')
 
 # PostgreSQL is the single source of truth
@@ -173,7 +167,6 @@ disabled_commands = load_disabled_commands()
 guild_prefixes = load_guild_prefixes()
 guild_birthday_channels = load_guild_birthday_channels()
 guild_activity_channels = load_guild_activity_channels()
-guild_wordle_configs = load_guild_wordle_configs()
 guild_log_configs = {}
 censored_phrases = load_censored_phrases()
 watchlist = load_watchlist()
@@ -245,54 +238,6 @@ POLL_NUMBER_EMOJIS = [
 CHESS_RANK_EMOJIS = POLL_NUMBER_EMOJIS[:8]
 C4_EMPTY_LIGHT = "<:QC4EmptyLight:1500878748537585715>"
 C4_EMPTY_DARK = "<:QC4EmptyDark:1500878746956202136>"
-WORDLE_REACTION = economy_q_accept
-WORDLE_ROLE_NAME = "Daily Wordle"
-WORDLE_EMOJI = "<:QWordle:1501596173365153945>"
-WORDLE_TILE_CORRECT = "<:QWordleCorrect:1501596177098084373>"
-WORDLE_TILE_PRESENT = "<:QWordlePresent:1501596178813423736>"
-WORDLE_TILE_ABSENT = "<:QWordleAbsent:1501596175269363712>"
-WORDLE_WORDS = [
-    "ABOUT", "ABOVE", "ACTOR", "ACUTE", "ADMIT", "ADOPT", "ADULT", "AFTER", "AGAIN", "AGENT",
-    "AGREE", "AHEAD", "ALARM", "ALBUM", "ALERT", "ALIEN", "ALIGN", "ALIKE", "ALIVE", "ALLOW",
-    "ALTER", "AMONG", "ANGER", "ANGLE", "ANGRY", "APART", "APPLE", "APPLY", "ARENA", "ARGUE",
-    "ARISE", "ARRAY", "ASIDE", "ASSET", "AUDIO", "AUDIT", "AVOID", "AWARD", "AWARE", "BADGE",
-    "BASIC", "BASIS", "BEACH", "BEGIN", "BEING", "BENCH", "BIRTH", "BLACK", "BLAME", "BLANK",
-    "BLAST", "BLEND", "BLIND", "BLOCK", "BLOOM", "BOARD", "BOOST", "BRAIN", "BRAND", "BRAVE",
-    "BREAD", "BREAK", "BRICK", "BRIEF", "BRING", "BROAD", "BROKE", "BROWN", "BUILD", "CABLE",
-    "CARRY", "CATCH", "CAUSE", "CHAIN", "CHAIR", "CHART", "CHASE", "CHEST", "CHIEF", "CHILD",
-    "CIVIL", "CLAIM", "CLASS", "CLEAN", "CLEAR", "CLICK", "CLIMB", "CLOCK", "CLOSE", "COACH",
-    "COAST", "COINS", "COUNT", "COURT", "COVER", "CRAFT", "CRASH", "CREAM", "CRIME", "CROSS",
-    "CROWD", "CROWN", "DAILY", "DANCE", "DEALT", "DEATH", "DEBUT", "DELAY", "DEPTH", "DOUBT",
-    "DRAFT", "DREAM", "DRESS", "DRIVE", "EAGER", "EARLY", "EARTH", "EIGHT", "ELITE", "EMPTY",
-    "ENJOY", "ENTER", "ENTRY", "EQUAL", "ERROR", "EVENT", "EVERY", "EXACT", "EXIST", "EXTRA",
-    "FAITH", "FALSE", "FAULT", "FAVOR", "FIELD", "FIFTH", "FINAL", "FIRST", "FLASH", "FLOOR",
-    "FOCUS", "FORCE", "FORTH", "FORTY", "FORUM", "FOUND", "FRAME", "FRESH", "FRONT", "FRUIT",
-    "GIANT", "GIVEN", "GLASS", "GLOBE", "GOING", "GRACE", "GRADE", "GRAND", "GRANT", "GRAPH",
-    "GREEN", "GROSS", "GROUP", "GUARD", "GUESS", "GUEST", "GUIDE", "HAPPY", "HEART", "HEAVY",
-    "HONEY", "HONOR", "HORSE", "HOTEL", "HOUSE", "HUMAN", "IDEAL", "IMAGE", "INDEX", "INNER",
-    "INPUT", "ISSUE", "JOINT", "JUDGE", "KNIFE", "KNOWN", "LABEL", "LARGE", "LASER", "LATER",
-    "LAUGH", "LAYER", "LEARN", "LEAST", "LEAVE", "LEGAL", "LEVEL", "LIGHT", "LIMIT", "LOCAL",
-    "LOGIC", "LOOSE", "LUCKY", "MAGIC", "MAJOR", "MAKER", "MATCH", "MAYBE", "MAYOR", "MEDIA",
-    "METAL", "MIGHT", "MINOR", "MODEL", "MONEY", "MONTH", "MORAL", "MOTOR", "MOUNT", "MOUSE",
-    "MOUTH", "MUSIC", "NEEDS", "NEVER", "NIGHT", "NOISE", "NORTH", "NOVEL", "NURSE", "OCCUR",
-    "OCEAN", "OFFER", "OFTEN", "ORDER", "OTHER", "OWNER", "PAINT", "PANEL", "PAPER", "PARTY",
-    "PEACE", "PHASE", "PHONE", "PHOTO", "PIECE", "PILOT", "PITCH", "PLACE", "PLAIN", "PLANE",
-    "PLANT", "PLATE", "POINT", "POUND", "POWER", "PRESS", "PRICE", "PRIDE", "PRIME", "PRIZE",
-    "PROOF", "PROUD", "PROVE", "QUEEN", "QUEST", "QUICK", "QUIET", "RADIO", "RAISE", "RANGE",
-    "RAPID", "RATIO", "REACH", "READY", "REFER", "RIGHT", "RIVAL", "RIVER", "ROBIN", "ROBOT",
-    "ROYAL", "RURAL", "SCALE", "SCENE", "SCOPE", "SCORE", "SCRAP", "SENSE", "SERVE", "SEVEN",
-    "SHARE", "SHIFT", "SHINE", "SHIRT", "SHOCK", "SHORT", "SHOWN", "SIGHT", "SINCE", "SKILL",
-    "SLEEP", "SLICE", "SMART", "SMILE", "SOLID", "SOLVE", "SOUND", "SOUTH", "SPACE", "SPARE",
-    "SPEAK", "SPEED", "SPEND", "SPICE", "STACK", "STAGE", "STAKE", "STAND", "START", "STATE",
-    "STEAM", "STEEL", "STICK", "STILL", "STOCK", "STONE", "STORE", "STORM", "STORY", "STRIP",
-    "STYLE", "SUGAR", "SUPER", "SWEET", "TABLE", "TAKEN", "TRACE", "TASTE", "TEACH", "THANK",
-    "THEME", "THING", "THINK", "THIRD", "THOSE", "THREE", "THROW", "TIMER", "TITLE", "TODAY",
-    "TOPIC", "TOTAL", "TOUCH", "TOWER", "TRACK", "TRADE", "TRAIL", "TRAIN", "TRASH", "TREAT",
-    "TREND", "TRIAL", "TRUST", "TRUTH", "UNDER", "UNION", "UNITY", "UNTIL", "UPPER", "UPSET",
-    "URBAN", "USAGE", "USUAL", "VALID", "VALUE", "VAULT", "VIDEO", "VIRAL", "VISIT", "VOICE",
-    "WASTE", "WATCH", "WATER", "WHEEL", "WHERE", "WHILE", "WHITE", "WHOLE", "WIDTH", "WORLD",
-    "WORRY", "WORTH", "WRITE", "WRONG", "YOUNG",
-]
 
 def custom_emoji(markdown):
     try:
@@ -980,7 +925,7 @@ async def keep_alive_task():
 
 @bot.event
 async def on_ready():
-    global birthday_task, activity_task, wordle_task, runtime_state_restored
+    global birthday_task, activity_task, runtime_state_restored
     print(f'ProQue is online as {bot.user}')
     if not keep_alive_task.is_running():
         keep_alive_task.start()
@@ -988,8 +933,6 @@ async def on_ready():
         birthday_task = asyncio.create_task(birthday_check_loop())
     if activity_task is None or activity_task.done():
         activity_task = asyncio.create_task(activity_report_loop())
-    if wordle_task is None or wordle_task.done():
-        wordle_task = asyncio.create_task(wordle_daily_loop())
     # Load economy cog
     try:
         await economy_setup(bot, send_log)
@@ -1320,470 +1263,6 @@ async def can_manage_birthday_channel(user, guild):
 
 async def can_manage_activity_channel(user, guild):
     return await can_manage_birthday_channel(user, guild)
-
-async def can_manage_wordle_channel(user, guild):
-    return await can_manage_birthday_channel(user, guild)
-
-def today_wordle_date():
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
-
-def wordle_round_is_current_today(config, today=None):
-    today = today or today_wordle_date()
-    current_date = str(config.get("current_date") or "")
-    return bool(config.get("current_word")) and current_date.startswith(today)
-
-def choose_wordle_word(guild_id):
-    used = load_guild_wordle_used_words(guild_id)
-    available = [word for word in WORDLE_WORDS if word not in used]
-    if not available:
-        return None
-    return random.choice(available)
-
-def wordle_setup_embed(guild):
-    embed = discord.Embed(
-        title=f"{WORDLE_EMOJI} Daily Wordle",
-        description=(
-            "A new 5-letter word is active in the thread below.\n"
-            f"React with {WORDLE_REACTION} on this message to get the **{WORDLE_ROLE_NAME}** role."
-        ),
-        color=discord.Color.green()
-    )
-    embed.add_field(name="How to Play", value="Open the Wordle thread and send any 5-letter guess. The bot replies with your result.", inline=False)
-    embed.add_field(
-        name="Tiles",
-        value=(
-            f"{WORDLE_TILE_CORRECT} correct spot\n"
-            f"{WORDLE_TILE_PRESENT} in the word, wrong spot\n"
-            f"{WORDLE_TILE_ABSENT} not in the word"
-        ),
-        inline=False
-    )
-    return embed
-
-def wordle_daily_embed(word_date):
-    embed = discord.Embed(
-        title=f"{WORDLE_EMOJI} Daily Wordle",
-        description=f"The 5-letter word is ready. Send guesses in the thread.\nRound: **{word_date}**",
-        color=discord.Color.green()
-    )
-    embed.add_field(
-        name="Result Tiles",
-        value=f"{WORDLE_TILE_CORRECT} correct spot  •  {WORDLE_TILE_PRESENT} wrong spot  •  {WORDLE_TILE_ABSENT} not in word",
-        inline=False
-    )
-    return embed
-
-def wordle_status_embed(guild, config):
-    channel = guild.get_channel(int(config["channel_id"])) if guild and config else None
-    role = guild.get_role(int(config["role_id"])) if guild and config and config.get("role_id") else None
-    embed = discord.Embed(
-        title=f"{WORDLE_EMOJI} Wordle Status",
-        description="Daily Wordle is enabled for this server.",
-        color=discord.Color.green()
-    )
-    embed.add_field(name="Channel", value=channel.mention if channel else f"`{config['channel_id']}`", inline=True)
-    embed.add_field(name="Role", value=role.mention if role else "Missing", inline=True)
-    embed.add_field(name="Current Date", value=config.get("current_date") or "None yet", inline=True)
-    thread_id = config.get("thread_id")
-    embed.add_field(name="Thread", value=f"<#{thread_id}>" if thread_id else "Missing", inline=True)
-    embed.set_footer(text="Use .wordle setup #channel to move it, or .wordle stop to disable it.")
-    return embed
-
-def score_wordle_guess(guess, answer):
-    guess = guess.upper()
-    answer = answer.upper()
-    result = [WORDLE_TILE_ABSENT] * 5
-    remaining = {}
-    for index, char in enumerate(answer):
-        if guess[index] == char:
-            result[index] = WORDLE_TILE_CORRECT
-        else:
-            remaining[char] = remaining.get(char, 0) + 1
-    for index, char in enumerate(guess):
-        if result[index] == WORDLE_TILE_CORRECT:
-            continue
-        if remaining.get(char, 0) > 0:
-            result[index] = WORDLE_TILE_PRESENT
-            remaining[char] -= 1
-    return "".join(result)
-
-async def fetch_wordle_definition(word):
-    try:
-        async with aiohttp.ClientSession() as session:
-            url = f"https://api.dictionaryapi.dev/api/v2/entries/en/{word.lower()}"
-            async with session.get(url) as resp:
-                if resp.status != 200:
-                    return None
-                data = await resp.json()
-        for meaning in data[0].get("meanings", []):
-            for item in meaning.get("definitions", []):
-                definition = item.get("definition")
-                if definition:
-                    return definition[:220]
-    except Exception as e:
-        print(f"Wordle definition lookup skipped for {word}: {type(e).__name__} - {e}")
-    return None
-
-async def resolve_wordle_thread(guild, config):
-    thread_id = config.get("thread_id")
-    if not thread_id:
-        return None
-    thread = guild.get_thread(int(thread_id))
-    if thread is not None:
-        return thread
-    channel = guild.get_channel(int(config.get("channel_id") or 0))
-    if channel is not None:
-        for thread in getattr(channel, "threads", []):
-            if thread.id == int(thread_id):
-                return thread
-    try:
-        return await bot.fetch_channel(int(thread_id))
-    except Exception:
-        return None
-
-async def create_wordle_round_message(guild, channel, role, set_by_user_id, word=None, word_date=None):
-    message = await channel.send(embed=wordle_setup_embed(guild), allowed_mentions=discord.AllowedMentions.none())
-    await message.add_reaction(reaction_emoji(WORDLE_REACTION))
-    try:
-        thread = await message.create_thread(
-            name="Daily Wordle",
-            auto_archive_duration=1440,
-            reason="Daily Wordle guesses"
-        )
-    except Exception:
-        thread = await channel.create_thread(
-            name="Daily Wordle",
-            type=discord.ChannelType.public_thread,
-            reason="Daily Wordle guesses"
-        )
-    config = {
-        "channel_id": channel.id,
-        "role_id": role.id if role else None,
-        "message_id": message.id,
-        "thread_id": thread.id,
-        "set_by_user_id": set_by_user_id,
-        "current_word": word,
-        "current_date": word_date,
-    }
-    await asyncio.to_thread(
-        save_guild_wordle_config,
-        guild.id,
-        channel.id,
-        role.id if role else None,
-        message.id,
-        set_by_user_id,
-        word,
-        word_date,
-        thread.id,
-    )
-    guild_wordle_configs[guild.id] = config
-    await thread.send(
-        f"{WORDLE_EMOJI} Guess the 5-letter word here.",
-        embed=wordle_daily_embed(word_date or today_wordle_date()),
-        allowed_mentions=discord.AllowedMentions.none()
-    )
-    return message, thread, config
-
-async def clear_wordle_channel(channel):
-    if channel is None:
-        return 0
-    try:
-        deleted = await channel.purge(limit=None, check=lambda m: not m.pinned, reason="Wordle round solved")
-        return len(deleted)
-    except Exception as e:
-        print(f"Wordle channel purge failed, trying manual delete: {type(e).__name__} - {e}")
-
-    deleted_count = 0
-    try:
-        async for old_message in channel.history(limit=None):
-            if old_message.pinned:
-                continue
-            try:
-                await old_message.delete()
-                deleted_count += 1
-                if deleted_count % 10 == 0:
-                    await asyncio.sleep(1)
-            except Exception as e:
-                print(f"Wordle message delete skipped: {type(e).__name__} - {e}")
-    except Exception as e:
-        print(f"Wordle manual clear failed: {type(e).__name__} - {e}")
-    return deleted_count
-
-async def sync_wordle_role_from_reaction(reaction, user, add=True):
-    guild = reaction.message.guild
-    if guild is None:
-        return False
-    config = guild_wordle_configs.get(guild.id)
-    if not config or int(config.get("message_id") or 0) != reaction.message.id:
-        return False
-    if not same_emoji(reaction.emoji, reaction_emoji(WORDLE_REACTION)):
-        return False
-
-    role = guild.get_role(int(config.get("role_id") or 0))
-    if role is None and add:
-        try:
-            role = await ensure_wordle_role(guild)
-            saved = await asyncio.to_thread(
-                save_guild_wordle_config,
-                guild.id,
-                config["channel_id"],
-                role.id,
-                config["message_id"],
-                config.get("set_by_user_id"),
-                config.get("current_word"),
-                config.get("current_date"),
-            )
-            if saved:
-                config["role_id"] = role.id
-                guild_wordle_configs[guild.id] = config
-        except Exception as e:
-            print(f"Wordle role restore failed: {type(e).__name__} - {e}")
-            return True
-    if role is None:
-        return True
-
-    member = user if isinstance(user, discord.Member) else guild.get_member(user.id)
-    if member is None:
-        try:
-            member = await guild.fetch_member(user.id)
-        except Exception:
-            member = None
-    if member is None:
-        return True
-    try:
-        if add and role not in member.roles:
-            await member.add_roles(role, reason="Daily Wordle reaction role")
-        elif not add and role in member.roles:
-            await member.remove_roles(role, reason="Daily Wordle reaction role")
-    except Exception as e:
-        print(f"Wordle role sync failed: {type(e).__name__} - {e}")
-    return True
-
-async def sync_wordle_role_from_payload(payload, add=True):
-    if payload.guild_id is None or payload.user_id == bot.user.id:
-        return False
-    guild = bot.get_guild(payload.guild_id)
-    if guild is None:
-        return False
-    config = guild_wordle_configs.get(guild.id)
-    if not config or int(config.get("message_id") or 0) != payload.message_id:
-        return False
-    if not same_emoji(payload.emoji, reaction_emoji(WORDLE_REACTION)):
-        return False
-
-    role = guild.get_role(int(config.get("role_id") or 0))
-    if role is None and add:
-        try:
-            role = await ensure_wordle_role(guild)
-            saved = await asyncio.to_thread(
-                save_guild_wordle_config,
-                guild.id,
-                config["channel_id"],
-                role.id,
-                config["message_id"],
-                config.get("set_by_user_id"),
-                config.get("current_word"),
-                config.get("current_date"),
-            )
-            if saved:
-                config["role_id"] = role.id
-                guild_wordle_configs[guild.id] = config
-        except Exception as e:
-            print(f"Wordle raw role restore failed: {type(e).__name__} - {e}")
-            return True
-    if role is None:
-        return True
-
-    payload_member = getattr(payload, "member", None)
-    member = payload_member if add and isinstance(payload_member, discord.Member) else guild.get_member(payload.user_id)
-    if member is None:
-        try:
-            member = await guild.fetch_member(payload.user_id)
-        except Exception:
-            member = None
-    if member is None:
-        return True
-    try:
-        if add and role not in member.roles:
-            await member.add_roles(role, reason="Daily Wordle reaction role")
-        elif not add and role in member.roles:
-            await member.remove_roles(role, reason="Daily Wordle reaction role")
-    except Exception as e:
-        print(f"Wordle raw role sync failed: {type(e).__name__} - {e}")
-    return True
-
-async def maybe_handle_wordle_guess(message):
-    if message.guild is None:
-        return False
-    config = guild_wordle_configs.get(message.guild.id)
-    if not config:
-        return False
-    if int(config.get("thread_id") or 0) != message.channel.id:
-        return False
-    guess = message.content.strip().upper()
-    if not re.fullmatch(r"[A-Z]{5}", guess):
-        return False
-
-    await ensure_daily_wordle(message.guild.id, config, announce=False)
-    config = guild_wordle_configs.get(message.guild.id, config)
-    answer = (config.get("current_word") or "").upper()
-    if len(answer) != 5:
-        await message.reply(
-            f"{economy_q_warning} Today's Wordle is not ready yet.",
-            mention_author=False,
-            allowed_mentions=discord.AllowedMentions.none()
-        )
-        return True
-
-    score = score_wordle_guess(guess, answer)
-    if guess == answer:
-        await complete_wordle_round(message, config, answer, score)
-        return True
-    else:
-        response = f"`{guess}` {score}"
-    await message.reply(
-        response,
-        mention_author=False,
-        allowed_mentions=discord.AllowedMentions.none()
-    )
-    return True
-
-async def wordle_prior_attempts_for_user(message):
-    attempts = 0
-    try:
-        async for prior in message.channel.history(limit=None, before=message.created_at):
-            if prior.author.id != message.author.id:
-                continue
-            if re.fullmatch(r"[A-Za-z]{5}", prior.content.strip()):
-                attempts += 1
-    except Exception as e:
-        print(f"Wordle prior attempt count skipped: {type(e).__name__} - {e}")
-        return None
-    return attempts
-
-async def complete_wordle_round(message, config, answer, score):
-    guild = message.guild
-    channel = guild.get_channel(int(config["channel_id"]))
-    if channel is None:
-        try:
-            channel = await bot.fetch_channel(int(config["channel_id"]))
-        except Exception:
-            channel = None
-
-    prior_attempts = await wordle_prior_attempts_for_user(message)
-    reward = 5_000_000 if prior_attempts == 0 else 1_000_000
-    await asyncio.to_thread(economy_add_user_balance, message.author.id, reward, reward)
-    definition = await fetch_wordle_definition(answer)
-    definition_line = f"\n**Definition:** {definition}" if definition else ""
-    await message.reply(
-        f"{economy_q_accept} `{answer}` {score}\nSolved. +**{economy_format_balance(reward)}**",
-        mention_author=False,
-        allowed_mentions=discord.AllowedMentions.none()
-    )
-    try:
-        await message.channel.edit(archived=True, locked=True, reason="Wordle solved")
-    except Exception:
-        pass
-
-    if channel:
-        bot_member = guild.get_member(bot.user.id) or guild.me
-        perms = channel.permissions_for(bot_member)
-        if perms.manage_messages:
-            await clear_wordle_channel(channel)
-        winner_text = (
-            f"{WORDLE_EMOJI} <@{message.author.id}> guessed **{answer}** and won **{economy_format_balance(reward)}**."
-            f"{definition_line}"
-        )
-        await channel.send(winner_text, allowed_mentions=discord.AllowedMentions(users=True))
-
-        role = guild.get_role(int(config.get("role_id") or 0)) if config.get("role_id") else None
-        if role is None:
-            role = await ensure_wordle_role(guild)
-        new_word = await asyncio.to_thread(choose_wordle_word, guild.id)
-        if not new_word:
-            await channel.send(f"{economy_q_warning} Wordle has used every saved word for this server. Add more words before the next round.")
-            return
-        round_id = datetime.now(timezone.utc).strftime("%Y-%m-%d-%H%M%S")
-        _, thread, new_config = await create_wordle_round_message(
-            guild,
-            channel,
-            role,
-            config.get("set_by_user_id") or message.author.id,
-            new_word,
-            round_id,
-        )
-        await asyncio.to_thread(update_guild_wordle_daily, guild.id, new_word, round_id)
-        guild_wordle_configs[guild.id] = new_config
-        try:
-            await thread.send(f"Previous winner: <@{message.author.id}>. New round started.", allowed_mentions=discord.AllowedMentions.none())
-        except Exception:
-            pass
-
-async def ensure_wordle_role(guild):
-    role = discord.utils.get(guild.roles, name=WORDLE_ROLE_NAME)
-    if role:
-        return role
-    return await guild.create_role(name=WORDLE_ROLE_NAME, reason="Daily Wordle role setup")
-
-async def post_wordle_setup_message(guild, channel, role, set_by_user_id):
-    message, _, config = await create_wordle_round_message(guild, channel, role, set_by_user_id)
-    return message, config
-
-async def ensure_daily_wordle(guild_id, config, announce=True):
-    guild = bot.get_guild(int(guild_id))
-    if guild is None:
-        return
-    today = today_wordle_date()
-    if wordle_round_is_current_today(config, today):
-        return
-    word = await asyncio.to_thread(choose_wordle_word, guild.id)
-    if not word:
-        channel = guild.get_channel(int(config["channel_id"]))
-        if channel and announce:
-            await channel.send(f"{economy_q_warning} Wordle has used every saved word for this server. Add more words before the next daily puzzle.")
-        return
-    config["current_word"] = word
-    config["current_date"] = today
-    guild_wordle_configs[guild.id] = config
-    saved = await asyncio.to_thread(update_guild_wordle_daily, guild.id, word, today)
-    if not saved:
-        await asyncio.to_thread(
-            save_guild_wordle_config,
-            guild.id,
-            config["channel_id"],
-            config.get("role_id"),
-            config.get("message_id"),
-            config.get("set_by_user_id"),
-            word,
-            today,
-            config.get("thread_id"),
-        )
-    if not announce:
-        return
-    thread = await resolve_wordle_thread(guild, config)
-    if thread is None:
-        return
-    role = guild.get_role(int(config["role_id"])) if config.get("role_id") else None
-    mention = role.mention if role else ""
-    await thread.send(
-        f"{mention} {WORDLE_EMOJI} **New Daily Wordle**",
-        embed=wordle_daily_embed(today),
-        allowed_mentions=discord.AllowedMentions(roles=True, users=False, everyone=False)
-    )
-
-async def wordle_daily_loop():
-    await bot.wait_until_ready()
-    while not bot.is_closed():
-        try:
-            saved_configs = await asyncio.to_thread(load_guild_wordle_configs)
-            if saved_configs:
-                guild_wordle_configs.update(saved_configs)
-            for guild_id, config in list(guild_wordle_configs.items()):
-                await ensure_daily_wordle(guild_id, config, announce=True)
-        except Exception as e:
-            print(f"Wordle daily loop failed: {type(e).__name__} - {e}")
-        await asyncio.sleep(300)
-
 
 @bot.event
 async def on_member_join(member):
@@ -2508,9 +1987,6 @@ async def on_message(message):
             chat_xp_memory[message.author.id] = now_ts
             asyncio.create_task(award_chat_xp_background(message))
 
-    if not looks_like_command_message(message) and await maybe_handle_wordle_guess(message):
-        return
-
     if looks_like_command_message(message):
         ctx = await bot.get_context(message)
         if ctx.valid:
@@ -2584,7 +2060,7 @@ HELP_CATEGORIES = {
         "daily", "weekly", "monthly", "cf", "roulette", "slots", "blackjack", "scratch", "tower", "vault", "memory", "ms", "wheel",
         "give", "lb", "qstats", "econhelp", "explain",
     ],
-    "Games": ["games", "ttt", "c4", "chess", "move", "resign", "wordle", "q", "picker"],
+    "Games": ["games", "ttt", "c4", "chess", "move", "resign", "q", "picker"],
     "Utility": ["help", "userinfo", "pfp", "calc", "define", "timer", "ctimer", "alarm", "poll", "epoll", "translate", "find"],
     "AI": ["ask", "generate", "analyse", "analyze"],
     "Server Tools": [
@@ -2695,7 +2171,6 @@ async def build_settings_embed(guild):
     log_config = get_guild_log_config(guild.id) if guild else {}
     birthday_config = guild_birthday_channels.get(guild.id, {}) if guild else {}
     activity_config = guild_activity_channels.get(guild.id, {}) if guild else {}
-    wordle_config = guild_wordle_configs.get(guild.id, {}) if guild else {}
     try:
         lottery_config = await asyncio.to_thread(economy_get_lottery_config, guild.id) if guild else None
     except Exception:
@@ -2717,7 +2192,6 @@ async def build_settings_embed(guild):
     if activity_config.get("next_report"):
         activity_value += f"\nNext: {discord.utils.format_dt(activity_config['next_report'], 'R')}"
     embed.add_field(name="Activity", value=activity_value, inline=True)
-    embed.add_field(name="Wordle", value=channel_status(guild, wordle_config.get("channel_id")), inline=True)
     if lottery_config:
         next_draw = lottery_config.get("next_draw")
         lottery_value = (
@@ -2799,23 +2273,6 @@ class SettingsView(View):
             return await interaction.response.send_message(message, ephemeral=True)
         await interaction.response.edit_message(embed=await build_settings_embed(interaction.guild), view=self)
 
-    @discord.ui.button(label="Wordle Here", style=discord.ButtonStyle.secondary)
-    async def wordle_button(self, interaction, button):
-        if not await can_manage_wordle_channel(interaction.user, interaction.guild):
-            return await interaction.response.send_message("You can't change Wordle here.", ephemeral=True)
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        try:
-            role = await ensure_wordle_role(interaction.guild)
-            _, config = await post_wordle_setup_message(interaction.guild, interaction.channel, role, interaction.user.id)
-            await ensure_daily_wordle(interaction.guild.id, config, announce=False)
-        except Exception as e:
-            return await interaction.followup.send(f"I couldn't set up Wordle: `{type(e).__name__}`", ephemeral=True)
-        await interaction.followup.send("Wordle set up in this channel.", ephemeral=True)
-        try:
-            await interaction.message.edit(embed=await build_settings_embed(interaction.guild), view=self)
-        except discord.HTTPException:
-            pass
-
 @bot.command(name="settings", aliases=["setup", "config"])
 @is_admin_power()
 async def settings_command(ctx):
@@ -2828,7 +2285,6 @@ GAME_MENU = [
     ("Tic Tac Toe", "`.ttt @user [bet]`", "Quick 2-player strategy. Supports bets."),
     ("Connect 4", "`.c4 @user [bet]`", "Column strategy game. Supports bets."),
     ("Chess", "`.chess @user [bet]`", "Full chess with UI moves and 10-minute clocks."),
-    ("Wordle", "`.wordle` / `.wordle setup #channel`", "Daily server word guessing in a thread."),
     ("Tower", "`.tower <amount>`", "Risk climbing floors or cash out."),
     ("Vault", "`.vault <amount>`", "Think through code hints before tries run out."),
     ("Memory", "`.memory <amount>`", "Match pairs before too many mistakes."),
@@ -3536,10 +2992,6 @@ async def on_reaction_remove(reaction, user):
     if user.bot and user.id != super_owner_id:
         return
 
-    try:
-        await sync_wordle_role_from_reaction(reaction, user, add=False)
-    except Exception as e:
-        print(f"Wordle reaction-remove sync skipped: {type(e).__name__} - {e}")
     await update_poll_counts(reaction.message)
     
     msg = reaction.message
@@ -3571,10 +3023,6 @@ async def on_reaction_add(reaction, user):
             pass
         return
 
-    try:
-        await sync_wordle_role_from_reaction(reaction, user, add=True)
-    except Exception as e:
-        print(f"Wordle reaction-add sync skipped: {type(e).__name__} - {e}")
     await update_poll_counts(reaction.message)
 
     # Reaction audit logs are sent from raw reaction events so uncached messages are covered too.
@@ -3582,20 +3030,12 @@ async def on_reaction_add(reaction, user):
 @bot.event
 async def on_raw_reaction_add(payload):
     try:
-        await sync_wordle_role_from_payload(payload, add=True)
-    except Exception as e:
-        print(f"Wordle raw reaction-add sync skipped: {type(e).__name__} - {e}")
-    try:
         await log_raw_reaction(payload, added=True)
     except Exception as e:
         print(f"Raw reaction-add log skipped: {type(e).__name__} - {e}")
 
 @bot.event
 async def on_raw_reaction_remove(payload):
-    try:
-        await sync_wordle_role_from_payload(payload, add=False)
-    except Exception as e:
-        print(f"Wordle raw reaction-remove sync skipped: {type(e).__name__} - {e}")
     try:
         await log_raw_reaction(payload, added=False)
     except Exception as e:
@@ -7342,69 +6782,6 @@ async def lists(ctx):
     embed.add_field(name="Censored Phrases", value=censored_text, inline=True)
 
     await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
-
-@bot.command(name="wordle")
-async def wordle(ctx, action: str = None, channel: discord.TextChannel = None):
-    """Sets up or shows this server's daily Wordle channel."""
-    if ctx.guild is None:
-        return await ctx.send("Wordle setup only works in servers.")
-
-    saved_configs = await asyncio.to_thread(load_guild_wordle_configs)
-    if saved_configs:
-        guild_wordle_configs.update(saved_configs)
-    config = guild_wordle_configs.get(ctx.guild.id)
-
-    if action is None:
-        if config:
-            return await ctx.send(embed=wordle_status_embed(ctx.guild, config), allowed_mentions=discord.AllowedMentions.none())
-        return await ctx.send(f"{economy_q_warning} Wordle is not set up. Use `.wordle setup #channel`.")
-
-    action = action.casefold()
-
-    if action in {"setup", "set", "channel"}:
-        if not await can_manage_wordle_channel(ctx.author, ctx.guild):
-            return await ctx.send("Only the person who added me, an admin, the server owner, or the superowner can set the Wordle channel.")
-        if channel is None:
-            channel = ctx.channel
-        bot_member = ctx.guild.me or ctx.guild.get_member(bot.user.id)
-        perms = channel.permissions_for(bot_member)
-        can_thread_send = getattr(perms, "send_messages_in_threads", True)
-        can_create_threads = getattr(perms, "create_public_threads", True)
-        if not perms.view_channel or not perms.send_messages or not perms.add_reactions or not can_create_threads or not can_thread_send:
-            return await ctx.send("I need to view, send messages, send in threads, add reactions, and create public threads in that channel.")
-        try:
-            role = await ensure_wordle_role(ctx.guild)
-        except discord.Forbidden:
-            return await ctx.send("I need permission to create/manage the Daily Wordle role.")
-        except Exception as e:
-            return await ctx.send(f"I couldn't create the Wordle role: `{type(e).__name__}`")
-        try:
-            message, wordle_config = await post_wordle_setup_message(ctx.guild, channel, role, ctx.author.id)
-            await ensure_daily_wordle(ctx.guild.id, wordle_config, announce=False)
-        except Exception as e:
-            return await ctx.send(f"I couldn't set up Wordle: `{type(e).__name__}: {str(e)[:120]}`")
-        return await ctx.send(
-            f"{economy_q_accept} Wordle set up in {channel.mention}. Main message: {message.jump_url}",
-            allowed_mentions=discord.AllowedMentions.none()
-        )
-
-    if action in {"stop", "disable", "off"}:
-        if not await can_manage_wordle_channel(ctx.author, ctx.guild):
-            return await ctx.send("Only the person who added me, an admin, the server owner, or the superowner can stop Wordle.")
-        await asyncio.to_thread(delete_guild_wordle_config, ctx.guild.id)
-        guild_wordle_configs.pop(ctx.guild.id, None)
-        return await ctx.send(f"{economy_q_accept} Daily Wordle disabled for this server.")
-
-    if action in {"new", "next"}:
-        if not has_super_owner_power(ctx.author, ctx.guild):
-            return await ctx.send("Superowner only.")
-        if not config:
-            return await ctx.send(f"{economy_q_warning} Wordle is not set up. Use `.wordle setup #channel`.")
-        config["current_date"] = None
-        await ensure_daily_wordle(ctx.guild.id, config, announce=True)
-        return await ctx.send(f"{economy_q_accept} Forced a new Wordle for today.")
-
-    return await ctx.send("Use `.wordle`, `.wordle setup #channel`, or `.wordle stop`.")
 
 def home():
     return "Bot alive"
