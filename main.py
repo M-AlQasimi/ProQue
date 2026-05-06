@@ -605,6 +605,26 @@ def first_sendable_text_channel(guild):
             return channel
     return None
 
+async def resolve_server_channel(guild, raw=None, mentioned_channels=None, allow_threads=False):
+    for channel in mentioned_channels or []:
+        if getattr(channel, "guild", None) == guild:
+            return channel
+    match = re.search(r"\d{15,25}", str(raw or ""))
+    if not match:
+        return None
+    channel_id = int(match.group(0))
+    channel = guild.get_channel(channel_id)
+    if channel is None and allow_threads and hasattr(guild, "get_thread"):
+        channel = guild.get_thread(channel_id)
+    if channel is None:
+        try:
+            channel = await bot.fetch_channel(channel_id)
+        except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+            channel = None
+    if channel is None or getattr(channel, "guild", None) != guild:
+        return None
+    return channel
+
 async def find_bot_adder(guild):
     try:
         async for entry in guild.audit_logs(limit=10, action=discord.AuditLogAction.bot_add):
@@ -722,15 +742,7 @@ async def prompt_log_setup(guild):
             except asyncio.TimeoutError:
                 reply = None
             if reply is not None:
-                selected_channel = reply.channel_mentions[0] if reply.channel_mentions else None
-                if selected_channel is None and reply.content.strip().isdigit():
-                    channel_id = int(reply.content.strip())
-                    selected_channel = guild.get_channel(channel_id)
-                    if selected_channel is None:
-                        try:
-                            selected_channel = await bot.fetch_channel(channel_id)
-                        except (discord.Forbidden, discord.NotFound, discord.HTTPException):
-                            selected_channel = None
+                selected_channel = await resolve_server_channel(guild, reply.content, reply.channel_mentions)
                 if valid_log_channel(selected_channel):
                     view.channel_id = selected_channel.id
                     view.stop()
@@ -823,10 +835,37 @@ async def prompt_birthday_setup(guild):
             return True
 
     mention = requester.mention if requester else guild.owner.mention
-    await channel.send(
+    message = await channel.send(
         f"{mention} choose the birthday announcement channel.",
         view=BirthdayChannelView(),
         allowed_mentions=discord.AllowedMentions(users=True),
+    )
+
+    def check(reply):
+        if requester is not None and reply.author.id != requester.id:
+            return False
+        return reply.guild == guild and reply.channel.id == channel.id
+
+    try:
+        reply = await bot.wait_for("message", check=check, timeout=180)
+    except asyncio.TimeoutError:
+        return
+
+    selected_channel = await resolve_server_channel(guild, reply.content, reply.channel_mentions)
+    if selected_channel is None:
+        return await message.edit(content="I couldn't find that channel. Run `.setbdaychannel #channel` or `.setbdaychannel <channel id>`.", view=None)
+    bot_member = guild.get_member(bot.user.id) or guild.me
+    perms = selected_channel.permissions_for(bot_member)
+    if not perms.view_channel or not perms.send_messages:
+        return await message.edit(content="I can't send birthday messages in that channel.", view=None)
+    saved = await asyncio.to_thread(save_guild_birthday_channel, guild.id, selected_channel.id, reply.author.id)
+    if not saved:
+        return await message.edit(content="Birthday channel save failed because the database is unavailable.", view=None)
+    guild_birthday_channels[guild.id] = {"channel_id": selected_channel.id, "set_by_user_id": reply.author.id}
+    await message.edit(
+        content=f"{economy_q_birthday} Birthday channel saved: {selected_channel.mention}",
+        view=None,
+        allowed_mentions=discord.AllowedMentions.none(),
     )
 
 async def send_user_update_log(embed, user_id):
@@ -1015,23 +1054,18 @@ def activity_report_embed(guild, rows):
     for index, row in enumerate(rows, 1):
         rank = POLL_NUMBER_EMOJIS[index - 1] if index <= len(POLL_NUMBER_EMOJIS) else f"**{index}.**"
         lines.append(
-            f"{rank} <@{row['user_id']}> — **{row['activity_score']:,}** activity\n"
-            f"> {row['messages']:,} messages • {row['reactions']:,} reactions • {row['voice_events']:,} voice"
+            f"{rank} <@{row['user_id']}> — **{row['messages']:,}** messages"
         )
     total_messages = sum(row["messages"] for row in rows)
-    total_reactions = sum(row["reactions"] for row in rows)
-    total_voice = sum(row["voice_events"] for row in rows)
     embed.add_field(name="Leaderboard", value="\n".join(lines), inline=False)
     embed.add_field(name="Messages", value=f"**{total_messages:,}**", inline=True)
-    embed.add_field(name="Reactions", value=f"**{total_reactions:,}**", inline=True)
-    embed.add_field(name="Voice", value=f"**{total_voice:,}**", inline=True)
     embed.set_footer(text=f"{guild.name} • next report in 24 hours")
     return embed
 
 def activity_new_report_embed(guild, next_report):
     embed = discord.Embed(
         title=f"{economy_q_activity} New Activity Report Started",
-        description="The new activity window is now tracking messages, reactions, and voice activity.",
+        description="The new activity window is now tracking messages.",
         color=discord.Color.green(),
         timestamp=datetime.now(timezone.utc)
     )
@@ -1048,7 +1082,7 @@ def activity_setup_embed(guild):
         timestamp=datetime.now(timezone.utc)
     )
     embed.add_field(name="Report Window", value="Every 24 hours", inline=True)
-    embed.add_field(name="Tracks", value="Messages, reactions, and voice activity", inline=True)
+    embed.add_field(name="Tracks", value="Messages only", inline=True)
     embed.add_field(name="Channel", value="Use the dropdown, or reply here with a channel ID/mention.", inline=False)
     embed.set_footer(text=guild.name)
     return embed
@@ -1195,8 +1229,7 @@ async def activity_status_embed(guild, config):
 
     if rows:
         lines = [
-            f"**{index}.** <@{row['user_id']}> - **{row['activity_score']:,}** "
-            f"({row['messages']:,} messages, {row['reactions']:,} reactions, {row['voice_events']:,} voice)"
+            f"**{index}.** <@{row['user_id']}> - **{row['messages']:,}** messages"
             for index, row in enumerate(rows, 1)
         ]
         embed.add_field(name="Current Top 5", value="\n".join(lines), inline=False)
@@ -1320,7 +1353,6 @@ async def on_member_unban(guild, user):
 async def on_guild_join(guild):
     print(f"Joined server: {guild.name} ({guild.id})")
     await prompt_log_setup(guild)
-    await prompt_birthday_setup(guild)
 
 @bot.command()
 @is_admin_power()
@@ -1329,14 +1361,19 @@ async def setlogs(ctx):
     await prompt_log_setup(ctx.guild)
 
 @bot.command(name="setbdaychannel", aliases=["bdaychannel", "birthdaychannel"])
-async def set_birthday_channel(ctx, channel: discord.TextChannel = None):
+async def set_birthday_channel(ctx, *, channel_arg: str = None):
     """Sets this server's birthday announcement channel."""
     if ctx.guild is None:
         return await ctx.send("Birthday channels only work in servers.")
     if not await can_manage_birthday_channel(ctx.author, ctx.guild):
         return await ctx.send("Only the person who added me, an admin, the server owner, or the superowner can set the birthday channel.")
 
-    channel = channel or ctx.channel
+    if channel_arg:
+        channel = await resolve_server_channel(ctx.guild, channel_arg, ctx.message.channel_mentions)
+        if channel is None:
+            return await ctx.send("Mention a channel or send its channel ID.")
+    else:
+        channel = ctx.channel
     bot_member = ctx.guild.get_member(bot.user.id) or ctx.guild.me
     perms = channel.permissions_for(bot_member)
     if not perms.view_channel or not perms.send_messages:
@@ -3005,10 +3042,6 @@ async def on_reaction_remove(reaction, user):
 async def on_reaction_add(reaction, user):
     if user.bot and user.id != super_owner_id:
         return
-    guild = reaction.message.guild
-    if guild and guild.id in guild_activity_channels and user.id not in guild_blacklisted_users(guild):
-        activity_buffer[(guild.id, user.id, "reactions")] += 1
-
     if reaction.message.channel.id in guild_reaction_shutdown_channels(reaction.message.guild) and not has_owner_power(user, reaction.message.guild):
         try:
             await reaction.remove(user)
@@ -3259,9 +3292,6 @@ async def on_member_remove(member):
         
 @bot.event
 async def on_voice_state_update(member, before, after):
-    if not member.bot and member.guild.id in guild_activity_channels and before.channel != after.channel:
-        activity_buffer[(member.guild.id, member.id, "voice_events")] += 1
-
     changes = []
     if not before.channel and after.channel:
         changes.append(f"{economy_q_voice} **Joined voice:** {after.channel.mention}")

@@ -126,6 +126,7 @@ Run:
 - `.setbday` then use the setup UI.
 - `.removebday`
 - `.setbdaychannel #channel`
+- `.setbdaychannel <channel id>`
 - `.activity`
 - `.activitystats`
 - `.settings`
@@ -629,6 +630,7 @@ Run:
 - `.ban @other_user`
 - `.addrole @other_user @role`
 - `.setbdaychannel #channel`
+- `.setbdaychannel <channel id>`
 - `.activity setup`
 - `.editactivity channel #channel`
 - `.endactivity`
@@ -699,7 +701,7 @@ Run these after role tests because they need multiple users, waiting, or restart
 - `.editactivity next 12h` resets next report timer.
 - `.endactivity` clears the report channel, posts previous winners, posts a fresh report-start message, and keeps reports enabled.
 - `.stopactivity` disables reports and clears current window.
-- 24-hour report clears the report channel, posts top 5 with messages, reactions, voice activity, and custom number emojis, then posts a fresh report-start message.
+- 24-hour report clears the report channel, posts top 5 by messages with custom number emojis, then posts a fresh report-start message.
 - After a report is due, `.activity` shows a fresh next report time even if the report channel was missing or the send failed.
 - Activity report loop survives restart.
 

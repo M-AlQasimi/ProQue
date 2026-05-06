@@ -996,7 +996,7 @@ def add_guild_activity_counts(counts):
                 column = "messages"
             else:
                 guild_id, user_id, column = key
-            if column not in {"messages", "reactions", "voice_events"}:
+            if column != "messages":
                 continue
             cur.execute(
                 f"INSERT INTO guild_activity_counts (guild_id, user_id, {column}) VALUES (%s, %s, %s) "
@@ -1021,11 +1021,10 @@ def get_guild_activity_top(guild_id, limit=5):
         cur = conn.cursor()
         cur.execute(
             """
-            SELECT user_id, messages, reactions, voice_events,
-                   (messages + reactions + voice_events) AS activity_score
+            SELECT user_id, messages
             FROM guild_activity_counts
             WHERE guild_id = %s
-            ORDER BY activity_score DESC, messages DESC, user_id ASC
+            ORDER BY messages DESC, user_id ASC
             LIMIT %s
             """,
             (int(guild_id), int(limit))
@@ -1037,11 +1036,9 @@ def get_guild_activity_top(guild_id, limit=5):
             {
                 "user_id": int(user_id),
                 "messages": int(messages),
-                "reactions": int(reactions),
-                "voice_events": int(voice_events),
-                "activity_score": int(activity_score),
+                "activity_score": int(messages),
             }
-            for user_id, messages, reactions, voice_events, activity_score in rows
+            for user_id, messages in rows
         ]
     except Exception:
         return []

@@ -2656,8 +2656,10 @@ async def lottery(ctx, action: str = None, amount: str = None):
             return
 
         channel = channel_msg.channel_mentions[0] if channel_msg.channel_mentions else None
-        if channel is None and channel_msg.content.strip().isdigit():
-            channel = ctx.guild.get_channel(int(channel_msg.content.strip()))
+        if channel is None:
+            match = re.search(r"\d{15,25}", channel_msg.content or "")
+            if match:
+                channel = ctx.guild.get_channel(int(match.group(0)))
         if channel is None:
             await ctx.send(f"{Q_DENIED} Channel not found. Run `.lottery` again.")
             return
@@ -5703,7 +5705,7 @@ EXPLANATIONS = {
     "afk": "Marks you AFK until you send a message.",
     "setbday": "Saves your birthday. Use `.setbday 25/12`, or run `.setbday` to open a setup UI.",
     "removebday": "Removes your birthday.",
-    "setbdaychannel": "Sets the server's birthday announcement channel.",
+    "setbdaychannel": "Sets the server's birthday announcement channel. Use `.setbdaychannel #channel` or `.setbdaychannel <channel id>`.",
     "bdaychannel": "Alias for `.setbdaychannel`. Sets the server's birthday announcement channel.",
     "birthdaychannel": "Alias for `.setbdaychannel`. Sets the server's birthday announcement channel.",
     "activity": "Shows this server's activity report status. Use `.activity setup` to set or change the report channel.",
@@ -5794,8 +5796,8 @@ DETAILED_EXPLANATIONS = {
     "setquesos": f"Superowner-only Quewo admin command. Use `.setquesos @user <amount>`, `.setquesos @role <amount>`, or `.setquesos @everyone <amount>` to set balances to an exact {CURRENCY_EMOJI} amount. This sets balance directly instead of adding or removing a delta.",
     "prefix": "Changes the command prefix for this server. Use `.prefix !` or `.preifx !`. If the superowner is in the server, only the superowner can change it. If not, the server owner or admins can change it.",
     "preifx": "Typo alias for `.prefix`. Changes the command prefix for this server.",
-    "setbdaychannel": "Sets the birthday announcement channel for this server. Users keep one birthday date globally, and the bot announces it in every server where they are still a member and a birthday channel is configured.",
-    "activity": "Shows the daily activity report status for this server, including report channel, next report time, and current top 5. Use `.activity setup` to set or change the report channel. Every 24 hours, the bot posts the top 5 members by tracked messages, reactions, and voice activity since the last report, then resets that server's activity window.",
+    "setbdaychannel": "Sets the birthday announcement channel for this server. Use `.setbdaychannel #birthdays` or `.setbdaychannel <channel id>`. Users keep one birthday date globally, and the bot announces it in every server where they are still a member and a birthday channel is configured.",
+    "activity": "Shows the daily activity report status for this server, including report channel, next report time, and current top 5. Use `.activity setup` to set or change the report channel. Every 24 hours, the bot posts the top 5 members by tracked messages since the last report, then resets that server's activity window.",
     "activitystats": "Shows the same activity status embed as `.activity`, including report channel, next report time, and the current top 5.",
     "editactivity": "Admin command. Use `.editactivity channel #activity` to move reports, or `.editactivity next 12h` to reset when the next 24-hour activity report posts.",
     "endactivity": "Admin command. Use `.endactivity` to finish the current report immediately. It clears the report channel, posts the previous activity winners, starts a fresh 24-hour activity window, and keeps activity reports enabled.",
