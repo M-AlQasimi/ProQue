@@ -5248,9 +5248,6 @@ async def shut(ctx, member: discord.Member):
     print(f"shut command used by {ctx.author} on {member}")
     if not can_act_on(ctx.author, member, ctx.guild):
         return await ctx.send("You can't silence that user.")
-    ok = await confirm_admin_action(ctx, "Silence User", f"Silence <@{member.id}> messages in this server?")
-    if not ok:
-        return
     targets = guild_watchlist(ctx.guild)
     targets[member.id] = ctx.author.id
     save_watchlist(scoped_id(ctx.guild), targets)
@@ -5280,9 +5277,6 @@ async def rshut(ctx, member: discord.Member):
     """Silence a user's reactions."""
     if not can_act_on(ctx.author, member, ctx.guild):
         return await ctx.send("You can't silence that user's reactions.")
-    ok = await confirm_admin_action(ctx, "Silence Reactions", f"Silence reactions from <@{member.id}> in this server?")
-    if not ok:
-        return
     targets = guild_reaction_watchlist(ctx.guild)
     targets[member.id] = ctx.author.id
     save_reaction_watchlist(scoped_id(ctx.guild), targets)
@@ -5301,9 +5295,6 @@ async def unrshut(ctx, member: discord.Member):
 @bot.command()
 @is_admin_power()
 async def lockdown(ctx):
-    ok = await confirm_admin_action(ctx, "Lockdown Channel", f"Lock messages in {ctx.channel.mention} for normal users?")
-    if not ok:
-        return
     channels = guild_shutdown_channels(ctx.guild)
     channels.add(ctx.channel.id)
     save_shutdown_channels(scoped_id(ctx.guild), channels)
@@ -5320,9 +5311,6 @@ async def unlock(ctx):
 @bot.command()
 @is_admin_power()
 async def rlockdown(ctx):
-    ok = await confirm_admin_action(ctx, "Disable Reactions", f"Disable reactions in {ctx.channel.mention}?")
-    if not ok:
-        return
     channels = guild_reaction_shutdown_channels(ctx.guild)
     channels.add(ctx.channel.id)
     save_reaction_shutdown_channels(scoped_id(ctx.guild), channels)
@@ -5343,10 +5331,6 @@ from collections import Counter
 async def purge(ctx, amount: int, member: discord.Member = None):
     if amount <= 0:
         return await ctx.send("Amount must be greater than 0.", delete_after=5)
-    target_text = f" from <@{member.id}>" if member else ""
-    ok = await confirm_admin_action(ctx, "Purge Messages", f"Delete up to **{amount}** messages{target_text} in {ctx.channel.mention}?")
-    if not ok:
-        return
     await safe_delete_message(ctx.message)
     deleted = []
     try:
@@ -5384,10 +5368,6 @@ async def purge(ctx, amount: int, member: discord.Member = None):
 async def rpurge(ctx, amount: int, member: discord.Member = None):
     if amount <= 0:
         return await ctx.send("Amount must be greater than 0.", delete_after=5)
-    target_text = f" from <@{member.id}>" if member else ""
-    ok = await confirm_admin_action(ctx, "Purge Reactions", f"Remove up to **{amount}** reactions{target_text} in {ctx.channel.mention}?")
-    if not ok:
-        return
 
     await safe_delete_message(ctx.message)
     removed = 0
@@ -5433,9 +5413,6 @@ async def rpurge(ctx, amount: int, member: discord.Member = None):
 @bot.command(name="lock")
 @is_admin_power()
 async def lock_channel(ctx):
-    ok = await confirm_admin_action(ctx, "Lock Channel", f"Lock {ctx.channel.mention} for normal users?")
-    if not ok:
-        return
     overwrite = ctx.channel.overwrites_for(ctx.guild.default_role)
     overwrite.send_messages = False
     await ctx.channel.set_permissions(ctx.guild.default_role, overwrite=overwrite)
@@ -6916,9 +6893,6 @@ async def summon2(ctx, *, message: str):
 async def block(ctx, member: discord.Member):
     if not can_act_on(ctx.author, member, ctx.guild):
         return await ctx.send("You can't block that member.")
-    ok = await confirm_admin_action(ctx, "Block User", f"Block <@{member.id}> from using bot commands in this server?")
-    if not ok:
-        return
     blocked = guild_blacklisted_users(ctx.guild)
     blocked.add(member.id)
     save_blacklisted_users(scoped_id(ctx.guild), blocked)
