@@ -432,12 +432,31 @@ async def sync_slash_commands_once():
     global slash_commands_synced
     if slash_commands_synced:
         return
+    runnable_count = len(slash_runnable_commands())
+    synced_guilds = 0
+    failed_guilds = 0
     try:
-        synced = await bot.tree.sync()
-        slash_commands_synced = True
-        print(f"Slash commands synced: {len(synced)} top-level commands. Use /run for all {len(slash_runnable_commands())} prefix commands.")
+        global_synced = await bot.tree.sync()
+        print(f"Global slash commands synced: {len(global_synced)} top-level commands.")
     except Exception as e:
-        print(f"Slash command sync failed: {type(e).__name__} - {e}")
+        print(f"Global slash command sync failed: {type(e).__name__} - {e}")
+
+    for guild in bot.guilds:
+        try:
+            bot.tree.copy_global_to(guild=discord.Object(id=guild.id))
+            synced = await bot.tree.sync(guild=discord.Object(id=guild.id))
+            synced_guilds += 1
+            print(f"Guild slash commands synced for {guild.name} ({guild.id}): {len(synced)} commands.")
+        except Exception as e:
+            failed_guilds += 1
+            print(f"Guild slash command sync failed for {guild.name} ({guild.id}): {type(e).__name__} - {e}")
+
+    if synced_guilds or not failed_guilds:
+        slash_commands_synced = True
+    print(
+        f"Slash command sync complete: {synced_guilds} guild(s) synced, "
+        f"{failed_guilds} failed. Use /run for all {runnable_count} prefix commands."
+    )
 
 def scoped_id(guild):
     return guild.id if guild else 0

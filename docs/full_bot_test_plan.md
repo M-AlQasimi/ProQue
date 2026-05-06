@@ -49,7 +49,8 @@ Expected: all are current and mention the right aliases/settings.
 
 ### Slash Commands
 
-- Wait for startup log: `Slash commands synced`.
+- Wait for startup log: `Slash command sync complete`.
+- If slash commands still do not appear, re-invite the bot with the `applications.commands` OAuth2 scope.
 - `/commands`
 - `/help`
 - `/help command:poll`
