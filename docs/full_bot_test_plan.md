@@ -1,204 +1,614 @@
 # ProQue Full Bot Test Plan
 
-Use a test server. Some commands delete messages, change roles/channels, ban/kick users, move money, and edit lottery state.
+Use a test server. Run this in order: global checks first, then Superowner, Server Owner, Admin, Normal User, then shared feature tests.
+
+Some tests delete messages, move money, change roles/channels, ban/kick users, and edit lottery/activity state.
 
 ## Test Accounts
 
-- Superowner: the configured `super_owner_id`
-- Normal user: no Discord admin
-- Admin user: Discord Administrator permission
+- Superowner: configured `super_owner_id`
 - Server owner: actual Discord server owner
+- Admin user: has Discord Administrator permission
+- Normal user: no Discord admin permissions
 
-The active permission model is superowner > actual server owner > Discord admins > normal users.
+Expected permission order: superowner > server owner > Discord admins > normal users.
 
-## Global Checks
+## Global Setup Checks
 
-- Prefix: `bal` should not run. `.bal` should run unless prefix was changed.
-- Prefix command: `.prefix`, `.preifx`, `.prefix !`, then `!help`, `!bal`, and `.bal` should fail after the change.
-- Help: `.help`, `.help Quewo category`, `.help <command>`, `.econhelp`, `.quewohelp`, `.explain <command>`.
-- Disabled command flow: disable a harmless command, confirm normal/admin/server-owner cannot use it, confirm superowner can bypass, then re-enable.
-- Blacklist flow: blocked normal user cannot use commands; admin-power users should still be able to recover.
-- Logs: set log channels, then trigger message delete/edit, role changes, channel changes, member ban/unban/kick, timeout, voice join/move/mute, reaction add/remove/clear.
-- Mentions in logs: user identities should be non-pinging mentions, not plain usernames.
-- Custom emojis: no command output should show raw custom emoji markdown unless Discord cannot render the emoji.
+Test these once before role testing.
 
-## Permission Matrix
+### Prefix
 
-Expected current behavior:
+- Send `bal`.
+  Expected: command does not run.
+- Send `.bal`.
+  Expected: command runs.
+- Send `.prefix !` as the allowed role for the current server.
+  Expected: prefix changes.
+- Send `!help` and `!bal`.
+  Expected: both run.
+- Send `.bal`.
+  Expected: does not run after prefix changed.
+- Change prefix back to `.` with `!prefix .`.
 
-- Superowner: can use every admin/superowner command and bypass disabled commands.
-- Server owner: can use admin-power commands and outranks admins, but cannot bypass disabled commands.
-- Admin user: can use admin-power commands, but cannot act on server owner or superowner.
-- Normal user: can use public commands only.
-
-## Main Commands
-
-### Public
+### Help
 
 - `.help`
-- `.userinfo [member]`
-- `.pfp [member]`
-- `.ttt @member`
-- `.c4 @member`
-- `.chess @member`
-- `.move <move>` / `.chessmove <move>` (fallback chess notation)
-- `.resign`
+- `.help Quewo`
+- `.help activity`
+- `.econhelp`
+- `.quewohelp`
+- `.explain lottery`
+- `.explain activity`
+- `.explain editactivity`
+
+Expected: all are current and mention the right aliases/settings.
+
+### Logs And Mentions
+
+- Run `.setlogs`.
+- Delete a message.
+- Edit a message.
+- Add/remove a role.
+- Kick/ban/unban a test user if safe.
+- Timeout/unmute a test user if safe.
+- Join/move/leave voice.
+- Add/remove/clear reactions.
+
+Expected: logs use non-pinging mentions like `<@id>`, not plain usernames/nicknames.
+
+### Custom Emojis
+
+- Run `.bal`, `.shop`, `.inventory`, `.lottery`, `.scratch 1000`, `.tower 1000`, `.vault 1000`, `.memory 1000`, `.slots 1000`, `.roulette 1000 red`, `.ms 1000`, `.wheel 1000`, `.poll test | one | two`.
+
+Expected: no raw custom emoji markdown appears unless Discord cannot render that emoji.
+
+## Superowner Tests
+
+Expected: can use everything, can bypass disabled commands, and can use all Quewo admin tools.
+
+### Public Commands
+
+Run:
+
+- `.help`
+- `.userinfo`
+- `.userinfo @normal`
+- `.pfp`
+- `.pfp @normal`
 - `.q`
 - `.testlog`
 - `.dsnipe`
 - `.esnipe`
 - `.rsnipe`
-- `.poll <question> | <option> | <option> [| time]`
-- `.picker ...`
-- `.timer <time> [title]`
+- `.picker apple banana orange`
+- `.timer 1m test`
 - `.ctimer`
-- `.alarm <date/time>`
-- `.calc <expression>`
-- `.define <word>`
-- `.sleep`
-- `.fsleep @member [time]` (currently internally superowner-gated)
-- `.wake @member`
-- `.afk [reason]`
-- `.setbday <dd/mm>`
-- `.removebday`
-- `.setbdaychannel [channel]`
-- `.activity`
-- `.activitystats` / `.astats`
+- `.alarm 1m test alarm`
+- `.calc 2+2*5`
+- `.define test`
+- `.afk testing`
 - `.away`
-- `.find <user id>` (server member first, global Discord user fallback)
+- `.sleep`
+- `.wake @normal`
+- `.fsleep @normal 1m`
+- `.setbday 01/01`
+- `.removebday`
+- `.setbdaychannel #channel`
+- `.activity`
+- `.activitystats`
+- `.find <normal_user_id>`
 - `.listtargets`
 - `.listcensors`
-- `.ask ...`
-- `.generate ...`
-- `.analyse ...`
-- `.translate ...`
+- `.ask hello`
+- `.generate short test prompt`
+- `.analyse short test text`
+- `.translate hello to Italian`
 
-### Admin / Owner-Power
+Expected: all run. Commands that need external APIs may fail only if their API/config is unavailable.
 
-- `.disable <command>`
-- `.enable <command>`
+### Games
+
+Run with another test user:
+
+- `.ttt @normal`
+- `.ttt @normal` with a bet
+- `.c4 @normal`
+- `.c4 @normal` with a bet
+- `.chess @normal`
+- `.chess @normal` with a bet
+- `.move e2e4` or `.chessmove e2e4` during chess fallback testing
+- `.resign`
+- `.endttt`
+
+Expected: challenges, accept/decline, bet accept/decline, turns, payouts, and timeouts work.
+
+### Admin Commands
+
+Run safe versions first:
+
+- `.disable calc`
+- `.calc 1+1`
+- `.enable calc`
+- `.dclist`
+- `.rolesinfo`
+- `.roleinfo @role`
+- `.test`
+- `.purge 1`
+- `.rpurge 1`
+- `.steal` by replying to an emoji/sticker/image
+- `.giveaway 1m test prize`
+- `.listbans`
+- `.listblocks`
+- `.lists`
+- `.censor badtestphrase`
+- `.listcensors`
+- `.uncensor badtestphrase`
+- `.clearcensors`
+
+Run only if safe:
+
+- `.setnick @normal TestName`
+- `.unmute @normal`
+- `.kick @normal test`
+- `.ban @normal test`
+- `.unban <normal_user_id>`
+- `.addrole @normal @role`
+- `.removerole @normal @role`
+- `.deleterole @role`
+- `.setlogs`
+- `.lock`
+- `.unlock`
+- `.lockdown`
+- `.rlockdown`
+- `.runlock`
+- `.shut @normal`
+- `.unshut @normal`
+- `.rshut @normal`
+- `.unrshut @normal`
+- `.clearwatchlist`
+- `.send #channel test message`
+- `.reply <message_id_or_link> test reply`
+- `.aban @normal`
+- `.raban @normal`
+- `.abanlist`
+- `.summon @normal`
+- `.summon2 @normal`
+- `.block @normal`
+- `.unblock @normal`
+
+Expected: superowner can run these where Discord/bot role hierarchy allows it.
+
+### Activity Admin
+
+Run:
+
+- `.activity`
+- `.activity setup`
+- Choose a channel from the dropdown.
+- `.activity setup`
+- Reply with a channel ID or mention instead of using the dropdown.
+- `.activitystats`
+- `.editactivity channel #channel`
+- `.editactivity next 12h`
+- `.stopactivity`
+- `.activity`
+
+Expected: setup works both ways, status is an embed, edit commands work, stop disables reports and clears current activity.
+
+### Quewo Commands
+
+Run:
+
+- `.bal`
+- `.cash`
+- `.profile`
+- `.level`
+- `.lvl`
+- `.inventory`
+- `.inv`
+- `.items`
+- `.quests`
+- `.shop`
+- `.cooldowns`
+- `.transactions`
+- `.daily`
+- `.weekly`
+- `.monthly`
+- `.cf 1000 h`
+- `.roulette 1000 red`
+- `.slots 1000`
+- `.blackjack 1000`
+- `.scratch 1000`
+- `.tower 1000`
+- `.vault 1000`
+- `.memory 1000`
+- `.ms 1000`
+- `.wheel 1000`
+- `.give @normal 1000`
+- `.lb`
+- `.econhelp`
+- `.quewohelp`
+- `.explain scratch`
+
+Expected: balances update correctly and cooldown/results make sense.
+
+### Quewo Admin
+
+Run:
+
+- `.lottery`
+- `.lotterystats`
+- `.editlottery price 200000`
+- `.editlottery duration 12h`
+- `.editlottery cut 10`
+- `.editlottery channel #channel`
+- `.buytick 1`
+- `.add @normal 1000`
+- `.remove @normal 100`
+- `.addtick @normal 2`
+- `.settick @normal 5`
+- `.setquesos @normal 2500000`
+- `.add @role 1000`
+- `.add @everyone 1000`
+- `.addtick @role 1`
+- `.settick @role 1`
+- `.setquesos @role 1000`
+- `.stoplottery`
+
+Expected: all work. Role/everyone operations affect the expected users. Balances/tickets shown after admin changes match `.bal` and `.lotterystats`.
+
+### Superowner Permission Checks
+
+- Disable `.calc`, then run `.calc 1+1` as superowner.
+  Expected: superowner bypasses disabled command.
+- Try acting on server owner/admin/normal users.
+  Expected: bot allows it where Discord hierarchy allows it.
+- Change prefix while superowner is in server.
+  Expected: only superowner can change it.
+
+## Server Owner Tests
+
+Expected: can use admin-power commands, outranks admins, cannot bypass disabled commands, and cannot act on superowner.
+
+### Public Commands
+
+Run the same public commands from Superowner Tests, except `.fsleep` should only work if internally allowed.
+
+Expected: public commands work.
+
+### Admin Commands
+
+Run:
+
+- `.disable calc`
+- `.enable calc`
 - `.disableall`
 - `.enableall`
 - `.dclist`
 - `.rolesinfo`
-- `.roleinfo <role>`
+- `.roleinfo @role`
 - `.test`
 - `.endttt`
-- `.setnick @member <nick>`
-- `.purge <amount>`
-- `.rpurge <amount>`
-- `.unmute @member`
-- `.kick @member [reason]`
-- `.addrole @member @role`
-- `.removerole @member @role`
-- `.steal <emoji/sticker>`
-- `.giveaway <time> <prize>`
-- `.abanlist`
-- `.censor <phrase>`
-- `.uncensor <phrase>`
-- `.clearcensors`
-- `.editactivity <setting> <value>`
-- `.stopactivity`
+- `.purge 1`
+- `.rpurge 1`
+- `.steal`
+- `.giveaway 1m test prize`
 - `.listbans`
 - `.listblocks`
 - `.lists`
-
-### Higher-Impact Admin / Owner-Power
-
+- `.censor badtestphrase`
+- `.uncensor badtestphrase`
+- `.clearcensors`
 - `.setlogs`
-- `.deleterole <role>`
-- `.shut @member`
-- `.unshut @member`
-- `.clearwatchlist`
-- `.rshut @member`
-- `.unrshut @member`
-- `.lockdown`
+- `.lock`
 - `.unlock`
+- `.editactivity channel #channel`
+- `.editactivity next 12h`
+- `.stopactivity`
+
+Run only if safe:
+
+- `.setnick @admin TestName`
+- `.setnick @normal TestName`
+- `.kick @normal test`
+- `.ban @normal test`
+- `.unban <normal_user_id>`
+- `.addrole @normal @role`
+- `.removerole @normal @role`
+- `.deleterole @role`
+- `.lockdown`
 - `.rlockdown`
 - `.runlock`
-- `.lock`
-- `.ban @member [reason]`
-- `.unban <user/id>`
-- `.send [channel] <message>`
-- `.reply <message id/link> <message>`
-- `.aban @member`
-- `.raban @member`
-- `.summon @member`
-- `.summon2 @member`
-- `.block @member`
-- `.unblock @member`
+- `.shut @normal`
+- `.unshut @normal`
+- `.rshut @normal`
+- `.unrshut @normal`
+- `.clearwatchlist`
+- `.send #channel test message`
+- `.reply <message_id_or_link> test reply`
+- `.aban @normal`
+- `.raban @normal`
+- `.abanlist`
+- `.summon @normal`
+- `.summon2 @normal`
+- `.block @normal`
+- `.unblock @normal`
 
-### Prefix
-
-- `.prefix`
-- `.preifx`
-- `.setprefix`
-
-Current expected:
-
-- Superowner in server: only superowner changes prefix.
-- Superowner not in server: server owner/admin changes prefix.
-- Prefix length 1-5, no spaces, not a user mention.
-
-## Quewo Commands
-
-### Public Quewo
-
-- `.bal [member]` / `.cash [member]`
-- `.profile [member]` / `.level [member]` / `.lvl [member]`
-- `.quests`
-- `.shop`
-- `.cooldowns`
-- `.transactions [member]`
-- `.lottery`
-- `.lotterystats`
-- `.buytick <amount>`
-- `.daily`
-- `.weekly`
-- `.monthly`
-- `.cf <amount> <h/t>`
-- `.roulette <amount> [red/black/green]` (matching color pays x3)
-- `.slots <amount>`
-- `.blackjack <amount>`
-- `.scratch <amount>`
-- `.ms <amount>`
-- `.wheel <amount>`
-- `.give @member <amount>`
-- `.lb` (local/global leaderboard UI, ranking type menu, page buttons, caller rank)
-- `.econhelp`
-- `.quewohelp`
-- `.explain <command>`
+Expected: server owner can act on admins and normal users, but not superowner.
 
 ### Quewo Admin
 
-- `.editlottery <setting> <value>`
+Run:
+
+- `.editlottery price 200000`
+- `.editlottery duration 12h`
+- `.editlottery cut 10`
+- `.editlottery channel #channel`
 - `.stoplottery`
+- `.add @normal 1000`
+- `.remove @normal 100`
+- `.addtick @normal 2`
+- `.settick @normal 5`
+- `.setquesos @normal 1000`
 
-### Quewo Admin / Superowner
+Expected: works for server owner.
 
-- `.add @member|@role|@everyone <amount>`
-- `.remove @member <amount|all>`
-- `.addtick @member|@role|@everyone <tickets>`
-- `.settick @member|@role|@everyone <tickets>`
-- `.setquesos @member|@role|@everyone <amount>`
+### Server Owner Permission Checks
 
-## Feature Tests
+- Disable `.calc`, then run `.calc 1+1`.
+  Expected: denied while disabled.
+- Try admin commands against superowner.
+  Expected: denied.
+- Try admin commands against admin and normal user.
+  Expected: allowed where Discord hierarchy allows it.
+- Try `.prefix !` while superowner is in server.
+  Expected: denied.
+- Try `.prefix !` while superowner is not in server.
+  Expected: allowed.
+
+## Admin User Tests
+
+Expected: can use admin-power commands, cannot bypass disabled commands, cannot act on server owner or superowner.
+
+### Public Commands
+
+Run the same public commands from Superowner Tests, except `.fsleep` should only work if internally allowed.
+
+Expected: public commands work.
+
+### Admin Commands
+
+Run:
+
+- `.disable calc`
+- `.enable calc`
+- `.dclist`
+- `.rolesinfo`
+- `.roleinfo @role`
+- `.test`
+- `.endttt`
+- `.purge 1`
+- `.rpurge 1`
+- `.steal`
+- `.giveaway 1m test prize`
+- `.listbans`
+- `.listblocks`
+- `.lists`
+- `.censor badtestphrase`
+- `.uncensor badtestphrase`
+- `.clearcensors`
+- `.setlogs`
+- `.lock`
+- `.unlock`
+- `.editactivity channel #channel`
+- `.editactivity next 12h`
+- `.stopactivity`
+
+Run only if safe:
+
+- `.setnick @normal TestName`
+- `.kick @normal test`
+- `.ban @normal test`
+- `.unban <normal_user_id>`
+- `.addrole @normal @role`
+- `.removerole @normal @role`
+- `.deleterole @role`
+- `.lockdown`
+- `.rlockdown`
+- `.runlock`
+- `.shut @normal`
+- `.unshut @normal`
+- `.rshut @normal`
+- `.unrshut @normal`
+- `.clearwatchlist`
+- `.send #channel test message`
+- `.reply <message_id_or_link> test reply`
+- `.aban @normal`
+- `.raban @normal`
+- `.abanlist`
+- `.summon @normal`
+- `.summon2 @normal`
+- `.block @normal`
+- `.unblock @normal`
+
+Expected: admin can act on normal users, but not server owner or superowner.
+
+### Quewo Admin
+
+Run:
+
+- `.editlottery price 200000`
+- `.editlottery duration 12h`
+- `.editlottery cut 10`
+- `.editlottery channel #channel`
+- `.stoplottery`
+- `.add @normal 1000`
+- `.remove @normal 100`
+- `.addtick @normal 2`
+- `.settick @normal 5`
+- `.setquesos @normal 1000`
+
+Expected: works for admin.
+
+### Admin Permission Checks
+
+- Disable `.calc`, then run `.calc 1+1`.
+  Expected: denied while disabled.
+- Try admin commands against server owner and superowner.
+  Expected: denied.
+- Try admin commands against normal user.
+  Expected: allowed where Discord hierarchy allows it.
+- Try `.prefix !` while superowner is in server.
+  Expected: denied.
+- Try `.prefix !` while superowner is not in server.
+  Expected: allowed.
+
+## Normal User Tests
+
+Expected: public commands work. Admin, activity admin, lottery admin, and Quewo admin commands are denied.
+
+### Public Commands
+
+Run:
+
+- `.help`
+- `.userinfo`
+- `.userinfo @admin`
+- `.pfp`
+- `.pfp @admin`
+- `.q`
+- `.dsnipe`
+- `.esnipe`
+- `.rsnipe`
+- `.poll test question | one | two`
+- `.poll yes no test | yes | no | 1m`
+- `.picker apple banana orange`
+- `.timer 1m test`
+- `.ctimer`
+- `.alarm 1m test alarm`
+- `.calc 2+2`
+- `.define test`
+- `.afk testing`
+- `.sleep`
+- `.wake @normal`
+- `.setbday 01/01`
+- `.removebday`
+- `.activity`
+- `.activitystats`
+- `.away`
+- `.find <user_id>`
+- `.ask hello`
+- `.generate short test prompt`
+- `.analyse short test text`
+- `.translate hello to Italian`
+
+Expected: all public commands run if the required external API/config is available.
+
+### Games
+
+Run:
+
+- `.ttt @other_user`
+- `.ttt @other_user` with a bet
+- `.c4 @other_user`
+- `.c4 @other_user` with a bet
+- `.chess @other_user`
+- `.chess @other_user` with a bet
+- `.move e2e4` or `.chessmove e2e4` during chess fallback testing
+- `.resign`
+
+Expected: games work, bet accept prompts appear, payouts mention both users with pings where game result should ping.
+
+### Quewo
+
+Run:
+
+- `.bal`
+- `.cash`
+- `.profile`
+- `.level`
+- `.lvl`
+- `.inventory`
+- `.inv`
+- `.items`
+- `.quests`
+- `.shop`
+- `.cooldowns`
+- `.transactions`
+- `.daily`
+- `.weekly`
+- `.monthly`
+- `.cf 1000 h`
+- `.roulette 1000 red`
+- `.slots 1000`
+- `.blackjack 1000`
+- `.scratch 1000`
+- `.tower 1000`
+- `.vault 1000`
+- `.memory 1000`
+- `.ms 1000`
+- `.wheel 1000`
+- `.give @other_user 1000`
+- `.lottery`
+- `.lotterystats`
+- `.buytick 1`
+- `.lb`
+- `.econhelp`
+- `.quewohelp`
+- `.explain shop`
+
+Expected: public Quewo commands work, balances update correctly, cooldowns apply.
+
+### Denial Checks
+
+Run:
+
+- `.disable calc`
+- `.setlogs`
+- `.purge 1`
+- `.kick @other_user`
+- `.ban @other_user`
+- `.addrole @other_user @role`
+- `.setbdaychannel #channel`
+- `.activity setup`
+- `.editactivity channel #channel`
+- `.stopactivity`
+- `.editlottery price 200000`
+- `.stoplottery`
+- `.add @normal 1000`
+- `.remove @normal 100`
+- `.addtick @normal 1`
+- `.settick @normal 1`
+- `.setquesos @normal 1000`
+- `.fsleep @other_user 1m`
+
+Expected: denied, unless this normal user is the person who added the bot for birthday/activity setup.
+
+## Shared Feature Tests
+
+Run these after role tests because they need multiple users, waiting, or restart behavior.
 
 ### Quewo System
 
 - New user balance row creation.
 - Balance formatting with Qoins custom emoji.
-- Shop buy flow, item limit, insufficient funds.
-- Fortune Vial purchase, temporary luck boost timer, and boosted game outcomes.
-- Inventory/profile display.
-- Quest claim/refresh buttons.
+- Shop buy flow: buy item, hit item limit, insufficient funds.
+- Fortune Vial purchase: temporary luck boost appears with a live timestamp and expires.
+- Shop message updates after purchases and refreshes active effect state while open.
+- Inventory/profile display after buying items.
+- Quest claim and refresh buttons.
 - Daily/weekly/monthly cooldowns and streaks.
-- Gambling cooldowns and result balances.
-- Shared Quewo command cooldown blocks rapid back-to-back Quewo commands for normal users.
-- Quewo amount parsing: `4m`, `4.5m`, `4k`, `47k`, `734k`, `1b`.
-- Slots only pays when all 3 reels match: ×2, ×3, ×4, or ×5 by symbol.
-- Scratch only pays when all 5 symbols match, with ×10 payout and low win chance.
-- Leaderboard pagination.
+- Shared Quewo cooldown blocks rapid back-to-back Quewo commands for normal users.
+- Amount parsing: `4m`, `4.5m`, `4k`, `47k`, `734k`, `1b`.
+- Slots: only pays when all 3 reels match; payouts are x2, x3, x4, x5 by symbol.
+- Scratch: only pays when all 5 symbols match; QScratchMark pays x10, QSlotJackpot pays x12, and win chance is low.
+- Tower: safe doors climb multipliers; cash out pays, trapped door resets the universal gambling streak.
+- Vault: 3-digit guesses show exact/close hints; correct code pays, failed tries reset the universal gambling streak.
+- Memory: matching all 8 pairs pays; too many misses or timeout resets the universal gambling streak.
+- Roulette: matching color pays x3 and loading display matches result.
+- Mine Sweep: multiplier starts at x2.
+- Leaderboard: local/global switch, ranking type menu, pages, caller rank, user mentions open profiles.
 - Transactions pagination/limits.
 - Chat XP background award and level-up embed.
 - Admin/superowner amount override behavior.
@@ -208,46 +618,58 @@ Current expected:
 - First setup asks for channel and period.
 - Lottery channel permissions are applied.
 - Panel restores after restart.
-- `.lottery` status/check messages include the ticket UI and stay synced after restart.
-- Buy 1/5/10/custom buttons update pot/message.
-- Private/ephemeral ticket confirmation works.
-- Ticket role assignment.
-- `.lotterystats` pagination.
-- Minimum-player refund path.
-- Winner path pays pot, clears the lottery channel, posts the winner message, then posts a fresh lottery panel.
-- `.editlottery price/duration/cut/channel`.
-- `.stoplottery`.
-- `.addtick`, `.settick`, `.setquesos` with user, role, and everyone.
+- `.lottery` status/check messages include ticket UI and stay synced after restart.
+- Buy 1/5/10/custom buttons update pot and panel.
+- Private ticket confirmation works.
+- Ticket role assignment works.
+- `.lotterystats` pagination works.
+- Minimum-player refund path returns money and sends confirmation.
+- Winner path pays pot, clears lottery channel, posts winner message, then posts fresh lottery panel.
+- `.editlottery price/duration/cut/channel` updates panel.
+- `.stoplottery` clears config/tickets.
+- `.addtick`, `.settick`, `.setquesos` work with user, role, and everyone.
+
+### Activity Reports
+
+- `.activity setup` dropdown works.
+- `.activity setup` channel ID/mention reply works.
+- `.activity` shows status if already configured.
+- `.activitystats` shows the same status embed.
+- `.editactivity channel #channel` moves reports and keeps next report time.
+- `.editactivity next 12h` resets next report timer.
+- `.stopactivity` disables reports and clears current window.
+- 24-hour report posts top 5 with messages, reactions, voice activity, and custom number emojis.
+- Activity report loop survives restart.
 
 ### Games
 
 - TTT challenge accept/decline/timeout.
-- TTT bet proposer prompt, opponent bet accept/decline.
+- TTT bet proposer prompt and opponent bet accept/decline.
 - TTT win/draw/timeout payout.
 - TTT custom X/O emojis render.
 - C4 challenge accept/decline/timeout.
-- C4 bet proposer prompt, opponent bet accept/decline.
+- C4 bet proposer prompt and opponent bet accept/decline.
 - C4 board column numbers show below the grid.
 - C4 win/draw/timeout payout.
 - C4 does not freeze after repeated moves or full columns.
 - Chess challenge accept/decline.
-- Chess bet proposer prompt, opponent bet accept/decline.
-- Chess UI only lets the current player move.
-- Chess UI source menu lists movable pieces, then legal destination/move choices.
-- Chess asks for move confirmation before applying the selected move.
-- Chess tracks live 10-minute total clocks for both players and awards timeout wins.
-- Chess board flips to the current player's perspective.
-- Chess board uses custom number labels and custom file-letter labels after file-letter markdowns are uploaded.
-- Chess rejects illegal fallback notation moves.
+- Chess bet proposer prompt and opponent bet accept/decline.
+- Chess UI only lets current player move.
+- Chess UI source menu lists movable pieces and legal destinations.
+- Chess asks for move confirmation.
+- Chess live 10-minute clocks update and award timeout wins.
+- Chess board flips to current player's perspective.
+- Chess board uses custom number labels and file-letter labels.
+- Chess rejects illegal fallback notation.
 - Chess detects checkmate, stalemate/draw, resignation, and settles bets.
-- Chess custom emoji placeholders should be replaced after Discord markdowns are uploaded.
 
 ### Timers, Polls, Giveaway
 
 - Timer create, countdown edit, finish ping, restart restore.
 - Timer cancel UI, superowner cancel override.
 - Alarm set and final ping.
-- Poll create yes/no and multi-option.
+- Poll yes/no and multi-option creation.
+- Poll custom number emojis render.
 - Poll reaction updates.
 - Poll timed end and manual `.epoll`.
 - Poll restore after restart.
@@ -258,20 +680,15 @@ Current expected:
 - AFK set, mention response, welcome-back summary.
 - Sleep set, mention response, wake-up summary.
 - Forced sleep/wake permission behavior.
-- Birthday set/remove and midnight birthday announcement.
-- Birthday channel setup and per-server announcement only when the birthday user is still in that server.
-- Activity status embed on repeated `.activity` or `.activitystats`.
-- Activity channel setup/change with `.activity setup`, dropdown or channel ID/mention reply.
-- `.editactivity channel #channel` moves reports while keeping the current next report time.
-- `.editactivity next 12h` resets the next report timer.
-- `.stopactivity` disables reports and clears the current activity window.
-- 24-hour top-5 activity report.
+- Birthday set/remove.
+- Birthday channel setup.
+- Midnight birthday announcement posts in every configured server where the birthday user is still a member.
 - `.away` output.
 
 ### Moderation / Server Tools
 
 - Message delete/edit logs and snipes.
-- Purge/rpurge, attachments logging.
+- Purge/rpurge and attachment logging.
 - Reaction add/remove/clear logs.
 - Reaction shutdown blocks reactions.
 - Message shutdown deletes non-owner messages.

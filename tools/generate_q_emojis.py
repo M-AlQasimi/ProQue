@@ -560,6 +560,82 @@ def qroyal_crown():
     return c
 
 
+def qtower():
+    c = Canvas()
+    c.rect(38, 37, 52, 67, BLUE_MID, outline=BLUE_DARK, width=4)
+    c.poly([(34, 37), (48, 22), (64, 37), (80, 22), (94, 37)], SILVER, outline=BLUE_DARK, width=3)
+    for y in [50, 68, 86]:
+        c.line(43, y, 85, y, CYAN, 2)
+    for x in [51, 64, 77]:
+        c.rect(x - 4, 52, 8, 12, ICE, outline=BLUE_DARK, width=1.5)
+    c.rect(56, 83, 16, 21, NAVY, outline=CYAN, width=2)
+    c.text_q(64, 72, 22, ICE)
+    c.sparkle(96, 30, 6)
+    return c
+
+
+def qtower_door():
+    c = Canvas()
+    c.rect(34, 24, 60, 84, BLUE_MID, outline=BLUE_DARK, width=5)
+    c.rect(43, 34, 42, 64, ICE, outline=CYAN, width=3)
+    c.circle(77, 67, 4, GOLD, outline=BLUE_DARK, width=1)
+    c.text_q(61, 64, 28, BLUE_MID)
+    c.sparkle(96, 32, 6)
+    return c
+
+
+def qtower_trap():
+    c = Canvas()
+    c.rect(33, 36, 62, 64, BLUE_DARK, outline=NAVY, width=5)
+    c.poly([(34, 36), (52, 24), (64, 36), (76, 24), (94, 36)], RED, outline=BLUE_DARK, width=3)
+    c.line(45, 82, 83, 50, RED, 7)
+    c.line(45, 50, 83, 82, RED, 7)
+    c.circle(64, 66, 18, TRANSPARENT, outline=ICE, width=4)
+    c.sparkle(96, 31, 6)
+    return c
+
+
+def qvault():
+    c = Canvas()
+    c.rect(25, 29, 78, 78, BLUE_DARK, outline=NAVY, width=5)
+    c.circle(64, 68, 28, SILVER, outline=BLUE_MID, width=4)
+    c.circle(64, 68, 13, NAVY, outline=CYAN, width=3)
+    for angle in [0, math.tau / 3, math.tau * 2 / 3]:
+        c.line(64, 68, 64 + math.cos(angle) * 21, 68 + math.sin(angle) * 21, ICE, 3)
+    c.text_q(64, 68, 18, CYAN)
+    c.sparkle(96, 32, 6)
+    return c
+
+
+def qvault_dial():
+    c = qvault()
+    c.circle(92, 91, 18, GOLD, outline=BLUE_DARK, width=3)
+    c.line(92, 91, 104, 83, ICE, 4)
+    c.line(92, 91, 84, 80, ICE, 3)
+    return c
+
+
+def qmemory():
+    c = Canvas()
+    c.rect(27, 27, 34, 34, BLUE_MID, outline=BLUE_DARK, width=3)
+    c.rect(67, 27, 34, 34, ICE, outline=BLUE_DARK, width=3)
+    c.rect(27, 67, 34, 34, ICE, outline=BLUE_DARK, width=3)
+    c.rect(67, 67, 34, 34, BLUE_MID, outline=BLUE_DARK, width=3)
+    c.text_q(44, 44, 18, ICE)
+    c.text_q(84, 84, 18, ICE)
+    c.circle(84, 44, 9, GOLD, outline=BLUE_DARK, width=2)
+    c.circle(44, 84, 9, GOLD, outline=BLUE_DARK, width=2)
+    c.sparkle(102, 28, 6)
+    return c
+
+
+def qmemory_tile():
+    c = qtile(BLUE_DARK, NAVY, False)
+    c.circle(64, 64, 25, BLUE_MID, outline=CYAN, width=3)
+    c.text_q(64, 65, 29, ICE)
+    return c
+
+
 def qbirthday():
     c = Canvas()
     c.rect(31, 60, 66, 38, BLUE, outline=BLUE_DARK, width=4)
@@ -1439,6 +1515,13 @@ STATIC = {
     "QChessFileF": qchess_file_f,
     "QChessFileG": qchess_file_g,
     "QChessFileH": qchess_file_h,
+    "QTower": qtower,
+    "QTowerDoor": qtower_door,
+    "QTowerTrap": qtower_trap,
+    "QVault": qvault,
+    "QVaultDial": qvault_dial,
+    "QMemory": qmemory,
+    "QMemoryTile": qmemory_tile,
 }
 
 STATIC_CATEGORIES = {
@@ -1492,6 +1575,15 @@ STATIC_CATEGORIES = {
     "games/wheel": {
         "QWheel", "QWheelRed", "QWheelBlue", "QWheelGreen", "QWheelOrange",
         "QWheelPurple", "QWheelGold", "QWheelBlank", "QWheelPink",
+    },
+    "games/tower": {
+        "QTower", "QTowerDoor", "QTowerTrap",
+    },
+    "games/vault": {
+        "QVault", "QVaultDial",
+    },
+    "games/memory": {
+        "QMemory", "QMemoryTile",
     },
     "polls": {
         "QPoll", "QPollOne", "QPollTwo", "QPollThree", "QPollFour", "QPollFive",

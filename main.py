@@ -26,7 +26,7 @@ from io import BytesIO
 from threading import Thread
 from economy import (
     award_chat_xp as economy_award_chat_xp,
-    build_profile_embed as economy_build_profile_embed,
+    build_level_up_embed as economy_build_level_up_embed,
     ensure_db_ready as economy_ensure_db_ready,
     format_balance as economy_format_balance,
     get_user as economy_get_user,
@@ -759,9 +759,9 @@ async def on_ready():
     try:
         await economy_setup(bot, send_log)
         economy_command_names = [
-            "bal", "profile", "quests", "shop", "cooldowns", "transactions", "lottery", "editlottery", "stoplottery", "lotterystats", "buytick",
+            "bal", "profile", "inventory", "quests", "shop", "cooldowns", "transactions", "lottery", "editlottery", "stoplottery", "lotterystats", "buytick",
             "daily", "weekly", "monthly", "cf", "roulette", "slots",
-            "blackjack", "scratch", "ms", "wheel", "give", "lb",
+            "blackjack", "scratch", "tower", "vault", "memory", "ms", "wheel", "give", "lb",
             "add", "remove", "addtick", "settick", "setquesos", "econhelp", "explain"
         ]
         loaded_economy_commands = [name for name in economy_command_names if bot.get_command(name)]
@@ -1515,9 +1515,8 @@ async def award_chat_xp_background(message):
     try:
         data = await asyncio.to_thread(economy_get_user, message.author.id)
         await message.channel.send(
-            f"{economy_q_level_pulse} <@{message.author.id}> reached **level {xp_result['level']}** "
-            f"and earned **{economy_format_balance(xp_result['reward'])}**!",
-            embed=economy_build_profile_embed(message.author, data),
+            f"{economy_q_level_pulse} <@{message.author.id}> leveled up.",
+            embed=economy_build_level_up_embed(message.author, data, xp_result),
             allowed_mentions=discord.AllowedMentions.none()
         )
     except Exception as e:
@@ -1755,8 +1754,8 @@ async def on_command_error(ctx, error):
 
 HELP_CATEGORIES = {
     "Quewo": [
-        "bal", "profile", "quests", "shop", "cooldowns", "transactions", "lottery", "lotterystats", "buytick",
-        "daily", "weekly", "monthly", "cf", "roulette", "slots", "blackjack", "scratch", "ms", "wheel",
+        "bal", "profile", "inventory", "quests", "shop", "cooldowns", "transactions", "lottery", "lotterystats", "buytick",
+        "daily", "weekly", "monthly", "cf", "roulette", "slots", "blackjack", "scratch", "tower", "vault", "memory", "ms", "wheel",
         "give", "lb", "econhelp", "explain",
     ],
     "Games": ["ttt", "c4", "chess", "move", "resign", "q", "picker"],
@@ -4586,7 +4585,11 @@ async def poll(ctx, *, args):
     for opt in options:
         embed.add_field(name=opt, value="0", inline=True)
     if end_time:
-        embed.add_field(name="Ends", value=discord.utils.format_dt(end_time, "f"), inline=False)
+        embed.add_field(
+            name="Ends",
+            value=f"{discord.utils.format_dt(end_time, 'R')} ({discord.utils.format_dt(end_time, 'f')})",
+            inline=False
+        )
         embed.timestamp = end_time
     embed.set_footer(text="Poll")
 
@@ -4775,11 +4778,20 @@ async def giveaway(ctx, time: str, *, prize: str):
     amount, unit = int(match[1]), match[2]
     unit_map = {'s': 1, 'm': 60, 'h': 3600, 'd': 86400, 'w': 604800}
     seconds = amount * unit_map[unit]
-    embed = discord.Embed(title=f"{economy_q_gift} Giveaway!", description=f"Prize: **{prize}**\nReact with {economy_q_confetti} to enter!", color=0x00ff00)
-    embed.set_footer(text=f"Ends in {time}")
+    end_time = datetime.now(timezone.utc) + timedelta(seconds=seconds)
+    embed = discord.Embed(
+        title=f"{economy_q_gift} Giveaway!",
+        description=(
+            f"Prize: **{prize}**\n"
+            f"Ends: {discord.utils.format_dt(end_time, 'R')} ({discord.utils.format_dt(end_time, 'f')})\n"
+            f"React with {economy_q_confetti} to enter!"
+        ),
+        color=0x00ff00
+    )
+    embed.timestamp = end_time
+    embed.set_footer(text="Ends at")
     msg = await ctx.send(embed=embed)
     await msg.add_reaction(reaction_emoji(economy_q_confetti))
-    end_time = datetime.now(timezone.utc) + timedelta(seconds=seconds)
     while seconds > 0:
         if seconds <= 60:
             embed.set_footer(text=f"Ends in {seconds}s")
