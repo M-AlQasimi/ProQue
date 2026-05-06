@@ -1122,7 +1122,6 @@ def wordle_setup_embed(guild):
         ),
         inline=False
     )
-    embed.set_footer(text="Words do not repeat for this server.")
     return embed
 
 def wordle_daily_embed(word_date):
@@ -1351,12 +1350,21 @@ async def ensure_daily_wordle(guild_id, config, announce=True):
         if channel and announce:
             await channel.send(f"{economy_q_warning} Wordle has used every saved word for this server. Add more words before the next daily puzzle.")
         return
-    saved = await asyncio.to_thread(update_guild_wordle_daily, guild.id, word, today)
-    if not saved:
-        return
     config["current_word"] = word
     config["current_date"] = today
     guild_wordle_configs[guild.id] = config
+    saved = await asyncio.to_thread(update_guild_wordle_daily, guild.id, word, today)
+    if not saved:
+        await asyncio.to_thread(
+            save_guild_wordle_config,
+            guild.id,
+            config["channel_id"],
+            config.get("role_id"),
+            config.get("message_id"),
+            config.get("set_by_user_id"),
+            word,
+            today,
+        )
     if not announce:
         return
     channel = guild.get_channel(int(config["channel_id"]))
