@@ -4724,15 +4724,16 @@ async def tower(ctx, amount: str):
                 return
             if self.index == bad_doors[floor]:
                 game_over = True
+                await interaction.response.defer()
                 try:
                     latest = get_user(user_id)
                     new_balance = max(0, latest["balance"] - amount)
                     update_user(user_id, balance=new_balance, gamble_streak=0, total_lost=latest["total_lost"] + amount)
                 except Exception:
-                    await interaction.response.edit_message(content=render(f"{Q_DENIED} Database unavailable."), view=None)
+                    await interaction.edit_original_response(content=render(f"{Q_DENIED} Database unavailable."), view=None)
                     return
                 view.clear_items()
-                await interaction.response.edit_message(
+                await interaction.edit_original_response(
                     content=render(
                         f">>> {Q_TOWER_TRAP} **Door {self.index + 1} was trapped.**\n"
                         f"Lost: **{format_balance(amount)}**\n"
@@ -4751,6 +4752,8 @@ async def tower(ctx, amount: str):
         nonlocal game_over
         game_over = True
         base_multiplier = TOWER_MULTIPLIERS[floor - 1]
+        if not interaction.response.is_done():
+            await interaction.response.defer()
         try:
             latest = get_user(user_id)
             new_streak = next_gambling_streak(latest)
@@ -4759,10 +4762,10 @@ async def tower(ctx, amount: str):
             new_balance = latest["balance"] + winnings - amount
             update_user(user_id, balance=new_balance, gamble_streak=new_streak, total_won=latest["total_won"] + winnings - amount)
         except Exception:
-            await interaction.response.edit_message(content=render(f"{Q_DENIED} Database unavailable."), view=None)
+            await interaction.edit_original_response(content=render(f"{Q_DENIED} Database unavailable."), view=None)
             return
         view.clear_items()
-        await interaction.response.edit_message(
+        await interaction.edit_original_response(
             content=render(
                 f">>> {Q_SUCCESS} **{label}**\n"
                 f"Multiplier: **×{base_multiplier * streak_mult:.3f}** (base ×{base_multiplier:.2f}, streak ×{streak_mult:.3f})"
