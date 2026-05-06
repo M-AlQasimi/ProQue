@@ -5053,7 +5053,7 @@ async def vault(ctx, amount: str):
 # =====================
 MEMORY_SYMBOLS = [Q_SLOT_STAR, Q_SLOT_DIAMOND, Q_SLOT_CROWN, Q_SLOT_JACKPOT, Q_SCRATCH_MARK, Q_XP, Q_TICKET, Q_FORTUNE_VIAL]
 MEMORY_MULTIPLIER = 3
-MEMORY_MAX_MISTAKES = 5
+MEMORY_MAX_MISTAKES = 6
 
 @commands.command(name="memory", aliases=["mem", "qmemory"])
 async def memory_game(ctx, amount: str):
