@@ -79,9 +79,11 @@ def _create_tables(cur):
             guild_id BIGINT PRIMARY KEY,
             channel_id BIGINT NOT NULL,
             set_by_user_id BIGINT,
-            next_report TIMESTAMP NOT NULL
+            next_report TIMESTAMP NOT NULL,
+            current_message_id BIGINT
         )
     """)
+    cur.execute("ALTER TABLE guild_activity_config ADD COLUMN IF NOT EXISTS current_message_id BIGINT")
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS guild_activity_counts (
@@ -902,7 +904,7 @@ def load_guild_activity_channels():
         if conn is None:
             return {}
         cur = conn.cursor()
-        cur.execute("SELECT guild_id, channel_id, set_by_user_id, next_report FROM guild_activity_config")
+        cur.execute("SELECT guild_id, channel_id, set_by_user_id, next_report, current_message_id FROM guild_activity_config")
         rows = cur.fetchall()
         cur.close()
         conn.close()
@@ -912,13 +914,14 @@ def load_guild_activity_channels():
                 "channel_id": int(channel_id),
                 "set_by_user_id": int(set_by_user_id) if set_by_user_id is not None else None,
                 "next_report": next_report.replace(tzinfo=timezone.utc) if next_report.tzinfo is None else next_report,
+                "current_message_id": int(current_message_id) if current_message_id is not None else None,
             }
-            for guild_id, channel_id, set_by_user_id, next_report in rows
+            for guild_id, channel_id, set_by_user_id, next_report, current_message_id in rows
         }
     except Exception:
         return {}
 
-def save_guild_activity_channel(guild_id, channel_id, set_by_user_id=None, next_report=None):
+def save_guild_activity_channel(guild_id, channel_id, set_by_user_id=None, next_report=None, current_message_id=None):
     _ensure_ready()
     if not pg_ready:
         return False
@@ -931,9 +934,15 @@ def save_guild_activity_channel(guild_id, channel_id, set_by_user_id=None, next_
             return False
         cur = conn.cursor()
         cur.execute(
-            "INSERT INTO guild_activity_config (guild_id, channel_id, set_by_user_id, next_report) VALUES (%s, %s, %s, %s) "
-            "ON CONFLICT (guild_id) DO UPDATE SET channel_id = EXCLUDED.channel_id, set_by_user_id = EXCLUDED.set_by_user_id, next_report = EXCLUDED.next_report",
-            (int(guild_id), int(channel_id), int(set_by_user_id) if set_by_user_id is not None else None, next_report)
+            "INSERT INTO guild_activity_config (guild_id, channel_id, set_by_user_id, next_report, current_message_id) VALUES (%s, %s, %s, %s, %s) "
+            "ON CONFLICT (guild_id) DO UPDATE SET channel_id = EXCLUDED.channel_id, set_by_user_id = EXCLUDED.set_by_user_id, next_report = EXCLUDED.next_report, current_message_id = EXCLUDED.current_message_id",
+            (
+                int(guild_id),
+                int(channel_id),
+                int(set_by_user_id) if set_by_user_id is not None else None,
+                next_report,
+                int(current_message_id) if current_message_id is not None else None,
+            )
         )
         conn.commit()
         cur.close()
@@ -954,6 +963,26 @@ def update_guild_activity_next_report(guild_id, next_report):
         cur.execute(
             "UPDATE guild_activity_config SET next_report = %s WHERE guild_id = %s",
             (next_report, int(guild_id))
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+        return True
+    except Exception:
+        return False
+
+def update_guild_activity_message_id(guild_id, message_id):
+    _ensure_ready()
+    if not pg_ready:
+        return False
+    try:
+        conn = pg_conn()
+        if conn is None:
+            return False
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE guild_activity_config SET current_message_id = %s WHERE guild_id = %s",
+            (int(message_id) if message_id is not None else None, int(guild_id))
         )
         conn.commit()
         cur.close()

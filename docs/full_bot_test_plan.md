@@ -697,11 +697,12 @@ Run these after role tests because they need multiple users, waiting, or restart
 - `.activity setup` channel ID/mention reply works.
 - `.activity` shows status if already configured.
 - `.activitystats` shows the same status embed.
+- Activity setup posts a live activity panel and the bot edits that same panel as message counts change.
 - `.editactivity channel #channel` moves reports and keeps next report time.
 - `.editactivity next 12h` resets next report timer.
-- `.endactivity` clears the report channel, posts previous winners, posts a fresh report-start message, and keeps reports enabled.
+- `.endactivity` clears the report channel, posts previous winners, posts a fresh live activity panel, and keeps reports enabled.
 - `.stopactivity` disables reports and clears current window.
-- 24-hour report clears the report channel, posts top 5 by messages with custom number emojis, then posts a fresh report-start message.
+- 24-hour report clears the report channel, posts top 5 by messages with custom number emojis, then posts a fresh live activity panel.
 - After a report is due, `.activity` shows a fresh next report time even if the report channel was missing or the send failed.
 - Activity report loop survives restart.
 

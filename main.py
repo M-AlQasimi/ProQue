@@ -121,6 +121,7 @@ from pgdata import (
     save_shutdown_channels,
     save_sleeping_user,
     update_guild_activity_next_report,
+    update_guild_activity_message_id,
     save_watchlist,
 )
 last_message_time = 0
@@ -1062,16 +1063,29 @@ def activity_report_embed(guild, rows):
     embed.set_footer(text=f"{guild.name} • next report in 24 hours")
     return embed
 
-def activity_new_report_embed(guild, next_report):
+def activity_live_embed(guild, rows, next_report):
     embed = discord.Embed(
-        title=f"{economy_q_activity} New Activity Report Started",
-        description="The new activity window is now tracking messages.",
+        title=f"{economy_q_activity} Current Activity Report",
+        description="Live message leaderboard for this report window.",
         color=discord.Color.green(),
         timestamp=datetime.now(timezone.utc)
     )
-    embed.add_field(name="Ends", value=f"<t:{int(next_report.timestamp())}:R>", inline=True)
-    embed.add_field(name="Report Time", value=f"<t:{int(next_report.timestamp())}:f>", inline=True)
-    embed.set_footer(text=guild.name)
+    if next_report and next_report.tzinfo is None:
+        next_report = next_report.replace(tzinfo=timezone.utc)
+    if next_report:
+        embed.add_field(name="Ends", value=f"<t:{int(next_report.timestamp())}:R>", inline=True)
+        embed.add_field(name="Report Time", value=f"<t:{int(next_report.timestamp())}:f>", inline=True)
+    if rows:
+        lines = []
+        for index, row in enumerate(rows, 1):
+            rank = POLL_NUMBER_EMOJIS[index - 1] if index <= len(POLL_NUMBER_EMOJIS) else f"**{index}.**"
+            lines.append(f"{rank} <@{row['user_id']}> — **{row['messages']:,}** messages")
+        total_messages = sum(row["messages"] for row in rows)
+        embed.add_field(name="Current Top 5", value="\n".join(lines), inline=False)
+        embed.add_field(name="Tracked Messages", value=f"**{total_messages:,}**", inline=True)
+    else:
+        embed.add_field(name="Current Top 5", value="No messages tracked yet.", inline=False)
+    embed.set_footer(text=f"{guild.name} • updates automatically")
     return embed
 
 def activity_setup_embed(guild):
@@ -1143,6 +1157,7 @@ async def save_activity_report_config(guild, selected_channel, user_id, next_rep
         selected_channel.id,
         user_id,
         next_report,
+        None,
     )
     if not saved:
         return False, "Activity channel save failed because the database is unavailable.", None
@@ -1150,6 +1165,7 @@ async def save_activity_report_config(guild, selected_channel, user_id, next_rep
         "channel_id": selected_channel.id,
         "set_by_user_id": user_id,
         "next_report": next_report,
+        "current_message_id": None,
     }
     return True, "", next_report
 
@@ -1161,6 +1177,7 @@ async def schedule_next_activity_report(guild_id, config, reason="completed"):
         "channel_id": int(config["channel_id"]),
         "set_by_user_id": config.get("set_by_user_id"),
         "next_report": next_report,
+        "current_message_id": config.get("current_message_id"),
     }
     updated = await asyncio.to_thread(update_guild_activity_next_report, guild_id, next_report)
     if not updated:
@@ -1170,10 +1187,50 @@ async def schedule_next_activity_report(guild_id, config, reason="completed"):
             int(config["channel_id"]),
             config.get("set_by_user_id"),
             next_report,
+            config.get("current_message_id"),
         )
         if not saved:
             print(f"Activity next report save failed for guild {guild_id} after {reason}.")
     return next_report
+
+async def save_activity_live_message_id(guild_id, config, message_id):
+    config["current_message_id"] = message_id
+    if int(guild_id) in guild_activity_channels:
+        guild_activity_channels[int(guild_id)]["current_message_id"] = message_id
+    updated = await asyncio.to_thread(update_guild_activity_message_id, int(guild_id), message_id)
+    if not updated:
+        print(f"Activity live message id save failed for guild {guild_id}.")
+
+async def refresh_activity_live_message(guild_id, config, rows=None):
+    guild = bot.get_guild(int(guild_id))
+    if guild is None:
+        return None
+    channel = resolve_activity_report_channel(guild, str(config["channel_id"]))
+    if channel is None:
+        return None
+    if rows is None:
+        rows = await asyncio.to_thread(get_guild_activity_top, guild.id, 5)
+    embed = activity_live_embed(guild, rows, config.get("next_report"))
+    message = None
+    message_id = config.get("current_message_id")
+    if message_id:
+        try:
+            message = await channel.fetch_message(int(message_id))
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            message = None
+    if message is not None:
+        try:
+            await message.edit(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+            return message
+        except discord.HTTPException as e:
+            print(f"Activity live message edit failed for guild {guild.id}: {type(e).__name__} - {e}")
+    try:
+        message = await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+        await save_activity_live_message_id(guild.id, config, message.id)
+        return message
+    except Exception as e:
+        print(f"Activity live message send failed for guild {guild.id}: {type(e).__name__} - {e}")
+        return None
 
 async def clear_activity_report_channel(channel):
     if channel is None:
@@ -1226,6 +1283,12 @@ async def activity_status_embed(guild, config):
     )
     if config.get("set_by_user_id"):
         embed.add_field(name="Set By", value=f"<@{config['set_by_user_id']}>", inline=True)
+    if config.get("current_message_id") and channel:
+        embed.add_field(
+            name="Live Message",
+            value=f"[Open](https://discord.com/channels/{guild.id}/{channel.id}/{config['current_message_id']})",
+            inline=True
+        )
 
     if rows:
         lines = [
@@ -1260,10 +1323,8 @@ async def send_activity_report(guild_id, config):
         print(f"Activity report failed for guild {guild.id}: {type(e).__name__} - {e}")
     next_report = await schedule_next_activity_report(guild.id, config, "sent" if sent else "failed send")
     if sent:
-        try:
-            await channel.send(embed=activity_new_report_embed(guild, next_report), allowed_mentions=discord.AllowedMentions.none())
-        except Exception as e:
-            print(f"Activity new report message failed for guild {guild.id}: {type(e).__name__} - {e}")
+        await save_activity_live_message_id(guild.id, config, None)
+        await refresh_activity_live_message(guild.id, config, rows=[])
 
 async def activity_report_loop():
     await bot.wait_until_ready()
@@ -1272,6 +1333,8 @@ async def activity_report_loop():
         now = datetime.now(timezone.utc)
         if time.time() - last_flush >= 60:
             await flush_activity_buffer()
+            for guild_id, config in list(guild_activity_channels.items()):
+                await refresh_activity_live_message(guild_id, config)
             last_flush = time.time()
         for guild_id, config in list(guild_activity_channels.items()):
             next_report = config.get("next_report")
@@ -1432,6 +1495,7 @@ async def activity(ctx, action: str = None):
             if not ok:
                 return await interaction.followup.send(message, ephemeral=True)
             self.view.saved = True
+            await refresh_activity_live_message(ctx.guild.id, guild_activity_channels[ctx.guild.id])
             await interaction.edit_original_response(
                 embed=activity_saved_embed(ctx.guild, selected_channel, next_report, interaction.user.id),
                 view=None,
@@ -1498,6 +1562,7 @@ async def activity(ctx, action: str = None):
         for item in view.children:
             item.disabled = True
         if ok:
+            await refresh_activity_live_message(ctx.guild.id, guild_activity_channels[ctx.guild.id])
             await prompt.edit(
                 embed=activity_saved_embed(ctx.guild, selected_channel, next_report, ctx.author.id),
                 view=None,
@@ -1560,6 +1625,7 @@ async def editactivity(ctx, setting: str = None, *, value: str = None):
         ok, message, _ = await save_activity_report_config(ctx.guild, selected_channel, ctx.author.id, next_report)
         if not ok:
             return await ctx.send(f"{economy_q_warning} {message}")
+        await refresh_activity_live_message(ctx.guild.id, guild_activity_channels[ctx.guild.id])
         embed = activity_saved_embed(ctx.guild, selected_channel, next_report, ctx.author.id)
         embed.title = f"{economy_q_activity} Activity Channel Updated"
         embed.description = "Daily activity reports were moved to a new channel."
@@ -1576,6 +1642,7 @@ async def editactivity(ctx, setting: str = None, *, value: str = None):
         ok, message, _ = await save_activity_report_config(ctx.guild, channel, config.get("set_by_user_id") or ctx.author.id, next_report)
         if not ok:
             return await ctx.send(f"{economy_q_warning} {message}")
+        await refresh_activity_live_message(ctx.guild.id, guild_activity_channels[ctx.guild.id])
         return await ctx.send(
             f"{economy_q_activity} Next activity report set for <t:{int(next_report.timestamp())}:R>.",
             allowed_mentions=discord.AllowedMentions.none()
@@ -1650,7 +1717,8 @@ async def endactivity(ctx):
         await channel.send(embed=activity_report_embed(ctx.guild, rows), allowed_mentions=discord.AllowedMentions.none())
         await asyncio.to_thread(clear_guild_activity_counts, ctx.guild.id)
         next_report = await schedule_next_activity_report(ctx.guild.id, config, "manual end")
-        await channel.send(embed=activity_new_report_embed(ctx.guild, next_report), allowed_mentions=discord.AllowedMentions.none())
+        await save_activity_live_message_id(ctx.guild.id, config, None)
+        await refresh_activity_live_message(ctx.guild.id, config, rows=[])
     except Exception as e:
         print(f"Manual activity report end failed for guild {ctx.guild.id}: {type(e).__name__} - {e}")
         return await ctx.send(f"{economy_q_warning} I couldn't end the current activity report: `{type(e).__name__}`")
@@ -2087,7 +2155,7 @@ async def on_command_error(ctx, error):
     else:
         print(f"Unexpected error in {ctx.command}: {type(error).__name__} - {error}")
         if has_owner_power(ctx.author, ctx.guild):
-            await ctx.send(f"Error: `{error}`")
+            await ctx.send(fit_discord_content(f"Error: `{error}`"))
         else:
             await ctx.send("You can't use that heh")
 
@@ -2308,6 +2376,7 @@ class SettingsView(View):
         ok, message, _ = await save_activity_report_config(interaction.guild, interaction.channel, interaction.user.id)
         if not ok:
             return await interaction.response.send_message(message, ephemeral=True)
+        await refresh_activity_live_message(interaction.guild.id, guild_activity_channels[interaction.guild.id])
         await interaction.response.edit_message(embed=await build_settings_embed(interaction.guild), view=self)
 
 @bot.command(name="settings", aliases=["setup", "config"])
@@ -3888,6 +3957,50 @@ def game_bet_line(game):
         return ""
     return f"\nBet: **{economy_format_balance(amount)}** each"
 
+def fit_discord_content(content, limit=2000):
+    content = str(content or "")
+    if len(content) <= limit:
+        return content
+    suffix = "\n\n[message shortened]"
+    return content[:limit - len(suffix)] + suffix
+
+if not getattr(commands.Context.send, "_proque_safe_content", False):
+    _original_context_send = commands.Context.send
+
+    async def _safe_context_send(self, *args, **kwargs):
+        if args and isinstance(args[0], str):
+            args = (fit_discord_content(args[0]),) + args[1:]
+        if isinstance(kwargs.get("content"), str):
+            kwargs["content"] = fit_discord_content(kwargs["content"])
+        return await _original_context_send(self, *args, **kwargs)
+
+    _safe_context_send._proque_safe_content = True
+    commands.Context.send = _safe_context_send
+
+def c4_result_content(board, turn, result_text, payout_text=""):
+    board_text = render_board(board, turn)
+    full = f"{board_text}\n\n{result_text}{payout_text}"
+    if len(full) <= 2000:
+        return full, None
+    compact = f"{board_text}\n\n{result_text}"
+    if len(compact) <= 2000:
+        return compact, payout_text.strip() or None
+    return fit_discord_content(compact), payout_text.strip() or None
+
+async def send_game_extra(channel, text, allowed_mentions=None):
+    text = str(text or "").strip()
+    if not text:
+        return
+    allowed_mentions = allowed_mentions or discord.AllowedMentions.none()
+    while text:
+        chunk = text[:2000]
+        if len(text) > 2000:
+            split_at = max(chunk.rfind("\n"), chunk.rfind(" "))
+            if split_at > 1000:
+                chunk = text[:split_at]
+        await channel.send(chunk, allowed_mentions=allowed_mentions)
+        text = text[len(chunk):].lstrip()
+
 async def settle_game_bet(game, winner):
     amount = game.get("bet_amount", 0)
     if amount <= 0:
@@ -3908,8 +4021,8 @@ async def settle_game_bet(game, winner):
     note = "" if payout == amount else "\nLoser did not have the full bet anymore, so only their remaining balance was paid."
     return (
         f"\nBet paid: **{economy_format_balance(payout)}**"
-        f"\nWinner <@{winner.id}>: **{economy_format_balance(winner_data['balance'])}** → **{economy_format_balance(winner_data['balance'] + payout)}**"
-        f"\nLoser <@{loser.id}>: **{economy_format_balance(loser_data['balance'])}** → **{economy_format_balance(max(0, loser_data['balance'] - payout))}**"
+        f"\nWinner: <@{winner.id}>"
+        f"\nLoser: <@{loser.id}>"
         f"{note}"
     )
 
@@ -3997,7 +4110,7 @@ def chess_clock_line(game):
 
 def chess_message_kwargs(game, result_text=None, view=None):
     return {
-        "content": result_text or chess_status(game),
+        "content": fit_discord_content(result_text or chess_status(game)),
         "embed": chess_embed(game, result_text),
         "view": game.get("view") if view is None else view,
         "allowed_mentions": discord.AllowedMentions.none(),
@@ -4640,11 +4753,13 @@ class Connect4Button(Button):
                 render = render_board(board, game["turn"])
                 payout_text = await settle_game_bet(game, interaction.user)
                 await disable_all_buttons(game["view"])
+                content, extra = c4_result_content(board, game["turn"], f"{economy_q_game_win} <@{interaction.user.id}> wins!", payout_text)
                 await interaction.message.edit(
-                    content=f"{render}\n\n{economy_q_game_win} <@{interaction.user.id}> wins!{payout_text}",
+                    content=content,
                     view=game["view"],
                     allowed_mentions=discord.AllowedMentions(users=True)
                 )
+                await send_game_extra(interaction.channel, extra, discord.AllowedMentions(users=True))
                 c4_games.pop(interaction.channel.id, None)
                 return
 
@@ -4652,11 +4767,13 @@ class Connect4Button(Button):
                 render = render_board(board, game["turn"])
                 payout_text = await settle_game_bet(game, None)
                 await disable_all_buttons(game["view"])
+                content, extra = c4_result_content(board, game["turn"], "It's a draw!", payout_text)
                 await interaction.message.edit(
-                    content=f"{render}\n\nIt's a draw!{payout_text}",
+                    content=content,
                     view=game["view"],
                     allowed_mentions=discord.AllowedMentions.none()
                 )
+                await send_game_extra(interaction.channel, extra, discord.AllowedMentions.none())
                 c4_games.pop(interaction.channel.id, None)
                 return
 
@@ -4666,7 +4783,7 @@ class Connect4Button(Button):
             game["view"] = Connect4View()
 
             render = render_board(board, game["turn"])
-            await interaction.message.edit(content=render, view=game["view"], allowed_mentions=discord.AllowedMentions.none())
+            await interaction.message.edit(content=fit_discord_content(render), view=game["view"], allowed_mentions=discord.AllowedMentions.none())
             await update_c4_turn(game, interaction.channel)
 
         except Exception as e:
@@ -4675,9 +4792,9 @@ class Connect4Button(Button):
             print(f"[ERROR in Connect4 callback]\n{traceback_str}")
             try:
                 if interaction.response.is_done():
-                    await interaction.followup.send(f"Error:\n```{e}```", ephemeral=True)
+                    await interaction.followup.send(fit_discord_content(f"Error:\n```{e}```"), ephemeral=True)
                 else:
-                    await interaction.response.send_message(f"Error:\n```{e}```", ephemeral=True)
+                    await interaction.response.send_message(fit_discord_content(f"Error:\n```{e}```"), ephemeral=True)
             except Exception as err:
                 print(f"Failed to send error: {err}")
 
@@ -4719,7 +4836,7 @@ async def update_c4_turn(game, channel):
             while time_left > 0:
                 if time_left in TURN_COUNTDOWN_EDIT_POINTS:
                     await msg.edit(
-                        content=f"{render_board(board, game['turn'])}\n\n<@{current.id}>, it's your turn! ({time_left}s){game_bet_line(game)}",
+                        content=fit_discord_content(f"{render_board(board, game['turn'])}\n\n<@{current.id}>, it's your turn! ({time_left}s){game_bet_line(game)}"),
                         view=game["view"],
                         allowed_mentions=discord.AllowedMentions.none()
                     )
@@ -4728,11 +4845,18 @@ async def update_c4_turn(game, channel):
 
             payout_text = await settle_game_bet(game, opponent)
             await disable_all_buttons(game["view"])
+            content, extra = c4_result_content(
+                board,
+                game["turn"],
+                f"{economy_q_timer} <@{current.id}> took too long.\n{economy_q_game_timeout} <@{opponent.id}> wins by timeout!",
+                payout_text
+            )
             await msg.edit(
-                content=f"{render_board(board, game['turn'])}\n\n{economy_q_timer} <@{current.id}> took too long.\n{economy_q_game_timeout} <@{opponent.id}> wins by timeout!{payout_text}",
+                content=content,
                 view=game["view"],
                 allowed_mentions=discord.AllowedMentions(users=True)
             )
+            await send_game_extra(channel, extra, discord.AllowedMentions(users=True))
             c4_games.pop(channel.id, None)
         except Exception as e:
             print("Error in countdown:", e)
@@ -4774,7 +4898,7 @@ async def c4(ctx, opponent: discord.Member):
     board = [[" "] * 7 for _ in range(6)]
     render = render_board(board, 0)
     game_view = Connect4View()
-    msg = await ctx.send(f"{render}{game_bet_line({'bet_amount': bet_amount})}", view=game_view)
+    msg = await ctx.send(fit_discord_content(f"{render}{game_bet_line({'bet_amount': bet_amount})}"), view=game_view)
 
     game = {
         "players": [ctx.author, opponent],
