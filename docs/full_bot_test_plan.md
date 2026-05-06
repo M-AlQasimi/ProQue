@@ -78,6 +78,7 @@ Run:
 - `.pfp @normal`
 - `.q`
 - `.testlog`
+- `.testrlog`
 - `.dsnipe`
 - `.esnipe`
 - `.rsnipe`
@@ -116,7 +117,8 @@ Run with another test user:
 - `.wordle setup #channel`
 - React to the Wordle setup message.
 - Remove the reaction from the Wordle setup message.
-- Send a 5-letter guess in the Wordle channel.
+- Send a 5-letter guess in the Wordle thread.
+- Guess the correct word in the Wordle thread.
 - `.wordle new`
 - `.wordle stop`
 - `.ttt @normal`
@@ -131,7 +133,7 @@ Run with another test user:
 
 Expected: challenges, accept/decline, bet accept/decline, turns, payouts, and timeouts work.
 
-Expected for Wordle: setup posts the main message, creates the `Daily Wordle` role, reaction add/remove gives/removes the role, guesses get tile replies, `.wordle` shows status, and `.wordle new` posts a fresh daily puzzle.
+Expected for Wordle: setup posts the main message, creates a Wordle thread, creates the `Daily Wordle` role, reaction add/remove gives/removes the role, guesses get tile replies in the thread, correct guesses award 1m quesos, clear/resend the main channel message, post a short definition, and start a new round.
 
 ### Admin Commands
 
@@ -526,7 +528,7 @@ Run:
 - `.ttt @other_user`
 - `.wordle`
 - React to the Wordle setup message if enabled.
-- Send a 5-letter guess in the Wordle channel.
+- Send a 5-letter guess in the Wordle thread.
 - `.wordle setup #channel`
 - `.ttt @other_user` with a bet
 - `.c4 @other_user`
@@ -536,7 +538,7 @@ Run:
 - `.move e2e4` or `.chessmove e2e4` during chess fallback testing
 - `.resign`
 
-Expected: games work, Wordle guesses reply with tiles, Wordle setup is denied for normal users unless they are the bot adder, bet accept prompts appear, payouts mention both users with pings where game result should ping.
+Expected: games work, Wordle guesses reply with tiles in the thread, Wordle setup is denied for normal users unless they are the bot adder, bet accept prompts appear, payouts mention both users with pings where game result should ping.
 
 ### Quewo
 
@@ -663,10 +665,12 @@ Run these after role tests because they need multiple users, waiting, or restart
 ### Games
 
 - Wordle setup command posts a main explanation embed in the chosen channel.
+- Wordle setup creates a public thread for guesses.
 - Wordle setup creates/reuses the `Daily Wordle` role.
 - Wordle setup reaction gives the role; removing the reaction removes the role.
-- Wordle posts a new daily puzzle in the configured channel and pings the role.
-- Wordle accepts 5-letter guesses in the configured channel and replies with tile results.
+- Wordle posts a new daily puzzle in the configured thread and pings the role.
+- Wordle accepts 5-letter guesses in the configured thread and replies with tile results.
+- Wordle correct guess awards 1m quesos, posts a short definition, clears/resends the main channel message, and starts a new word immediately.
 - Wordle does not treat normal 5-letter guesses as commands.
 - Wordle words do not repeat for the server until the saved word list is exhausted.
 - TTT challenge accept/decline/timeout.

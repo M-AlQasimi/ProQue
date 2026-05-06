@@ -271,11 +271,13 @@ def _create_wordle_tables(cur):
                 channel_id BIGINT NOT NULL,
                 role_id BIGINT,
                 message_id BIGINT,
+                thread_id BIGINT,
                 set_by_user_id BIGINT,
                 current_word TEXT,
                 current_date TEXT
             )
         """)
+        cur.execute("ALTER TABLE guild_wordle_config ADD COLUMN IF NOT EXISTS thread_id BIGINT")
 
         cur.execute("""
             CREATE TABLE IF NOT EXISTS guild_wordle_used_words (
@@ -1022,7 +1024,7 @@ def load_guild_wordle_configs():
         if conn is None:
             return {}
         cur = conn.cursor()
-        cur.execute("SELECT guild_id, channel_id, role_id, message_id, set_by_user_id, current_word, current_date FROM guild_wordle_config")
+        cur.execute("SELECT guild_id, channel_id, role_id, message_id, thread_id, set_by_user_id, current_word, current_date FROM guild_wordle_config")
         rows = cur.fetchall()
         cur.close()
         conn.close()
@@ -1031,16 +1033,17 @@ def load_guild_wordle_configs():
                 "channel_id": int(channel_id),
                 "role_id": int(role_id) if role_id is not None else None,
                 "message_id": int(message_id) if message_id is not None else None,
+                "thread_id": int(thread_id) if thread_id is not None else None,
                 "set_by_user_id": int(set_by_user_id) if set_by_user_id is not None else None,
                 "current_word": current_word,
                 "current_date": current_date,
             }
-            for guild_id, channel_id, role_id, message_id, set_by_user_id, current_word, current_date in rows
+            for guild_id, channel_id, role_id, message_id, thread_id, set_by_user_id, current_word, current_date in rows
         }
     except Exception:
         return {}
 
-def save_guild_wordle_config(guild_id, channel_id, role_id=None, message_id=None, set_by_user_id=None, current_word=None, current_date=None):
+def save_guild_wordle_config(guild_id, channel_id, role_id=None, message_id=None, set_by_user_id=None, current_word=None, current_date=None, thread_id=None):
     _ensure_ready()
     if not pg_ready:
         return False
@@ -1051,12 +1054,13 @@ def save_guild_wordle_config(guild_id, channel_id, role_id=None, message_id=None
         cur = conn.cursor()
         cur.execute(
             """
-            INSERT INTO guild_wordle_config (guild_id, channel_id, role_id, message_id, set_by_user_id, current_word, current_date)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO guild_wordle_config (guild_id, channel_id, role_id, message_id, thread_id, set_by_user_id, current_word, current_date)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (guild_id) DO UPDATE SET
                 channel_id = EXCLUDED.channel_id,
                 role_id = EXCLUDED.role_id,
                 message_id = EXCLUDED.message_id,
+                thread_id = COALESCE(EXCLUDED.thread_id, guild_wordle_config.thread_id),
                 set_by_user_id = EXCLUDED.set_by_user_id,
                 current_word = COALESCE(EXCLUDED.current_word, guild_wordle_config.current_word),
                 current_date = COALESCE(EXCLUDED.current_date, guild_wordle_config.current_date)
@@ -1066,6 +1070,7 @@ def save_guild_wordle_config(guild_id, channel_id, role_id=None, message_id=None
                 int(channel_id),
                 int(role_id) if role_id is not None else None,
                 int(message_id) if message_id is not None else None,
+                int(thread_id) if thread_id is not None else None,
                 int(set_by_user_id) if set_by_user_id is not None else None,
                 current_word,
                 current_date,
