@@ -167,6 +167,7 @@ guild_prefixes = load_guild_prefixes()
 guild_birthday_channels = load_guild_birthday_channels()
 guild_activity_channels = load_guild_activity_channels()
 guild_wordle_configs = load_guild_wordle_configs()
+guild_log_configs = {}
 censored_phrases = load_censored_phrases()
 watchlist = load_watchlist()
 reaction_watchlist = load_reaction_watchlist()
@@ -402,6 +403,10 @@ def home():
 
 def get_log_channel_id(guild_id, key):
     config = load_guild_log_config(guild_id)
+    if config:
+        guild_log_configs[int(guild_id)] = config
+    else:
+        config = guild_log_configs.get(int(guild_id))
     if not config:
         return None
     return config.get(key)
@@ -421,12 +426,12 @@ async def send_log(embed, guild=None):
     try:
         if guild is None:
             print("Log skipped: missing guild context.")
-            return
+            return False
 
         channel_id = get_log_channel_id(guild.id, "log_channel_id")
         if not channel_id:
             print(f"Log skipped: no normal log channel saved for guild {guild.id}.")
-            return
+            return False
 
         channel = bot.get_channel(channel_id)
         if channel is None:
@@ -434,36 +439,38 @@ async def send_log(embed, guild=None):
                 channel = await bot.fetch_channel(channel_id)
             except Exception as e:
                 print(f"Log skipped: could not fetch normal log channel {channel_id} for guild {guild.id}: {e}")
-                return
+                return False
 
         if getattr(channel, "guild", None) is None or channel.guild.id != guild.id:
             print(f"Log skipped: saved normal log channel {channel_id} is not in guild {guild.id}.")
-            return
+            return False
 
         bot_member = guild.get_member(bot.user.id) or guild.me
         perms = channel.permissions_for(bot_member)
         if not perms.view_channel or not perms.send_messages:
             print(f"Log skipped: missing send/view permission in normal log channel {channel_id}.")
-            return
+            return False
         if not perms.embed_links:
             print(f"Log skipped: missing Embed Links permission in normal log channel {channel_id}.")
-            return
+            return False
 
         await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
         print(f"Sending log: {embed.title} | Server: {guild_log_label(guild)}")
+        return True
     except Exception as e:
         print(f"Failed to send log for guild {guild.id if guild else 'unknown'}: {type(e).__name__} - {e}")
+        return False
 
 async def send_rlog(embed, guild=None):
     try:
         if guild is None:
             print("Reaction log skipped: missing guild context.")
-            return
+            return False
 
         channel_id = get_log_channel_id(guild.id, "reaction_log_channel_id")
         if not channel_id:
             print(f"Reaction log skipped: no reaction log channel saved for guild {guild.id}.")
-            return
+            return False
 
         channel = bot.get_channel(channel_id)
         if channel is None:
@@ -471,25 +478,27 @@ async def send_rlog(embed, guild=None):
                 channel = await bot.fetch_channel(channel_id)
             except Exception as e:
                 print(f"Reaction log skipped: could not fetch channel {channel_id} for guild {guild.id}: {e}")
-                return
+                return False
 
         if getattr(channel, "guild", None) is None or channel.guild.id != guild.id:
             print(f"Reaction log skipped: saved channel {channel_id} is not in guild {guild.id}.")
-            return
+            return False
 
         bot_member = guild.get_member(bot.user.id) or guild.me
         perms = channel.permissions_for(bot_member)
         if not perms.view_channel or not perms.send_messages:
             print(f"Reaction log skipped: missing send/view permission in channel {channel_id}.")
-            return
+            return False
         if not perms.embed_links:
             print(f"Reaction log skipped: missing Embed Links permission in channel {channel_id}.")
-            return
+            return False
 
         await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
         print(f"Sending reaction log: {embed.title} | Server: {guild_log_label(guild)}")
+        return True
     except Exception as e:
         print(f"Failed to send reaction log for guild {guild.id if guild else 'unknown'}: {type(e).__name__} - {e}")
+        return False
 
 def first_sendable_text_channel(guild):
     for channel in guild.text_channels:
@@ -666,6 +675,10 @@ async def prompt_log_setup(guild):
             return
 
     save_guild_log_config(guild.id, normal_channel_id, reaction_channel_id)
+    guild_log_configs[guild.id] = {
+        "log_channel_id": int(normal_channel_id),
+        "reaction_log_channel_id": int(reaction_channel_id),
+    }
     await channel.send("Log channels saved.")
 
 async def prompt_birthday_setup(guild):
@@ -3224,8 +3237,10 @@ async def test(ctx):
 async def testlog(ctx):
     embed = discord.Embed(title="Test Log", description="This is a test log.", color=discord.Color.green())
     try:
-        await send_log(embed, ctx.guild)
+        sent = await send_log(embed, ctx.guild)
         print("DEBUG: testlog command used")
+        if not sent:
+            await ctx.send("Test log could not send. Check the saved log channel and my View Channel, Send Messages, and Embed Links permissions.")
     except Exception as e:
         print(f"Failed to send test log: {e}")
         await ctx.send("Failed to send test log.")
