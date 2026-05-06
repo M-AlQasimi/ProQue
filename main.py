@@ -1058,13 +1058,13 @@ async def flush_activity_buffer():
 
 def activity_report_embed(guild, rows):
     embed = discord.Embed(
-        title=f"{economy_q_activity} Daily Activity Report",
-        description="Top server activity from the last 24 hours.",
+        title=f"{economy_q_activity} Activity Winners",
+        description="Previous report results.",
         color=discord.Color.blurple(),
         timestamp=datetime.now(timezone.utc)
     )
     if not rows:
-        embed.description = "No activity was tracked in the last 24 hours."
+        embed.description = "Previous report ended with no tracked activity."
         embed.set_footer(text=f"{guild.name} • next report in 24 hours")
         return embed
 
@@ -1083,6 +1083,18 @@ def activity_report_embed(guild, rows):
     embed.add_field(name="Reactions", value=f"**{total_reactions:,}**", inline=True)
     embed.add_field(name="Voice", value=f"**{total_voice:,}**", inline=True)
     embed.set_footer(text=f"{guild.name} • next report in 24 hours")
+    return embed
+
+def activity_new_report_embed(guild, next_report):
+    embed = discord.Embed(
+        title=f"{economy_q_activity} New Activity Report Started",
+        description="The new activity window is now tracking messages, reactions, and voice activity.",
+        color=discord.Color.green(),
+        timestamp=datetime.now(timezone.utc)
+    )
+    embed.add_field(name="Ends", value=f"<t:{int(next_report.timestamp())}:R>", inline=True)
+    embed.add_field(name="Report Time", value=f"<t:{int(next_report.timestamp())}:f>", inline=True)
+    embed.set_footer(text=guild.name)
     return embed
 
 def activity_setup_embed(guild):
@@ -1186,6 +1198,31 @@ async def schedule_next_activity_report(guild_id, config, reason="completed"):
             print(f"Activity next report save failed for guild {guild_id} after {reason}.")
     return next_report
 
+async def clear_activity_report_channel(channel):
+    if channel is None:
+        return 0
+    try:
+        deleted = await channel.purge(limit=None, check=lambda m: not m.pinned, reason="Activity report ended")
+        return len(deleted)
+    except Exception as e:
+        print(f"Activity channel purge failed, trying manual delete: {type(e).__name__} - {e}")
+
+    deleted_count = 0
+    try:
+        async for old_message in channel.history(limit=None):
+            if old_message.pinned:
+                continue
+            try:
+                await old_message.delete()
+                deleted_count += 1
+                if deleted_count % 10 == 0:
+                    await asyncio.sleep(1)
+            except Exception as e:
+                print(f"Activity message delete skipped: {type(e).__name__} - {e}")
+    except Exception as e:
+        print(f"Activity manual clear failed: {type(e).__name__} - {e}")
+    return deleted_count
+
 async def activity_status_embed(guild, config):
     await flush_activity_buffer()
     rows = await asyncio.to_thread(get_guild_activity_top, guild.id, 5)
@@ -1239,12 +1276,18 @@ async def send_activity_report(guild_id, config):
     try:
         await flush_activity_buffer()
         rows = await asyncio.to_thread(get_guild_activity_top, guild.id, 5)
+        await clear_activity_report_channel(channel)
         await channel.send(embed=activity_report_embed(guild, rows), allowed_mentions=discord.AllowedMentions.none())
         sent = True
         await asyncio.to_thread(clear_guild_activity_counts, guild.id)
     except Exception as e:
         print(f"Activity report failed for guild {guild.id}: {type(e).__name__} - {e}")
-    await schedule_next_activity_report(guild.id, config, "sent" if sent else "failed send")
+    next_report = await schedule_next_activity_report(guild.id, config, "sent" if sent else "failed send")
+    if sent:
+        try:
+            await channel.send(embed=activity_new_report_embed(guild, next_report), allowed_mentions=discord.AllowedMentions.none())
+        except Exception as e:
+            print(f"Activity new report message failed for guild {guild.id}: {type(e).__name__} - {e}")
 
 async def activity_report_loop():
     await bot.wait_until_ready()
@@ -2061,6 +2104,47 @@ async def stopactivity(ctx):
     embed.set_footer(text="Use .activity setup to enable reports again.")
     await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
+@bot.command(name="endactivity", aliases=["stopcurrentactivity", "currentactivitystop", "resetactivity", "activityreset"])
+async def endactivity(ctx):
+    """Ends the current activity window, posts winners, and starts a fresh window."""
+    if ctx.guild is None:
+        return await ctx.send("Activity report ending only works in servers.")
+    if not await can_manage_activity_channel(ctx.author, ctx.guild):
+        return await ctx.send("Only the person who added me, an admin, the server owner, or the superowner can end the current activity report.")
+
+    saved_configs = await asyncio.to_thread(load_guild_activity_channels)
+    if saved_configs:
+        guild_activity_channels.update(saved_configs)
+    config = guild_activity_channels.get(ctx.guild.id)
+    if not config:
+        return await ctx.send(f"{economy_q_warning} Activity reports are not set up. Use `.activity setup` first.")
+
+    channel = resolve_activity_report_channel(ctx.guild, str(config["channel_id"]))
+    if channel is None:
+        next_report = await schedule_next_activity_report(ctx.guild.id, config, "manual missing channel")
+        return await ctx.send(
+            f"{economy_q_warning} Saved activity channel no longer exists. I started a fresh timer for <t:{int(next_report.timestamp())}:R>. Use `.editactivity channel #channel`.",
+            allowed_mentions=discord.AllowedMentions.none()
+        )
+
+    try:
+        await flush_activity_buffer()
+        rows = await asyncio.to_thread(get_guild_activity_top, ctx.guild.id, 5)
+        await clear_activity_report_channel(channel)
+        await channel.send(embed=activity_report_embed(ctx.guild, rows), allowed_mentions=discord.AllowedMentions.none())
+        await asyncio.to_thread(clear_guild_activity_counts, ctx.guild.id)
+        next_report = await schedule_next_activity_report(ctx.guild.id, config, "manual end")
+        await channel.send(embed=activity_new_report_embed(ctx.guild, next_report), allowed_mentions=discord.AllowedMentions.none())
+    except Exception as e:
+        print(f"Manual activity report end failed for guild {ctx.guild.id}: {type(e).__name__} - {e}")
+        return await ctx.send(f"{economy_q_warning} I couldn't end the current activity report: `{type(e).__name__}`")
+
+    if ctx.channel.id != channel.id:
+        await ctx.send(
+            f"{economy_q_activity} Current activity report ended in {channel.mention}. Next report: <t:{int(next_report.timestamp())}:R>.",
+            allowed_mentions=discord.AllowedMentions.none()
+        )
+
 @bot.event
 async def on_guild_remove(guild):
     print(f"Left server: {guild.name} ({guild.id})")
@@ -2513,7 +2597,7 @@ HELP_CATEGORIES = {
         "endttt", "setnick", "unmute", "kick", "ban", "unban", "addrole", "removerole", "deleterole",
         "lock", "lockdown", "unlock", "rlockdown", "runlock", "shut", "unshut", "clearwatchlist", "rshut", "unrshut",
         "send", "reply", "aban", "raban", "abanlist", "summon", "summon2", "block", "unblock",
-        "censor", "uncensor", "clearcensors", "editlottery", "stoplottery", "editactivity", "stopactivity",
+        "censor", "uncensor", "clearcensors", "editlottery", "stoplottery", "editactivity", "endactivity", "stopactivity",
         "add", "remove", "addtick", "settick", "setquesos",
     ],
 }
