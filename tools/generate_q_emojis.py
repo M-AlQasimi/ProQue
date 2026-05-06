@@ -636,6 +636,41 @@ def qmemory_tile():
     return c
 
 
+def qwordle():
+    c = Canvas()
+    colors = [GREEN, GOLD, BLUE_DARK, BLUE, GREEN, BLUE_DARK, GOLD, GREEN, BLUE, ICE, BLUE_DARK, GOLD, GREEN, BLUE, GREEN]
+    i = 0
+    for row in range(3):
+        for col in range(5):
+            x = 15 + col * 20
+            y = 28 + row * 24
+            fill = colors[i]
+            edge = BLUE_DARK if fill != BLUE_DARK else CYAN
+            c.rect(x, y, 17, 17, fill, outline=edge, width=2)
+            i += 1
+    c.text_q(64, 101, 22, CYAN)
+    c.sparkle(102, 23, 6)
+    return c
+
+
+def qwordle_tile_correct():
+    c = qtile(GREEN, BLUE_DARK, False)
+    c.text_q(64, 66, 26, ICE)
+    return c
+
+
+def qwordle_tile_present():
+    c = qtile(GOLD, BLUE_DARK, False)
+    c.text_q(64, 66, 26, ICE)
+    return c
+
+
+def qwordle_tile_absent():
+    c = qtile(BLUE_DARK, CYAN, False)
+    c.text_q(64, 66, 26, ICE)
+    return c
+
+
 def qbirthday():
     c = Canvas()
     c.rect(31, 60, 66, 38, BLUE, outline=BLUE_DARK, width=4)
@@ -1522,6 +1557,10 @@ STATIC = {
     "QVaultDial": qvault_dial,
     "QMemory": qmemory,
     "QMemoryTile": qmemory_tile,
+    "QWordle": qwordle,
+    "QWordleCorrect": qwordle_tile_correct,
+    "QWordlePresent": qwordle_tile_present,
+    "QWordleAbsent": qwordle_tile_absent,
 }
 
 STATIC_CATEGORIES = {
@@ -1584,6 +1623,9 @@ STATIC_CATEGORIES = {
     },
     "games/memory": {
         "QMemory", "QMemoryTile",
+    },
+    "games/wordle": {
+        "QWordle", "QWordleCorrect", "QWordlePresent", "QWordleAbsent",
     },
     "polls": {
         "QPoll", "QPollOne", "QPollTwo", "QPollThree", "QPollFour", "QPollFive",

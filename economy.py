@@ -1738,7 +1738,8 @@ def next_gambling_streak(data):
     return int(data.get("gamble_streak", 0) or 0) + 1
 
 def gambling_streak_text(data, new_streak):
-    return f" {Q_STREAK_FIRE} {new_streak} in a row!"
+    bonus = streak_bonus_for_wins(new_streak) * 100
+    return f" {Q_STREAK_FIRE} {new_streak} in a row! (+{bonus:.2f}% streak)"
 
 def xp_multiplier(data):
     return 1 + item_bonus(data, "xp_tonic", 0.05, 5)
@@ -3559,6 +3560,7 @@ async def gamble(ctx, amount: str, choice: str = None):
         )
 
     try:
+        data = get_user(user_id)
         if win:
             new_streak = next_gambling_streak(data)
             mult = payout_multiplier(data, new_streak)
@@ -3721,6 +3723,7 @@ async def roulette(ctx, amount: str, color: str = None):
         )
 
     try:
+        data = get_user(user_id)
         if result == color:
             new_streak = next_gambling_streak(data)
             mult = payout_multiplier(data, new_streak)
@@ -3851,6 +3854,7 @@ async def slots(ctx, amount: str):
     r3 = final_reels[2]
 
     try:
+        data = get_user(user_id)
         if result_multiplier > 0:
             new_streak = next_gambling_streak(data)
             mult = payout_multiplier(data, new_streak)
@@ -4682,7 +4686,7 @@ async def scratch(ctx, amount: str):
 # TOWER
 # =====================
 TOWER_MULTIPLIERS = [1.15, 1.45, 2.00, 3.00, 4.50, 7.00]
-TOWER_TRAPS_BY_FLOOR = [1, 1, 1, 2, 2, 2]
+TOWER_TRAPS_BY_FLOOR = [2, 2, 2, 2, 2, 2]
 
 @commands.command(aliases=["towers", "qtower"])
 async def tower(ctx, amount: str):
@@ -5612,7 +5616,8 @@ EXPLANATIONS = {
     "steal": "Admin-power command. Copies a custom emoji or sticker into this server if the bot has permission.",
     "ask": "Asks the AI a question.",
     "generate": "Generates text with AI.",
-    "analyse": "Analyzes provided text or content.",
+    "analyse": "Analyzes an image from a replied message.",
+    "analyze": "Alias for `.analyse`. Analyzes an image from a replied message.",
     "translate": "Translates text.",
     "econhelp": "Shows Quewo commands, aliases, and short explanations.",
     "economyhelp": "Alias for `.econhelp`. Shows Quewo commands, aliases, and short explanations.",
@@ -5653,7 +5658,7 @@ DETAILED_EXPLANATIONS = {
     "slots": f"The bot spins 3 reels with 4 custom symbols. All 3 reels must match to win: {slot_symbol_help_text()}. The base match chance is about {int(SLOTS_WIN_CHANCE * 100)}%. Non-perfect results lose the bet and reset the universal gambling streak.",
     "blackjack": "You get cards against the dealer and use Hit or Stand buttons. Try to get closer to 21 than the dealer without going over. The dealer hits below 16, usually hits on 16, and stands on 17+. A normal win pays +1x your bet as profit before the universal gambling streak bonus. Losing removes the bet and resets the streak. A push changes nothing.",
     "scratch": f"The ticket reveals 5 symbols one by one: {scratch_symbol_help_text()}. All 5 symbols must match to win. Payout tiers: {scratch_tier_help_text()}. The base win chance is intentionally low at about 8%. Losing resets the universal gambling streak.",
-    "tower": f"Choose one of 3 doors per floor. Floors 1-3 have 1 trapped door; floors 4-6 have 2 trapped doors. Safe floors raise the cash-out multiplier through {', '.join(f'×{m:.2f}' for m in TOWER_MULTIPLIERS)}. Cash out anytime after one safe door, or risk climbing higher. Wins use the universal gambling streak bonus; traps and timeouts reset it.",
+    "tower": f"Choose one of 3 doors per floor. Every floor has 2 trapped doors and 1 safe door. Safe floors raise the cash-out multiplier through {', '.join(f'×{m:.2f}' for m in TOWER_MULTIPLIERS)}. Cash out anytime after one safe door, or risk climbing higher. Wins use the universal gambling streak bonus; traps and timeouts reset it.",
     "towers": "Alias for `.tower`. Climb safe doors and cash out before hitting a trap.",
     "vault": f"Guess a secret 3-digit code with no repeated digits. Each guess tells you exact digits and close digits. Opening the vault within {VAULT_GUESSES} tries pays ×{VAULT_MULTIPLIER} before the universal gambling streak bonus. Running out of tries resets the streak.",
     "memory": f"Flip a 4x4 board and match 8 pairs. Matching every pair before {MEMORY_MAX_MISTAKES} mistakes or timeout pays ×{MEMORY_MULTIPLIER} before the universal gambling streak bonus. Too many mistakes or timeout resets the streak.",
