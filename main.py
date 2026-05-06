@@ -247,6 +247,18 @@ def set_embed_field(embed, index, name, value, inline=True):
         embed.set_field_at(index, name=name, value=value, inline=inline)
     else:
         embed.add_field(name=name, value=value, inline=inline)
+
+def embed_value(text, limit=1024):
+    text = str(text or "None.")
+    return text if len(text) <= limit else text[:limit - 1] + "…"
+
+def joined_embed_value(lines, empty="None.", limit=1024):
+    lines = [str(line) for line in lines if str(line)]
+    if not lines:
+        return empty
+    value = "\n".join(lines)
+    return embed_value(value, limit)
+
 active_timers = load_active_timers()
 active_polls = load_active_polls()
 runtime_state_restored = False
@@ -2010,8 +2022,8 @@ async def on_message_edit(before, after):
             color=discord.Color.orange()
         )
         embed.add_field(name="Author", value=log_user(before.author), inline=False)
-        embed.add_field(name="Before", value=before.content, inline=False)
-        embed.add_field(name="After", value=after.content, inline=False)
+        embed.add_field(name="Before", value=embed_value(before.content), inline=False)
+        embed.add_field(name="After", value=embed_value(after.content), inline=False)
         embed.add_field(name="Message", value=f"[Jump to Message]({before.jump_url})", inline=False)
         channel_value = before.channel.mention if hasattr(before.channel, "mention") else str(before.channel)
         embed.add_field(name="Channel", value=channel_value, inline=False)
@@ -2797,10 +2809,10 @@ async def roleinfo(ctx, role: discord.Role):
         perms = [name.replace('_', ' ').title() for name, value in role.permissions if value]
         perms_text = "**Permissions:**\n" + ", ".join(perms) if perms else "No special permissions."
 
-    member_list = ", ".join(members) if members else "No members have this role."
+    member_list = embed_value(", ".join(members) if members else "No members have this role.")
     embed = discord.Embed(title=f"Role Info: {role.name}", color=role.color)
     embed.add_field(name="Members", value=member_list, inline=False)
-    embed.add_field(name="Permissions", value=perms_text, inline=False)
+    embed.add_field(name="Permissions", value=embed_value(perms_text), inline=False)
     await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
 @bot.command()
@@ -5497,7 +5509,7 @@ async def away(ctx):
 
                 afk_text += f"<@!{user.id}> — been AFK for {formatted}\n"
 
-            embed.add_field(name="AFK Users", value=afk_text, inline=False)
+            embed.add_field(name="AFK Users", value=embed_value(afk_text), inline=False)
 
         if sleeping_users:
             sleep_text = ""
@@ -5517,7 +5529,7 @@ async def away(ctx):
 
                 sleep_text += f"<@!{user.id}> — been asleep for {formatted}\n"
 
-            embed.add_field(name="Sleeping Users", value=sleep_text, inline=False)
+            embed.add_field(name="Sleeping Users", value=embed_value(sleep_text), inline=False)
 
         if not afk_users and not sleeping_users:
             embed.description = "No users are currently AFK or sleeping."
@@ -5656,20 +5668,20 @@ async def lists(ctx):
     blocked = guild_blacklisted_users(ctx.guild)
     phrases = guild_censored_phrases(ctx.guild)
 
-    targets_text = "\n".join(f"<@{uid}>" for uid in targets) if targets else "None."
+    targets_text = joined_embed_value([f"<@{uid}>" for uid in targets])
     embed.add_field(name="Watched Targets", value=targets_text, inline=True)
 
     try:
         bans_list = [ban async for ban in ctx.guild.bans()]
-        banned_text = "\n".join(f"<@{ban.user.id}>" for ban in bans_list) if bans_list else "None."
+        banned_text = joined_embed_value([f"<@{ban.user.id}>" for ban in bans_list])
     except discord.Forbidden:
         banned_text = "Cannot view bans."
     embed.add_field(name="Banned Users", value=banned_text, inline=True)
 
-    blocked_text = "\n".join(f"<@{uid}>" for uid in blocked) if blocked else "None."
+    blocked_text = joined_embed_value([f"<@{uid}>" for uid in blocked])
     embed.add_field(name="Blocked Users", value=blocked_text, inline=True)
 
-    censored_text = "\n".join(f"- {p}" for p in phrases) if phrases else "None."
+    censored_text = joined_embed_value([f"- {p}" for p in phrases])
     embed.add_field(name="Censored Phrases", value=censored_text, inline=True)
 
     await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())

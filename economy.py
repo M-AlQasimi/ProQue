@@ -1801,7 +1801,7 @@ def build_inventory_embed(user, data):
                 max_qty = item.get("max_qty", 1)
                 text = f"{qty}/{max_qty}" if max_qty > 1 else ("owned" if qty else "not owned")
             lines.append(f"**{item_display_name(item)}** - {text}")
-        embed.add_field(name=category, value="\n".join(lines), inline=False)
+        add_split_embed_field(embed, category, lines, inline=False)
     embed.set_footer(text="Use .shop to buy items.")
     return embed
 
@@ -1866,7 +1866,7 @@ def build_quests_embed(user, data):
             f"{quest['description']}\n"
             f"Reward: **{format_balance(quest['reward'])}**"
         )
-    embed.add_field(name="Main Quests", value="\n\n".join(main_lines), inline=False)
+    add_split_embed_field(embed, "Main Quests", main_lines, inline=False)
 
     claims = quest_claim_ids(data)
     for period in ["daily", "weekly", "monthly"]:
@@ -1880,7 +1880,7 @@ def build_quests_embed(user, data):
                 f"{description}\n"
                 f"Reward: **{format_balance(reward)}**"
             )
-        embed.add_field(name=f"{period.title()} Quests", value="\n\n".join(lines), inline=False)
+        add_split_embed_field(embed, f"{period.title()} Quests", lines, inline=False)
     return embed
 
 def format_duration(seconds):
@@ -2320,7 +2320,7 @@ async def shop(ctx):
                     f"{item['description']}\n"
                     f"Owned: **{owned_text}**"
                 )
-            embed.add_field(name=category, value="\n\n".join(lines), inline=False)
+            add_split_embed_field(embed, category, lines, inline=False)
         return embed
 
     class ShopQuantityModal(discord.ui.Modal):
@@ -4814,7 +4814,7 @@ async def tower(ctx, amount: str):
 # =====================
 # VAULT
 # =====================
-VAULT_GUESSES = 6
+VAULT_GUESSES = 7
 VAULT_MULTIPLIER = 4
 
 @commands.command(aliases=["qvault"])
@@ -4918,7 +4918,7 @@ async def vault(ctx, amount: str):
 # =====================
 MEMORY_SYMBOLS = [Q_SLOT_STAR, Q_SLOT_DIAMOND, Q_SLOT_CROWN, Q_SLOT_JACKPOT, Q_SCRATCH_MARK, Q_XP, Q_TICKET, Q_FORTUNE_VIAL]
 MEMORY_MULTIPLIER = 3
-MEMORY_MAX_MISTAKES = 6
+MEMORY_MAX_MISTAKES = 5
 
 @commands.command(name="memory", aliases=["mem", "qmemory"])
 async def memory_game(ctx, amount: str):
@@ -5660,7 +5660,6 @@ ECONHELP_COMMANDS = [
     ("Lottery", ["lottery", "buytick", "lotterystats", "editlottery", "stoplottery"]),
     ("Gambling", ["cf", "roulette", "slots", "blackjack", "scratch", "tower", "vault", "memory", "ms", "wheel"]),
     ("Transfers", ["give"]),
-    ("Admin Quewo", ["add", "remove", "addtick", "settick", "setquesos"]),
     ("Help", ["econhelp", "explain"]),
 ]
 
@@ -5680,6 +5679,25 @@ def command_help_line(command_name, prefix="."):
     text = apply_prefix_to_help_text(text, prefix)
     return f"`{prefix}{usage_name}`{alias_text}\n{text}"
 
+def add_split_embed_field(embed, name, lines, inline=False, limit=1024):
+    chunks = []
+    current = ""
+    for line in lines:
+        candidate = line if not current else f"{current}\n\n{line}"
+        if len(candidate) <= limit:
+            current = candidate
+            continue
+        if current:
+            chunks.append(current)
+        current = line[:limit - 1] + "…" if len(line) > limit else line
+    if current:
+        chunks.append(current)
+    if not chunks:
+        chunks = ["None."]
+    for index, chunk in enumerate(chunks, 1):
+        field_name = name if len(chunks) == 1 else f"{name} {index}/{len(chunks)}"
+        embed.add_field(name=field_name, value=chunk, inline=inline)
+
 @commands.command(name="econhelp", aliases=["economyhelp", "quewohelp", "ehelp"])
 async def econhelp(ctx):
     """Shows Quewo commands, aliases, and short explanations."""
@@ -5694,7 +5712,7 @@ async def econhelp(ctx):
     )
     for category, commands_ in ECONHELP_COMMANDS:
         lines = [command_help_line(command_name, prefix) for command_name in commands_]
-        embed.add_field(name=category, value="\n\n".join(lines), inline=False)
+        add_split_embed_field(embed, category, lines, inline=False)
     embed.set_footer(text=f"Tip: examples: {prefix}explain lottery, {prefix}explain shop, {prefix}explain cf")
     await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
