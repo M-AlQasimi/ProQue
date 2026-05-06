@@ -1317,7 +1317,15 @@ async def ensure_wordle_role(guild):
 async def post_wordle_setup_message(guild, channel, role, set_by_user_id):
     message = await channel.send(embed=wordle_setup_embed(guild), allowed_mentions=discord.AllowedMentions.none())
     await message.add_reaction(reaction_emoji(WORDLE_REACTION))
-    saved = await asyncio.to_thread(
+    config = {
+        "channel_id": channel.id,
+        "role_id": role.id,
+        "message_id": message.id,
+        "set_by_user_id": set_by_user_id,
+        "current_word": None,
+        "current_date": None,
+    }
+    await asyncio.to_thread(
         save_guild_wordle_config,
         guild.id,
         channel.id,
@@ -1327,16 +1335,8 @@ async def post_wordle_setup_message(guild, channel, role, set_by_user_id):
         None,
         None,
     )
-    if saved:
-        guild_wordle_configs[guild.id] = {
-            "channel_id": channel.id,
-            "role_id": role.id,
-            "message_id": message.id,
-            "set_by_user_id": set_by_user_id,
-            "current_word": None,
-            "current_date": None,
-        }
-    return message
+    guild_wordle_configs[guild.id] = config
+    return message, config
 
 async def ensure_daily_wordle(guild_id, config, announce=True):
     guild = bot.get_guild(int(guild_id))
@@ -6088,10 +6088,10 @@ async def wordle(ctx, action: str = None, channel: discord.TextChannel = None):
         except Exception as e:
             return await ctx.send(f"I couldn't create the Wordle role: `{type(e).__name__}`")
         try:
-            message = await post_wordle_setup_message(ctx.guild, channel, role, ctx.author.id)
-            await ensure_daily_wordle(ctx.guild.id, guild_wordle_configs[ctx.guild.id], announce=False)
+            message, wordle_config = await post_wordle_setup_message(ctx.guild, channel, role, ctx.author.id)
+            await ensure_daily_wordle(ctx.guild.id, wordle_config, announce=False)
         except Exception as e:
-            return await ctx.send(f"I couldn't set up Wordle: `{type(e).__name__}`")
+            return await ctx.send(f"I couldn't set up Wordle: `{type(e).__name__}: {str(e)[:120]}`")
         return await ctx.send(
             f"{economy_q_accept} Wordle set up in {channel.mention}. Main message: {message.jump_url}",
             allowed_mentions=discord.AllowedMentions.none()
