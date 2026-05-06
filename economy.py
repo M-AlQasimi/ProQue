@@ -135,6 +135,7 @@ LEVEL_REWARD_STEP = 50_000
 TRANSFER_TAX_RATE = 0.03
 LOTTERY_TICKET_COST = 100_000
 LOTTERY_HOUSE_CUT = 0.10
+LOTTERY_MAX_BALANCE_SPEND_RATIO = 0.60
 MAIN_QUESTS = {
     "daily_30": {
         "name": "Daily Devotee",
@@ -1393,6 +1394,28 @@ def buy_lottery_tickets_sync(guild_id, user_id, tickets):
                 "message": f"{Q_DENIED} You need {format_balance(total_cost)}, but you only have {format_balance(data['balance'])}.",
             }
 
+        cur.execute(
+            "SELECT spent FROM lottery_tickets WHERE guild_id = %s AND user_id = %s FOR UPDATE",
+            (guild_id, user_id)
+        )
+        ticket_row = cur.fetchone()
+        round_spent = int(ticket_row["spent"] or 0) if ticket_row else 0
+        spend_base = int(data["balance"]) + round_spent
+        max_round_spend = int(spend_base * LOTTERY_MAX_BALANCE_SPEND_RATIO)
+        remaining_lottery_spend = max(0, max_round_spend - round_spent)
+        if total_cost > remaining_lottery_spend:
+            max_more_tickets = remaining_lottery_spend // ticket_cost
+            conn.rollback()
+            return {
+                "ok": False,
+                "message": (
+                    f"{Q_DENIED} Lottery safety limit: you can spend at most "
+                    f"**{format_balance(max_round_spend)}** this round (**{int(LOTTERY_MAX_BALANCE_SPEND_RATIO * 100)}%** of your lottery-adjusted balance).\n"
+                    f"Already spent: **{format_balance(round_spent)}** | Remaining allowed: **{format_balance(remaining_lottery_spend)}**\n"
+                    f"Max tickets you can buy now: **{max_more_tickets:,}**"
+                ),
+            }
+
         bonus_tickets = int(tickets * item_bonus(data, "ticket_charm", 0.02, 5))
         total_entries = tickets + bonus_tickets
         new_balance = data["balance"] - total_cost
@@ -1715,7 +1738,7 @@ def next_gambling_streak(data):
     return int(data.get("gamble_streak", 0) or 0) + 1
 
 def gambling_streak_text(data, new_streak):
-    return f" {Q_STREAK_FIRE} {new_streak} in a row! ×{payout_multiplier_after_win(data, new_streak):.3f} payout"
+    return f" {Q_STREAK_FIRE} {new_streak} in a row!"
 
 def xp_multiplier(data):
     return 1 + item_bonus(data, "xp_tonic", 0.05, 5)
@@ -4658,7 +4681,8 @@ async def scratch(ctx, amount: str):
 # =====================
 # TOWER
 # =====================
-TOWER_MULTIPLIERS = [1.25, 1.60, 2.10, 3.00, 4.50, 7.00]
+TOWER_MULTIPLIERS = [1.15, 1.45, 2.00, 3.00, 4.50, 7.00]
+TOWER_TRAPS_BY_FLOOR = [1, 1, 1, 2, 2, 2]
 
 @commands.command(aliases=["towers", "qtower"])
 async def tower(ctx, amount: str):
@@ -4692,7 +4716,10 @@ async def tower(ctx, amount: str):
 
     floor = 0
     game_over = False
-    bad_doors = [random.randrange(3) for _ in TOWER_MULTIPLIERS]
+    bad_doors = [
+        set(random.sample(range(3), trap_count))
+        for trap_count in TOWER_TRAPS_BY_FLOOR
+    ]
 
     def render(extra=None):
         current_mult = TOWER_MULTIPLIERS[floor - 1] if floor > 0 else 0
@@ -4702,6 +4729,7 @@ async def tower(ctx, amount: str):
             "─────────────────",
             f"Bet: **{format_balance(amount)}**",
             f"Floor: **{floor}/{len(TOWER_MULTIPLIERS)}**",
+            f"Traps This Floor: **{TOWER_TRAPS_BY_FLOOR[floor] if floor < len(TOWER_TRAPS_BY_FLOOR) else TOWER_TRAPS_BY_FLOOR[-1]}/3**",
             f"Cash Out: **×{current_mult:.2f}**" if floor > 0 else "Cash Out: **locked**",
             f"Next Safe Pick: **×{next_mult:.2f}**",
         ]
@@ -4722,7 +4750,7 @@ async def tower(ctx, amount: str):
             if game_over:
                 await interaction.response.defer()
                 return
-            if self.index == bad_doors[floor]:
+            if self.index in bad_doors[floor]:
                 game_over = True
                 await interaction.response.defer()
                 try:
@@ -5513,7 +5541,7 @@ EXPLANATIONS = {
     "editlottery": "Server owner/admin command. Edits lottery price, duration, house cut, or channel, then refreshes the panel.",
     "stoplottery": "Server owner/admin command. Stops this server's lottery and clears its tickets/config.",
     "lotterystats": "Shows lottery prize, tickets, players, next draw, paginated ticket holders, and panel link.",
-    "buytick": "Legacy text command for buying lottery tickets. The lottery panel buttons are preferred.",
+    "buytick": "Legacy text command for buying lottery tickets. The lottery panel buttons are preferred. Lottery spending is capped at 60% of your lottery-adjusted balance per round.",
     "daily": "Claim a daily reward. Higher daily streak means a small bonus.",
     "weekly": "Claim a weekly reward. Higher weekly streak means a bigger bonus.",
     "monthly": "Claim a monthly reward. Higher monthly streak means a bigger bonus.",
@@ -5612,11 +5640,11 @@ DETAILED_EXPLANATIONS = {
     "shop": "Opens an interactive categorized Quewo shop. Select an item, press Buy, then enter the quantity. The bot checks your balance, item limit, and total price before purchasing.",
     "cooldowns": "Shows daily, weekly, monthly, and active gambling command cooldowns in one place.",
     "transactions": "Shows recent money movement including shop purchases, quest rewards, level rewards, transfer tax, admin changes, and lottery activity.",
-    "lottery": f"Server lottery. First run asks the server owner or an admin for a channel and draw period, locks the channel, and posts a persistent ticket panel with buy buttons. Existing active lottery data is preserved when the panel is refreshed. The prize is the full current pot. Tickets cost {format_balance(LOTTERY_TICKET_COST)} and {int(LOTTERY_HOUSE_CUT * 100)}% is burned as a money sink.",
+    "lottery": f"Server lottery. First run asks the server owner or an admin for a channel and draw period, locks the channel, and posts a persistent ticket panel with buy buttons. Existing active lottery data is preserved when the panel is refreshed. The prize is the full current pot. Tickets cost {format_balance(LOTTERY_TICKET_COST)} and {int(LOTTERY_HOUSE_CUT * 100)}% is burned as a money sink. Users can spend up to {int(LOTTERY_MAX_BALANCE_SPEND_RATIO * 100)}% of their lottery-adjusted balance per round.",
     "editlottery": "Server owner/admin command. Use `.editlottery price 250000`, `.editlottery duration 12h`, `.editlottery cut 5`, or `.editlottery channel #lottery`. Duration resets the next draw timer. Channel posts a fresh lottery panel. Updates ping the lottery participant role.",
     "stoplottery": "Server owner/admin command. Use `.stoplottery` to remove the lottery setup for this server, clear the current pot/tickets, and delete the participant role if the bot can. It leaves channels and panel messages alone.",
     "lotterystats": "Shows the current lottery prize pot, total ticket count, number of players, participant role, next draw time, panel link, and paginated ticket holders with approximate odds.",
-    "buytick": f"Legacy text command for buying tickets for the configured server lottery. The lottery panel buttons are preferred because they send private confirmations and update the panel automatically. Each ticket costs {format_balance(LOTTERY_TICKET_COST)}. The prize is the full current lottery pot; every ticket is one entry.",
+    "buytick": f"Legacy text command for buying tickets for the configured server lottery. The lottery panel buttons are preferred because they send private confirmations and update the panel automatically. Each ticket costs {format_balance(LOTTERY_TICKET_COST)}. The prize is the full current lottery pot; every ticket is one entry. Ticket spending is capped at {int(LOTTERY_MAX_BALANCE_SPEND_RATIO * 100)}% of your lottery-adjusted balance for the current round, so earning or spending quesos changes how many more tickets you can buy.",
     "weekly": f"Gives a reward once every 7 days. Base reward is 20,000-30,000 {CURRENCY_EMOJI}. Your weekly streak adds a bonus after week 1.",
     "monthly": f"Gives a reward once every 30 days. Base reward is 40,000-60,000 {CURRENCY_EMOJI}. Your monthly streak adds a bigger bonus after month 1.",
     "cf": "Pick heads or tails with `.cf <amount> h`, `.cf <amount> t`, `.flip <amount> heads`, or `.flip <amount> tails`. If you do not pick, the bot asks you. Winning pays ×2 before the universal gambling streak bonus, so betting 100 wins 200 total before bonuses. Losing removes the bet and resets the gambling streak.",
@@ -5625,7 +5653,7 @@ DETAILED_EXPLANATIONS = {
     "slots": f"The bot spins 3 reels with 4 custom symbols. All 3 reels must match to win: {slot_symbol_help_text()}. The base match chance is about {int(SLOTS_WIN_CHANCE * 100)}%. Non-perfect results lose the bet and reset the universal gambling streak.",
     "blackjack": "You get cards against the dealer and use Hit or Stand buttons. Try to get closer to 21 than the dealer without going over. The dealer hits below 16, usually hits on 16, and stands on 17+. A normal win pays +1x your bet as profit before the universal gambling streak bonus. Losing removes the bet and resets the streak. A push changes nothing.",
     "scratch": f"The ticket reveals 5 symbols one by one: {scratch_symbol_help_text()}. All 5 symbols must match to win. Payout tiers: {scratch_tier_help_text()}. The base win chance is intentionally low at about 8%. Losing resets the universal gambling streak.",
-    "tower": f"Choose one of 3 doors per floor. One door is trapped and two are safe. Safe floors raise the cash-out multiplier through {', '.join(f'×{m:.2f}' for m in TOWER_MULTIPLIERS)}. Cash out anytime after one safe door, or risk climbing higher. Wins use the universal gambling streak bonus; traps and timeouts reset it.",
+    "tower": f"Choose one of 3 doors per floor. Floors 1-3 have 1 trapped door; floors 4-6 have 2 trapped doors. Safe floors raise the cash-out multiplier through {', '.join(f'×{m:.2f}' for m in TOWER_MULTIPLIERS)}. Cash out anytime after one safe door, or risk climbing higher. Wins use the universal gambling streak bonus; traps and timeouts reset it.",
     "towers": "Alias for `.tower`. Climb safe doors and cash out before hitting a trap.",
     "vault": f"Guess a secret 3-digit code with no repeated digits. Each guess tells you exact digits and close digits. Opening the vault within {VAULT_GUESSES} tries pays ×{VAULT_MULTIPLIER} before the universal gambling streak bonus. Running out of tries resets the streak.",
     "memory": f"Flip a 4x4 board and match 8 pairs. Matching every pair before {MEMORY_MAX_MISTAKES} mistakes or timeout pays ×{MEMORY_MULTIPLIER} before the universal gambling streak bonus. Too many mistakes or timeout resets the streak.",
