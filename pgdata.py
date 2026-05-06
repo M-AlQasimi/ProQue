@@ -96,26 +96,7 @@ def _create_tables(cur):
     cur.execute("ALTER TABLE guild_activity_counts ADD COLUMN IF NOT EXISTS reactions BIGINT NOT NULL DEFAULT 0")
     cur.execute("ALTER TABLE guild_activity_counts ADD COLUMN IF NOT EXISTS voice_events BIGINT NOT NULL DEFAULT 0")
 
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS guild_wordle_config (
-            guild_id BIGINT PRIMARY KEY,
-            channel_id BIGINT NOT NULL,
-            role_id BIGINT,
-            message_id BIGINT,
-            set_by_user_id BIGINT,
-            current_word TEXT,
-            current_date TEXT
-        )
-    """)
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS guild_wordle_used_words (
-            guild_id BIGINT NOT NULL,
-            word TEXT NOT NULL,
-            used_date TEXT NOT NULL,
-            PRIMARY KEY (guild_id, word)
-        )
-    """)
+    _create_wordle_tables(cur)
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS birthdays (
@@ -280,6 +261,38 @@ def _create_tables(cur):
             PRIMARY KEY (guild_id, user_id)
         )
     """)
+
+def _create_wordle_tables(cur):
+    try:
+        cur.execute("SAVEPOINT wordle_tables")
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS guild_wordle_config (
+                guild_id BIGINT PRIMARY KEY,
+                channel_id BIGINT NOT NULL,
+                role_id BIGINT,
+                message_id BIGINT,
+                set_by_user_id BIGINT,
+                current_word TEXT,
+                current_date TEXT
+            )
+        """)
+
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS guild_wordle_used_words (
+                guild_id BIGINT NOT NULL,
+                word TEXT NOT NULL,
+                used_date TEXT NOT NULL,
+                PRIMARY KEY (guild_id, word)
+            )
+        """)
+        cur.execute("RELEASE SAVEPOINT wordle_tables")
+    except Exception as e:
+        try:
+            cur.execute("ROLLBACK TO SAVEPOINT wordle_tables")
+            cur.execute("RELEASE SAVEPOINT wordle_tables")
+        except Exception:
+            pass
+        print(f"Wordle tables unavailable; continuing without Wordle persistence: {type(e).__name__} - {e}")
 
 def _migrate_bot_config(cur):
     cur.execute("SELECT to_regclass('public.bot_config')")

@@ -2587,7 +2587,10 @@ async def on_reaction_remove(reaction, user):
     if user.bot and user.id != super_owner_id:
         return
 
-    await sync_wordle_role_from_reaction(reaction, user, add=False)
+    try:
+        await sync_wordle_role_from_reaction(reaction, user, add=False)
+    except Exception as e:
+        print(f"Wordle reaction-remove sync skipped: {type(e).__name__} - {e}")
     await update_poll_counts(reaction.message)
     
     msg = reaction.message
@@ -2632,7 +2635,10 @@ async def on_reaction_add(reaction, user):
             pass
         return
 
-    await sync_wordle_role_from_reaction(reaction, user, add=True)
+    try:
+        await sync_wordle_role_from_reaction(reaction, user, add=True)
+    except Exception as e:
+        print(f"Wordle reaction-add sync skipped: {type(e).__name__} - {e}")
     await update_poll_counts(reaction.message)
 
     msg = reaction.message
@@ -2652,11 +2658,17 @@ async def on_reaction_add(reaction, user):
 
 @bot.event
 async def on_raw_reaction_add(payload):
-    await sync_wordle_role_from_payload(payload, add=True)
+    try:
+        await sync_wordle_role_from_payload(payload, add=True)
+    except Exception as e:
+        print(f"Wordle raw reaction-add sync skipped: {type(e).__name__} - {e}")
 
 @bot.event
 async def on_raw_reaction_remove(payload):
-    await sync_wordle_role_from_payload(payload, add=False)
+    try:
+        await sync_wordle_role_from_payload(payload, add=False)
+    except Exception as e:
+        print(f"Wordle raw reaction-remove sync skipped: {type(e).__name__} - {e}")
 
 @bot.event
 async def on_raw_reaction_clear(payload):
