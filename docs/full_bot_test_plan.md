@@ -36,13 +36,32 @@ Test these once before role testing.
 - `.help`
 - `.help Quewo`
 - `.help activity`
+- `.help poll` then press the setup UI button.
 - `.econhelp`
 - `.quewohelp`
 - `.explain lottery`
 - `.explain activity`
 - `.explain editactivity`
+- `.explain settings`
+- `.explain games`
 
 Expected: all are current and mention the right aliases/settings.
+
+### Slash Commands
+
+- Wait for startup log: `Slash commands synced`.
+- `/commands`
+- `/help`
+- `/help command:poll`
+- `/games`
+- `/settings` as an admin-power user.
+- `/run command:bal`
+- `/run command:profile args:@normal`
+- `/run command:poll args:Slash poll? yes no 1m`
+- `/run command:timer args:1m slash test`
+- `/run command:qstats` as an admin-power user.
+
+Expected: `/run` autocomplete lists prefix commands, direct slash commands respond, and slash-run commands behave like their prefix versions. Discord only exposes a few top-level slash entries because all prefix commands are available through `/run`.
 
 ### Logs And Mentions
 
@@ -77,6 +96,7 @@ Run:
 - `.pfp`
 - `.pfp @normal`
 - `.q`
+- `.games`
 - `.testlog`
 - `.testrlog`
 - `.dsnipe`
@@ -107,6 +127,8 @@ Run:
 - `.setbdaychannel #channel`
 - `.activity`
 - `.activitystats`
+- `.settings`
+- In `.settings`, test Refresh, Prefix, Birthdays Here, Activity Here, and Wordle Here if safe.
 - `.find <normal_user_id>`
 - `.listtargets`
 - `.listcensors`
@@ -253,6 +275,7 @@ Run:
 - `.wheel 1000`
 - `.give @normal 1000`
 - `.lb`
+- `.qstats`
 - `.econhelp`
 - `.quewohelp`
 - `.explain scratch`
@@ -281,6 +304,7 @@ Run:
 - `.settick @role 1`
 - `.setquesos @role 1000`
 - `.stoplottery`
+- `.qstats`
 
 Expected: all work. Role/everyone operations affect the expected users. Balances/tickets shown after admin changes match `.bal` and `.lotterystats`.
 
@@ -316,8 +340,8 @@ Run:
 - `.roleinfo @role`
 - `.test`
 - `.endttt`
-- `.purge 1`
-- `.rpurge 1`
+- `.purge 1` and confirm/cancel once.
+- `.rpurge 1` and confirm/cancel once.
 - `.steal`
 - `.giveaway 1m test prize`
 - `.giveaway test prize 1m`
@@ -328,6 +352,7 @@ Run:
 - `.censor badtestphrase`
 - `.uncensor badtestphrase`
 - `.clearcensors`
+- `.settings`
 - `.setlogs`
 - `.lock`
 - `.unlock`

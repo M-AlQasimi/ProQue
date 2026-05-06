@@ -22,6 +22,10 @@ from datetime import datetime, timedelta, timezone
 from discord import Embed, Emoji, File, Interaction, StickerItem, app_commands
 from discord.ext import commands, tasks
 from discord.ui import Button, Modal, Select, TextInput, View
+try:
+    from discord.ext.commands.view import StringView
+except Exception:
+    StringView = None
 from flask import Flask
 from io import BytesIO
 from threading import Thread
@@ -31,6 +35,7 @@ from economy import (
     build_level_up_embed as economy_build_level_up_embed,
     ensure_db_ready as economy_ensure_db_ready,
     format_balance as economy_format_balance,
+    get_lottery_config as economy_get_lottery_config,
     get_user as economy_get_user,
     Q_ACCEPT as economy_q_accept,
     Q_ACTIVITY as economy_q_activity,
@@ -179,6 +184,7 @@ chess_games = {}
 edited_snipes = {}
 deleted_snipes = {}
 removed_reactions = {}
+slash_commands_synced = False
 
 TTT_EMPTY = "empty"
 TTT_X = "x"
@@ -359,6 +365,79 @@ def looks_like_command_message(message):
     if content.startswith(prefix):
         return True
     return False
+
+def slash_runnable_commands():
+    commands_ = []
+    seen = set()
+    for command in bot.walk_commands():
+        if command.hidden or getattr(command, "parent", None):
+            continue
+        if command.name in seen:
+            continue
+        seen.add(command.name)
+        commands_.append(command)
+    return sorted(commands_, key=lambda c: c.name.casefold())
+
+def slash_command_search(current):
+    current = (current or "").casefold().strip()
+    results = []
+    for command in slash_runnable_commands():
+        names = [command.name, *command.aliases]
+        haystack = " ".join(names).casefold()
+        if current and current not in haystack:
+            continue
+        alias_text = f" ({', '.join(command.aliases[:3])})" if command.aliases else ""
+        label = f"{command.name}{alias_text}"
+        if len(label) > 100:
+            label = label[:97] + "..."
+        results.append(app_commands.Choice(name=label, value=command.name))
+        if len(results) >= 25:
+            break
+    return results
+
+async def invoke_prefix_command_from_interaction(interaction, command_name, args=None):
+    command = get_command_case_insensitive(command_name)
+    if not command:
+        await interaction.followup.send(
+            f"Command `{command_name}` was not found. Try `/commands`.",
+            ephemeral=True
+        )
+        return
+    if StringView is None or not hasattr(commands.Context, "from_interaction"):
+        await interaction.followup.send(
+            "Slash forwarding is not available in this Discord library version.",
+            ephemeral=True
+        )
+        return
+
+    ctx = await commands.Context.from_interaction(interaction)
+    ctx.command = command
+    ctx.invoked_with = command.name
+    ctx.prefix = "/run "
+    raw_args = (args or "").strip()
+    ctx.view = StringView(raw_args)
+    ctx.view.skip_ws()
+    try:
+        await command.invoke(ctx)
+    except commands.CommandError as e:
+        await on_command_error(ctx, e)
+    except Exception as e:
+        print(f"Slash command bridge failed for {command.name}: {type(e).__name__} - {e}")
+        if not interaction.response.is_done():
+            await interaction.response.send_message("That slash command failed.", ephemeral=True)
+        else:
+            await interaction.followup.send("That slash command failed.", ephemeral=True)
+
+async def sync_slash_commands_once():
+    global slash_commands_synced
+    if slash_commands_synced:
+        return
+    try:
+        synced = await bot.tree.sync()
+        slash_commands_synced = True
+        print(f"Slash commands synced: {len(synced)} top-level commands. Use /run for all {len(slash_runnable_commands())} prefix commands.")
+    except Exception as e:
+        print(f"Slash command sync failed: {type(e).__name__} - {e}")
 
 def scoped_id(guild):
     return guild.id if guild else 0
@@ -908,7 +987,7 @@ async def on_ready():
     if not runtime_state_restored:
         await restore_persistent_runtime_state()
         runtime_state_restored = True
-    print("Bot ready, waiting to sync slash commands...")
+    await sync_slash_commands_once()
 
 
 async def birthday_check_loop():
@@ -2350,6 +2429,18 @@ async def on_command_error(ctx, error):
             f"Missing `{error.param.name}`.\nUse: `{usage}`\nTry `{prefix}help {ctx.command.qualified_name}` or `{prefix}explain {ctx.command.qualified_name}`."
         )
 
+    elif isinstance(error, commands.MemberNotFound):
+        await ctx.send("I couldn't find that member. Mention them or paste their user ID.")
+
+    elif isinstance(error, commands.UserNotFound):
+        await ctx.send("I couldn't find that user. Mention them or paste their user ID.")
+
+    elif isinstance(error, commands.ChannelNotFound):
+        await ctx.send("I couldn't find that channel. Mention it like `#channel` or paste its ID.")
+
+    elif isinstance(error, commands.RoleNotFound):
+        await ctx.send("I couldn't find that role. Mention it like `@role` or paste its ID.")
+
     elif isinstance(error, commands.BadArgument):
         print(f"Command bad argument: {ctx.command} for {ctx.author} ({ctx.author.id}) - {error}")
         prefix = getattr(ctx, "prefix", prefix_for_guild(ctx.guild))
@@ -2366,9 +2457,9 @@ HELP_CATEGORIES = {
     "Quewo": [
         "bal", "profile", "inventory", "quests", "shop", "cooldowns", "transactions", "lottery", "lotterystats", "buytick",
         "daily", "weekly", "monthly", "cf", "roulette", "slots", "blackjack", "scratch", "tower", "vault", "memory", "ms", "wheel",
-        "give", "lb", "econhelp", "explain",
+        "give", "lb", "qstats", "econhelp", "explain",
     ],
-    "Games": ["ttt", "c4", "chess", "move", "resign", "wordle", "q", "picker"],
+    "Games": ["games", "ttt", "c4", "chess", "move", "resign", "wordle", "q", "picker"],
     "Utility": ["help", "userinfo", "pfp", "calc", "define", "timer", "ctimer", "alarm", "poll", "epoll", "translate", "find"],
     "AI": ["ask", "generate", "analyse", "analyze"],
     "Server Tools": [
@@ -2377,7 +2468,7 @@ HELP_CATEGORIES = {
     ],
     "Status": ["afk", "sleep", "wake", "fsleep", "away", "setbday", "removebday", "setbdaychannel", "activity", "activitystats"],
     "Admin": [
-        "setlogs", "prefix", "disable", "enable", "disableall", "enableall", "dclist", "test", "testlog", "testrlog",
+        "settings", "setlogs", "prefix", "disable", "enable", "disableall", "enableall", "dclist", "test", "testlog", "testrlog",
         "endttt", "setnick", "unmute", "kick", "ban", "unban", "addrole", "removerole", "deleterole",
         "lock", "lockdown", "unlock", "rlockdown", "runlock", "shut", "unshut", "clearwatchlist", "rshut", "unrshut",
         "send", "reply", "aban", "raban", "abanlist", "summon", "summon2", "block", "unblock",
@@ -2460,9 +2551,321 @@ async def help_command(ctx, command_name: str = None):
             usage += f" {command.signature}"
         aliases = f"\nAliases: {', '.join(command.aliases)}" if command.aliases else ""
         description = (command.help or "").strip().splitlines()[0] if command.help else "No extra help available."
-        return await ctx.send(f"**{usage}**\n{description}{aliases}")
+        setup_note = "\nRun it with no arguments to open the setup UI." if command.name in SETUP_UI_COMMANDS else ""
+        return await ctx.send(
+            f"**{usage}**\n{description}{aliases}{setup_note}",
+            view=command_setup_view(ctx.author.id, command.name)
+        )
 
     await ctx.send(embed=render_help_embed(ctx.guild), view=HelpView(ctx.author.id))
+
+def channel_status(guild, channel_id):
+    if not channel_id:
+        return "Not set"
+    channel = guild.get_channel(int(channel_id)) if guild else None
+    return channel.mention if channel else f"Missing channel (`{channel_id}`)"
+
+async def build_settings_embed(guild):
+    prefix = prefix_for_guild(guild)
+    log_config = get_guild_log_config(guild.id) if guild else {}
+    birthday_config = guild_birthday_channels.get(guild.id, {}) if guild else {}
+    activity_config = guild_activity_channels.get(guild.id, {}) if guild else {}
+    wordle_config = guild_wordle_configs.get(guild.id, {}) if guild else {}
+    try:
+        lottery_config = await asyncio.to_thread(economy_get_lottery_config, guild.id) if guild else None
+    except Exception:
+        lottery_config = None
+    disabled = sorted(guild_disabled_commands(guild)) if guild else []
+
+    embed = discord.Embed(
+        title=f"{economy_q_permissions} Server Settings",
+        description="Current bot setup for this server.",
+        color=discord.Color.blurple(),
+        timestamp=datetime.now(timezone.utc)
+    )
+    embed.add_field(name="Prefix", value=f"`{prefix}`", inline=True)
+    embed.add_field(name="Disabled Commands", value=f"{len(disabled)} disabled" if disabled else "None", inline=True)
+    embed.add_field(name="Logs", value=channel_status(guild, log_config.get("log_channel_id")), inline=True)
+    embed.add_field(name="Reaction Logs", value=channel_status(guild, log_config.get("reaction_log_channel_id")), inline=True)
+    embed.add_field(name="Birthdays", value=channel_status(guild, birthday_config.get("channel_id")), inline=True)
+    activity_value = channel_status(guild, activity_config.get("channel_id"))
+    if activity_config.get("next_report"):
+        activity_value += f"\nNext: {discord.utils.format_dt(activity_config['next_report'], 'R')}"
+    embed.add_field(name="Activity", value=activity_value, inline=True)
+    embed.add_field(name="Wordle", value=channel_status(guild, wordle_config.get("channel_id")), inline=True)
+    if lottery_config:
+        next_draw = lottery_config.get("next_draw")
+        lottery_value = (
+            f"{channel_status(guild, lottery_config.get('channel_id'))}\n"
+            f"Pot: {economy_format_balance(lottery_config.get('pot') or 0)}"
+        )
+        if next_draw:
+            lottery_value += f"\nNext: {discord.utils.format_dt(next_draw, 'R')}"
+    else:
+        lottery_value = "Not set"
+    embed.add_field(name="Lottery", value=lottery_value, inline=True)
+    embed.set_footer(text="Use the buttons below for quick setup actions.")
+    return embed
+
+class PrefixSettingsModal(Modal):
+    def __init__(self, author_id, current_prefix):
+        super().__init__(title="Change Prefix")
+        self.author_id = author_id
+        self.prefix = TextInput(label="New prefix", placeholder=current_prefix, max_length=5)
+        self.add_item(self.prefix)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if interaction.user.id != self.author_id:
+            return await interaction.response.send_message("Use your own settings UI.", ephemeral=True)
+        if not can_manage_prefix(interaction.user, interaction.guild):
+            return await interaction.response.send_message("You can't change the prefix here.", ephemeral=True)
+        new_prefix = str(self.prefix.value).strip()
+        if not new_prefix or len(new_prefix) > 5 or any(char.isspace() for char in new_prefix) or new_prefix.startswith("<@"):
+            return await interaction.response.send_message("Prefix must be 1-5 characters, no spaces, and not a user mention.", ephemeral=True)
+        saved = await asyncio.to_thread(save_guild_prefix, interaction.guild.id, new_prefix)
+        if not saved:
+            return await interaction.response.send_message("Prefix save failed because the database is unavailable.", ephemeral=True)
+        guild_prefixes[interaction.guild.id] = new_prefix
+        await interaction.response.send_message(f"Prefix changed to `{new_prefix}`. Press Refresh on the settings panel to update it.", ephemeral=True)
+
+class SettingsView(View):
+    def __init__(self, author_id):
+        super().__init__(timeout=180)
+        self.author_id = author_id
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id == self.author_id:
+            return True
+        await interaction.response.send_message("Use your own settings panel.", ephemeral=True)
+        return False
+
+    @discord.ui.button(label="Refresh", style=discord.ButtonStyle.secondary)
+    async def refresh(self, interaction, button):
+        await interaction.response.edit_message(embed=await build_settings_embed(interaction.guild), view=self)
+
+    @discord.ui.button(label="Prefix", style=discord.ButtonStyle.primary)
+    async def prefix_button(self, interaction, button):
+        current_prefix = prefix_for_guild(interaction.guild)
+        await interaction.response.send_modal(PrefixSettingsModal(self.author_id, current_prefix))
+
+    @discord.ui.button(label="Logs", style=discord.ButtonStyle.secondary)
+    async def logs_button(self, interaction, button):
+        if not has_owner_power(interaction.user, interaction.guild):
+            return await interaction.response.send_message("Admin power only.", ephemeral=True)
+        await interaction.response.send_message("Starting log setup in this server.", ephemeral=True)
+        await prompt_log_setup(interaction.guild)
+
+    @discord.ui.button(label="Birthdays Here", style=discord.ButtonStyle.secondary)
+    async def birthday_button(self, interaction, button):
+        if not await can_manage_birthday_channel(interaction.user, interaction.guild):
+            return await interaction.response.send_message("You can't change the birthday channel here.", ephemeral=True)
+        saved = await asyncio.to_thread(save_guild_birthday_channel, interaction.guild.id, interaction.channel.id, interaction.user.id)
+        if not saved:
+            return await interaction.response.send_message("Birthday channel save failed.", ephemeral=True)
+        guild_birthday_channels[interaction.guild.id] = {"channel_id": interaction.channel.id, "set_by_user_id": interaction.user.id}
+        await interaction.response.edit_message(embed=await build_settings_embed(interaction.guild), view=self)
+
+    @discord.ui.button(label="Activity Here", style=discord.ButtonStyle.secondary)
+    async def activity_button(self, interaction, button):
+        if not await can_manage_activity_channel(interaction.user, interaction.guild):
+            return await interaction.response.send_message("You can't change activity reports here.", ephemeral=True)
+        ok, message, _ = await save_activity_report_config(interaction.guild, interaction.channel, interaction.user.id)
+        if not ok:
+            return await interaction.response.send_message(message, ephemeral=True)
+        await interaction.response.edit_message(embed=await build_settings_embed(interaction.guild), view=self)
+
+    @discord.ui.button(label="Wordle Here", style=discord.ButtonStyle.secondary)
+    async def wordle_button(self, interaction, button):
+        if not await can_manage_wordle_channel(interaction.user, interaction.guild):
+            return await interaction.response.send_message("You can't change Wordle here.", ephemeral=True)
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            role = await ensure_wordle_role(interaction.guild)
+            _, config = await post_wordle_setup_message(interaction.guild, interaction.channel, role, interaction.user.id)
+            await ensure_daily_wordle(interaction.guild.id, config, announce=False)
+        except Exception as e:
+            return await interaction.followup.send(f"I couldn't set up Wordle: `{type(e).__name__}`", ephemeral=True)
+        await interaction.followup.send("Wordle set up in this channel.", ephemeral=True)
+        try:
+            await interaction.message.edit(embed=await build_settings_embed(interaction.guild), view=self)
+        except discord.HTTPException:
+            pass
+
+@bot.command(name="settings", aliases=["setup", "config"])
+@is_admin_power()
+async def settings_command(ctx):
+    """Shows the server settings dashboard."""
+    if ctx.guild is None:
+        return await ctx.send("Settings only work in servers.")
+    await ctx.send(embed=await build_settings_embed(ctx.guild), view=SettingsView(ctx.author.id), allowed_mentions=discord.AllowedMentions.none())
+
+GAME_MENU = [
+    ("Tic Tac Toe", "`.ttt @user [bet]`", "Quick 2-player strategy. Supports bets."),
+    ("Connect 4", "`.c4 @user [bet]`", "Column strategy game. Supports bets."),
+    ("Chess", "`.chess @user [bet]`", "Full chess with UI moves and 10-minute clocks."),
+    ("Wordle", "`.wordle` / `.wordle setup #channel`", "Daily server word guessing in a thread."),
+    ("Tower", "`.tower <amount>`", "Risk climbing floors or cash out."),
+    ("Vault", "`.vault <amount>`", "Think through code hints before tries run out."),
+    ("Memory", "`.memory <amount>`", "Match pairs before too many mistakes."),
+    ("Minesweeper", "`.ms <amount>`", "Reveal safe tiles and avoid bombs."),
+    ("Picker", "`.picker`", "Randomly picks from options."),
+]
+
+def games_embed(prefix="."):
+    embed = discord.Embed(
+        title=f"{economy_q_game_win} Games",
+        description="Pick a game by skill, luck, or bets.",
+        color=discord.Color.green()
+    )
+    for name, usage, desc in GAME_MENU:
+        embed.add_field(name=name, value=f"{usage.replace('`.', f'`{prefix}')}\n{desc}", inline=False)
+    embed.set_footer(text="Use .explain <game> for full rules.")
+    return embed
+
+class GamesView(View):
+    def __init__(self, author_id, prefix):
+        super().__init__(timeout=180)
+        self.author_id = author_id
+        self.prefix = prefix
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id == self.author_id:
+            return True
+        await interaction.response.send_message("Use your own games menu.", ephemeral=True)
+        return False
+
+    @discord.ui.select(
+        placeholder="Choose a game",
+        options=[discord.SelectOption(label=name, description=desc[:95], value=name) for name, _, desc in GAME_MENU[:9]]
+    )
+    async def select_game(self, interaction, select):
+        selected = select.values[0]
+        usage = next((usage for name, usage, _ in GAME_MENU if name == selected), None)
+        usage = usage.replace("`.", f"`{self.prefix}") if usage else f"`{self.prefix}help games`"
+        await interaction.response.send_message(f"Start with {usage}", ephemeral=True)
+
+@bot.command(name="games", aliases=["gamelist"])
+async def games_command(ctx):
+    """Shows available games and how to start them."""
+    prefix = prefix_for_guild(ctx.guild)
+    await ctx.send(embed=games_embed(prefix), view=GamesView(ctx.author.id, prefix))
+
+@bot.tree.command(name="run", description="Run any ProQue prefix command through slash commands.")
+@app_commands.describe(command="Command name", args="Everything after the command, like @user 1000 or 10m title")
+async def slash_run(interaction: discord.Interaction, command: str, args: str = ""):
+    await interaction.response.defer(thinking=True)
+    await invoke_prefix_command_from_interaction(interaction, command, args)
+
+@slash_run.autocomplete("command")
+async def slash_run_command_autocomplete(interaction: discord.Interaction, current: str):
+    return slash_command_search(current)
+
+@bot.tree.command(name="commands", description="List slash command access for all ProQue commands.")
+async def slash_commands_list(interaction: discord.Interaction):
+    commands_ = slash_runnable_commands()
+    prefix = prefix_for_guild(interaction.guild)
+    lines = []
+    for command in commands_:
+        alias_text = f" ({', '.join(command.aliases[:3])})" if command.aliases else ""
+        lines.append(f"`{command.name}`{alias_text}")
+    embed = discord.Embed(
+        title="ProQue Slash Commands",
+        description=(
+            f"Use `/run command args` to run any of the **{len(commands_)}** commands.\n"
+            f"Prefix commands still use `{prefix}` in this server."
+        ),
+        color=discord.Color.blurple()
+    )
+    for index in range(0, len(lines), 25):
+        chunk = "\n".join(lines[index:index + 25])
+        embed.add_field(name=f"Commands {index + 1}-{min(index + 25, len(lines))}", value=chunk, inline=True)
+        if len(embed.fields) >= 6:
+            break
+    embed.set_footer(text="Discord limits top-level slash commands to 100, so /run covers every command.")
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+@bot.tree.command(name="help", description="Show ProQue help.")
+@app_commands.describe(command="Optional command name")
+async def slash_help(interaction: discord.Interaction, command: str = ""):
+    if command:
+        command_obj = get_command_case_insensitive(command)
+        if not command_obj:
+            return await interaction.response.send_message("Command not found.", ephemeral=True)
+        prefix = prefix_for_guild(interaction.guild)
+        usage = f"{prefix}{command_obj.qualified_name}"
+        if command_obj.signature:
+            usage += f" {command_obj.signature}"
+        aliases = f"\nAliases: {', '.join(command_obj.aliases)}" if command_obj.aliases else ""
+        description = (command_obj.help or "").strip().splitlines()[0] if command_obj.help else "No extra help available."
+        setup_note = "\nRun it through `/run`, or use the setup UI where available." if command_obj.name in SETUP_UI_COMMANDS else "\nRun it through `/run command args`."
+        return await interaction.response.send_message(f"**{usage}**\n{description}{aliases}{setup_note}", ephemeral=True)
+    await interaction.response.send_message(embed=render_help_embed(interaction.guild), ephemeral=True)
+
+@slash_help.autocomplete("command")
+async def slash_help_command_autocomplete(interaction: discord.Interaction, current: str):
+    return slash_command_search(current)
+
+@bot.tree.command(name="settings", description="Open the server settings dashboard.")
+async def slash_settings(interaction: discord.Interaction):
+    if interaction.guild is None:
+        return await interaction.response.send_message("Settings only work in servers.", ephemeral=True)
+    if not has_owner_power(interaction.user, interaction.guild):
+        return await interaction.response.send_message("Admin power only.", ephemeral=True)
+    await interaction.response.send_message(
+        embed=await build_settings_embed(interaction.guild),
+        view=SettingsView(interaction.user.id),
+        ephemeral=True
+    )
+
+@bot.tree.command(name="games", description="Show ProQue games.")
+async def slash_games(interaction: discord.Interaction):
+    prefix = prefix_for_guild(interaction.guild)
+    await interaction.response.send_message(embed=games_embed(prefix), view=GamesView(interaction.user.id, prefix), ephemeral=True)
+
+class ConfirmActionView(View):
+    def __init__(self, author_id, label="Confirm"):
+        super().__init__(timeout=45)
+        self.author_id = author_id
+        self.label = label
+        self.value = None
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id == self.author_id:
+            return True
+        await interaction.response.send_message("This confirmation is not for you.", ephemeral=True)
+        return False
+
+    @discord.ui.button(label="Confirm", style=discord.ButtonStyle.danger)
+    async def confirm_button(self, interaction, button):
+        self.value = True
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(content=f"{economy_q_accept} Confirmed: {self.label}", view=self)
+        self.stop()
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel_button(self, interaction, button):
+        self.value = False
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(content="Cancelled.", view=self)
+        self.stop()
+
+async def confirm_admin_action(ctx, title, details, danger=True):
+    view = ConfirmActionView(ctx.author.id, title)
+    color = discord.Color.red() if danger else discord.Color.orange()
+    embed = discord.Embed(title=title, description=details, color=color)
+    msg = await ctx.send(embed=embed, view=view, allowed_mentions=discord.AllowedMentions.none())
+    await view.wait()
+    if view.value is None:
+        for item in view.children:
+            item.disabled = True
+        try:
+            await msg.edit(content="Confirmation timed out.", embed=None, view=view)
+        except discord.HTTPException:
+            pass
+        return False
+    return bool(view.value)
 
 @bot.event
 async def on_message_delete(message):
@@ -3411,6 +3814,9 @@ async def disableall(ctx):
     if not has_owner_power(ctx.author, ctx.guild):
         return
 
+    ok = await confirm_admin_action(ctx, "Disable All Commands", "This disables every command except `enableall` for this server.")
+    if not ok:
+        return
     for command in bot.commands:
         if command.name != "enableall":
             guild_disabled_commands(ctx.guild).add(command.name)
@@ -4823,6 +5229,9 @@ async def shut(ctx, member: discord.Member):
     print(f"shut command used by {ctx.author} on {member}")
     if not can_act_on(ctx.author, member, ctx.guild):
         return await ctx.send("You can't silence that user.")
+    ok = await confirm_admin_action(ctx, "Silence User", f"Silence <@{member.id}> messages in this server?")
+    if not ok:
+        return
     targets = guild_watchlist(ctx.guild)
     targets[member.id] = ctx.author.id
     save_watchlist(scoped_id(ctx.guild), targets)
@@ -4852,6 +5261,9 @@ async def rshut(ctx, member: discord.Member):
     """Silence a user's reactions."""
     if not can_act_on(ctx.author, member, ctx.guild):
         return await ctx.send("You can't silence that user's reactions.")
+    ok = await confirm_admin_action(ctx, "Silence Reactions", f"Silence reactions from <@{member.id}> in this server?")
+    if not ok:
+        return
     targets = guild_reaction_watchlist(ctx.guild)
     targets[member.id] = ctx.author.id
     save_reaction_watchlist(scoped_id(ctx.guild), targets)
@@ -4870,6 +5282,9 @@ async def unrshut(ctx, member: discord.Member):
 @bot.command()
 @is_admin_power()
 async def lockdown(ctx):
+    ok = await confirm_admin_action(ctx, "Lockdown Channel", f"Lock messages in {ctx.channel.mention} for normal users?")
+    if not ok:
+        return
     channels = guild_shutdown_channels(ctx.guild)
     channels.add(ctx.channel.id)
     save_shutdown_channels(scoped_id(ctx.guild), channels)
@@ -4886,6 +5301,9 @@ async def unlock(ctx):
 @bot.command()
 @is_admin_power()
 async def rlockdown(ctx):
+    ok = await confirm_admin_action(ctx, "Disable Reactions", f"Disable reactions in {ctx.channel.mention}?")
+    if not ok:
+        return
     channels = guild_reaction_shutdown_channels(ctx.guild)
     channels.add(ctx.channel.id)
     save_reaction_shutdown_channels(scoped_id(ctx.guild), channels)
@@ -4904,6 +5322,12 @@ from collections import Counter
 @bot.command()
 @is_admin_power()
 async def purge(ctx, amount: int, member: discord.Member = None):
+    if amount <= 0:
+        return await ctx.send("Amount must be greater than 0.", delete_after=5)
+    target_text = f" from <@{member.id}>" if member else ""
+    ok = await confirm_admin_action(ctx, "Purge Messages", f"Delete up to **{amount}** messages{target_text} in {ctx.channel.mention}?")
+    if not ok:
+        return
     await safe_delete_message(ctx.message)
     deleted = []
     try:
@@ -4941,6 +5365,10 @@ async def purge(ctx, amount: int, member: discord.Member = None):
 async def rpurge(ctx, amount: int, member: discord.Member = None):
     if amount <= 0:
         return await ctx.send("Amount must be greater than 0.", delete_after=5)
+    target_text = f" from <@{member.id}>" if member else ""
+    ok = await confirm_admin_action(ctx, "Purge Reactions", f"Remove up to **{amount}** reactions{target_text} in {ctx.channel.mention}?")
+    if not ok:
+        return
 
     await safe_delete_message(ctx.message)
     removed = 0
@@ -4986,6 +5414,9 @@ async def rpurge(ctx, amount: int, member: discord.Member = None):
 @bot.command(name="lock")
 @is_admin_power()
 async def lock_channel(ctx):
+    ok = await confirm_admin_action(ctx, "Lock Channel", f"Lock {ctx.channel.mention} for normal users?")
+    if not ok:
+        return
     overwrite = ctx.channel.overwrites_for(ctx.guild.default_role)
     overwrite.send_messages = False
     await ctx.channel.set_permissions(ctx.guild.default_role, overwrite=overwrite)
@@ -5014,6 +5445,9 @@ async def ban(ctx, user: discord.User):
     member = ctx.guild.get_member(user.id) if ctx.guild else None
     if member is not None and not can_act_on(ctx.author, member, ctx.guild):
         return await ctx.send("You can't ban that user.")
+    ok = await confirm_admin_action(ctx, "Ban User", f"Ban <@{user.id}> from **{ctx.guild.name}**?")
+    if not ok:
+        return
     try:
         await user.send(f"LMAO you got banned from **{ctx.guild.name}** {economy_q_reject}")
     except Exception:
@@ -5056,6 +5490,10 @@ async def unban(ctx, *, user: str):
 async def kick(ctx, member: discord.Member, *, reason=None):
     if not can_act_on(ctx.author, member, ctx.guild):
         return await ctx.send("You can't kick that member.")
+    reason_text = f"\nReason: {reason}" if reason else ""
+    ok = await confirm_admin_action(ctx, "Kick User", f"Kick <@{member.id}> from **{ctx.guild.name}**?{reason_text}")
+    if not ok:
+        return
     await member.kick(reason=reason)
     await ctx.send(f"<@{member.id}> has been kicked.", allowed_mentions=discord.AllowedMentions.none())
 
@@ -6459,6 +6897,9 @@ async def summon2(ctx, *, message: str):
 async def block(ctx, member: discord.Member):
     if not can_act_on(ctx.author, member, ctx.guild):
         return await ctx.send("You can't block that member.")
+    ok = await confirm_admin_action(ctx, "Block User", f"Block <@{member.id}> from using bot commands in this server?")
+    if not ok:
+        return
     blocked = guild_blacklisted_users(ctx.guild)
     blocked.add(member.id)
     save_blacklisted_users(scoped_id(ctx.guild), blocked)
@@ -7199,6 +7640,25 @@ class OpenTranslateSetupButton(Button):
         if interaction.user.id != self.view.author_id:
             return await interaction.response.send_message("Use your own setup UI.", ephemeral=True)
         await interaction.response.send_modal(TranslateSetupModal(self.view.author_id))
+
+SETUP_UI_COMMANDS = {"poll", "timer", "alarm", "picker", "giveaway", "calc", "define", "setbday", "translate"}
+
+def command_setup_view(author_id, command_name):
+    buttons = {
+        "poll": OpenPollSetupButton,
+        "timer": OpenTimerSetupButton,
+        "alarm": OpenAlarmSetupButton,
+        "picker": OpenPickerSetupButton,
+        "giveaway": OpenGiveawaySetupButton,
+        "calc": OpenCalcSetupButton,
+        "define": OpenDefineSetupButton,
+        "setbday": OpenBirthdaySetupButton,
+        "translate": OpenTranslateSetupButton,
+    }
+    button_cls = buttons.get(command_name)
+    if not button_cls:
+        return None
+    return SingleUserSetupView(author_id, button_cls())
 
 @bot.command(name="translate")
 async def translate_command(ctx, *, args: str = None):

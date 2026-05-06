@@ -851,6 +851,63 @@ def get_recent_transactions(user_id, limit=10):
     conn.close()
     return rows
 
+def get_economy_stats():
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT
+            COUNT(*) AS users,
+            COALESCE(SUM(balance), 0) AS total_balance,
+            COALESCE(SUM(total_earned), 0) AS total_earned,
+            COALESCE(SUM(total_won), 0) AS total_won,
+            COALESCE(SUM(total_lost), 0) AS total_lost,
+            COALESCE(SUM(messages_sent), 0) AS messages_sent,
+            COALESCE(MAX(balance), 0) AS richest_balance
+        FROM economy
+        """
+    )
+    totals = cur.fetchone()
+    cur.execute(
+        """
+        SELECT user_id, balance
+        FROM economy
+        ORDER BY balance DESC, user_id ASC
+        LIMIT 1
+        """
+    )
+    richest = cur.fetchone()
+    cur.execute("SELECT COUNT(*) AS count, COALESCE(SUM(pot), 0) AS total_pot FROM lottery_config")
+    lottery = cur.fetchone()
+    cur.execute("SELECT COALESCE(SUM(tickets), 0) AS tickets, COALESCE(SUM(spent), 0) AS spent FROM lottery_tickets")
+    tickets = cur.fetchone()
+    cur.execute(
+        """
+        SELECT kind, COALESCE(SUM(amount), 0) AS total
+        FROM economy_transactions
+        WHERE kind IN ('transfer_tax', 'lottery_house_cut', 'shop_payment', 'shop_purchase')
+        GROUP BY kind
+        """
+    )
+    transaction_totals = {row["kind"]: int(row["total"] or 0) for row in cur.fetchall()}
+    cur.close()
+    conn.close()
+    return {
+        "users": int(totals["users"] or 0),
+        "total_balance": int(totals["total_balance"] or 0),
+        "total_earned": int(totals["total_earned"] or 0),
+        "total_won": int(totals["total_won"] or 0),
+        "total_lost": int(totals["total_lost"] or 0),
+        "messages_sent": int(totals["messages_sent"] or 0),
+        "richest_user_id": int(richest["user_id"]) if richest else None,
+        "richest_balance": int(richest["balance"] or 0) if richest else 0,
+        "active_lotteries": int(lottery["count"] or 0),
+        "lottery_pots": int(lottery["total_pot"] or 0),
+        "lottery_tickets": int(tickets["tickets"] or 0),
+        "lottery_spent": int(tickets["spent"] or 0),
+        "transaction_totals": transaction_totals,
+    }
+
 def period_key(period):
     now = datetime.now(timezone.utc)
     if period == "daily":
@@ -4225,6 +4282,47 @@ async def give(ctx, member: discord.Member, amount: str):
 async def lb(ctx):
     await send_balance_rank(ctx, "DESC", "Leaderboard", QOIN_CHEST)
 
+@commands.command(name="qstats", aliases=["economystats", "qstatus"])
+async def qstats(ctx):
+    if not await ensure_db_ready(ctx):
+        return
+    if not has_economy_owner_power(ctx.author.id, ctx.guild):
+        await ctx.send(f"{Q_DENIED} Server owner or admin only.")
+        return
+    try:
+        stats = await asyncio.to_thread(get_economy_stats)
+    except Exception:
+        await send_error(ctx, "Database unavailable. Try again shortly.")
+        return
+
+    tx = stats["transaction_totals"]
+    net_gambling = stats["total_won"] - stats["total_lost"]
+    embed = discord.Embed(
+        title=f"{QOIN_CHEST} Quewo Economy Stats",
+        description="Global economy health across all servers.",
+        color=discord.Color.gold(),
+        timestamp=datetime.now(timezone.utc)
+    )
+    embed.add_field(name="Users", value=f"{stats['users']:,}", inline=True)
+    embed.add_field(name="Money Supply", value=format_balance(stats["total_balance"]), inline=True)
+    embed.add_field(name="Total Earned", value=format_balance(stats["total_earned"]), inline=True)
+    embed.add_field(name="Gambling Won", value=format_balance(stats["total_won"]), inline=True)
+    embed.add_field(name="Gambling Lost", value=format_balance(stats["total_lost"]), inline=True)
+    embed.add_field(name="Net Gambling", value=format_balance(net_gambling), inline=True)
+    embed.add_field(name="Active Lotteries", value=f"{stats['active_lotteries']:,}", inline=True)
+    embed.add_field(name="Lottery Pots", value=format_balance(stats["lottery_pots"]), inline=True)
+    embed.add_field(name="Lottery Tickets", value=f"{stats['lottery_tickets']:,}", inline=True)
+    burned = abs(tx.get("shop_purchase", 0)) + tx.get("transfer_tax", 0) + tx.get("lottery_house_cut", 0)
+    embed.add_field(name="Tracked Taxes / Payments", value=format_balance(burned), inline=True)
+    if stats["richest_user_id"]:
+        embed.add_field(
+            name="Richest",
+            value=f"{user_mention(stats['richest_user_id'])}\n{format_balance(stats['richest_balance'])}",
+            inline=True
+        )
+    embed.add_field(name="Messages Tracked", value=f"{stats['messages_sent']:,}", inline=True)
+    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
 # =====================
 # ADD / REMOVE (OWNER)
 # =====================
@@ -5528,6 +5626,11 @@ async def wheel(ctx, amount: str):
 # =====================
 EXPLANATIONS = {
     "admin": "Admin power means superowner, actual server owner, or Discord Administrator. Server owner outranks admins, and superowner is highest.",
+    "settings": "Admin-power command. Opens a server setup dashboard for prefix, logs, birthdays, activity reports, Wordle, lottery status, and disabled commands.",
+    "setup": "Alias for `.settings`. Opens the server setup dashboard.",
+    "config": "Alias for `.settings`. Opens the server setup dashboard.",
+    "games": "Shows the bot's games, short rules, bet support, and how to start each one.",
+    "gamelist": "Alias for `.games`. Shows available games.",
     "bal": "Shows balance, streaks, and total earned/won/lost. Use `.bal` or `.bal @user`.",
     "balance": "Alias for `.bal`. Shows balance, streaks, and total earned/won/lost.",
     "cash": "Alias for `.bal`. Shows balance, streaks, and total earned/won/lost.",
@@ -5567,6 +5670,9 @@ EXPLANATIONS = {
     "give": "Transfers quesos to another user. Normal transfers burn 3% tax.",
     "lb": "Shows a paginated local/global leaderboard with ranking types for quesos, level, earnings, wins, losses, net gambling, and messages.",
     "leaderboard": "Shows a paginated local/global leaderboard with ranking types for quesos, level, earnings, wins, losses, net gambling, and messages.",
+    "qstats": "Admin-power command. Shows global Quewo economy health, money supply, gambling totals, lotteries, and tracked taxes/payments.",
+    "economystats": "Alias for `.qstats`. Shows global Quewo economy health.",
+    "qstatus": "Alias for `.qstats`. Shows global Quewo economy health.",
     "add": "Admin-power command. Adds quesos to a user. Superowner can bulk add to @everyone or a role.",
     "remove": "Admin-power command. Removes quesos from a user.",
     "addtick": "Superowner command. Adds free lottery tickets to a user, role, or @everyone.",
@@ -5675,6 +5781,7 @@ DETAILED_EXPLANATIONS = {
     "give": f"Moves quesos from you to another user. Normal transfers burn {int(TRANSFER_TAX_RATE * 100)}% as tax. Admin-power users can use `.give @user all`. The message shows sent amount, tax, received amount, and balances.",
     "lb": "Shows a paginated leaderboard. Use the buttons to switch between local server rankings and global all-server rankings. Use the ranking type menu to sort by quesos, level, earnings, total won, total lost, net gambling, or messages. The embed also shows your rank for the selected scope and type.",
     "leaderboard": "Alias for `.lb`. Shows local/global paginated rankings with selectable ranking types and your rank.",
+    "qstats": "Admin-power command for checking the global Quewo economy. It shows total money supply, total earned, gambling won/lost/net, active lotteries, lottery pots, ticket count, tracked taxes/payments, richest user, and tracked messages.",
     "add": "Admin-power command. `.add @user <amount>` adds new quesos to one user. Superowner can use `.add @everyone <amount>` or `.add @role <amount>` to add that amount to every server member or every member with that role. It does not support `all`.",
     "remove": "Admin-power command. Removes quesos from a user. `.remove @user all` removes their full balance. The balance cannot go below 0, and the message shows old and new balance.",
     "addtick": "Superowner-only lottery admin command. Use `.addtick @user <tickets>`, `.addtick @role <tickets>`, or `.addtick @everyone <tickets>` to add free entries to the current lottery without changing the prize pot or charging users. The lottery panel refreshes after the change.",
@@ -5698,6 +5805,8 @@ DETAILED_EXPLANATIONS = {
     "define": "Looks up English dictionary definitions. Use `.define example`, or run `.define` to enter the word through a UI.",
     "setbday": "Saves your birthday as day/month. Use `.setbday 25/12`, or run `.setbday` to enter it through a UI. Birthday announcements use the server's configured birthday channel.",
     "translate": "Translates provided text or the message you reply to. Friendly forms work: `.translate hello to Italian`, `.translate to Spanish hello`, `.translate it hello`, or reply to a message with `.translate to Spanish`. If no target is given, it translates to English.",
+    "settings": "Admin-power server setup dashboard. It summarizes prefix, logs, reaction logs, birthday channel, activity reports, Wordle, lottery, and disabled command count. Buttons let admins refresh the dashboard, change the prefix, rerun log setup, or set birthdays/activity/Wordle to the current channel.",
+    "games": "Shows a central game menu with quick usage for Tic Tac Toe, Connect 4, chess, Wordle, Tower, Vault, Memory, Minesweeper, and Picker. The select menu gives the start command for each game.",
     "ttt": "Challenge a user to Tic Tac Toe. The opponent accepts the game first. If the challenger enables a bet and enters an amount, the opponent gets a second accept/decline prompt for that exact bet before the game starts.",
     "c4": "Challenge a user to Connect 4. The opponent accepts the game first. If the challenger enables a bet and enters an amount, the opponent gets a second accept/decline prompt for that exact bet before the game starts. The board shows column numbers below the grid.",
     "chess": "Challenge a user to chess. The opponent accepts first. If the challenger enables a bet and enters an amount, the opponent gets a second accept/decline prompt. The board uses dropdown UI controls: choose one of your pieces, choose a legal move, then confirm or cancel. Each player has a live 10-minute total clock, and the board flips to the current player's perspective. Movement legality, check, checkmate, stalemate, draw detection, and time-loss handling are enforced.",
@@ -5707,7 +5816,7 @@ DETAILED_EXPLANATIONS = {
 }
 
 ECONHELP_COMMANDS = [
-    ("Core", ["bal", "profile", "inventory", "quests", "shop", "cooldowns", "transactions", "lb"]),
+    ("Core", ["bal", "profile", "inventory", "quests", "shop", "cooldowns", "transactions", "lb", "qstats"]),
     ("Claims", ["daily", "weekly", "monthly"]),
     ("Lottery", ["lottery", "buytick", "lotterystats", "editlottery", "stoplottery"]),
     ("Gambling", ["cf", "roulette", "slots", "blackjack", "scratch", "tower", "vault", "memory", "ms", "wheel"]),
@@ -5827,7 +5936,7 @@ async def setup(bot_ref, log_callback=None):
     economy_commands = [
         bal, profile, inventory, quests, shop, cooldowns, transactions, lottery, editlottery, stoplottery, lotterystats, buytick,
         daily, weekly, monthly, gamble, roulette, slots, blackjack,
-        scratch, tower, vault, memory_game, minesweeper, wheel, give, lb, add, remove, addtick, settick, setquesos, econhelp, explain
+        scratch, tower, vault, memory_game, minesweeper, wheel, give, lb, qstats, add, remove, addtick, settick, setquesos, econhelp, explain
     ]
     for command in economy_commands:
         if bot.get_command(command.name):
