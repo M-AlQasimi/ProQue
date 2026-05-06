@@ -1164,6 +1164,28 @@ async def save_activity_report_config(guild, selected_channel, user_id, next_rep
     }
     return True, "", next_report
 
+async def schedule_next_activity_report(guild_id, config, reason="completed"):
+    next_report = datetime.now(timezone.utc) + timedelta(hours=24)
+    guild_id = int(guild_id)
+    config["next_report"] = next_report
+    guild_activity_channels[guild_id] = {
+        "channel_id": int(config["channel_id"]),
+        "set_by_user_id": config.get("set_by_user_id"),
+        "next_report": next_report,
+    }
+    updated = await asyncio.to_thread(update_guild_activity_next_report, guild_id, next_report)
+    if not updated:
+        saved = await asyncio.to_thread(
+            save_guild_activity_channel,
+            guild_id,
+            int(config["channel_id"]),
+            config.get("set_by_user_id"),
+            next_report,
+        )
+        if not saved:
+            print(f"Activity next report save failed for guild {guild_id} after {reason}.")
+    return next_report
+
 async def activity_status_embed(guild, config):
     await flush_activity_buffer()
     rows = await asyncio.to_thread(get_guild_activity_top, guild.id, 5)
@@ -1207,22 +1229,22 @@ async def activity_status_embed(guild, config):
 async def send_activity_report(guild_id, config):
     guild = bot.get_guild(int(guild_id))
     if guild is None:
+        await schedule_next_activity_report(guild_id, config, "missing guild")
         return
-    channel = guild.get_channel(config["channel_id"]) or bot.get_channel(config["channel_id"])
+    channel = resolve_activity_report_channel(guild, str(config["channel_id"]))
     if channel is None:
+        await schedule_next_activity_report(guild_id, config, "missing channel")
         return
+    sent = False
     try:
         await flush_activity_buffer()
         rows = await asyncio.to_thread(get_guild_activity_top, guild.id, 5)
         await channel.send(embed=activity_report_embed(guild, rows), allowed_mentions=discord.AllowedMentions.none())
+        sent = True
         await asyncio.to_thread(clear_guild_activity_counts, guild.id)
     except Exception as e:
         print(f"Activity report failed for guild {guild.id}: {type(e).__name__} - {e}")
-        return
-
-    next_report = datetime.now(timezone.utc) + timedelta(hours=24)
-    config["next_report"] = next_report
-    await asyncio.to_thread(update_guild_activity_next_report, guild.id, next_report)
+    await schedule_next_activity_report(guild.id, config, "sent" if sent else "failed send")
 
 async def activity_report_loop():
     await bot.wait_until_ready()

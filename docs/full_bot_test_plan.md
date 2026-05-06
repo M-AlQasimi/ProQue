@@ -712,6 +712,7 @@ Run these after role tests because they need multiple users, waiting, or restart
 - `.editactivity next 12h` resets next report timer.
 - `.stopactivity` disables reports and clears current window.
 - 24-hour report posts top 5 with messages, reactions, voice activity, and custom number emojis.
+- After a report is due, `.activity` shows a fresh next report time even if the report channel was missing or the send failed.
 - Activity report loop survives restart.
 
 ### Games
