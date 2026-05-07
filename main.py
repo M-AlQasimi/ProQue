@@ -979,7 +979,7 @@ async def on_ready():
         economy_command_names = [
             "bal", "profile", "inventory", "quests", "shop", "cooldowns", "transactions", "lottery", "editlottery", "stoplottery", "lotterystats", "buytick",
             "daily", "weekly", "monthly", "cf", "roulette", "slots",
-            "blackjack", "scratch", "tower", "vault", "memory", "cardladder", "lockpick", "ms", "wheel", "give", "lb",
+            "blackjack", "scratch", "tower", "vault", "memory", "cardladder", "lockpick", "heist", "diceduel", "cases", "plinko", "luckynumber", "jackpotspin", "ms", "wheel", "give", "lb", "gamestats",
             "add", "remove", "addtick", "settick", "setquesos", "econhelp", "explain"
         ]
         loaded_economy_commands = [name for name in economy_command_names if bot.get_command(name)]
@@ -1937,6 +1937,15 @@ COMMAND_EXAMPLE_OVERRIDES = {
     "giveaway": ".giveaway 10m prize",
     "kick": ".kick @user reason",
     "lockpick": ".lockpick 1000",
+    "heist": ".heist 1000",
+    "diceduel": ".diceduel 1000",
+    "dice": ".dice 1000",
+    "cases": ".cases 1000",
+    "case": ".case 1000",
+    "plinko": ".plinko 1000",
+    "luckynumber": ".luckynumber 1000",
+    "jackpotspin": ".jackpotspin 1000",
+    "gamestats": ".gamestats @user",
     "memory": ".memory 1000",
     "move": ".move e2e4",
     "ms": ".ms 1000",
@@ -2277,8 +2286,9 @@ async def on_command_error(ctx, error):
 HELP_CATEGORIES = {
     "Quewo": [
         "bal", "profile", "inventory", "quests", "shop", "cooldowns", "transactions", "lottery", "lotterystats", "buytick",
-        "daily", "weekly", "monthly", "cf", "roulette", "slots", "blackjack", "scratch", "tower", "vault", "memory", "cardladder", "lockpick", "ms", "wheel",
-        "give", "lb", "qstats", "econhelp", "explain",
+        "daily", "weekly", "monthly", "cf", "roulette", "slots", "blackjack", "scratch", "tower", "vault", "memory", "cardladder", "lockpick",
+        "heist", "diceduel", "cases", "plinko", "luckynumber", "jackpotspin", "ms", "wheel",
+        "give", "lb", "gamestats", "qstats", "econhelp", "explain",
     ],
     "Games": ["games", "ttt", "c4", "chess", "move", "resign", "q", "picker"],
     "Utility": ["help", "userinfo", "pfp", "calc", "define", "timer", "ctimer", "alarm", "poll", "epoll", "translate", "find"],
@@ -2503,16 +2513,22 @@ async def settings_command(ctx):
     await ctx.send(embed=await build_settings_embed(ctx.guild), view=SettingsView(ctx.author.id), allowed_mentions=discord.AllowedMentions.none())
 
 GAME_MENU = [
-    ("Tic Tac Toe", "`.ttt @user [bet]`", "Quick 2-player strategy. Supports bets."),
-    ("Connect 4", "`.c4 @user [bet]`", "Column strategy game. Supports bets."),
-    ("Chess", "`.chess @user [bet]`", "Full chess with UI moves and 10-minute clocks."),
-    ("Tower", "`.tower <amount>`", "Risk climbing floors or cash out."),
-    ("Vault", "`.vault <amount>`", "Think through code hints before tries run out."),
-    ("Memory", "`.memory <amount>`", "Match pairs before too many mistakes."),
-    ("Card Ladder", "`.cardladder <amount>`", "Higher/lower card climb with cash-out."),
-    ("Lockpick", "`.lockpick <amount>`", "Set pins using high/low hints before tries run out."),
-    ("Minesweeper", "`.ms <amount>`", "Reveal safe tiles and avoid bombs."),
-    ("Picker", "`.picker`", "Randomly picks from options."),
+    ("PvP", "Tic Tac Toe", "`.ttt @user [bet]`", "Quick 2-player strategy. Supports bets."),
+    ("PvP", "Connect 4", "`.c4 @user [bet]`", "Column strategy game. Supports bets."),
+    ("PvP", "Chess", "`.chess @user [bet]`", "Full chess with UI moves and 10-minute clocks."),
+    ("Skill", "Tower", "`.tower <amount>`", "High risk. Climb floors or cash out."),
+    ("Skill", "Vault", "`.vault <amount>`", "Think through code hints before tries run out."),
+    ("Skill", "Memory", "`.memory <amount>`", "Match pairs before too many mistakes."),
+    ("Skill", "Card Ladder", "`.cardladder <amount>`", "Higher/lower card climb with cash-out."),
+    ("Skill", "Lockpick", "`.lockpick <amount>`", "Set pins using high/low hints before tries run out."),
+    ("Skill", "Minesweeper", "`.ms <amount>`", "Reveal safe tiles and avoid bombs."),
+    ("Luck", "Heist", "`.heist <amount>`", "Pick a route. Riskier routes pay more."),
+    ("Luck", "Dice Duel", "`.diceduel <amount>`", "Roll against the dealer."),
+    ("Luck", "Q Cases", "`.cases <amount>`", "Open weighted prize cases."),
+    ("Luck", "Plinko", "`.plinko <amount>`", "Drop into multiplier slots."),
+    ("Luck", "Lucky Number", "`.luckynumber <amount>`", "Pick a range and number."),
+    ("Luck", "Jackpot Spin", "`.jackpotspin <amount>`", "Rare high-risk jackpot spin."),
+    ("Utility", "Picker", "`.picker`", "Randomly picks from options."),
 ]
 
 def games_embed(prefix="."):
@@ -2521,8 +2537,14 @@ def games_embed(prefix="."):
         description="Pick a game by skill, luck, or bets.",
         color=discord.Color.green()
     )
-    for name, usage, desc in GAME_MENU:
-        embed.add_field(name=name, value=f"{usage.replace('`.', f'`{prefix}')}\n{desc}", inline=False)
+    for category in ["PvP", "Skill", "Luck", "Utility"]:
+        lines = []
+        for item_category, name, usage, desc in GAME_MENU:
+            if item_category != category:
+                continue
+            lines.append(f"**{name}** - {usage.replace('`.', f'`{prefix}')} — {desc}")
+        if lines:
+            embed.add_field(name=category, value="\n".join(lines), inline=False)
     embed.set_footer(text="Use .explain <game> for full rules.")
     return embed
 
@@ -2540,11 +2562,11 @@ class GamesView(View):
 
     @discord.ui.select(
         placeholder="Choose a game",
-        options=[discord.SelectOption(label=name, description=desc[:95], value=name) for name, _, desc in GAME_MENU[:9]]
+        options=[discord.SelectOption(label=name, description=f"{category}: {desc}"[:95], value=name) for category, name, _, desc in GAME_MENU[:25]]
     )
     async def select_game(self, interaction, select):
         selected = select.values[0]
-        usage = next((usage for name, usage, _ in GAME_MENU if name == selected), None)
+        usage = next((usage for _, name, usage, _ in GAME_MENU if name == selected), None)
         usage = usage.replace("`.", f"`{self.prefix}") if usage else f"`{self.prefix}help games`"
         await interaction.response.send_message(f"Start with {usage}", ephemeral=True)
 

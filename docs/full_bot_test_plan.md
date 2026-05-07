@@ -263,8 +263,15 @@ Run:
 - `.memory 1000`
 - `.cardladder 1000`
 - `.lockpick 1000`
+- `.heist 1000`
+- `.diceduel 1000`
+- `.cases 1000`
+- `.plinko 1000`
+- `.luckynumber 1000`
+- `.jackpotspin 1000`
 - `.ms 1000`
 - `.wheel 1000`
+- `.gamestats`
 - `.give @normal 1000`
 - `.lb`
 - `.qstats`
@@ -610,8 +617,15 @@ Run:
 - `.memory 1000`
 - `.cardladder 1000`
 - `.lockpick 1000`
+- `.heist 1000`
+- `.diceduel 1000`
+- `.cases 1000`
+- `.plinko 1000`
+- `.luckynumber 1000`
+- `.jackpotspin 1000`
 - `.ms 1000`
 - `.wheel 1000`
+- `.gamestats`
 - `.give @other_user 1000`
 - `.lottery`
 - `.lotterystats`

@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 import math
 import os
+import shutil
 import struct
+import subprocess
 import zlib
 
 
@@ -668,6 +670,125 @@ def qwordle_tile_present():
 def qwordle_tile_absent():
     c = qtile(BLUE_DARK, CYAN, False)
     c.text_q(64, 66, 26, ICE)
+    return c
+
+
+def qheist():
+    c = Canvas()
+    c.rect(32, 45, 64, 50, NAVY, outline=BLUE_DARK, width=4)
+    c.poly([(32, 45), (44, 28), (84, 28), (96, 45)], BLUE_MID, outline=BLUE_DARK, width=3)
+    c.rect(42, 58, 44, 28, ICE, outline=CYAN, width=2)
+    c.line(47, 51, 81, 88, RED, 6)
+    c.line(81, 51, 47, 88, RED, 6)
+    coin(c, 64, 71, 16)
+    c.poly([(89, 27), (106, 34), (94, 45)], GOLD, outline=BLUE_DARK, width=2)
+    c.sparkle(101, 29, 6)
+    return c
+
+
+def qdice_duel():
+    c = Canvas()
+    c.rect(24, 31, 42, 42, ICE, outline=BLUE_DARK, width=4)
+    c.rect(62, 55, 42, 42, BLUE_MID, outline=BLUE_DARK, width=4)
+    for x, y in [(37, 44), (53, 60), (45, 52)]:
+        c.circle(x, y, 3.5, BLUE_MID)
+    for x, y in [(75, 68), (91, 84)]:
+        c.circle(x, y, 3.5, ICE)
+    c.line(31, 91, 94, 28, CYAN, 4)
+    c.poly([(94, 28), (82, 29), (92, 41)], CYAN, outline=BLUE_DARK, width=1.5)
+    c.sparkle(98, 35, 6)
+    return c
+
+
+def qcases():
+    c = Canvas()
+    c.rect(25, 44, 78, 55, BLUE_DARK, outline=NAVY, width=5)
+    c.rect(36, 33, 56, 18, SILVER, outline=BLUE_DARK, width=3)
+    c.rect(53, 40, 22, 61, BLUE, outline=CYAN, width=2)
+    c.circle(64, 70, 17, GOLD, outline=BLUE_DARK, width=3)
+    c.text_q(64, 71, 20, BLUE_MID)
+    c.ellipse(64, 47, 31, 7, (128, 221, 255, 120))
+    c.sparkle(99, 33, 7)
+    return c
+
+
+def qplinko(ball_step=None):
+    c = Canvas()
+    c.poly([(27, 28), (101, 28), (91, 103), (37, 103)], NAVY, outline=BLUE_DARK, width=4)
+    for y in [45, 61, 77]:
+        for x in [46, 64, 82] if y != 61 else [37, 55, 73, 91]:
+            c.circle(x, y, 4, ICE, outline=CYAN, width=1)
+    if ball_step is None:
+        bx, by = 64, 35
+    else:
+        path = [(64, 35), (56, 48), (68, 60), (53, 74), (65, 88)]
+        step = min(len(path) - 1, max(0, int(ball_step)))
+        bx, by = path[step]
+    c.circle(bx, by, 10, GOLD, outline=BLUE_DARK, width=2)
+    for x, col in [(43, BLUE), (64, GREEN), (85, PURPLE)]:
+        c.rect(x - 9, 91, 18, 15, col, outline=CYAN, width=1.5)
+    c.line(64, 44, 54, 58, CYAN, 2)
+    c.line(54, 58, 74, 75, CYAN, 2)
+    c.sparkle(98, 29, 6)
+    return c
+
+
+def qlucky_number():
+    c = Canvas()
+    c.circle(64, 64, 42, BLUE_MID, outline=BLUE_DARK, width=5)
+    c.circle(64, 64, 30, ICE, outline=CYAN, width=3)
+    c.line(64, 42, 64, 66, BLUE_DARK, 8)
+    c.circle(64, 85, 5, BLUE_DARK)
+    coin(c, 92, 91, 15)
+    c.sparkle(96, 32, 7)
+    return c
+
+
+def qjackpot_spin(offset=0):
+    c = Canvas()
+    c.rect(24, 33, 80, 62, NAVY, outline=BLUE_DARK, width=5)
+    c.rect(34, 45, 60, 28, ICE, outline=CYAN, width=3)
+    colors = [BLUE_MID, CYAN, GOLD, PURPLE]
+    for index, x in enumerate([45, 64, 83]):
+        col = colors[(index + int(offset)) % len(colors)]
+        c.circle(x, 59, 8, col, outline=BLUE_DARK, width=1.5)
+    c.poly([(51, 31), (64, 14), (77, 31)], GOLD, outline=BLUE_DARK, width=2)
+    c.rect(40, 80, 48, 9, BLUE, outline=CYAN, width=2)
+    c.sparkle(100, 32, 7)
+    return c
+
+
+def qdouble_nothing(angle=0):
+    c = Canvas()
+    flip_coin(c, 47, 67, angle)
+    flip_coin(c, 82, 61, math.pi + angle)
+    c.line(31, 28, 92, 28, CYAN, 5)
+    c.poly([(92, 28), (80, 19), (84, 39)], CYAN, outline=BLUE_DARK, width=1.5)
+    c.line(97, 99, 36, 99, CYAN, 5)
+    c.poly([(36, 99), (48, 90), (44, 110)], CYAN, outline=BLUE_DARK, width=1.5)
+    c.sparkle(101, 45, 6)
+    return c
+
+
+def qgame_stats():
+    c = Canvas()
+    c.rect(27, 35, 74, 62, NAVY, outline=BLUE_DARK, width=4)
+    for x, h, col in [(42, 24, BLUE), (60, 38, CYAN), (78, 50, GOLD)]:
+        c.rect(x, 86 - h, 11, h, col, outline=BLUE_DARK, width=1.5)
+    c.line(37, 88, 92, 88, ICE, 2)
+    c.circle(91, 38, 13, GREEN, outline=BLUE_DARK, width=2)
+    c.text_q(91, 39, 13, ICE)
+    c.sparkle(100, 27, 6)
+    return c
+
+
+def qbadge():
+    c = Canvas()
+    c.circle(64, 55, 34, GOLD, outline=BLUE_DARK, width=5)
+    c.poly([(46, 82), (56, 112), (64, 94), (72, 112), (82, 82)], BLUE_MID, outline=BLUE_DARK, width=2)
+    c.circle(64, 55, 20, ICE, outline=CYAN, width=3)
+    c.text_q(64, 56, 24, BLUE_MID)
+    c.sparkle(95, 28, 6)
     return c
 
 
@@ -1561,6 +1682,15 @@ STATIC = {
     "QWordleCorrect": qwordle_tile_correct,
     "QWordlePresent": qwordle_tile_present,
     "QWordleAbsent": qwordle_tile_absent,
+    "QHeist": qheist,
+    "QDiceDuel": qdice_duel,
+    "QCases": qcases,
+    "QPlinko": qplinko,
+    "QLuckyNumber": qlucky_number,
+    "QJackpotSpin": qjackpot_spin,
+    "QDoubleNothing": qdouble_nothing,
+    "QGameStats": qgame_stats,
+    "QBadge": qbadge,
 }
 
 STATIC_CATEGORIES = {
@@ -1581,6 +1711,7 @@ STATIC_CATEGORIES = {
     },
     "games/common": {
         "QGameWin", "QGameTimeout", "QGameX", "QGameO", "QCards",
+        "QDoubleNothing", "QGameStats", "QBadge",
     },
     "games/coinflip": {
         "QFlip",
@@ -1627,6 +1758,24 @@ STATIC_CATEGORIES = {
     "games/wordle": {
         "QWordle", "QWordleCorrect", "QWordlePresent", "QWordleAbsent",
     },
+    "games/heist": {
+        "QHeist",
+    },
+    "games/dice": {
+        "QDiceDuel",
+    },
+    "games/cases": {
+        "QCases",
+    },
+    "games/plinko": {
+        "QPlinko",
+    },
+    "games/lucky_number": {
+        "QLuckyNumber",
+    },
+    "games/jackpot": {
+        "QJackpotSpin",
+    },
     "polls": {
         "QPoll", "QPollOne", "QPollTwo", "QPollThree", "QPollFour", "QPollFive",
         "QPollSix", "QPollSeven", "QPollEight", "QPollNine", "QPollTen",
@@ -1659,6 +1808,9 @@ def make_frames():
         "QTimerTick": lambda i, n: qtimer(-math.pi / 2 + i / n * math.tau),
         "QLevelPulse": lambda i, n: qlevel_up(),
         "QMineSpark": lambda i, n: qmine(),
+        "QJackpotSpin": lambda i, n: qjackpot_spin(i),
+        "QDoubleNothing": lambda i, n: qdouble_nothing(i / n * math.tau * 2),
+        "QPlinkoDrop": lambda i, n: qplinko((i * 5) // n),
     }
     for name, fn in animations.items():
         folder = os.path.join(GIF_FRAMES, name)
@@ -1671,6 +1823,35 @@ def make_frames():
             if name == "QMineSpark" and i % 4 in (0, 1):
                 canvas.sparkle(96, 21, 11)
             save_png(canvas, os.path.join(folder, f"{i:03d}.png"))
+
+
+def make_gifs_from_frames():
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        return
+    gif_out = os.path.join(OUT, "gif")
+    os.makedirs(gif_out, exist_ok=True)
+    for name in ["QJackpotSpin", "QDoubleNothing", "QPlinkoDrop"]:
+        frame_pattern = os.path.join(GIF_FRAMES, name, "%03d.png")
+        out_path = os.path.join(gif_out, f"{name}.gif")
+        subprocess.run(
+            [
+                ffmpeg,
+                "-y",
+                "-framerate",
+                "12",
+                "-i",
+                frame_pattern,
+                "-loop",
+                "0",
+                "-gifflags",
+                "+transdiff",
+                out_path,
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
 
 
 def make_upload_gifs():
@@ -1691,6 +1872,7 @@ def make_upload_gifs():
 if __name__ == "__main__":
     make_static()
     make_frames()
+    make_gifs_from_frames()
     make_upload_gifs()
     print(PNG_OUT)
     print(GIF_FRAMES)

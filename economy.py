@@ -125,6 +125,15 @@ Q_MEMORY = "<:QMemory:1501490610421629109>"
 Q_MEMORY_TILE = "<:QMemoryTile:1501490612510134272>"
 Q_CARD_LADDER = Q_CARDS
 Q_LOCKPICK = Q_LOCK
+Q_HEIST = "<:QHeist:1501999656643723425>"
+Q_DICE_DUEL = "<:QDiceDuel:1501999780459450368>"
+Q_CASES = "<:QCases:1501999740429271040>"
+Q_PLINKO = "<a:QPlinkoDrop:1502002567427915866>"
+Q_LUCKY_NUMBER = "<:QLuckyNumber:1501999889150775488>"
+Q_JACKPOT_SPIN = "<a:QJackpotSpin:1502002724261330955>"
+Q_DOUBLE_NOTHING = "<:QDoubleNothing:1502000332916392126>"
+Q_GAME_STATS = "<:QGameStats:1502000517201661962>"
+Q_BADGE = "<:QBadge:1502000221977055372>"
 SLOT_SYMBOL_PAYOUTS = [
     (Q_SLOT_STAR, 2),
     (Q_SLOT_DIAMOND, 3),
@@ -367,6 +376,18 @@ def init_db():
                     amount BIGINT NOT NULL,
                     note TEXT,
                     created_at TIMESTAMP NOT NULL DEFAULT NOW()
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS economy_game_stats (
+                    user_id BIGINT NOT NULL,
+                    game_key TEXT NOT NULL,
+                    played BIGINT NOT NULL DEFAULT 0,
+                    wins BIGINT NOT NULL DEFAULT 0,
+                    losses BIGINT NOT NULL DEFAULT 0,
+                    profit BIGINT NOT NULL DEFAULT 0,
+                    biggest_win BIGINT NOT NULL DEFAULT 0,
+                    PRIMARY KEY (user_id, game_key)
                 )
             """)
             cur.execute("""
@@ -852,6 +873,55 @@ def get_recent_transactions(user_id, limit=10):
     cur.close()
     conn.close()
     return rows
+
+def record_game_result(user_id, game_key, won, net_amount, payout=0):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            INSERT INTO economy_game_stats (user_id, game_key, played, wins, losses, profit, biggest_win)
+            VALUES (%s, %s, 1, %s, %s, %s, %s)
+            ON CONFLICT (user_id, game_key) DO UPDATE SET
+                played = economy_game_stats.played + 1,
+                wins = economy_game_stats.wins + EXCLUDED.wins,
+                losses = economy_game_stats.losses + EXCLUDED.losses,
+                profit = economy_game_stats.profit + EXCLUDED.profit,
+                biggest_win = GREATEST(economy_game_stats.biggest_win, EXCLUDED.biggest_win)
+            RETURNING *
+            """,
+            (user_id, game_key, 1 if won is True else 0, 1 if won is False else 0, int(net_amount), int(payout) if won is True else 0)
+        )
+        row = cur.fetchone()
+        conn.commit()
+        return row
+    finally:
+        cur.close()
+        conn.close()
+
+def get_game_stats(user_id):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT * FROM economy_game_stats WHERE user_id = %s ORDER BY played DESC, game_key ASC",
+        (user_id,)
+    )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
+
+def get_game_stat(user_id, game_key):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT * FROM economy_game_stats WHERE user_id = %s AND game_key = %s",
+        (user_id, game_key)
+    )
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    return row
 
 def get_economy_stats():
     conn = get_db_connection()
@@ -1800,6 +1870,240 @@ def gambling_streak_text(data, new_streak):
     bonus = streak_bonus_for_wins(new_streak) * 100
     return f" {Q_STREAK_FIRE} {new_streak} in a row! (+{bonus:.2f}% streak)"
 
+GAME_DISPLAY_NAMES = {
+    "heist": "Heist",
+    "diceduel": "Dice Duel",
+    "cases": "Q Cases",
+    "plinko": "Plinko",
+    "luckynumber": "Lucky Number",
+    "jackpotspin": "Jackpot Spin",
+    "memory": "Memory",
+    "tower": "Tower",
+    "vault": "Vault",
+    "cardladder": "Card Ladder",
+    "lockpick": "Lockpick",
+    "ms": "Mine Hunt",
+    "wheel": "Wheel",
+    "slots": "Slots",
+    "scratch": "Scratch",
+    "blackjack": "Blackjack",
+    "roulette": "Roulette",
+    "cf": "Coin Flip",
+}
+
+GAME_RISK_LABELS = {
+    "heist": "Medium/High",
+    "diceduel": "Medium",
+    "cases": "Low/High",
+    "plinko": "Medium",
+    "luckynumber": "Chosen by range",
+    "jackpotspin": "Extreme",
+    "memory": "Skill",
+    "tower": "High",
+    "vault": "Skill",
+    "cardladder": "Medium",
+    "lockpick": "Skill",
+    "ms": "Skill/High",
+    "wheel": "Medium",
+    "slots": "High",
+    "scratch": "High",
+    "blackjack": "Medium",
+    "roulette": "Medium",
+    "cf": "Medium",
+}
+
+GAME_ACHIEVEMENTS = {
+    "memory_100_wins": {"game": "memory", "field": "wins", "target": 100, "name": "Memory Master", "reward": 5_000_000},
+    "heist_100_wins": {"game": "heist", "field": "wins", "target": 100, "name": "Clean Getaway", "reward": 5_000_000},
+    "diceduel_100_wins": {"game": "diceduel", "field": "wins", "target": 100, "name": "Dice Duelist", "reward": 4_000_000},
+    "cases_100_wins": {"game": "cases", "field": "wins", "target": 100, "name": "Case Collector", "reward": 4_000_000},
+    "plinko_100_wins": {"game": "plinko", "field": "wins", "target": 100, "name": "Plinko Pro", "reward": 4_000_000},
+    "luckynumber_100_wins": {"game": "luckynumber", "field": "wins", "target": 100, "name": "Number Oracle", "reward": 4_000_000},
+    "jackpotspin_25_wins": {"game": "jackpotspin", "field": "wins", "target": 25, "name": "Jackpot Hunter", "reward": 7_500_000},
+    "all_games_1000_played": {"game": None, "field": "played", "target": 1000, "name": "Quewo Grinder", "reward": 10_000_000},
+}
+
+def risk_label(game_key):
+    return GAME_RISK_LABELS.get(game_key, "Medium")
+
+def game_display_name(game_key):
+    return GAME_DISPLAY_NAMES.get(game_key, str(game_key).replace("_", " ").title())
+
+def maybe_award_game_achievements(user_id, game_key, stats_row=None):
+    try:
+        data = get_user(user_id)
+        achievements = achievement_ids(data)
+        earned = []
+        rows = get_game_stats(user_id)
+        totals = {
+            "played": sum(int(row["played"] or 0) for row in rows),
+            "wins": sum(int(row["wins"] or 0) for row in rows),
+            "losses": sum(int(row["losses"] or 0) for row in rows),
+        }
+        per_game = {row["game_key"]: row for row in rows}
+        for achievement_id, achievement in GAME_ACHIEVEMENTS.items():
+            if achievement_id in achievements:
+                continue
+            if achievement["game"] is None:
+                progress = totals.get(achievement["field"], 0)
+            else:
+                if achievement["game"] != game_key:
+                    continue
+                row = stats_row or per_game.get(game_key)
+                progress = int((row or {}).get(achievement["field"], 0) or 0)
+            if progress < achievement["target"]:
+                continue
+            achievements.append(achievement_id)
+            earned.append(achievement)
+        if not earned:
+            return []
+        reward_total = sum(int(achievement["reward"]) for achievement in earned)
+        update_user(
+            user_id,
+            balance=int(data["balance"]) + reward_total,
+            total_earned=int(data["total_earned"]) + reward_total,
+            achievements=achievements
+        )
+        for achievement in earned:
+            log_transaction(user_id, "game_achievement", achievement["reward"], achievement["name"])
+        return earned
+    except Exception as e:
+        print(f"Game achievement check failed: {type(e).__name__} - {e}")
+        return []
+
+def achievement_reward_text(achievements):
+    if not achievements:
+        return ""
+    lines = [
+        f"{Q_BADGE} Achievement: **{achievement['name']}** +**{format_balance(achievement['reward'])}**"
+        for achievement in achievements
+    ]
+    return "\n" + "\n".join(lines)
+
+def settle_gambling_result(user_id, game_key, amount, base_multiplier=0, won=False, neutral=False, data=None):
+    latest = get_user(user_id) if data is None else data
+    if neutral:
+        record_game_result(user_id, game_key, None, 0, 0)
+        return {
+            "balance": int(latest["balance"]),
+            "winnings": 0,
+            "net": 0,
+            "streak": int(latest.get("gamble_streak", 0) or 0),
+            "streak_mult": 1,
+            "achievements": [],
+        }
+    if won:
+        new_streak = next_gambling_streak(latest)
+        streak_mult = payout_multiplier(latest, new_streak)
+        winnings = int(amount * base_multiplier * streak_mult)
+        net = winnings - amount
+        new_balance = int(latest["balance"]) + net
+        updated = update_user(
+            user_id,
+            balance=new_balance,
+            gamble_streak=new_streak,
+            total_won=int(latest["total_won"]) + net
+        )
+        stats = record_game_result(user_id, game_key, True, net, winnings)
+        achievements = maybe_award_game_achievements(user_id, game_key, stats)
+        return {
+            "balance": int(updated["balance"]),
+            "winnings": winnings,
+            "net": net,
+            "streak": new_streak,
+            "streak_mult": streak_mult,
+            "achievements": achievements,
+        }
+    new_balance = max(0, int(latest["balance"]) - amount)
+    updated = update_user(
+        user_id,
+        balance=new_balance,
+        gamble_streak=0,
+        total_lost=int(latest["total_lost"]) + amount
+    )
+    record_game_result(user_id, game_key, False, -amount, 0)
+    return {
+        "balance": int(updated["balance"]),
+        "winnings": 0,
+        "net": -amount,
+        "streak": 0,
+        "streak_mult": 1,
+        "achievements": [],
+    }
+
+class DoubleOrNothingView(discord.ui.View):
+    def __init__(self, user_id, game_key, stake):
+        super().__init__(timeout=45)
+        self.user_id = int(user_id)
+        self.game_key = game_key
+        self.stake = int(stake)
+        self.used = False
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id == self.user_id:
+            return True
+        await interaction.response.send_message("Use your own double or nothing.", ephemeral=True)
+        return False
+
+    @discord.ui.button(label="Double or Nothing", style=discord.ButtonStyle.danger)
+    async def double_or_nothing(self, interaction, button):
+        if self.used:
+            await interaction.response.defer()
+            return
+        self.used = True
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.defer()
+        try:
+            data = get_user(self.user_id)
+            if random.random() < 0.50 + min(active_luck_bonus(data), 0.03):
+                new_balance = int(data["balance"]) + self.stake
+                update_user(self.user_id, balance=new_balance, total_won=int(data["total_won"]) + self.stake)
+                record_game_result(self.user_id, self.game_key, True, self.stake, self.stake)
+                await interaction.edit_original_response(
+                    content=f"{Q_DOUBLE_NOTHING} **Double won!** Added **{format_balance(self.stake)}**.\nNew Balance: **{format_balance(new_balance)}**",
+                    view=self
+                )
+            else:
+                loss = min(int(data["balance"]), self.stake)
+                new_balance = max(0, int(data["balance"]) - loss)
+                update_user(self.user_id, balance=new_balance, gamble_streak=0, total_lost=int(data["total_lost"]) + loss)
+                record_game_result(self.user_id, self.game_key, False, -loss, 0)
+                await interaction.edit_original_response(
+                    content=f"{Q_DOUBLE_NOTHING} **Nothing.** Lost the payout risk: **{format_balance(loss)}**.\nNew Balance: **{format_balance(new_balance)}**",
+                    view=self
+                )
+        except Exception:
+            await interaction.edit_original_response(content=f"{Q_DENIED} Database unavailable. Try again shortly.", view=self)
+
+def double_or_nothing_view(user_id, game_key, result):
+    stake = int(result.get("winnings", 0) or 0)
+    return DoubleOrNothingView(user_id, game_key, stake) if stake > 0 else None
+
+def gamble_result_block(game_key, amount, result, base_multiplier=None):
+    lines = [
+        f"Risk: **{risk_label(game_key)}**",
+        f"Bet: **{format_balance(amount)}**",
+    ]
+    if result["winnings"] > 0:
+        multiplier = base_multiplier * result["streak_mult"] if base_multiplier else None
+        if multiplier:
+            lines.append(f"Multiplier: **×{multiplier:.3f}** (base ×{base_multiplier:g}, streak ×{result['streak_mult']:.3f})")
+        lines.extend([
+            f"Prize: **{format_balance(result['winnings'])}**",
+            f"Streak: **{result['streak']}** win(s)",
+            f"New Balance: **{format_balance(result['balance'])}**",
+        ])
+    else:
+        lines.extend([
+            f"Lost: **{format_balance(amount)}**",
+            f"New Balance: **{format_balance(result['balance'])}**",
+            "Streak reset.",
+        ])
+    lines.append("Double or Nothing is available below after wins.")
+    lines.append(achievement_reward_text(result.get("achievements", [])))
+    return "\n".join(line for line in lines if line)
+
 def xp_multiplier(data):
     return 1 + item_bonus(data, "xp_tonic", 0.05, 5)
 
@@ -2596,7 +2900,7 @@ async def cooldowns(ctx):
     embed.add_field(name="Daily", value=claim_cooldown_text(data.get("last_daily"), 86400), inline=True)
     embed.add_field(name="Weekly", value=claim_cooldown_text(data.get("last_weekly"), 604800), inline=True)
     embed.add_field(name="Monthly", value=claim_cooldown_text(data.get("last_monthly"), 2592000), inline=True)
-    for command in ["cf", "roulette", "slots", "blackjack", "scratch", "tower", "vault", "memory", "cardladder", "lockpick", "ms", "wheel"]:
+    for command in ["cf", "roulette", "slots", "blackjack", "scratch", "tower", "vault", "memory", "cardladder", "lockpick", "heist", "diceduel", "cases", "plinko", "luckynumber", "jackpotspin", "ms", "wheel"]:
         embed.add_field(name=command, value=command_cooldown_text(ctx.author.id, command), inline=True)
     await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
@@ -3642,7 +3946,8 @@ async def gamble(ctx, amount: str, choice: str = None):
                 f">>> {Q_SUCCESS} **{coin_result} — YOU WIN!**\n"
                 f"Prize: **{format_balance(winnings)}**{streak_msg}\n"
                 f"New Balance: **{format_balance(new_balance)}**"
-                )
+                ),
+                view=double_or_nothing_view(user_id, "cf", {"winnings": winnings})
             )
         else:
             new_balance = max(0, data['balance'] - amount)
@@ -3807,7 +4112,8 @@ async def roulette(ctx, amount: str, color: str = None):
                 f"Multiplier: ×{mult * multipliers[color]:.2f}\n"
                 f"Prize: **{format_balance(winnings)}**{streak_msg}\n"
                 f"New Balance: **{format_balance(new_balance)}**"
-                )
+                ),
+                view=double_or_nothing_view(user_id, "roulette", {"winnings": winnings})
             )
         else:
             new_balance = max(0, data['balance'] - amount)
@@ -3937,7 +4243,8 @@ async def slots(ctx, amount: str):
                     f">>> {QOIN_CHEST} **THREE MATCH!** ×{result_multiplier}\n"
                     f"Prize: **{format_balance(winnings)}**{streak_msg}\n"
                     f"New Balance: **{format_balance(new_balance)}**"
-                )
+                ),
+                view=double_or_nothing_view(user_id, "slots", {"winnings": winnings})
             )
         else:
             new_balance = max(0, data['balance'] - amount)
@@ -4070,7 +4377,8 @@ async def blackjack(ctx, amount: str):
                         f">>> {Q_SUCCESS} **{win_type}!**\n"
                         f"Prize: **{format_balance(prize)}**{streak_msg}\n"
                         f"New Balance: **{format_balance(data['balance'] + winnings)}**"
-                    )
+                    ),
+                    view=double_or_nothing_view(user_id, "blackjack", {"winnings": prize})
                 )
             elif amount_delta == 0:
                 await msg.edit(
@@ -4758,7 +5066,8 @@ async def scratch(ctx, amount: str):
                     f"Multiplier: ×{multiplier}  |  Streak bonus: ×{mult:.2f}\n"
                     f"Prize: **{format_balance(winnings)}**{streak_msg}\n"
                     f"New Balance: **{format_balance(new_balance)}**"
-                )
+                ),
+                view=double_or_nothing_view(user_id, "scratch", {"winnings": winnings})
             )
         else:
             new_balance = max(0, data['balance'] - amount)
@@ -4907,7 +5216,7 @@ async def tower(ctx, amount: str):
                 f"Prize: **{format_balance(winnings)}**\n"
                 f"New Balance: **{format_balance(new_balance)}**"
             ),
-            view=view
+            view=double_or_nothing_view(user_id, "tower", {"winnings": winnings})
         )
 
     class TowerCashOut(discord.ui.Button):
@@ -5028,7 +5337,8 @@ async def vault(ctx, amount: str):
                     f"{gambling_streak_text(latest, new_streak)}\n"
                     f"Prize: **{format_balance(winnings)}**\n"
                     f"New Balance: **{format_balance(new_balance)}**"
-                )
+                ),
+                view=double_or_nothing_view(user_id, "vault", {"winnings": winnings})
             )
             return
         await ctx.send(f"{Q_VAULT_DIAL} `{guess}` → **{exact}** exact, **{close}** close. Tries left: **{VAULT_GUESSES - len(guesses)}**")
@@ -5198,6 +5508,8 @@ async def memory_game(ctx, amount: str):
                         winnings = int(amount * MEMORY_MULTIPLIER * streak_mult)
                         new_balance = latest["balance"] + winnings - amount
                         update_user(user_id, balance=new_balance, gamble_streak=new_streak, total_won=latest["total_won"] + winnings - amount)
+                        stats = record_game_result(user_id, "memory", True, winnings - amount, winnings)
+                        achievements = maybe_award_game_achievements(user_id, "memory", stats)
                     except Exception:
                         await interaction.message.edit(content=render(f"{Q_DENIED} Database unavailable."), view=None)
                         return
@@ -5209,8 +5521,9 @@ async def memory_game(ctx, amount: str):
                             f"{gambling_streak_text(latest, new_streak)}\n"
                             f"Prize: **{format_balance(winnings)}**\n"
                             f"New Balance: **{format_balance(new_balance)}**"
+                            f"{achievement_reward_text(achievements)}"
                         ),
-                        view=view
+                        view=double_or_nothing_view(user_id, "memory", {"winnings": winnings})
                     )
                 else:
                     await interaction.message.edit(content=render(f"{Q_SUCCESS} Pair matched."), view=view)
@@ -5228,6 +5541,7 @@ async def memory_game(ctx, amount: str):
                     latest = get_user(user_id)
                     new_balance = max(0, latest["balance"] - amount)
                     update_user(user_id, balance=new_balance, gamble_streak=0, total_lost=latest["total_lost"] + amount)
+                    record_game_result(user_id, "memory", False, -amount, 0)
                 except Exception:
                     return
                 view.clear_items()
@@ -5252,6 +5566,7 @@ async def memory_game(ctx, amount: str):
                 latest = get_user(user_id)
                 new_balance = max(0, latest["balance"] - amount)
                 update_user(user_id, balance=new_balance, gamble_streak=0, total_lost=latest["total_lost"] + amount)
+                record_game_result(user_id, "memory", False, -amount, 0)
                 await self.message.edit(content=render(f">>> {Q_TIMER} **Timed out.**\nLost: **{format_balance(amount)}**\nNew Balance: **{format_balance(new_balance)}**"), view=self)
             except Exception:
                 pass
@@ -5335,6 +5650,8 @@ async def card_ladder(ctx, amount: str):
             latest = get_user(user_id)
             new_balance = max(0, latest["balance"] - amount)
             update_user(user_id, balance=new_balance, gamble_streak=0, total_lost=latest["total_lost"] + amount)
+            record_game_result(user_id, "lockpick", False, -amount, 0)
+            record_game_result(user_id, "cardladder", False, -amount, 0)
         except Exception:
             await interaction.message.edit(content=render(f"{Q_DENIED} Database unavailable."), view=None)
             return
@@ -5364,6 +5681,7 @@ async def card_ladder(ctx, amount: str):
             winnings = int(amount * base_multiplier * streak_mult)
             new_balance = latest["balance"] + winnings - amount
             update_user(user_id, balance=new_balance, gamble_streak=new_streak, total_won=latest["total_won"] + winnings - amount)
+            record_game_result(user_id, "cardladder", True, winnings - amount, winnings)
         except Exception:
             await interaction.edit_original_response(content=render(f"{Q_DENIED} Database unavailable."), view=None)
             return
@@ -5376,7 +5694,7 @@ async def card_ladder(ctx, amount: str):
                 f"Prize: **{format_balance(winnings)}**\n"
                 f"New Balance: **{format_balance(new_balance)}**"
             ),
-            view=view
+            view=double_or_nothing_view(user_id, "cardladder", {"winnings": winnings})
         )
 
     class LadderCall(discord.ui.Button):
@@ -5442,6 +5760,7 @@ async def card_ladder(ctx, amount: str):
                 latest = get_user(user_id)
                 new_balance = max(0, latest["balance"] - amount)
                 update_user(user_id, balance=new_balance, gamble_streak=0, total_lost=latest["total_lost"] + amount)
+                record_game_result(user_id, "cardladder", False, -amount, 0)
                 await self.message.edit(content=render(f"{Q_TIMER} Timed out. Lost **{format_balance(amount)}**\nNew Balance: **{format_balance(new_balance)}**"), view=self)
             except Exception:
                 pass
@@ -5455,7 +5774,7 @@ async def card_ladder(ctx, amount: str):
 # =====================
 LOCKPICK_PINS = 4
 LOCKPICK_HEIGHTS = 8
-LOCKPICK_TRIES = 5
+LOCKPICK_TRIES = 4
 LOCKPICK_MULTIPLIER = 5
 
 @commands.command(name="lockpick", aliases=["lp", "picklock"])
@@ -5542,6 +5861,7 @@ async def lockpick(ctx, amount: str):
             winnings = int(amount * LOCKPICK_MULTIPLIER * streak_mult)
             new_balance = latest["balance"] + winnings - amount
             update_user(user_id, balance=new_balance, gamble_streak=new_streak, total_won=latest["total_won"] + winnings - amount)
+            record_game_result(user_id, "lockpick", True, winnings - amount, winnings)
         except Exception:
             await interaction.message.edit(content=render(f"{Q_DENIED} Database unavailable."), view=None)
             return
@@ -5554,7 +5874,7 @@ async def lockpick(ctx, amount: str):
                 f"Prize: **{format_balance(winnings)}**\n"
                 f"New Balance: **{format_balance(new_balance)}**"
             ),
-            view=view
+            view=double_or_nothing_view(user_id, "lockpick", {"winnings": winnings})
         )
 
     class PinButton(discord.ui.Button):
@@ -5639,12 +5959,290 @@ async def lockpick(ctx, amount: str):
                 latest = get_user(user_id)
                 new_balance = max(0, latest["balance"] - amount)
                 update_user(user_id, balance=new_balance, gamble_streak=0, total_lost=latest["total_lost"] + amount)
+                record_game_result(user_id, "lockpick", False, -amount, 0)
                 await self.message.edit(content=render(f">>> {Q_TIMER} **Timed out.**\nLost: **{format_balance(amount)}**\nNew Balance: **{format_balance(new_balance)}**"), view=self)
             except Exception:
                 pass
 
     view = LockpickView()
     view.message = await ctx.send(render(), view=view)
+
+
+# =====================
+# NEW QUEWO GAMES
+# =====================
+async def prepare_gamble(ctx, amount_text, command_name):
+    if not await ensure_db_ready(ctx):
+        return None, None
+    cd = check_cooldown(ctx.author.id, command_name)
+    if cd > 0:
+        await send_gambling_cooldown(ctx, cd)
+        return None, None
+    try:
+        data = get_user(ctx.author.id)
+    except Exception:
+        await send_error(ctx, "Database unavailable. Try again shortly.")
+        return None, None
+    parsed = parse_amount(amount_text, ctx.author.id, ctx.guild, data["balance"])
+    if parsed is None:
+        await ctx.send(f"{Q_DENIED} Use `.{command_name} all` or `.{command_name} <amount>` (max {MAX_BET:,} {CURRENCY_EMOJI})")
+        return None, None
+    if parsed <= 0:
+        await send_nonpositive_amount_error(ctx, amount_text)
+        return None, None
+    if parsed > data["balance"] and not has_economy_owner_power(ctx.author.id, ctx.guild):
+        await ctx.send(f"{Q_DENIED} You only have {format_balance(data['balance'])}")
+        return None, None
+    return data, parsed
+
+async def send_new_game_result(ctx, game_key, title, amount, result, details="", base_multiplier=None):
+    content = (
+        f"{title}\n"
+        f"─────────────────\n"
+        f"{details}\n"
+        f"{gamble_result_block(game_key, amount, result, base_multiplier)}"
+    )
+    view = double_or_nothing_view(ctx.author.id, game_key, result)
+    await ctx.send(content, view=view, allowed_mentions=discord.AllowedMentions.none())
+
+HEIST_ROUTES = {
+    "silent": {"label": "Silent", "chance": 0.45, "mult": 2.0, "risk": "Medium"},
+    "balanced": {"label": "Balanced", "chance": 0.30, "mult": 3.25, "risk": "High"},
+    "loud": {"label": "Loud", "chance": 0.16, "mult": 6.0, "risk": "Extreme"},
+}
+
+@commands.command(name="heist", aliases=["robbery", "qh"])
+async def heist(ctx, amount: str):
+    data, amount = await prepare_gamble(ctx, amount, "heist")
+    if data is None:
+        return
+
+    class HeistButton(discord.ui.Button):
+        def __init__(self, route_key, route):
+            super().__init__(label=f"{route['label']} ×{route['mult']:g}", style=discord.ButtonStyle.primary)
+            self.route_key = route_key
+            self.route = route
+
+        async def callback(self, interaction):
+            if interaction.user.id != ctx.author.id:
+                await interaction.response.send_message("Use your own heist.", ephemeral=True)
+                return
+            view.stop()
+            for item in view.children:
+                item.disabled = True
+            await interaction.response.edit_message(view=view)
+            latest = get_user(ctx.author.id)
+            chance = min(0.90, self.route["chance"] + active_luck_bonus(latest))
+            won = random.random() < chance
+            result = settle_gambling_result(ctx.author.id, "heist", amount, self.route["mult"], won, data=latest)
+            details = f"{Q_HEIST} Route: **{self.route['label']}** | Risk: **{self.route['risk']}** | Success chance: **{int(chance * 100)}%**"
+            await send_new_game_result(ctx, "heist", f"{Q_HEIST} **HEIST**", amount, result, details, self.route["mult"] if won else None)
+
+    class HeistView(discord.ui.View):
+        def __init__(self):
+            super().__init__(timeout=45)
+            for route_key, route in HEIST_ROUTES.items():
+                self.add_item(HeistButton(route_key, route))
+
+    view = HeistView()
+    await ctx.send(
+        f"{Q_HEIST} **HEIST**\nChoose a route.\n"
+        + "\n".join(f"**{route['label']}**: {route['risk']} risk, pays ×{route['mult']:g}" for route in HEIST_ROUTES.values()),
+        view=view
+    )
+
+@commands.command(name="diceduel", aliases=["dice", "dd"])
+async def dice_duel(ctx, amount: str):
+    data, amount = await prepare_gamble(ctx, amount, "diceduel")
+    if data is None:
+        return
+    player = (random.randint(1, 6), random.randint(1, 6))
+    dealer = (random.randint(1, 6), random.randint(1, 6))
+    player_total = sum(player)
+    dealer_total = sum(dealer)
+    if player_total == dealer_total:
+        result = settle_gambling_result(ctx.author.id, "diceduel", amount, neutral=True, data=data)
+        details = f"{Q_DICE_DUEL} You rolled **{player[0]} + {player[1]} = {player_total}**\nDealer rolled **{dealer[0]} + {dealer[1]} = {dealer_total}**\nPush. Nothing won or lost."
+        await ctx.send(f"{Q_DICE_DUEL} **DICE DUEL**\n─────────────────\n{details}\nNew Balance: **{format_balance(result['balance'])}**")
+        return
+    won = player_total > dealer_total
+    result = settle_gambling_result(ctx.author.id, "diceduel", amount, 2, won, data=data)
+    details = f"{Q_DICE_DUEL} You rolled **{player[0]} + {player[1]} = {player_total}**\nDealer rolled **{dealer[0]} + {dealer[1]} = {dealer_total}**"
+    await send_new_game_result(ctx, "diceduel", f"{Q_DICE_DUEL} **DICE DUEL**", amount, result, details, 2 if won else None)
+
+CASE_TABLE = [
+    ("Empty Case", 0, 42),
+    ("Small Stack", 1.25, 30),
+    ("Blue Cache", 2, 18),
+    ("Royal Case", 5, 8),
+    ("Mythic Case", 15, 2),
+]
+
+@commands.command(name="cases", aliases=["case", "qcase", "open"])
+async def cases(ctx, amount: str):
+    data, amount = await prepare_gamble(ctx, amount, "cases")
+    if data is None:
+        return
+    names, multipliers, weights = zip(*CASE_TABLE)
+    index = random.choices(range(len(CASE_TABLE)), weights=weights)[0]
+    name, multiplier, _ = CASE_TABLE[index]
+    if multiplier <= 0:
+        result = settle_gambling_result(ctx.author.id, "cases", amount, won=False, data=data)
+    else:
+        result = settle_gambling_result(ctx.author.id, "cases", amount, multiplier, True, data=data)
+    details = f"{Q_CASES} Opened: **{name}** | Result: **×{multiplier:g}**"
+    await send_new_game_result(ctx, "cases", f"{Q_CASES} **Q CASES**", amount, result, details, multiplier if multiplier > 0 else None)
+
+PLINKO_SLOTS = [
+    (Q_WHEEL_BLANK, 0, 25),
+    (Q_WHEEL_RED, 0, 20),
+    (Q_WHEEL_BLUE, 1, 20),
+    (Q_WHEEL_GREEN, 1.5, 15),
+    (Q_WHEEL_ORANGE, 2, 12),
+    (Q_WHEEL_GOLD, 5, 6),
+    (Q_WHEEL_PINK, 10, 2),
+]
+
+@commands.command(name="plinko", aliases=["plink", "drop"])
+async def plinko(ctx, amount: str):
+    data, amount = await prepare_gamble(ctx, amount, "plinko")
+    if data is None:
+        return
+    index = random.choices(range(len(PLINKO_SLOTS)), weights=[slot[2] for slot in PLINKO_SLOTS])[0]
+    emoji, multiplier, _ = PLINKO_SLOTS[index]
+    path = " ".join(random.choice([Q_WHEEL_BLUE, Q_WHEEL_PURPLE, Q_WHEEL_GREEN]) for _ in range(5))
+    if multiplier == 1:
+        result = settle_gambling_result(ctx.author.id, "plinko", amount, neutral=True, data=data)
+        await ctx.send(f"{Q_PLINKO} **PLINKO**\n─────────────────\nPath: {path}\nLanded: **{emoji} ×1**\nRefund. New Balance: **{format_balance(result['balance'])}**")
+        return
+    won = multiplier > 1
+    result = settle_gambling_result(ctx.author.id, "plinko", amount, multiplier, won, data=data)
+    details = f"{Q_PLINKO} Path: {path}\nLanded: **{emoji} ×{multiplier:g}**"
+    await send_new_game_result(ctx, "plinko", f"{Q_PLINKO} **PLINKO**", amount, result, details, multiplier if won else None)
+
+LUCKY_NUMBER_OPTIONS = {
+    10: 3,
+    20: 5,
+    50: 10,
+    100: 20,
+}
+
+@commands.command(name="luckynumber", aliases=["ln", "lucky", "number"])
+async def lucky_number(ctx, amount: str):
+    data, amount = await prepare_gamble(ctx, amount, "luckynumber")
+    if data is None:
+        return
+
+    class RangeButton(discord.ui.Button):
+        def __init__(self, max_number, multiplier):
+            super().__init__(label=f"1-{max_number} ×{multiplier}", style=discord.ButtonStyle.primary)
+            self.max_number = max_number
+            self.multiplier = multiplier
+
+        async def callback(self, interaction):
+            if interaction.user.id != ctx.author.id:
+                await interaction.response.send_message("Use your own lucky number.", ephemeral=True)
+                return
+            view.stop()
+            for item in view.children:
+                item.disabled = True
+            await interaction.response.edit_message(
+                content=f"{Q_LUCKY_NUMBER} Type your number from **1-{self.max_number}** in this channel.",
+                view=view
+            )
+
+            def check(message):
+                return message.author.id == ctx.author.id and message.channel.id == ctx.channel.id
+
+            try:
+                message = await bot.wait_for("message", timeout=30, check=check)
+            except asyncio.TimeoutError:
+                await ctx.send(f"{Q_TIMER} Lucky Number timed out.")
+                return
+            try:
+                picked = int(message.content.strip())
+            except ValueError:
+                await ctx.send(f"{Q_DENIED} Pick a whole number from 1-{self.max_number}.")
+                return
+            if picked < 1 or picked > self.max_number:
+                await ctx.send(f"{Q_DENIED} Pick a number from 1-{self.max_number}.")
+                return
+            drawn = random.randint(1, self.max_number)
+            won = picked == drawn
+            result = settle_gambling_result(ctx.author.id, "luckynumber", amount, self.multiplier, won, data=get_user(ctx.author.id))
+            details = f"{Q_LUCKY_NUMBER} Range: **1-{self.max_number}** | Picked: **{picked}** | Drawn: **{drawn}**"
+            await send_new_game_result(ctx, "luckynumber", f"{Q_LUCKY_NUMBER} **LUCKY NUMBER**", amount, result, details, self.multiplier if won else None)
+
+    class LuckyNumberView(discord.ui.View):
+        def __init__(self):
+            super().__init__(timeout=45)
+            for max_number, multiplier in LUCKY_NUMBER_OPTIONS.items():
+                self.add_item(RangeButton(max_number, multiplier))
+
+    view = LuckyNumberView()
+    await ctx.send(
+        f"{Q_LUCKY_NUMBER} **LUCKY NUMBER**\nChoose your range:\n"
+        "`1-10 = ×3`, `1-20 = ×5`, `1-50 = ×10`, `1-100 = ×20`",
+        view=view
+    )
+
+JACKPOT_SPIN_TABLE = [
+    ("Miss", 0, 70),
+    ("Small Hit", 2, 18),
+    ("Big Hit", 5, 8),
+    ("Mega Hit", 10, 3),
+    ("Jackpot", 50, 1),
+]
+
+@commands.command(name="jackpotspin", aliases=["jackpot", "jspin", "jps"])
+async def jackpot_spin(ctx, amount: str):
+    data, amount = await prepare_gamble(ctx, amount, "jackpotspin")
+    if data is None:
+        return
+    index = random.choices(range(len(JACKPOT_SPIN_TABLE)), weights=[row[2] for row in JACKPOT_SPIN_TABLE])[0]
+    label, multiplier, _ = JACKPOT_SPIN_TABLE[index]
+    strip = " ".join(random.choice([Q_SLOT_STAR, Q_SLOT_DIAMOND, Q_SLOT_CROWN, Q_SLOT_JACKPOT]) for _ in range(5))
+    result = settle_gambling_result(ctx.author.id, "jackpotspin", amount, multiplier, multiplier > 0, data=data)
+    details = f"{Q_JACKPOT_SPIN} Reels: {strip}\nResult: **{label} ×{multiplier:g}**"
+    await send_new_game_result(ctx, "jackpotspin", f"{Q_JACKPOT_SPIN} **JACKPOT SPIN**", amount, result, details, multiplier if multiplier > 0 else None)
+
+@commands.command(name="gamestats", aliases=["gstats", "gamestat", "playstats"])
+async def gamestats(ctx, member: discord.Member = None):
+    if not await ensure_db_ready(ctx):
+        return
+    user = member or ctx.author
+    try:
+        rows = get_game_stats(user.id)
+        data = get_user(user.id)
+    except Exception:
+        await send_error(ctx, "Database unavailable. Try again shortly.")
+        return
+    embed = discord.Embed(
+        title=f"{Q_GAME_STATS} Game Stats",
+        description=user_mention(user.id),
+        color=discord.Color.green()
+    )
+    if not rows:
+        embed.add_field(name="Games", value="No tracked game stats yet.", inline=False)
+    else:
+        total_played = sum(int(row["played"] or 0) for row in rows)
+        total_wins = sum(int(row["wins"] or 0) for row in rows)
+        total_profit = sum(int(row["profit"] or 0) for row in rows)
+        embed.add_field(name="Total", value=f"Played: **{total_played:,}**\nWins: **{total_wins:,}**\nProfit: **{format_balance(total_profit)}**", inline=False)
+        lines = []
+        for row in rows[:12]:
+            played = int(row["played"] or 0)
+            wins = int(row["wins"] or 0)
+            losses = int(row["losses"] or 0)
+            win_rate = (wins / played * 100) if played else 0
+            lines.append(
+                f"**{game_display_name(row['game_key'])}** - {wins:,}W/{losses:,}L, {win_rate:.1f}% win, {format_balance(int(row['profit'] or 0))}"
+            )
+        embed.add_field(name="By Game", value="\n".join(lines), inline=False)
+    achievements = achievement_ids(data)
+    game_badges = [GAME_ACHIEVEMENTS[achievement_id]["name"] for achievement_id in achievements if achievement_id in GAME_ACHIEVEMENTS]
+    embed.add_field(name="Badges", value=", ".join(game_badges[:20]) if game_badges else "No game badges yet.", inline=False)
+    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
 
 # MINESWEEPER
@@ -5818,7 +6416,7 @@ async def minesweeper(ctx, amount: str):
                     f"New Balance: **{format_balance(new_balance)}**"
                 )
                 self.view.clear_items()
-                await interaction.response.edit_message(content=new_content, view=self.view)
+                await interaction.response.edit_message(content=new_content, view=double_or_nothing_view(user_id, "ms", {"winnings": winnings}))
                 try:
                     update_user(
                         user_id,
@@ -6042,7 +6640,8 @@ async def wheel(ctx, amount: str):
                     f"Multiplier: ×{mult * mult_val:.2f} (base ×{mult_val}, streak ×{mult:.2f})\n"
                     f"Prize: **{format_balance(winnings)}**{streak_msg}\n"
                     f"New Balance: **{format_balance(new_balance)}**"
-                    )
+                    ),
+                    view=double_or_nothing_view(user_id, "wheel", {"winnings": winnings})
                 )
             else:
                 loss_amount = amount - winnings
@@ -6116,6 +6715,30 @@ EXPLANATIONS = {
     "lockpick": f"{Q_LOCKPICK} Adjust lock pins, use high/low hints, and open the lock before your tests run out.",
     "lp": "Alias for `.lockpick`. Adjust lock pins and open the lock before your tests run out.",
     "picklock": "Alias for `.lockpick`. Adjust lock pins and open the lock before your tests run out.",
+    "heist": f"{Q_HEIST} Pick a robbery route. Higher risk routes pay more if they succeed.",
+    "robbery": "Alias for `.heist`. Pick a robbery route and try to escape.",
+    "qh": "Alias for `.heist`. Pick a robbery route and try to escape.",
+    "diceduel": f"{Q_DICE_DUEL} Roll against the dealer. Higher total wins.",
+    "dice": "Alias for `.diceduel`. Roll against the dealer.",
+    "dd": "Alias for `.diceduel`. Roll against the dealer.",
+    "cases": f"{Q_CASES} Open a random case with tiered prizes.",
+    "case": "Alias for `.cases`. Open a random case.",
+    "qcase": "Alias for `.cases`. Open a random case.",
+    "plinko": f"{Q_PLINKO} Drop a ball into weighted multiplier slots.",
+    "plink": "Alias for `.plinko`. Drop a ball into weighted multiplier slots.",
+    "drop": "Alias for `.plinko`. Drop a ball into weighted multiplier slots.",
+    "luckynumber": f"{Q_LUCKY_NUMBER} Pick a range and a number. Bigger ranges pay more.",
+    "ln": "Alias for `.luckynumber`. Pick a range and a number.",
+    "lucky": "Alias for `.luckynumber`. Pick a range and a number.",
+    "number": "Alias for `.luckynumber`. Pick a range and a number.",
+    "jackpotspin": f"{Q_JACKPOT_SPIN} Rare jackpot wheel with high-risk payouts.",
+    "jackpot": "Alias for `.jackpotspin`. Rare jackpot wheel.",
+    "jspin": "Alias for `.jackpotspin`. Rare jackpot wheel.",
+    "jps": "Alias for `.jackpotspin`. Rare jackpot wheel.",
+    "gamestats": "Shows tracked game wins, losses, profit, and game badges.",
+    "gstats": "Alias for `.gamestats`. Shows tracked game stats.",
+    "gamestat": "Alias for `.gamestats`. Shows tracked game stats.",
+    "playstats": "Alias for `.gamestats`. Shows tracked game stats.",
     "ms": f"Pick a grid size, reveal safe tiles {Q_XP}, avoid bombs {Q_MINE}.",
     "minesweeper": f"Pick a grid size, reveal safe tiles {Q_XP}, avoid bombs {Q_MINE}.",
     "minesweepeer": f"Pick a grid size, reveal safe tiles {Q_XP}, avoid bombs {Q_MINE}.",
@@ -6239,6 +6862,13 @@ DETAILED_EXPLANATIONS = {
     "lockpick": f"Set {LOCKPICK_PINS} lock pins from 1-{LOCKPICK_HEIGHTS}. Press each pin to raise it, Test to spend one try, and use the per-pin high/low/set hints to solve the lock. Opening it within {LOCKPICK_TRIES} tests pays ×{LOCKPICK_MULTIPLIER:g} before the universal gambling streak bonus. Running out of tests or timing out resets the streak.",
     "lp": "Alias for `.lockpick`. Adjust lock pins and open the lock before your tests run out.",
     "picklock": "Alias for `.lockpick`. Adjust lock pins and open the lock before your tests run out.",
+    "heist": "Choose Silent, Balanced, or Loud. Safer routes hit more often and pay less; risky routes hit less often and pay more. Wins can use Double or Nothing after payout.",
+    "diceduel": "You and the dealer each roll two dice. Higher total wins ×2 before streak bonus. Ties refund. Wins can use Double or Nothing.",
+    "cases": "Opens one case with weighted tiers: empty, small, medium, rare, or mythic. Better cases are rarer. Wins can use Double or Nothing.",
+    "plinko": "Drops into weighted slots from ×0 to ×10. ×1 refunds, higher than ×1 wins, lower than ×1 loses part/all by current settlement. Wins can use Double or Nothing.",
+    "luckynumber": "Choose a range, then type your number. Options: 1-10 pays ×3, 1-20 pays ×5, 1-50 pays ×10, and 1-100 pays ×20. Wins can use Double or Nothing.",
+    "jackpotspin": "High-risk spin with rare huge outcomes. Most spins miss, but jackpot tier pays ×50 before streak bonus. Wins can use Double or Nothing.",
+    "gamestats": "Shows tracked game stats for you or a mentioned user: total played, wins, profit, per-game records, and hard game badges. Example: `.gamestats` or `.gamestats @user`.",
     "ms": f"Choose 3x3, 4x4, or 5x5, then reveal tiles. Hidden tiles show as {Q_MS_HIDDEN}, safe gems show as {Q_XP}, bombs show as {Q_MINE}, and your cursor shows as {Q_MS_CURSOR}. 3x3 has 1 bomb, 4x4 has 3 bombs, and 5x5 has 5 bombs. Reveal every safe tile to win. The final multiplier starts at ×2.00 and each safe reveal adds +0.15, then the universal gambling streak bonus applies. Hitting a bomb or timing out loses the bet and resets the streak.",
     "minesweeper": f"Choose 3x3, 4x4, or 5x5, then reveal tiles. Hidden tiles show as {Q_MS_HIDDEN}, safe gems show as {Q_XP}, bombs show as {Q_MINE}, and your cursor shows as {Q_MS_CURSOR}. 3x3 has 1 bomb, 4x4 has 3 bombs, and 5x5 has 5 bombs. Reveal every safe tile to win. The final multiplier starts at ×2.00 and each safe reveal adds +0.15, then the universal gambling streak bonus applies. Hitting a bomb or timing out loses the bet and resets the streak.",
     "minesweepeer": f"Choose 3x3, 4x4, or 5x5, then reveal tiles. Hidden tiles show as {Q_MS_HIDDEN}, safe gems show as {Q_XP}, bombs show as {Q_MINE}, and your cursor shows as {Q_MS_CURSOR}. 3x3 has 1 bomb, 4x4 has 3 bombs, and 5x5 has 5 bombs. Reveal every safe tile to win. The final multiplier starts at ×2.00 and each safe reveal adds +0.15, then the universal gambling streak bonus applies. Hitting a bomb or timing out loses the bet and resets the streak.",
@@ -6282,10 +6912,10 @@ DETAILED_EXPLANATIONS = {
 }
 
 ECONHELP_COMMANDS = [
-    ("Core", ["bal", "profile", "inventory", "quests", "shop", "cooldowns", "transactions", "lb", "qstats"]),
+    ("Core", ["bal", "profile", "inventory", "quests", "shop", "cooldowns", "transactions", "lb", "gamestats", "qstats"]),
     ("Claims", ["daily", "weekly", "monthly"]),
     ("Lottery", ["lottery", "buytick", "lotterystats", "editlottery", "stoplottery"]),
-    ("Gambling", ["cf", "roulette", "slots", "blackjack", "scratch", "tower", "vault", "memory", "cardladder", "lockpick", "ms", "wheel"]),
+    ("Gambling", ["cf", "roulette", "slots", "blackjack", "scratch", "tower", "vault", "memory", "cardladder", "lockpick", "heist", "diceduel", "cases", "plinko", "luckynumber", "jackpotspin", "ms", "wheel"]),
     ("Transfers", ["give"]),
     ("Help", ["econhelp", "explain"]),
 ]
@@ -6402,7 +7032,7 @@ async def setup(bot_ref, log_callback=None):
     economy_commands = [
         bal, profile, inventory, quests, shop, cooldowns, transactions, lottery, editlottery, stoplottery, lotterystats, buytick,
         daily, weekly, monthly, gamble, roulette, slots, blackjack,
-        scratch, tower, vault, memory_game, card_ladder, lockpick, minesweeper, wheel, give, lb, qstats, add, remove, addtick, settick, setquesos, econhelp, explain
+        scratch, tower, vault, memory_game, card_ladder, lockpick, heist, dice_duel, cases, plinko, lucky_number, jackpot_spin, minesweeper, wheel, give, lb, gamestats, qstats, add, remove, addtick, settick, setquesos, econhelp, explain
     ]
     for command in economy_commands:
         if bot.get_command(command.name):
