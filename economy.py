@@ -5454,8 +5454,8 @@ async def card_ladder(ctx, amount: str):
 # LOCKPICK
 # =====================
 LOCKPICK_PINS = 4
-LOCKPICK_HEIGHTS = 7
-LOCKPICK_TRIES = 6
+LOCKPICK_HEIGHTS = 8
+LOCKPICK_TRIES = 5
 LOCKPICK_MULTIPLIER = 5
 
 @commands.command(name="lockpick", aliases=["lp", "picklock"])
