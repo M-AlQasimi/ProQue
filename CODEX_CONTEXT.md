@@ -11,9 +11,8 @@ This file is the persistent project memory for future Codex sessions. Read this 
 - Requirements file: `requirements.txt`
 - Emoji asset generator: `tools/generate_q_emojis.py`
 - Generated emoji assets:
-  - Static PNGs: `assets/emojis/png`
-  - Animated GIFs: `assets/emojis/gif`
-  - Animation frame PNGs: `assets/emojis/gif_frames`
+  - Upload-ready static PNGs: `assets/emojis/upload/png`
+  - Upload-ready animated GIFs: `assets/emojis/upload/animated`
 
 ## Bot Structure
 
@@ -29,8 +28,8 @@ At the time this file was created, the working tree had uncommitted changes:
 
 - Modified: `economy.py`
 - Modified: `main.py`
-- Untracked: `assets/`
-- Untracked: `tools/`
+- Emoji assets: `assets/emojis/upload/`
+- Emoji generator: `tools/generate_q_emojis.py`
 - New context file: `CODEX_CONTEXT.md`
 
 Do not revert these unless the user explicitly asks.
@@ -202,95 +201,24 @@ Q_WARNING = "<:QWarning:1500516819604209704>"
 
 Created in this repo with `tools/generate_q_emojis.py`.
 
-Static PNGs, 128x128 RGBA with transparency:
+Use `assets/emojis/upload/` when uploading emojis to Discord:
 
 ```text
-assets/emojis/png/QDenied.png
-assets/emojis/png/QDailySpice.png
-assets/emojis/png/QAccept.png
-assets/emojis/png/QAlarm.png
-assets/emojis/png/QAttachment.png
-assets/emojis/png/QBell.png
-assets/emojis/png/QBirthday.png
-assets/emojis/png/QBook.png
-assets/emojis/png/QBroom.png
-assets/emojis/png/QCards.png
-assets/emojis/png/QConfetti.png
-assets/emojis/png/QConnectBlack.png
-assets/emojis/png/QConnectWhite.png
-assets/emojis/png/QFlip.png
-assets/emojis/png/QGameO.png
-assets/emojis/png/QGameTimeout.png
-assets/emojis/png/QGameWin.png
-assets/emojis/png/QGameX.png
-assets/emojis/png/QGift.png
-assets/emojis/png/QGoldBadge.png
-assets/emojis/png/QHammer.png
-assets/emojis/png/QHighRoller.png
-assets/emojis/png/QImage.png
-assets/emojis/png/QLevelUp.png
-assets/emojis/png/QLock.png
-assets/emojis/png/QLuckyCharm.png
-assets/emojis/png/QMine.png
-assets/emojis/png/QPermissions.png
-assets/emojis/png/QPoll.png
-assets/emojis/png/QQuesoMagnet.png
-assets/emojis/png/QQuest.png
-assets/emojis/png/QReaction.png
-assets/emojis/png/QReject.png
-assets/emojis/png/QRoles.png
-assets/emojis/png/QRoyalCrown.png
-assets/emojis/png/QShop.png
-assets/emojis/png/QSleep.png
-assets/emojis/png/QSlots.png
-assets/emojis/png/QStreakFire.png
-assets/emojis/png/QStreakPolish.png
-assets/emojis/png/QSuccess.png
-assets/emojis/png/QTarget.png
-assets/emojis/png/QThinking.png
-assets/emojis/png/QTimer.png
-assets/emojis/png/QTicket.png
-assets/emojis/png/QTicketCharm.png
-assets/emojis/png/QCooldownClock.png
-assets/emojis/png/QTimeout.png
-assets/emojis/png/QTrash.png
-assets/emojis/png/QUserEdit.png
-assets/emojis/png/QWheel.png
-assets/emojis/png/QXP.png
-assets/emojis/png/QXPTonic.png
-assets/emojis/png/QVelvetFrame.png
-assets/emojis/png/QVoice.png
-assets/emojis/png/QWarning.png
-assets/emojis/png/QoinBag.png
-assets/emojis/png/QoinChest.png
-assets/emojis/png/QoinTransfer.png
+assets/emojis/upload/png/general
+assets/emojis/upload/png/quewo
+assets/emojis/upload/png/moderation
+assets/emojis/upload/png/polls
+assets/emojis/upload/png/games/<game>
+assets/emojis/upload/animated
 ```
 
-Animated GIFs, 128x128 GIF89a with transparency:
-
-```text
-assets/emojis/gif/QFlipSpin.gif
-assets/emojis/gif/QLevelPulse.gif
-assets/emojis/gif/QMineSpark.gif
-assets/emojis/gif/QTimerTick.gif
-assets/emojis/gif/QWheelSpin.gif
-```
-
-Frame folders:
-
-```text
-assets/emojis/gif_frames/QFlipSpin/
-assets/emojis/gif_frames/QLevelPulse/
-assets/emojis/gif_frames/QMineSpark/
-assets/emojis/gif_frames/QTimerTick/
-assets/emojis/gif_frames/QWheelSpin/
-```
+The old flat cache folders `assets/emojis/png`, `assets/emojis/gif`, and `assets/emojis/gif_frames` were removed. The generator now writes directly to `upload/` and uses temporary animation frames.
 
 Validation that was performed:
 
 ```bash
-file assets/emojis/png/*.png assets/emojis/gif/*.gif
-python3 -m py_compile economy.py main.py
+find assets/emojis/upload -type f
+python3 -m py_compile economy.py main.py pgdata.py tools/generate_q_emojis.py
 ```
 
 Static PNGs were confirmed as `128 x 128, 8-bit/color RGBA`.
@@ -317,19 +245,13 @@ Because of that, `tools/generate_q_emojis.py` was written as a pure-Python raste
 
 - It draws directly into RGBA pixels.
 - It writes PNG files manually via zlib/PNG chunks.
-- It generates animation frames.
-- `ffmpeg` converts frames into transparent GIFs.
+- It generates animation frames in a temporary directory.
+- `ffmpeg` converts frames into transparent GIFs under `assets/emojis/upload/animated`.
 
 Commands used to generate/rebuild assets:
 
 ```bash
 python3 tools/generate_q_emojis.py
-mkdir -p assets/emojis/gif
-ffmpeg -y -framerate 12 -i assets/emojis/gif_frames/QFlipSpin/%03d.png -vf "fps=12,scale=128:128:flags=lanczos,split[s0][s1];[s0]palettegen=reserve_transparent=1:transparency_color=00ff00[p];[s1][p]paletteuse=alpha_threshold=128" assets/emojis/gif/QFlipSpin.gif
-ffmpeg -y -framerate 12 -i assets/emojis/gif_frames/QWheelSpin/%03d.png -vf "fps=12,scale=128:128:flags=lanczos,split[s0][s1];[s0]palettegen=reserve_transparent=1:transparency_color=00ff00[p];[s1][p]paletteuse=alpha_threshold=128" assets/emojis/gif/QWheelSpin.gif
-ffmpeg -y -framerate 12 -i assets/emojis/gif_frames/QTimerTick/%03d.png -vf "fps=12,scale=128:128:flags=lanczos,split[s0][s1];[s0]palettegen=reserve_transparent=1:transparency_color=00ff00[p];[s1][p]paletteuse=alpha_threshold=128" assets/emojis/gif/QTimerTick.gif
-ffmpeg -y -framerate 12 -i assets/emojis/gif_frames/QLevelPulse/%03d.png -vf "fps=12,scale=128:128:flags=lanczos,split[s0][s1];[s0]palettegen=reserve_transparent=1:transparency_color=00ff00[p];[s1][p]paletteuse=alpha_threshold=128" assets/emojis/gif/QLevelPulse.gif
-ffmpeg -y -framerate 12 -i assets/emojis/gif_frames/QMineSpark/%03d.png -vf "fps=12,scale=128:128:flags=lanczos,split[s0][s1];[s0]palettegen=reserve_transparent=1:transparency_color=00ff00[p];[s1][p]paletteuse=alpha_threshold=128" assets/emojis/gif/QMineSpark.gif
 ```
 
 `QFlipSpin.gif` was later improved because the first version did not look enough like a spin. The current generator uses a `flip_coin()` helper where the coin width changes per frame: face-on, edge-on, opposite side, face-on.
@@ -517,8 +439,8 @@ When replacing emojis, preserve game-state Unicode symbols if they represent act
 The user uploads files from:
 
 ```text
-assets/emojis/png
-assets/emojis/gif
+assets/emojis/upload/png
+assets/emojis/upload/animated
 ```
 
 Then they provide markdown like:
@@ -546,7 +468,7 @@ For static emojis:
 
 - The generated local PNG/GIF assets are simple stylized raster drawings, not AI-rendered photorealistic images.
 - The generated assets intentionally prioritize Discord emoji readability over detail.
-- There may be an `.DS_Store` under `assets/emojis/`; ignore or remove later if desired.
+- `.DS_Store`, `__pycache__`, and Python bytecode are ignored and should not be committed.
 - The bot code still contains some Unicode emoji in print logs and in game-state symbols. This is intentional unless the user asks for every last Unicode emoji removed.
 
 ## Good Future Practices

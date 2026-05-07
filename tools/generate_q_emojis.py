@@ -4,14 +4,13 @@ import os
 import shutil
 import struct
 import subprocess
+import tempfile
 import zlib
 
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 OUT = os.path.join(ROOT, "assets", "emojis")
-PNG_OUT = os.path.join(OUT, "png")
 UPLOAD_OUT = os.path.join(OUT, "upload")
-GIF_FRAMES = os.path.join(OUT, "gif_frames")
 SIZE = 128
 SCALE = 3
 W = SIZE * SCALE
@@ -635,41 +634,6 @@ def qmemory_tile():
     c = qtile(BLUE_DARK, NAVY, False)
     c.circle(64, 64, 25, BLUE_MID, outline=CYAN, width=3)
     c.text_q(64, 65, 29, ICE)
-    return c
-
-
-def qwordle():
-    c = Canvas()
-    colors = [GREEN, GOLD, BLUE_DARK, BLUE, GREEN, BLUE_DARK, GOLD, GREEN, BLUE, ICE, BLUE_DARK, GOLD, GREEN, BLUE, GREEN]
-    i = 0
-    for row in range(3):
-        for col in range(5):
-            x = 15 + col * 20
-            y = 28 + row * 24
-            fill = colors[i]
-            edge = BLUE_DARK if fill != BLUE_DARK else CYAN
-            c.rect(x, y, 17, 17, fill, outline=edge, width=2)
-            i += 1
-    c.text_q(64, 101, 22, CYAN)
-    c.sparkle(102, 23, 6)
-    return c
-
-
-def qwordle_tile_correct():
-    c = qtile(GREEN, BLUE_DARK, False)
-    c.text_q(64, 66, 26, ICE)
-    return c
-
-
-def qwordle_tile_present():
-    c = qtile(GOLD, BLUE_DARK, False)
-    c.text_q(64, 66, 26, ICE)
-    return c
-
-
-def qwordle_tile_absent():
-    c = qtile(BLUE_DARK, CYAN, False)
-    c.text_q(64, 66, 26, ICE)
     return c
 
 
@@ -1678,10 +1642,6 @@ STATIC = {
     "QVaultDial": qvault_dial,
     "QMemory": qmemory,
     "QMemoryTile": qmemory_tile,
-    "QWordle": qwordle,
-    "QWordleCorrect": qwordle_tile_correct,
-    "QWordlePresent": qwordle_tile_present,
-    "QWordleAbsent": qwordle_tile_absent,
     "QHeist": qheist,
     "QDiceDuel": qdice_duel,
     "QCases": qcases,
@@ -1755,9 +1715,6 @@ STATIC_CATEGORIES = {
     "games/memory": {
         "QMemory", "QMemoryTile",
     },
-    "games/wordle": {
-        "QWordle", "QWordleCorrect", "QWordlePresent", "QWordleAbsent",
-    },
     "games/heist": {
         "QHeist",
     },
@@ -1791,17 +1748,15 @@ def static_category(name):
 
 
 def make_static():
-    os.makedirs(PNG_OUT, exist_ok=True)
     for name, fn in STATIC.items():
         canvas = fn()
-        save_png(canvas, os.path.join(PNG_OUT, f"{name}.png"))
         category_dir = os.path.join(UPLOAD_OUT, "png", static_category(name))
         os.makedirs(category_dir, exist_ok=True)
         save_png(canvas, os.path.join(category_dir, f"{name}.png"))
 
 
-def make_frames():
-    os.makedirs(GIF_FRAMES, exist_ok=True)
+def make_frames(frame_root):
+    os.makedirs(frame_root, exist_ok=True)
     animations = {
         "QFlipSpin": lambda i, n: qflip(i / n * math.tau * 2),
         "QWheelSpin": lambda i, n: qwheel(i / n * math.tau),
@@ -1813,7 +1768,7 @@ def make_frames():
         "QPlinkoDrop": lambda i, n: qplinko((i * 5) // n),
     }
     for name, fn in animations.items():
-        folder = os.path.join(GIF_FRAMES, name)
+        folder = os.path.join(frame_root, name)
         os.makedirs(folder, exist_ok=True)
         for i in range(16):
             canvas = fn(i, 16)
@@ -1823,16 +1778,17 @@ def make_frames():
             if name == "QMineSpark" and i % 4 in (0, 1):
                 canvas.sparkle(96, 21, 11)
             save_png(canvas, os.path.join(folder, f"{i:03d}.png"))
+    return list(animations)
 
 
-def make_gifs_from_frames():
+def make_gifs_from_frames(frame_root, names):
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
         return
-    gif_out = os.path.join(OUT, "gif")
+    gif_out = os.path.join(UPLOAD_OUT, "animated")
     os.makedirs(gif_out, exist_ok=True)
-    for name in ["QJackpotSpin", "QDoubleNothing", "QPlinkoDrop"]:
-        frame_pattern = os.path.join(GIF_FRAMES, name, "%03d.png")
+    for name in names:
+        frame_pattern = os.path.join(frame_root, name, "%03d.png")
         out_path = os.path.join(gif_out, f"{name}.gif")
         subprocess.run(
             [
@@ -1854,26 +1810,9 @@ def make_gifs_from_frames():
         )
 
 
-def make_upload_gifs():
-    gif_src = os.path.join(OUT, "gif")
-    gif_dest = os.path.join(UPLOAD_OUT, "animated")
-    if not os.path.isdir(gif_src):
-        return
-    os.makedirs(gif_dest, exist_ok=True)
-    for filename in os.listdir(gif_src):
-        if not filename.endswith(".gif"):
-            continue
-        src_path = os.path.join(gif_src, filename)
-        dest_path = os.path.join(gif_dest, filename)
-        with open(src_path, "rb") as src, open(dest_path, "wb") as dest:
-            dest.write(src.read())
-
-
 if __name__ == "__main__":
     make_static()
-    make_frames()
-    make_gifs_from_frames()
-    make_upload_gifs()
-    print(PNG_OUT)
-    print(GIF_FRAMES)
+    with tempfile.TemporaryDirectory(prefix="proque_emoji_frames_") as frame_root:
+        names = make_frames(frame_root)
+        make_gifs_from_frames(frame_root, names)
     print(UPLOAD_OUT)

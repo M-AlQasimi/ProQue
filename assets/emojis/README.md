@@ -9,4 +9,6 @@ Use `upload/` when adding emojis to Discord. It is organized by where the emoji 
 - `upload/png/polls` - poll number and poll UI emojis.
 - `upload/animated` - GIF emojis ready for upload.
 
-The flat `png/` folder is the generator output cache. Keep it because `tools/generate_q_emojis.py` writes there for quick regeneration.
+Run `python3 tools/generate_q_emojis.py` to regenerate the upload-ready files. The generator writes directly into `upload/` and uses temporary animation frames, so old flat cache folders are not needed.
+
+Some upload files intentionally share the same artwork under different names, such as poll numbers and Connect 4 numbers. Keep those separate because Discord emoji names are part of the bot UI.
