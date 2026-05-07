@@ -5762,7 +5762,7 @@ async def card_ladder(ctx, amount: str):
 # LOCKPICK
 # =====================
 LOCKPICK_PINS = 5
-LOCKPICK_HEIGHTS = 10
+LOCKPICK_HEIGHTS = 9
 LOCKPICK_TRIES = 3
 LOCKPICK_MULTIPLIER = 4
 
