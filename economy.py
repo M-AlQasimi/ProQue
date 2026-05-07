@@ -5763,8 +5763,8 @@ async def card_ladder(ctx, amount: str):
 # =====================
 LOCKPICK_PINS = 5
 LOCKPICK_HEIGHTS = 10
-LOCKPICK_TRIES = 4
-LOCKPICK_MULTIPLIER = 5
+LOCKPICK_TRIES = 3
+LOCKPICK_MULTIPLIER = 4
 
 @commands.command(name="lockpick", aliases=["lp", "picklock"])
 async def lockpick(ctx, amount: str):
@@ -6088,6 +6088,7 @@ async def heist(ctx, amount: str):
     async def finish_heist(interaction):
         route = HEIST_ROUTES[route_choice]
         tool = HEIST_TOOLS[tool_choice]
+        await interaction.response.edit_message(content=f"{Q_HEIST} **HEIST COMPLETE**\nEscaping...", view=None)
         latest = get_user(ctx.author.id)
         chance = min(0.90, max(0.05, route["chance"] + tool["chance"] + heist_chance_bonus + active_luck_bonus(latest)))
         base_mult = max(1.1, route["mult"] + tool["mult"] + heist_mult_bonus)
@@ -6098,7 +6099,6 @@ async def heist(ctx, amount: str):
             f"Choices: **{' / '.join(stage_choices)}**\n"
             f"Success chance: **{int(chance * 100)}%** | Target payout: **×{base_mult:g}**"
         )
-        await interaction.response.edit_message(content=f"{Q_HEIST} **HEIST COMPLETE**\nEscaping...", view=None)
         await prompt_message.delete()
         await send_new_game_result(ctx, "heist", f"{Q_HEIST} **HEIST**", amount, result, details, base_mult if won else None)
 
@@ -6239,6 +6239,7 @@ async def dice_duel(ctx, amount: str):
             dealer.extend([random.randint(1, 6), random.randint(1, 6)])
             player_total = sum(player) + tactic["bonus"]
             dealer_total = sum(dealer)
+            await interaction.response.edit_message(content=dice_content("Dealer rolled. Settling result..."), view=view)
             latest = get_user(ctx.author.id)
             if player_total == dealer_total:
                 result = settle_gambling_result(ctx.author.id, "diceduel", amount, neutral=True, data=latest)
@@ -6248,7 +6249,7 @@ async def dice_duel(ctx, amount: str):
                     f"Dealer rolled **{dealer[0]} + {dealer[1]} = {dealer_total}**\n"
                     "Push. Nothing won or lost."
                 )
-                await interaction.response.edit_message(content=f"{Q_DICE_DUEL} **DICE DUEL**\n─────────────────\n{details}\nNew Balance: **{format_balance(result['balance'])}**", view=view)
+                await message.edit(content=f"{Q_DICE_DUEL} **DICE DUEL**\n─────────────────\n{details}\nNew Balance: **{format_balance(result['balance'])}**", view=view)
                 return
             won = player_total > dealer_total
             result = settle_gambling_result(ctx.author.id, "diceduel", amount, tactic["mult"], won, data=latest)
@@ -6257,7 +6258,6 @@ async def dice_duel(ctx, amount: str):
                 f"You rolled **{player[0]} + {player[1]} {tactic['bonus']:+d} = {player_total}**\n"
                 f"Dealer rolled **{dealer[0]} + {dealer[1]} = {dealer_total}**"
             )
-            await interaction.response.edit_message(content=dice_content("Settling result..."), view=view)
             await message.delete()
             await send_new_game_result(ctx, "diceduel", f"{Q_DICE_DUEL} **DICE DUEL**", amount, result, details, tactic["mult"] if won else None)
 
@@ -6454,10 +6454,11 @@ async def plinko(ctx, amount: str):
                 item.disabled = True
             slot_index = max(0, min(len(PLINKO_SLOTS) - 1, ball_col + random.choice([0, 1, 2])))
             emoji, multiplier, _ = PLINKO_SLOTS[slot_index]
+            await interaction.response.edit_message(content=f"{Q_PLINKO} **PLINKO COMPLETE**\n{plinko_board(5, ball_col)}\nSettling result...", view=view)
             latest = get_user(ctx.author.id)
             if multiplier == 1:
                 result = settle_gambling_result(ctx.author.id, "plinko", amount, neutral=True, data=latest)
-                await interaction.response.edit_message(
+                await message.edit(
                     content=(
                         f"{Q_PLINKO} **PLINKO**\n{plinko_board(5, ball_col)}\n"
                         f"Landed: **{emoji} ×1**\nRefund. New Balance: **{format_balance(result['balance'])}**"
@@ -6468,7 +6469,6 @@ async def plinko(ctx, amount: str):
             won = multiplier > 1
             result = settle_gambling_result(ctx.author.id, "plinko", amount, multiplier, won, data=latest)
             details = f"{Q_PLINKO} Final lane: **{ball_col + 1}**\nLanded: **{emoji} ×{multiplier:g}**"
-            await interaction.response.edit_message(content=f"{Q_PLINKO} **PLINKO COMPLETE**\n{plinko_board(5, ball_col)}", view=view)
             await message.delete()
             await send_new_game_result(ctx, "plinko", f"{Q_PLINKO} **PLINKO**", amount, result, details, multiplier if won else None)
 
@@ -6496,6 +6496,33 @@ async def lucky_number(ctx, amount: str):
     data, amount = await prepare_gamble(ctx, amount, "luckynumber")
     if data is None:
         return
+    mode = None
+
+    async def ask_range(interaction):
+        view.clear_items()
+        for max_number, multiplier in LUCKY_NUMBER_OPTIONS.items():
+            view.add_item(RangeButton(max_number, multiplier))
+        await interaction.response.edit_message(
+            content=(
+                f"{Q_LUCKY_NUMBER} **LUCKY NUMBER**\n"
+                f"Mode: **{'Public channel' if mode == 'public' else 'Solo'}**\n"
+                "Choose your number range."
+            ),
+            view=view
+        )
+
+    class ModeButton(discord.ui.Button):
+        def __init__(self, mode_key, label, style):
+            super().__init__(label=label, style=style)
+            self.mode_key = mode_key
+
+        async def callback(self, interaction):
+            nonlocal mode
+            if interaction.user.id != ctx.author.id:
+                await interaction.response.send_message("Only the player who started Lucky Number can choose the mode.", ephemeral=True)
+                return
+            mode = self.mode_key
+            await ask_range(interaction)
 
     class RangeButton(discord.ui.Button):
         def __init__(self, max_number, multiplier):
@@ -6505,62 +6532,76 @@ async def lucky_number(ctx, amount: str):
 
         async def callback(self, interaction):
             if interaction.user.id != ctx.author.id:
-                await interaction.response.send_message("Use your own lucky number.", ephemeral=True)
+                await interaction.response.send_message("Only the player who started Lucky Number can choose the range.", ephemeral=True)
                 return
-            view.stop()
             for item in view.children:
                 item.disabled = True
+            drawn = random.randint(1, self.max_number)
             await interaction.response.edit_message(
-                content=f"{Q_LUCKY_NUMBER} Type your number from **1-{self.max_number}** in this channel.",
+                content=(
+                    f"{Q_LUCKY_NUMBER} **LUCKY NUMBER**\n"
+                    f"Range: **1-{self.max_number}** | Prize: **×{self.multiplier}**\n"
+                    f"{'Anyone in this channel can guess.' if mode == 'public' else 'Type your guess.'}\n"
+                    "You have **30 seconds**."
+                ),
                 view=view
             )
 
             def check(message):
-                return message.author.id == ctx.author.id and message.channel.id == ctx.channel.id
+                if message.author.bot or message.channel.id != ctx.channel.id:
+                    return False
+                if mode != "public" and message.author.id != ctx.author.id:
+                    return False
+                try:
+                    guess = int(message.content.strip())
+                except ValueError:
+                    return False
+                return 1 <= guess <= self.max_number
 
+            picked = None
+            guesser = None
+            deadline = time.time() + 30
             try:
-                message = await bot.wait_for("message", timeout=30, check=check)
+                while True:
+                    remaining = deadline - time.time()
+                    if remaining <= 0:
+                        raise asyncio.TimeoutError
+                    message = await bot.wait_for("message", timeout=remaining, check=check)
+                    guess = int(message.content.strip())
+                    picked = guess
+                    guesser = message.author
+                    if guess == drawn:
+                        break
+                    await ctx.send(f"{Q_DENIED} {user_mention(message.author.id)} guessed **{guess}**. Not it.", allowed_mentions=discord.AllowedMentions.none())
             except asyncio.TimeoutError:
-                await ctx.send(f"{Q_TIMER} Lucky Number timed out.")
-                return
-            try:
-                picked = int(message.content.strip())
-            except ValueError:
-                await ctx.send(f"{Q_DENIED} Pick a whole number from 1-{self.max_number}.")
-                return
-            if picked < 1 or picked > self.max_number:
-                await ctx.send(f"{Q_DENIED} Pick a number from 1-{self.max_number}.")
-                return
-            drawn = random.randint(1, self.max_number)
+                guesser = guesser or ctx.author
+
             won = picked == drawn
-            result = settle_gambling_result(ctx.author.id, "luckynumber", amount, self.multiplier, won, data=get_user(ctx.author.id))
-            details = f"{Q_LUCKY_NUMBER} Range: **1-{self.max_number}** | Picked: **{picked}** | Drawn: **{drawn}**"
+            latest = get_user(ctx.author.id)
+            result = settle_gambling_result(ctx.author.id, "luckynumber", amount, self.multiplier, won, data=latest)
+            details = (
+                f"{Q_LUCKY_NUMBER} Mode: **{'Public' if mode == 'public' else 'Solo'}** | Range: **1-{self.max_number}**\n"
+                f"Last Guess: **{picked if picked is not None else 'none'}** | Drawn: **{drawn}**\n"
+                f"Guesser: **{user_mention(guesser.id if guesser else ctx.author.id)}**"
+            )
             await send_new_game_result(ctx, "luckynumber", f"{Q_LUCKY_NUMBER} **LUCKY NUMBER**", amount, result, details, self.multiplier if won else None)
 
     class LuckyNumberView(discord.ui.View):
         def __init__(self):
             super().__init__(timeout=45)
-            for max_number, multiplier in LUCKY_NUMBER_OPTIONS.items():
-                self.add_item(RangeButton(max_number, multiplier))
+            self.add_item(ModeButton("solo", "Solo", discord.ButtonStyle.primary))
+            self.add_item(ModeButton("public", "Public Channel", discord.ButtonStyle.success))
 
     view = LuckyNumberView()
     await ctx.send(
-        f"{Q_LUCKY_NUMBER} **LUCKY NUMBER**\nChoose your range:\n"
-        "`1-10 = ×3`, `1-20 = ×5`, `1-50 = ×10`, `1-100 = ×20`",
+        f"{Q_LUCKY_NUMBER} **LUCKY NUMBER**\nWho can guess the number?",
         view=view
     )
 
-JACKPOT_SPIN_TABLE = [
-    ("Miss", 0, 70),
-    ("Small Hit", 2, 18),
-    ("Big Hit", 5, 8),
-    ("Mega Hit", 10, 3),
-    ("Jackpot", 50, 1),
-]
 JACKPOT_SYMBOLS = [
-    (Q_SLOT_STAR, "Star Hit", 2, 42),
-    (Q_SLOT_DIAMOND, "Diamond Hit", 5, 28),
-    (Q_SLOT_CROWN, "Crown Hit", 10, 20),
+    (Q_SLOT_STAR, "Star", 2, 42),
+    (Q_SLOT_DIAMOND, "Diamond", 5, 28),
+    (Q_SLOT_CROWN, "Crown", 10, 20),
     (Q_SLOT_JACKPOT, "Jackpot", 50, 10),
 ]
 
@@ -6569,74 +6610,109 @@ async def jackpot_spin(ctx, amount: str):
     data, amount = await prepare_gamble(ctx, amount, "jackpotspin")
     if data is None:
         return
-    reels = [None, None, None]
-    stop_count = 0
-    weights = [row[3] for row in JACKPOT_SYMBOLS]
+    target = None
+    pointer_index = random.randrange(len(JACKPOT_SYMBOLS))
+    spins_used = 0
+    max_spins = 3
 
-    def reel_line(spinning=True):
-        shown = []
-        for value in reels:
-            shown.append(value or (Q_JACKPOT_SPIN if spinning else Q_SLOTS))
-        return f"| {shown[0]} | {shown[1]} | {shown[2]} |"
+    def wheel_line():
+        parts = []
+        for index, (emoji, _, _, _) in enumerate(JACKPOT_SYMBOLS):
+            marker = Q_TARGET if index == pointer_index else Q_WHEEL_BLANK
+            parts.append(f"{marker}{emoji}")
+        return "  ".join(parts)
 
-    def evaluate_jackpot():
-        if reels[0] == reels[1] == reels[2]:
-            for emoji, label, multiplier, _ in JACKPOT_SYMBOLS:
-                if reels[0] == emoji:
-                    return label, multiplier
-        if reels.count(Q_SLOT_JACKPOT) == 2:
-            return "Two Jackpot Symbols", 2
-        return "Miss", 0
+    def target_text():
+        if target is None:
+            return "No target selected."
+        emoji, label, multiplier, _ = target
+        return f"Target: **{emoji} {label} ×{multiplier:g}**"
 
-    class StopReel(discord.ui.Button):
-        def __init__(self):
-            super().__init__(label="Stop Reel", style=discord.ButtonStyle.danger)
+    async def settle_jackpot(interaction):
+        nonlocal spins_used
+        for item in view.children:
+            item.disabled = True
+        landed = JACKPOT_SYMBOLS[pointer_index]
+        landed_emoji, landed_label, _, _ = landed
+        target_emoji, target_label, target_multiplier, _ = target
+        won = landed_emoji == target_emoji
+        await interaction.response.edit_message(
+            content=(
+                f"{Q_JACKPOT_SPIN} **JACKPOT SPIN**\n"
+                f"{wheel_line()}\n"
+                f"Landed: **{landed_emoji} {landed_label}**\n"
+                "Settling result..."
+            ),
+            view=view
+        )
+        latest = get_user(ctx.author.id)
+        result = settle_gambling_result(ctx.author.id, "jackpotspin", amount, target_multiplier, won, data=latest)
+        details = (
+            f"{Q_JACKPOT_SPIN} {target_text()}\n"
+            f"Landed: **{landed_emoji} {landed_label}** | Spins used: **{spins_used}/{max_spins}**"
+        )
+        await message.delete()
+        await send_new_game_result(ctx, "jackpotspin", f"{Q_JACKPOT_SPIN} **JACKPOT SPIN**", amount, result, details, target_multiplier if won else None)
+
+    class TargetButton(discord.ui.Button):
+        def __init__(self, symbol):
+            emoji, label, multiplier, _ = symbol
+            super().__init__(label=f"{label} ×{multiplier:g}", style=discord.ButtonStyle.primary)
+            self.symbol = symbol
 
         async def callback(self, interaction):
-            nonlocal stop_count
+            nonlocal target
             if interaction.user.id != ctx.author.id:
                 await interaction.response.send_message("Use your own jackpot spin.", ephemeral=True)
                 return
-            if stop_count >= 3:
-                await interaction.response.defer()
-                return
-            symbol, _, _, _ = random.choices(JACKPOT_SYMBOLS, weights=weights)[0]
-            reels[stop_count] = symbol
-            stop_count += 1
-            if stop_count < 3:
-                await interaction.response.edit_message(
-                    content=(
-                        f"{Q_JACKPOT_SPIN} **JACKPOT SPIN**\n"
-                        f"{reel_line()}\n"
-                        f"Stopped **{stop_count}/3** reels. Press again."
-                    ),
-                    view=view
-                )
-                return
-            for item in view.children:
-                item.disabled = True
+            target = self.symbol
+            view.clear_items()
+            view.add_item(SpinWheelButton())
             await interaction.response.edit_message(
-                content=f"{Q_JACKPOT_SPIN} **JACKPOT SPIN**\n{reel_line(False)}\nChecking payout...",
+                content=(
+                    f"{Q_JACKPOT_SPIN} **JACKPOT SPIN**\n"
+                    f"{target_text()}\n"
+                    f"{wheel_line()}\n"
+                    f"Press **Spin Wheel**. You get **{max_spins}** tries to land on your target."
+                ),
                 view=view
             )
-            await asyncio.sleep(0.8)
-            label, multiplier = evaluate_jackpot()
-            latest = get_user(ctx.author.id)
-            result = settle_gambling_result(ctx.author.id, "jackpotspin", amount, multiplier, multiplier > 0, data=latest)
-            details = f"{Q_JACKPOT_SPIN} Reels: {reel_line(False)}\nResult: **{label} ×{multiplier:g}**"
-            await message.delete()
-            await send_new_game_result(ctx, "jackpotspin", f"{Q_JACKPOT_SPIN} **JACKPOT SPIN**", amount, result, details, multiplier if multiplier > 0 else None)
+
+    class SpinWheelButton(discord.ui.Button):
+        def __init__(self):
+            super().__init__(label="Spin Wheel", style=discord.ButtonStyle.danger)
+
+        async def callback(self, interaction):
+            nonlocal pointer_index, spins_used
+            if interaction.user.id != ctx.author.id:
+                await interaction.response.send_message("Use your own jackpot spin.", ephemeral=True)
+                return
+            spins_used += 1
+            pointer_index = (pointer_index + random.randint(1, 7)) % len(JACKPOT_SYMBOLS)
+            landed_emoji = JACKPOT_SYMBOLS[pointer_index][0]
+            target_emoji = target[0]
+            if landed_emoji == target_emoji or spins_used >= max_spins:
+                await settle_jackpot(interaction)
+                return
+            await interaction.response.edit_message(
+                content=(
+                    f"{Q_JACKPOT_SPIN} **JACKPOT SPIN**\n"
+                    f"{target_text()}\n"
+                    f"{wheel_line()}\n"
+                    f"Miss. Tries left: **{max_spins - spins_used}**"
+                ),
+                view=view
+            )
 
     class JackpotView(discord.ui.View):
         def __init__(self):
             super().__init__(timeout=45)
-            self.add_item(StopReel())
+            for symbol in JACKPOT_SYMBOLS:
+                self.add_item(TargetButton(symbol))
 
     view = JackpotView()
     message = await ctx.send(
-        f"{Q_JACKPOT_SPIN} **JACKPOT SPIN**\n"
-        f"{reel_line()}\n"
-        "Press **Stop Reel** three times. Three matching symbols win.",
+        f"{Q_JACKPOT_SPIN} **JACKPOT SPIN**\nChoose your target symbol. Harder targets pay more.",
         view=view
     )
 
@@ -7208,14 +7284,14 @@ EXPLANATIONS = {
     "plinko": f"{Q_PLINKO} Choose a drop lane, then nudge the ball every row.",
     "plink": "Alias for `.plinko`. Choose a drop lane and watch the board.",
     "drop": "Alias for `.plinko`. Choose a drop lane and watch the board.",
-    "luckynumber": f"{Q_LUCKY_NUMBER} Pick a range and a number. Bigger ranges pay more.",
-    "ln": "Alias for `.luckynumber`. Pick a range and a number.",
-    "lucky": "Alias for `.luckynumber`. Pick a range and a number.",
-    "number": "Alias for `.luckynumber`. Pick a range and a number.",
-    "jackpotspin": f"{Q_JACKPOT_SPIN} Stop three reels yourself. Matching reels pay high.",
-    "jackpot": "Alias for `.jackpotspin`. Stop three reels yourself.",
-    "jspin": "Alias for `.jackpotspin`. Stop three reels yourself.",
-    "jps": "Alias for `.jackpotspin`. Stop three reels yourself.",
+    "luckynumber": f"{Q_LUCKY_NUMBER} Choose solo or public guessing, then choose the number range.",
+    "ln": "Alias for `.luckynumber`. Choose solo/public guessing and a range.",
+    "lucky": "Alias for `.luckynumber`. Choose solo/public guessing and a range.",
+    "number": "Alias for `.luckynumber`. Choose solo/public guessing and a range.",
+    "jackpotspin": f"{Q_JACKPOT_SPIN} Pick a target symbol, then spin up to 3 times to land on it.",
+    "jackpot": "Alias for `.jackpotspin`. Pick a target and spin the wheel.",
+    "jspin": "Alias for `.jackpotspin`. Pick a target and spin the wheel.",
+    "jps": "Alias for `.jackpotspin`. Pick a target and spin the wheel.",
     "gamestats": "Shows tracked game wins, losses, profit, and game badges.",
     "gstats": "Alias for `.gamestats`. Shows tracked game stats.",
     "gamestat": "Alias for `.gamestats`. Shows tracked game stats.",
@@ -7347,8 +7423,8 @@ DETAILED_EXPLANATIONS = {
     "diceduel": "Choose Steady, Normal, or Push, then press Roll Die twice yourself and make the dealer roll. Steady adds +1 with lower payout, Push subtracts -1 with higher payout, and Normal is classic. Higher total wins; ties refund.",
     "cases": "Three locked cases appear. Pick a case, then pick Safe, Clean, or Royal key. Safe can downgrade, Royal can upgrade, and Clean opens normally. Better case tiers are rarer. Wins can use Double or Nothing to replay the same game with the prize at risk.",
     "plinko": "Choose one of five drop lanes, then nudge left, let drop, or nudge right every row. Peg bounce still adds luck, but your row choices affect the final lane and multiplier. ×1 refunds; higher than ×1 wins.",
-    "luckynumber": "Choose a range, then type your number. Options: 1-10 pays ×3, 1-20 pays ×5, 1-50 pays ×10, and 1-100 pays ×20. Wins can use Double or Nothing to replay the same game with the prize at risk.",
-    "jackpotspin": f"Press Stop Reel three times. Three {Q_SLOT_STAR} pays ×2, three {Q_SLOT_DIAMOND} pays ×5, three {Q_SLOT_CROWN} pays ×10, and three {Q_SLOT_JACKPOT} pays ×50. Two jackpot symbols pay ×2. Wins can use Double or Nothing to replay the same game with the prize at risk.",
+    "luckynumber": "Choose Solo or Public Channel, then choose a range. Solo means only you can guess. Public means anyone in the channel can guess, but the stake and payout still belong to the player who started it. Options: 1-10 pays ×3, 1-20 pays ×5, 1-50 pays ×10, and 1-100 pays ×20.",
+    "jackpotspin": f"Choose a target symbol, then press Spin Wheel up to 3 times. Landing on {Q_SLOT_STAR} pays ×2, {Q_SLOT_DIAMOND} pays ×5, {Q_SLOT_CROWN} pays ×10, and {Q_SLOT_JACKPOT} pays ×50 if that was your target. Missing all 3 spins loses the bet.",
     "gamestats": "Shows tracked game stats for you or a mentioned user: total played, wins, profit, per-game records, and hard game badges. Example: `.gamestats` or `.gamestats @user`.",
     "ms": f"Choose 3x3, 4x4, or 5x5, then reveal tiles. Hidden tiles show as {Q_MS_HIDDEN}, safe gems show as {Q_XP}, bombs show as {Q_MINE}, and your cursor shows as {Q_MS_CURSOR}. 3x3 has 1 bomb, 4x4 has 3 bombs, and 5x5 has 5 bombs. Reveal every safe tile to win. The final multiplier starts at ×2.00 and each safe reveal adds +0.15, then the universal gambling streak bonus applies. Hitting a bomb or timing out loses the bet and resets the streak.",
     "minesweeper": f"Choose 3x3, 4x4, or 5x5, then reveal tiles. Hidden tiles show as {Q_MS_HIDDEN}, safe gems show as {Q_XP}, bombs show as {Q_MINE}, and your cursor shows as {Q_MS_CURSOR}. 3x3 has 1 bomb, 4x4 has 3 bombs, and 5x5 has 5 bombs. Reveal every safe tile to win. The final multiplier starts at ×2.00 and each safe reveal adds +0.15, then the universal gambling streak bonus applies. Hitting a bomb or timing out loses the bet and resets the streak.",
