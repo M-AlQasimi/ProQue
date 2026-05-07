@@ -79,7 +79,7 @@ Expected: logs use non-pinging mentions like `<@id>`, not plain usernames/nickna
 
 ### Custom Emojis
 
-- Run `.bal`, `.shop`, `.inventory`, `.lottery`, `.scratch 1000`, `.tower 1000`, `.vault 1000`, `.memory 1000`, `.slots 1000`, `.roulette 1000 red`, `.ms 1000`, `.wheel 1000`, `.poll Test question? one two`.
+- Run `.bal`, `.shop`, `.inventory`, `.lottery`, `.scratch 1000`, `.tower 1000`, `.vault 1000`, `.memory 1000`, `.cardladder 1000`, `.lockpick 1000`, `.slots 1000`, `.roulette 1000 red`, `.ms 1000`, `.wheel 1000`, `.poll Test question? one two`.
 
 Expected: no raw custom emoji markdown appears unless Discord cannot render that emoji.
 
@@ -261,6 +261,8 @@ Run:
 - `.tower 1000`
 - `.vault 1000`
 - `.memory 1000`
+- `.cardladder 1000`
+- `.lockpick 1000`
 - `.ms 1000`
 - `.wheel 1000`
 - `.give @normal 1000`
@@ -606,6 +608,8 @@ Run:
 - `.tower 1000`
 - `.vault 1000`
 - `.memory 1000`
+- `.cardladder 1000`
+- `.lockpick 1000`
 - `.ms 1000`
 - `.wheel 1000`
 - `.give @other_user 1000`

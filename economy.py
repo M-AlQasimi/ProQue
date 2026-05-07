@@ -123,6 +123,8 @@ Q_VAULT = "<:QVault:1501490432801247344>"
 Q_VAULT_DIAL = "<:QVaultDial:1501490434499940352>"
 Q_MEMORY = "<:QMemory:1501490610421629109>"
 Q_MEMORY_TILE = "<:QMemoryTile:1501490612510134272>"
+Q_CARD_LADDER = Q_CARDS
+Q_LOCKPICK = Q_LOCK
 SLOT_SYMBOL_PAYOUTS = [
     (Q_SLOT_STAR, 2),
     (Q_SLOT_DIAMOND, 3),
@@ -2594,7 +2596,7 @@ async def cooldowns(ctx):
     embed.add_field(name="Daily", value=claim_cooldown_text(data.get("last_daily"), 86400), inline=True)
     embed.add_field(name="Weekly", value=claim_cooldown_text(data.get("last_weekly"), 604800), inline=True)
     embed.add_field(name="Monthly", value=claim_cooldown_text(data.get("last_monthly"), 2592000), inline=True)
-    for command in ["cf", "roulette", "slots", "blackjack", "scratch", "tower", "vault", "memory", "ms", "wheel"]:
+    for command in ["cf", "roulette", "slots", "blackjack", "scratch", "tower", "vault", "memory", "cardladder", "lockpick", "ms", "wheel"]:
         embed.add_field(name=command, value=command_cooldown_text(ctx.author.id, command), inline=True)
     await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
@@ -5054,6 +5056,8 @@ async def vault(ctx, amount: str):
 MEMORY_SYMBOLS = [Q_SLOT_STAR, Q_SLOT_DIAMOND, Q_SLOT_CROWN, Q_SLOT_JACKPOT, Q_SCRATCH_MARK, Q_XP, Q_TICKET, Q_FORTUNE_VIAL]
 MEMORY_MULTIPLIER = 3
 MEMORY_MAX_MISTAKES = 6
+MEMORY_PICK_SECONDS = 7
+MEMORY_REVEAL_SECONDS = 0.75
 
 @commands.command(name="memory", aliases=["mem", "qmemory"])
 async def memory_game(ctx, amount: str):
@@ -5093,6 +5097,7 @@ async def memory_game(ctx, amount: str):
     mistakes = 0
     busy = False
     game_over = False
+    pick_timer_task = None
 
     def render(extra=None):
         rows = []
@@ -5108,6 +5113,53 @@ async def memory_game(ctx, amount: str):
             + "\n".join(rows)
         )
         return f"{text}\n{extra}" if extra else text
+
+    def shuffle_unsolved_tiles():
+        unsolved = [index for index, is_matched in enumerate(matched) if not is_matched]
+        values = [symbols[index] for index in unsolved]
+        random.shuffle(values)
+        for index, value in zip(unsolved, values):
+            symbols[index] = value
+
+    def cancel_pick_timer():
+        nonlocal pick_timer_task
+        if pick_timer_task and not pick_timer_task.done():
+            pick_timer_task.cancel()
+        pick_timer_task = None
+
+    async def pick_timer_loop():
+        nonlocal busy
+        try:
+            for remaining in range(MEMORY_PICK_SECONDS, 0, -1):
+                if game_over or busy or len(selected) != 1:
+                    return
+                await view.message.edit(
+                    content=render(f"{Q_TIMER_TICK} Pick another tile in **{remaining}s** or unsolved tiles shuffle."),
+                    view=view
+                )
+                await asyncio.sleep(1)
+            if game_over or busy or len(selected) != 1:
+                return
+            busy = True
+            selected.clear()
+            for index in range(len(revealed)):
+                if not matched[index]:
+                    revealed[index] = False
+            shuffle_unsolved_tiles()
+            busy = False
+            await view.message.edit(
+                content=render(f"{Q_TIMER} Too slow. Unsolved tiles shuffled."),
+                view=view
+            )
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            return
+
+    def start_pick_timer():
+        nonlocal pick_timer_task
+        cancel_pick_timer()
+        pick_timer_task = asyncio.create_task(pick_timer_loop())
 
     class MemoryTile(discord.ui.Button):
         def __init__(self, index):
@@ -5126,7 +5178,9 @@ async def memory_game(ctx, amount: str):
             selected.append(self.index)
             await interaction.response.edit_message(content=render(), view=view)
             if len(selected) < 2:
+                start_pick_timer()
                 return
+            cancel_pick_timer()
             busy = True
             first, second = selected
             selected.clear()
@@ -5136,6 +5190,7 @@ async def memory_game(ctx, amount: str):
                 busy = False
                 if all(matched):
                     game_over = True
+                    cancel_pick_timer()
                     try:
                         latest = get_user(user_id)
                         new_streak = next_gambling_streak(latest)
@@ -5162,12 +5217,13 @@ async def memory_game(ctx, amount: str):
                 return
 
             mistakes += 1
-            await asyncio.sleep(1.0)
+            await asyncio.sleep(MEMORY_REVEAL_SECONDS)
             revealed[first] = False
             revealed[second] = False
             busy = False
             if mistakes >= MEMORY_MAX_MISTAKES:
                 game_over = True
+                cancel_pick_timer()
                 try:
                     latest = get_user(user_id)
                     new_balance = max(0, latest["balance"] - amount)
@@ -5190,6 +5246,7 @@ async def memory_game(ctx, amount: str):
             if game_over:
                 return
             game_over = True
+            cancel_pick_timer()
             self.clear_items()
             try:
                 latest = get_user(user_id)
@@ -5200,6 +5257,393 @@ async def memory_game(ctx, amount: str):
                 pass
 
     view = MemoryView()
+    view.message = await ctx.send(render(), view=view)
+
+
+# =====================
+# CARD LADDER
+# =====================
+CARD_LADDER_MULTIPLIERS = [1.25, 1.65, 2.20, 3.10, 4.50, 6.50]
+CARD_SUITS = [Q_CARD_SPADE, Q_CARD_HEART, Q_CARD_DIAMOND, Q_CARD_CLUB]
+CARD_RANK_LABELS = {
+    2: "2", 3: "3", 4: "4", 5: "5", 6: "6", 7: "7", 8: "8", 9: "9", 10: "10",
+    11: "J", 12: "Q", 13: "K", 14: "A",
+}
+
+def random_ladder_card():
+    return random.randint(2, 14), random.choice(CARD_SUITS)
+
+def format_ladder_card(card):
+    rank, suit = card
+    return f"{suit} **{CARD_RANK_LABELS[rank]}**"
+
+@commands.command(name="cardladder", aliases=["ladder", "cards", "cladder"])
+async def card_ladder(ctx, amount: str):
+    if not await ensure_db_ready(ctx):
+        return
+
+    cd = check_cooldown(ctx.author.id, "cardladder")
+    if cd > 0:
+        await send_gambling_cooldown(ctx, cd)
+        return
+
+    user_id = ctx.author.id
+    try:
+        data = get_user(user_id)
+    except Exception:
+        await send_error(ctx, "Database unavailable. Try again shortly.")
+        return
+
+    raw_amount = amount
+    parsed = parse_amount(amount, ctx.author.id, ctx.guild, data["balance"])
+    if parsed is None:
+        await ctx.send(f"{Q_DENIED} Use `.cardladder all` or `.cardladder <amount>` (max {MAX_BET:,} {CURRENCY_EMOJI})")
+        return
+    amount = parsed
+    if amount <= 0:
+        await send_nonpositive_amount_error(ctx, raw_amount)
+        return
+    if amount > data["balance"] and not has_economy_owner_power(ctx.author.id, ctx.guild):
+        await ctx.send(f"{Q_DENIED} You only have {format_balance(data['balance'])}")
+        return
+
+    current_card = random_ladder_card()
+    rung = 0
+    game_over = False
+
+    def render(extra=None):
+        current_mult = CARD_LADDER_MULTIPLIERS[rung - 1] if rung > 0 else 0
+        next_mult = CARD_LADDER_MULTIPLIERS[rung] if rung < len(CARD_LADDER_MULTIPLIERS) else current_mult
+        lines = [
+            f"{Q_CARD_LADDER} **CARD LADDER**",
+            "─────────────────",
+            f"Bet: **{format_balance(amount)}**",
+            f"Current Card: {format_ladder_card(current_card)}",
+            f"Rung: **{rung}/{len(CARD_LADDER_MULTIPLIERS)}**",
+            f"Cash Out: **×{current_mult:.2f}**" if rung > 0 else "Cash Out: **locked**",
+            f"Next Correct Pick: **×{next_mult:.2f}**",
+        ]
+        if extra:
+            lines.append(extra)
+        return "\n".join(lines)
+
+    async def finish_loss(interaction, next_card, label):
+        nonlocal game_over, current_card
+        game_over = True
+        current_card = next_card
+        try:
+            latest = get_user(user_id)
+            new_balance = max(0, latest["balance"] - amount)
+            update_user(user_id, balance=new_balance, gamble_streak=0, total_lost=latest["total_lost"] + amount)
+        except Exception:
+            await interaction.message.edit(content=render(f"{Q_DENIED} Database unavailable."), view=None)
+            return
+        view.clear_items()
+        await interaction.message.edit(
+            content=render(
+                f">>> {Q_DENIED} **Wrong call.** You picked **{label}**.\n"
+                f"Lost: **{format_balance(amount)}**\n"
+                f"New Balance: **{format_balance(new_balance)}**"
+            ),
+            view=view
+        )
+
+    async def cash_out(interaction, label):
+        nonlocal game_over
+        if rung <= 0:
+            await interaction.response.send_message("Win at least one card before cashing out.", ephemeral=True)
+            return
+        game_over = True
+        base_multiplier = CARD_LADDER_MULTIPLIERS[rung - 1]
+        if not interaction.response.is_done():
+            await interaction.response.defer()
+        try:
+            latest = get_user(user_id)
+            new_streak = next_gambling_streak(latest)
+            streak_mult = payout_multiplier(latest, new_streak)
+            winnings = int(amount * base_multiplier * streak_mult)
+            new_balance = latest["balance"] + winnings - amount
+            update_user(user_id, balance=new_balance, gamble_streak=new_streak, total_won=latest["total_won"] + winnings - amount)
+        except Exception:
+            await interaction.edit_original_response(content=render(f"{Q_DENIED} Database unavailable."), view=None)
+            return
+        view.clear_items()
+        await interaction.edit_original_response(
+            content=render(
+                f">>> {Q_SUCCESS} **{label}**\n"
+                f"Multiplier: **×{base_multiplier * streak_mult:.3f}** (base ×{base_multiplier:.2f}, streak ×{streak_mult:.3f})"
+                f"{gambling_streak_text(latest, new_streak)}\n"
+                f"Prize: **{format_balance(winnings)}**\n"
+                f"New Balance: **{format_balance(new_balance)}**"
+            ),
+            view=view
+        )
+
+    class LadderCall(discord.ui.Button):
+        def __init__(self, label, higher):
+            super().__init__(label=label, style=discord.ButtonStyle.primary)
+            self.higher = higher
+
+        async def callback(self, interaction):
+            nonlocal current_card, rung, game_over
+            if interaction.user.id != user_id:
+                await interaction.response.send_message("Use your own card ladder.", ephemeral=True)
+                return
+            if game_over:
+                await interaction.response.defer()
+                return
+            await interaction.response.defer()
+            current_rank = current_card[0]
+            winning_ranks = [
+                rank for rank in range(2, 15)
+                if (rank > current_rank if self.higher else rank < current_rank)
+            ]
+            if winning_ranks and random.random() < active_luck_bonus(data):
+                next_card = (random.choice(winning_ranks), random.choice(CARD_SUITS))
+            else:
+                next_card = random_ladder_card()
+            next_rank = next_card[0]
+            correct = next_rank > current_rank if self.higher else next_rank < current_rank
+            label = "Higher" if self.higher else "Lower"
+            if not correct:
+                await finish_loss(interaction, next_card, label)
+                return
+            current_card = next_card
+            rung += 1
+            if rung >= len(CARD_LADDER_MULTIPLIERS):
+                await cash_out(interaction, "Ladder cleared!")
+                return
+            await interaction.message.edit(content=render(f"{Q_SUCCESS} **{label}** was right."), view=view)
+
+    class LadderCashOut(discord.ui.Button):
+        def __init__(self):
+            super().__init__(label="Cash Out", style=discord.ButtonStyle.success)
+
+        async def callback(self, interaction):
+            if interaction.user.id != user_id:
+                await interaction.response.send_message("Use your own card ladder.", ephemeral=True)
+                return
+            await cash_out(interaction, "Cashed out.")
+
+    class LadderView(discord.ui.View):
+        def __init__(self):
+            super().__init__(timeout=75)
+            self.add_item(LadderCall("Higher", True))
+            self.add_item(LadderCall("Lower", False))
+            self.add_item(LadderCashOut())
+
+        async def on_timeout(self):
+            nonlocal game_over
+            if game_over:
+                return
+            game_over = True
+            self.clear_items()
+            try:
+                latest = get_user(user_id)
+                new_balance = max(0, latest["balance"] - amount)
+                update_user(user_id, balance=new_balance, gamble_streak=0, total_lost=latest["total_lost"] + amount)
+                await self.message.edit(content=render(f"{Q_TIMER} Timed out. Lost **{format_balance(amount)}**\nNew Balance: **{format_balance(new_balance)}**"), view=self)
+            except Exception:
+                pass
+
+    view = LadderView()
+    view.message = await ctx.send(render(), view=view)
+
+
+# =====================
+# LOCKPICK
+# =====================
+LOCKPICK_PINS = 3
+LOCKPICK_HEIGHTS = 5
+LOCKPICK_TRIES = 7
+LOCKPICK_MULTIPLIER = 4.5
+
+@commands.command(name="lockpick", aliases=["lp", "picklock"])
+async def lockpick(ctx, amount: str):
+    if not await ensure_db_ready(ctx):
+        return
+
+    cd = check_cooldown(ctx.author.id, "lockpick")
+    if cd > 0:
+        await send_gambling_cooldown(ctx, cd)
+        return
+
+    user_id = ctx.author.id
+    try:
+        data = get_user(user_id)
+    except Exception:
+        await send_error(ctx, "Database unavailable. Try again shortly.")
+        return
+
+    raw_amount = amount
+    parsed = parse_amount(amount, ctx.author.id, ctx.guild, data["balance"])
+    if parsed is None:
+        await ctx.send(f"{Q_DENIED} Use `.lockpick all` or `.lockpick <amount>` (max {MAX_BET:,} {CURRENCY_EMOJI})")
+        return
+    amount = parsed
+    if amount <= 0:
+        await send_nonpositive_amount_error(ctx, raw_amount)
+        return
+    if amount > data["balance"] and not has_economy_owner_power(ctx.author.id, ctx.guild):
+        await ctx.send(f"{Q_DENIED} You only have {format_balance(data['balance'])}")
+        return
+
+    target = [random.randint(1, LOCKPICK_HEIGHTS) for _ in range(LOCKPICK_PINS)]
+    pins = [3] * LOCKPICK_PINS
+    tries = 0
+    game_over = False
+    last_hint = "Adjust the pins, then test the lock."
+
+    def pin_bar(value):
+        return "▰" * value + "▱" * (LOCKPICK_HEIGHTS - value)
+
+    def render(extra=None):
+        pin_lines = [f"Pin {index + 1}: `{pin_bar(value)}` **{value}/{LOCKPICK_HEIGHTS}**" for index, value in enumerate(pins)]
+        lines = [
+            f"{Q_LOCKPICK} **LOCKPICK**",
+            "─────────────────",
+            f"Bet: **{format_balance(amount)}** | Prize: **×{LOCKPICK_MULTIPLIER:g}**",
+            f"Tests: **{tries}/{LOCKPICK_TRIES}**",
+            *pin_lines,
+            f"> {last_hint}",
+        ]
+        if extra:
+            lines.append(extra)
+        return "\n".join(lines)
+
+    async def finish_loss(interaction, reason):
+        nonlocal game_over
+        game_over = True
+        try:
+            latest = get_user(user_id)
+            new_balance = max(0, latest["balance"] - amount)
+            update_user(user_id, balance=new_balance, gamble_streak=0, total_lost=latest["total_lost"] + amount)
+        except Exception:
+            await interaction.message.edit(content=render(f"{Q_DENIED} Database unavailable."), view=None)
+            return
+        view.clear_items()
+        await interaction.message.edit(
+            content=render(
+                f">>> {Q_DENIED} **{reason}**\n"
+                f"Code was: **{'-'.join(map(str, target))}**\n"
+                f"Lost: **{format_balance(amount)}**\n"
+                f"New Balance: **{format_balance(new_balance)}**"
+            ),
+            view=view
+        )
+
+    async def finish_win(interaction):
+        nonlocal game_over
+        game_over = True
+        try:
+            latest = get_user(user_id)
+            new_streak = next_gambling_streak(latest)
+            streak_mult = payout_multiplier(latest, new_streak)
+            winnings = int(amount * LOCKPICK_MULTIPLIER * streak_mult)
+            new_balance = latest["balance"] + winnings - amount
+            update_user(user_id, balance=new_balance, gamble_streak=new_streak, total_won=latest["total_won"] + winnings - amount)
+        except Exception:
+            await interaction.message.edit(content=render(f"{Q_DENIED} Database unavailable."), view=None)
+            return
+        view.clear_items()
+        await interaction.message.edit(
+            content=render(
+                f">>> {Q_SUCCESS} **Lock opened!**\n"
+                f"Multiplier: **×{LOCKPICK_MULTIPLIER * streak_mult:.3f}** (base ×{LOCKPICK_MULTIPLIER:g}, streak ×{streak_mult:.3f})"
+                f"{gambling_streak_text(latest, new_streak)}\n"
+                f"Prize: **{format_balance(winnings)}**\n"
+                f"New Balance: **{format_balance(new_balance)}**"
+            ),
+            view=view
+        )
+
+    class PinButton(discord.ui.Button):
+        def __init__(self, index):
+            super().__init__(label=f"Pin {index + 1}", style=discord.ButtonStyle.secondary)
+            self.index = index
+
+        async def callback(self, interaction):
+            nonlocal last_hint
+            if interaction.user.id != user_id:
+                await interaction.response.send_message("Use your own lockpick.", ephemeral=True)
+                return
+            if game_over:
+                await interaction.response.defer()
+                return
+            pins[self.index] = 1 if pins[self.index] >= LOCKPICK_HEIGHTS else pins[self.index] + 1
+            last_hint = f"Pin {self.index + 1} raised."
+            await interaction.response.edit_message(content=render(), view=view)
+
+    class TestLock(discord.ui.Button):
+        def __init__(self):
+            super().__init__(label="Test", style=discord.ButtonStyle.success)
+
+        async def callback(self, interaction):
+            nonlocal tries, last_hint
+            if interaction.user.id != user_id:
+                await interaction.response.send_message("Use your own lockpick.", ephemeral=True)
+                return
+            if game_over:
+                await interaction.response.defer()
+                return
+            await interaction.response.defer()
+            tries += 1
+            if pins == target:
+                await finish_win(interaction)
+                return
+            hints = []
+            for index, (current, goal) in enumerate(zip(pins, target), 1):
+                if current == goal:
+                    hints.append(f"P{index} set")
+                elif current < goal:
+                    hints.append(f"P{index} low")
+                else:
+                    hints.append(f"P{index} high")
+            last_hint = " | ".join(hints)
+            if tries >= LOCKPICK_TRIES:
+                await finish_loss(interaction, "The lock jammed.")
+                return
+            await interaction.message.edit(content=render(), view=view)
+
+    class ResetPins(discord.ui.Button):
+        def __init__(self):
+            super().__init__(label="Reset", style=discord.ButtonStyle.danger)
+
+        async def callback(self, interaction):
+            nonlocal pins, last_hint
+            if interaction.user.id != user_id:
+                await interaction.response.send_message("Use your own lockpick.", ephemeral=True)
+                return
+            if game_over:
+                await interaction.response.defer()
+                return
+            pins = [1] * LOCKPICK_PINS
+            last_hint = "Pins reset to 1."
+            await interaction.response.edit_message(content=render(), view=view)
+
+    class LockpickView(discord.ui.View):
+        def __init__(self):
+            super().__init__(timeout=120)
+            for index in range(LOCKPICK_PINS):
+                self.add_item(PinButton(index))
+            self.add_item(TestLock())
+            self.add_item(ResetPins())
+
+        async def on_timeout(self):
+            nonlocal game_over
+            if game_over:
+                return
+            game_over = True
+            self.clear_items()
+            try:
+                latest = get_user(user_id)
+                new_balance = max(0, latest["balance"] - amount)
+                update_user(user_id, balance=new_balance, gamble_streak=0, total_lost=latest["total_lost"] + amount)
+                await self.message.edit(content=render(f">>> {Q_TIMER} **Timed out.**\nLost: **{format_balance(amount)}**\nNew Balance: **{format_balance(new_balance)}**"), view=self)
+            except Exception:
+                pass
+
+    view = LockpickView()
     view.message = await ctx.send(render(), view=view)
 
 
@@ -5665,6 +6109,13 @@ EXPLANATIONS = {
     "vault": f"{Q_VAULT} Guess a 3-digit code with exact/close hints before your tries run out.",
     "memory": f"{Q_MEMORY} Match all hidden pairs before too many mistakes or timeout.",
     "mem": "Alias for `.memory`. Match all hidden pairs before too many mistakes or timeout.",
+    "cardladder": f"{Q_CARD_LADDER} Higher/lower card ladder. Guess the next card direction and cash out before missing.",
+    "ladder": "Alias for `.cardladder`. Guess higher/lower and cash out before missing.",
+    "cards": "Alias for `.cardladder`. Guess higher/lower and cash out before missing.",
+    "cladder": "Alias for `.cardladder`. Guess higher/lower and cash out before missing.",
+    "lockpick": f"{Q_LOCKPICK} Adjust lock pins, use high/low hints, and open the lock before your tests run out.",
+    "lp": "Alias for `.lockpick`. Adjust lock pins and open the lock before your tests run out.",
+    "picklock": "Alias for `.lockpick`. Adjust lock pins and open the lock before your tests run out.",
     "ms": f"Pick a grid size, reveal safe tiles {Q_XP}, avoid bombs {Q_MINE}.",
     "minesweeper": f"Pick a grid size, reveal safe tiles {Q_XP}, avoid bombs {Q_MINE}.",
     "minesweepeer": f"Pick a grid size, reveal safe tiles {Q_XP}, avoid bombs {Q_MINE}.",
@@ -5779,8 +6230,15 @@ DETAILED_EXPLANATIONS = {
     "tower": f"Choose one of 3 doors per floor. Every floor has 2 trapped doors and 1 safe door. Safe floors raise the cash-out multiplier through {', '.join(f'×{m:.2f}' for m in TOWER_MULTIPLIERS)}. Cash out anytime after one safe door, or risk climbing higher. Wins use the universal gambling streak bonus; traps and timeouts reset it.",
     "towers": "Alias for `.tower`. Climb safe doors and cash out before hitting a trap.",
     "vault": f"Guess a secret 3-digit code with no repeated digits. Each guess tells you exact digits and close digits. Opening the vault within {VAULT_GUESSES} tries pays ×{VAULT_MULTIPLIER} before the universal gambling streak bonus. Running out of tries resets the streak.",
-    "memory": f"Flip a 4x4 board and match 8 pairs. Matching every pair before {MEMORY_MAX_MISTAKES} mistakes or timeout pays ×{MEMORY_MULTIPLIER} before the universal gambling streak bonus. Too many mistakes or timeout resets the streak.",
+    "memory": f"Flip a 4x4 board and match 8 pairs. After opening one tile, you have {MEMORY_PICK_SECONDS} seconds to pick the second tile or all unsolved tiles shuffle. Wrong pairs show briefly for {MEMORY_REVEAL_SECONDS:g}s. Matching every pair before {MEMORY_MAX_MISTAKES} mistakes or timeout pays ×{MEMORY_MULTIPLIER} before the universal gambling streak bonus. Too many mistakes or timeout resets the streak.",
     "mem": "Alias for `.memory`. Match all hidden pairs before too many mistakes or timeout.",
+    "cardladder": f"You start with one card, then choose Higher or Lower for the next card. Ties count as misses. Correct calls climb the ladder through {', '.join(f'×{m:.2f}' for m in CARD_LADDER_MULTIPLIERS)}. Cash out after any correct call, or clear the ladder for the top multiplier. Wins use the universal gambling streak bonus; wrong calls and timeouts reset it.",
+    "ladder": "Alias for `.cardladder`. Guess higher/lower and cash out before missing.",
+    "cards": "Alias for `.cardladder`. Guess higher/lower and cash out before missing.",
+    "cladder": "Alias for `.cardladder`. Guess higher/lower and cash out before missing.",
+    "lockpick": f"Set {LOCKPICK_PINS} lock pins from 1-{LOCKPICK_HEIGHTS}. Press each pin to raise it, Test to spend one try, and use the high/low/set hints to solve the lock. Opening it within {LOCKPICK_TRIES} tests pays ×{LOCKPICK_MULTIPLIER:g} before the universal gambling streak bonus. Running out of tests or timing out resets the streak.",
+    "lp": "Alias for `.lockpick`. Adjust lock pins and open the lock before your tests run out.",
+    "picklock": "Alias for `.lockpick`. Adjust lock pins and open the lock before your tests run out.",
     "ms": f"Choose 3x3, 4x4, or 5x5, then reveal tiles. Hidden tiles show as {Q_MS_HIDDEN}, safe gems show as {Q_XP}, bombs show as {Q_MINE}, and your cursor shows as {Q_MS_CURSOR}. 3x3 has 1 bomb, 4x4 has 3 bombs, and 5x5 has 5 bombs. Reveal every safe tile to win. The final multiplier starts at ×2.00 and each safe reveal adds +0.15, then the universal gambling streak bonus applies. Hitting a bomb or timing out loses the bet and resets the streak.",
     "minesweeper": f"Choose 3x3, 4x4, or 5x5, then reveal tiles. Hidden tiles show as {Q_MS_HIDDEN}, safe gems show as {Q_XP}, bombs show as {Q_MINE}, and your cursor shows as {Q_MS_CURSOR}. 3x3 has 1 bomb, 4x4 has 3 bombs, and 5x5 has 5 bombs. Reveal every safe tile to win. The final multiplier starts at ×2.00 and each safe reveal adds +0.15, then the universal gambling streak bonus applies. Hitting a bomb or timing out loses the bet and resets the streak.",
     "minesweepeer": f"Choose 3x3, 4x4, or 5x5, then reveal tiles. Hidden tiles show as {Q_MS_HIDDEN}, safe gems show as {Q_XP}, bombs show as {Q_MINE}, and your cursor shows as {Q_MS_CURSOR}. 3x3 has 1 bomb, 4x4 has 3 bombs, and 5x5 has 5 bombs. Reveal every safe tile to win. The final multiplier starts at ×2.00 and each safe reveal adds +0.15, then the universal gambling streak bonus applies. Hitting a bomb or timing out loses the bet and resets the streak.",
@@ -5827,7 +6285,7 @@ ECONHELP_COMMANDS = [
     ("Core", ["bal", "profile", "inventory", "quests", "shop", "cooldowns", "transactions", "lb", "qstats"]),
     ("Claims", ["daily", "weekly", "monthly"]),
     ("Lottery", ["lottery", "buytick", "lotterystats", "editlottery", "stoplottery"]),
-    ("Gambling", ["cf", "roulette", "slots", "blackjack", "scratch", "tower", "vault", "memory", "ms", "wheel"]),
+    ("Gambling", ["cf", "roulette", "slots", "blackjack", "scratch", "tower", "vault", "memory", "cardladder", "lockpick", "ms", "wheel"]),
     ("Transfers", ["give"]),
     ("Help", ["econhelp", "explain"]),
 ]
@@ -5944,7 +6402,7 @@ async def setup(bot_ref, log_callback=None):
     economy_commands = [
         bal, profile, inventory, quests, shop, cooldowns, transactions, lottery, editlottery, stoplottery, lotterystats, buytick,
         daily, weekly, monthly, gamble, roulette, slots, blackjack,
-        scratch, tower, vault, memory_game, minesweeper, wheel, give, lb, qstats, add, remove, addtick, settick, setquesos, econhelp, explain
+        scratch, tower, vault, memory_game, card_ladder, lockpick, minesweeper, wheel, give, lb, qstats, add, remove, addtick, settick, setquesos, econhelp, explain
     ]
     for command in economy_commands:
         if bot.get_command(command.name):

@@ -979,7 +979,7 @@ async def on_ready():
         economy_command_names = [
             "bal", "profile", "inventory", "quests", "shop", "cooldowns", "transactions", "lottery", "editlottery", "stoplottery", "lotterystats", "buytick",
             "daily", "weekly", "monthly", "cf", "roulette", "slots",
-            "blackjack", "scratch", "tower", "vault", "memory", "ms", "wheel", "give", "lb",
+            "blackjack", "scratch", "tower", "vault", "memory", "cardladder", "lockpick", "ms", "wheel", "give", "lb",
             "add", "remove", "addtick", "settick", "setquesos", "econhelp", "explain"
         ]
         loaded_economy_commands = [name for name in economy_command_names if bot.get_command(name)]
@@ -1910,6 +1910,128 @@ async def award_chat_xp_background(message):
     except Exception as e:
         print(f"Level-up message skipped for {message.author.id}: {type(e).__name__} - {e}")
 
+COMMAND_EXAMPLE_OVERRIDES = {
+    "add": ".add @user 1000",
+    "addrole": ".addrole @user @role",
+    "addtick": ".addtick @user 5",
+    "alarm": ".alarm 1h reminder",
+    "analyse": ".analyse while replying to an image",
+    "analyze": ".analyze while replying to an image",
+    "ban": ".ban @user reason",
+    "blackjack": ".blackjack 1000",
+    "block": ".block @user",
+    "buytick": ".buytick 3",
+    "c4": ".c4 @user 1000",
+    "cardladder": ".cardladder 1000",
+    "cf": ".cf 1000 h",
+    "chess": ".chess @user 1000",
+    "define": ".define example",
+    "deleterole": ".deleterole @role",
+    "disable": ".disable command",
+    "editactivity": ".editactivity channel #activity",
+    "editlottery": ".editlottery duration 12h",
+    "enable": ".enable command",
+    "find": ".find 885548126365171824",
+    "fsleep": ".fsleep @user 1h",
+    "give": ".give @user 1000",
+    "giveaway": ".giveaway 10m prize",
+    "kick": ".kick @user reason",
+    "lockpick": ".lockpick 1000",
+    "memory": ".memory 1000",
+    "move": ".move e2e4",
+    "ms": ".ms 1000",
+    "poll": ".poll Best color? | Blue | Red | 10m",
+    "prefix": ".prefix !",
+    "preifx": ".preifx !",
+    "purge": ".purge 20",
+    "remove": ".remove @user 1000",
+    "removerole": ".removerole @user @role",
+    "reply": ".reply <message id/link> message",
+    "roulette": ".roulette 1000 red",
+    "rpurge": ".rpurge 20",
+    "rshut": ".rshut @user",
+    "scratch": ".scratch 1000",
+    "send": ".send #channel message",
+    "setbday": ".setbday 25/12",
+    "setbdaychannel": ".setbdaychannel #birthdays",
+    "setnick": ".setnick @user new nickname",
+    "setprefix": ".setprefix !",
+    "setquesos": ".setquesos @user 1m",
+    "settick": ".settick @user 10",
+    "shut": ".shut @user",
+    "slots": ".slots 1000",
+    "steal": ".steal <:emoji:123456789>",
+    "summon": ".summon @user",
+    "summon2": ".summon2 @user",
+    "timer": ".timer 10m study",
+    "tower": ".tower 1000",
+    "translate": ".translate hello to Italian",
+    "ttt": ".ttt @user 1000",
+    "unban": ".unban 885548126365171824",
+    "unblock": ".unblock @user",
+    "unmute": ".unmute @user",
+    "unrshut": ".unrshut @user",
+    "unshut": ".unshut @user",
+    "vault": ".vault 1000",
+    "wake": ".wake @user",
+    "wheel": ".wheel 1000",
+}
+
+ARGUMENT_HINTS = {
+    "amount": "Use a number like `1000`, `4k`, `1.5m`, or `all` where allowed.",
+    "member": "Mention a member or paste their user ID.",
+    "user": "Mention a user or paste their user ID.",
+    "target": "Mention the target or paste their ID.",
+    "role": "Mention a role or paste its ID.",
+    "channel": "Mention a channel like `#general` or paste its ID.",
+    "time": "Use time like `30s`, `10m`, `2h`, or `1d`.",
+    "duration": "Use time like `30s`, `10m`, `2h`, or `1d`.",
+    "message": "Type the message text after the command.",
+    "reason": "Type the reason after the member.",
+    "choice": "Use one of the choices shown in the command example.",
+}
+
+def command_usage_example(ctx):
+    prefix = getattr(ctx, "prefix", prefix_for_guild(ctx.guild))
+    command = ctx.command
+    if not command:
+        return f"{prefix}help"
+    example = COMMAND_EXAMPLE_OVERRIDES.get(command.name)
+    if not example:
+        for alias in command.aliases:
+            example = COMMAND_EXAMPLE_OVERRIDES.get(alias)
+            if example:
+                break
+    if example:
+        return example.replace(".", prefix, 1)
+    usage = f"{prefix}{command.qualified_name}"
+    if command.signature:
+        usage += f" {command.signature}"
+    return usage
+
+def command_argument_hint(error):
+    param_name = getattr(getattr(error, "param", None), "name", "")
+    if param_name in ARGUMENT_HINTS:
+        return ARGUMENT_HINTS[param_name]
+    if isinstance(error, (commands.MemberNotFound, commands.UserNotFound)):
+        return "Mention them or paste their user ID."
+    if isinstance(error, commands.ChannelNotFound):
+        return "Mention the channel like `#channel` or paste its ID."
+    if isinstance(error, commands.RoleNotFound):
+        return "Mention the role like `@role` or paste its ID."
+    return None
+
+async def send_command_usage_correction(ctx, error=None):
+    usage = command_usage_example(ctx)
+    hint = command_argument_hint(error)
+    lines = [f"Type: `{usage}`"]
+    if hint:
+        lines.append(hint)
+    if ctx.command:
+        prefix = getattr(ctx, "prefix", prefix_for_guild(ctx.guild))
+        lines.append(f"More help: `{prefix}help {ctx.command.qualified_name}` or `{prefix}explain {ctx.command.qualified_name}`")
+    await ctx.send("\n".join(lines), allowed_mentions=discord.AllowedMentions.none())
+
 @bot.event
 async def on_message(message):
     if message.author.bot:
@@ -2127,30 +2249,23 @@ async def on_command_error(ctx, error):
 
     elif isinstance(error, commands.MissingRequiredArgument):
         print(f"Command missing argument: {ctx.command} for {ctx.author} ({ctx.author.id}) - {error}")
-        prefix = getattr(ctx, "prefix", prefix_for_guild(ctx.guild))
-        usage = f"{prefix}{ctx.command.qualified_name}"
-        if ctx.command.signature:
-            usage += f" {ctx.command.signature}"
-        await ctx.send(
-            f"Missing `{error.param.name}`.\nUse: `{usage}`\nTry `{prefix}help {ctx.command.qualified_name}` or `{prefix}explain {ctx.command.qualified_name}`."
-        )
+        await send_command_usage_correction(ctx, error)
 
     elif isinstance(error, commands.MemberNotFound):
-        await ctx.send("I couldn't find that member. Mention them or paste their user ID.")
+        await send_command_usage_correction(ctx, error)
 
     elif isinstance(error, commands.UserNotFound):
-        await ctx.send("I couldn't find that user. Mention them or paste their user ID.")
+        await send_command_usage_correction(ctx, error)
 
     elif isinstance(error, commands.ChannelNotFound):
-        await ctx.send("I couldn't find that channel. Mention it like `#channel` or paste its ID.")
+        await send_command_usage_correction(ctx, error)
 
     elif isinstance(error, commands.RoleNotFound):
-        await ctx.send("I couldn't find that role. Mention it like `@role` or paste its ID.")
+        await send_command_usage_correction(ctx, error)
 
     elif isinstance(error, commands.BadArgument):
         print(f"Command bad argument: {ctx.command} for {ctx.author} ({ctx.author.id}) - {error}")
-        prefix = getattr(ctx, "prefix", prefix_for_guild(ctx.guild))
-        await ctx.send(f"Invalid input. Try `{prefix}help {ctx.command.qualified_name}` or `{prefix}explain {ctx.command.qualified_name}`.")
+        await send_command_usage_correction(ctx, error)
 
     else:
         print(f"Unexpected error in {ctx.command}: {type(error).__name__} - {error}")
@@ -2162,7 +2277,7 @@ async def on_command_error(ctx, error):
 HELP_CATEGORIES = {
     "Quewo": [
         "bal", "profile", "inventory", "quests", "shop", "cooldowns", "transactions", "lottery", "lotterystats", "buytick",
-        "daily", "weekly", "monthly", "cf", "roulette", "slots", "blackjack", "scratch", "tower", "vault", "memory", "ms", "wheel",
+        "daily", "weekly", "monthly", "cf", "roulette", "slots", "blackjack", "scratch", "tower", "vault", "memory", "cardladder", "lockpick", "ms", "wheel",
         "give", "lb", "qstats", "econhelp", "explain",
     ],
     "Games": ["games", "ttt", "c4", "chess", "move", "resign", "q", "picker"],
@@ -2394,6 +2509,8 @@ GAME_MENU = [
     ("Tower", "`.tower <amount>`", "Risk climbing floors or cash out."),
     ("Vault", "`.vault <amount>`", "Think through code hints before tries run out."),
     ("Memory", "`.memory <amount>`", "Match pairs before too many mistakes."),
+    ("Card Ladder", "`.cardladder <amount>`", "Higher/lower card climb with cash-out."),
+    ("Lockpick", "`.lockpick <amount>`", "Set pins using high/low hints before tries run out."),
     ("Minesweeper", "`.ms <amount>`", "Reveal safe tiles and avoid bombs."),
     ("Picker", "`.picker`", "Randomly picks from options."),
 ]
