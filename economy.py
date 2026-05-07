@@ -5263,7 +5263,7 @@ async def memory_game(ctx, amount: str):
 # =====================
 # CARD LADDER
 # =====================
-CARD_LADDER_MULTIPLIERS = [1.25, 1.65, 2.20, 3.10, 4.50, 6.50]
+CARD_LADDER_MULTIPLIERS = [1.25, 1.50, 1.75, 2.00, 3.00, 5.00]
 CARD_SUITS = [Q_CARD_SPADE, Q_CARD_HEART, Q_CARD_DIAMOND, Q_CARD_CLUB]
 CARD_RANK_LABELS = {
     2: "2", 3: "3", 4: "4", 5: "5", 6: "6", 7: "7", 8: "8", 9: "9", 10: "10",
@@ -5453,10 +5453,10 @@ async def card_ladder(ctx, amount: str):
 # =====================
 # LOCKPICK
 # =====================
-LOCKPICK_PINS = 3
-LOCKPICK_HEIGHTS = 5
-LOCKPICK_TRIES = 7
-LOCKPICK_MULTIPLIER = 4.5
+LOCKPICK_PINS = 4
+LOCKPICK_HEIGHTS = 6
+LOCKPICK_TRIES = 6
+LOCKPICK_MULTIPLIER = 5.5
 
 @commands.command(name="lockpick", aliases=["lp", "picklock"])
 async def lockpick(ctx, amount: str):
