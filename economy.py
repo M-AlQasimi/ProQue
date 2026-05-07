@@ -5454,9 +5454,9 @@ async def card_ladder(ctx, amount: str):
 # LOCKPICK
 # =====================
 LOCKPICK_PINS = 4
-LOCKPICK_HEIGHTS = 6
-LOCKPICK_TRIES = 6
-LOCKPICK_MULTIPLIER = 5.5
+LOCKPICK_HEIGHTS = 8
+LOCKPICK_TRIES = 5
+LOCKPICK_MULTIPLIER = 5
 
 @commands.command(name="lockpick", aliases=["lp", "picklock"])
 async def lockpick(ctx, amount: str):
@@ -5489,7 +5489,7 @@ async def lockpick(ctx, amount: str):
         return
 
     target = [random.randint(1, LOCKPICK_HEIGHTS) for _ in range(LOCKPICK_PINS)]
-    pins = [3] * LOCKPICK_PINS
+    pins = [max(1, LOCKPICK_HEIGHTS // 2)] * LOCKPICK_PINS
     tries = 0
     game_over = False
     last_hint = "Adjust the pins, then test the lock."
@@ -5591,15 +5591,10 @@ async def lockpick(ctx, amount: str):
             if pins == target:
                 await finish_win(interaction)
                 return
-            hints = []
-            for index, (current, goal) in enumerate(zip(pins, target), 1):
-                if current == goal:
-                    hints.append(f"P{index} set")
-                elif current < goal:
-                    hints.append(f"P{index} low")
-                else:
-                    hints.append(f"P{index} high")
-            last_hint = " | ".join(hints)
+            exact = sum(1 for current, goal in zip(pins, target) if current == goal)
+            low = sum(1 for current, goal in zip(pins, target) if current < goal)
+            high = LOCKPICK_PINS - exact - low
+            last_hint = f"Pins set: **{exact}** | Too low: **{low}** | Too high: **{high}**"
             if tries >= LOCKPICK_TRIES:
                 await finish_loss(interaction, "The lock jammed.")
                 return
@@ -6236,7 +6231,7 @@ DETAILED_EXPLANATIONS = {
     "ladder": "Alias for `.cardladder`. Guess higher/lower and cash out before missing.",
     "cards": "Alias for `.cardladder`. Guess higher/lower and cash out before missing.",
     "cladder": "Alias for `.cardladder`. Guess higher/lower and cash out before missing.",
-    "lockpick": f"Set {LOCKPICK_PINS} lock pins from 1-{LOCKPICK_HEIGHTS}. Press each pin to raise it, Test to spend one try, and use the high/low/set hints to solve the lock. Opening it within {LOCKPICK_TRIES} tests pays ×{LOCKPICK_MULTIPLIER:g} before the universal gambling streak bonus. Running out of tests or timing out resets the streak.",
+    "lockpick": f"Set {LOCKPICK_PINS} lock pins from 1-{LOCKPICK_HEIGHTS}. Press each pin to raise it, Test to spend one try, and use the aggregate set/low/high hint counts to solve the lock. Opening it within {LOCKPICK_TRIES} tests pays ×{LOCKPICK_MULTIPLIER:g} before the universal gambling streak bonus. Running out of tests or timing out resets the streak.",
     "lp": "Alias for `.lockpick`. Adjust lock pins and open the lock before your tests run out.",
     "picklock": "Alias for `.lockpick`. Adjust lock pins and open the lock before your tests run out.",
     "ms": f"Choose 3x3, 4x4, or 5x5, then reveal tiles. Hidden tiles show as {Q_MS_HIDDEN}, safe gems show as {Q_XP}, bombs show as {Q_MINE}, and your cursor shows as {Q_MS_CURSOR}. 3x3 has 1 bomb, 4x4 has 3 bombs, and 5x5 has 5 bombs. Reveal every safe tile to win. The final multiplier starts at ×2.00 and each safe reveal adds +0.15, then the universal gambling streak bonus applies. Hitting a bomb or timing out loses the bet and resets the streak.",
