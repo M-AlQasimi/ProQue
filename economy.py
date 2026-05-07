@@ -131,7 +131,7 @@ Q_CASES = "<:QCases:1501999740429271040>"
 Q_PLINKO = "<a:QPlinkoDrop:1502002567427915866>"
 Q_LUCKY_NUMBER = "<:QLuckyNumber:1501999889150775488>"
 Q_JACKPOT_SPIN = "<a:QJackpotSpin:1502002724261330955>"
-Q_DOUBLE_NOTHING = "<:QDoubleNothing:1502000332916392126>"
+Q_DOUBLE_NOTHING = Q_FLIP_SPIN
 Q_GAME_STATS = "<:QGameStats:1502000517201661962>"
 Q_BADGE = "<:QBadge:1502000221977055372>"
 SLOT_SYMBOL_PAYOUTS = [
@@ -2053,28 +2053,17 @@ class DoubleOrNothingView(discord.ui.View):
         self.used = True
         for item in self.children:
             item.disabled = True
-        await interaction.response.defer()
+        await interaction.response.edit_message(
+            content=(
+                f"{Q_DOUBLE_NOTHING} **Double or Nothing started.**\n"
+                f"Replaying **{game_display_name(self.game_key)}** with **{format_balance(self.stake)}** at risk."
+            ),
+            view=self
+        )
         try:
-            data = get_user(self.user_id)
-            if random.random() < 0.50 + min(active_luck_bonus(data), 0.03):
-                new_balance = int(data["balance"]) + self.stake
-                update_user(self.user_id, balance=new_balance, total_won=int(data["total_won"]) + self.stake)
-                record_game_result(self.user_id, self.game_key, True, self.stake, self.stake)
-                await interaction.edit_original_response(
-                    content=f"{Q_DOUBLE_NOTHING} **Double won!** Added **{format_balance(self.stake)}**.\nNew Balance: **{format_balance(new_balance)}**",
-                    view=self
-                )
-            else:
-                loss = min(int(data["balance"]), self.stake)
-                new_balance = max(0, int(data["balance"]) - loss)
-                update_user(self.user_id, balance=new_balance, gamble_streak=0, total_lost=int(data["total_lost"]) + loss)
-                record_game_result(self.user_id, self.game_key, False, -loss, 0)
-                await interaction.edit_original_response(
-                    content=f"{Q_DOUBLE_NOTHING} **Nothing.** Lost the payout risk: **{format_balance(loss)}**.\nNew Balance: **{format_balance(new_balance)}**",
-                    view=self
-                )
-        except Exception:
-            await interaction.edit_original_response(content=f"{Q_DENIED} Database unavailable. Try again shortly.", view=self)
+            await replay_double_or_nothing_game(interaction, self.game_key, self.stake)
+        except Exception as e:
+            await interaction.followup.send(f"{Q_DENIED} Could not start Double or Nothing: {type(e).__name__}")
 
 def double_or_nothing_view(user_id, game_key, result):
     stake = int(result.get("winnings", 0) or 0)
@@ -2100,7 +2089,7 @@ def gamble_result_block(game_key, amount, result, base_multiplier=None):
             f"New Balance: **{format_balance(result['balance'])}**",
             "Streak reset.",
         ])
-    lines.append("Double or Nothing is available below after wins.")
+    lines.append("Double or Nothing replays the same game with the prize at risk.")
     lines.append(achievement_reward_text(result.get("achievements", [])))
     return "\n".join(line for line in lines if line)
 
@@ -4520,12 +4509,12 @@ async def give(ctx, member: discord.Member, amount: str):
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
 
-    if str(amount).lower() == "all" and has_economy_owner_power(ctx.author.id, ctx.guild):
+    if str(amount).lower() == "all":
         raw_amount = amount
         amount = max(0, int(data['balance']))
     else:
         raw_amount = amount
-        parsed = parse_amount(amount, ctx.author.id, ctx.guild, data['balance'])
+        parsed = parse_whole_number(amount)
         if parsed is None:
             await ctx.send(f"{Q_DENIED} Use `.give @user all` or `.give @user <amount>`")
             return
@@ -5772,7 +5761,7 @@ async def card_ladder(ctx, amount: str):
 # =====================
 # LOCKPICK
 # =====================
-LOCKPICK_PINS = 4
+LOCKPICK_PINS = 5
 LOCKPICK_HEIGHTS = 8
 LOCKPICK_TRIES = 4
 LOCKPICK_MULTIPLIER = 5
@@ -6010,12 +5999,108 @@ HEIST_ROUTES = {
     "balanced": {"label": "Balanced", "chance": 0.30, "mult": 3.25, "risk": "High"},
     "loud": {"label": "Loud", "chance": 0.16, "mult": 6.0, "risk": "Extreme"},
 }
+HEIST_TOOLS = {
+    "scanner": {"label": "Scanner", "chance": 0.08, "mult": -0.15, "text": "spots patrol routes"},
+    "scrambler": {"label": "Scrambler", "chance": 0.04, "mult": 0.00, "text": "jams alarms"},
+    "decoy": {"label": "Decoy", "chance": -0.03, "mult": 0.35, "text": "draws guards away"},
+}
 
 @commands.command(name="heist", aliases=["robbery", "qh"])
 async def heist(ctx, amount: str):
     data, amount = await prepare_gamble(ctx, amount, "heist")
     if data is None:
         return
+    route_choice = None
+    tool_choice = None
+    heist_stage = 0
+    stage_choices = []
+    heist_chance_bonus = 0
+    heist_mult_bonus = 0
+    prompt_message = None
+    heist_stages = [
+        {
+            "name": "Entry",
+            "options": [
+                ("Pick Lock", 0.05, -0.05),
+                ("Cut Power", 0.00, 0.10),
+                ("Break Window", -0.06, 0.25),
+            ],
+        },
+        {
+            "name": "Vault",
+            "options": [
+                ("Slow Drill", 0.05, 0.00),
+                ("Thermal Cut", -0.02, 0.18),
+                ("Blast Door", -0.08, 0.40),
+            ],
+        },
+        {
+            "name": "Escape",
+            "options": [
+                ("Back Alley", 0.05, -0.05),
+                ("Garage", 0.00, 0.10),
+                ("Main Road", -0.05, 0.25),
+            ],
+        },
+    ]
+
+    def heist_prompt():
+        if route_choice is None:
+            return (
+                f"{Q_HEIST} **HEIST SETUP**\n"
+                "Choose the route.\n"
+                + "\n".join(f"**{route['label']}**: {route['risk']} risk, pays ×{route['mult']:g}" for route in HEIST_ROUTES.values())
+            )
+        route = HEIST_ROUTES[route_choice]
+        return (
+            f"{Q_HEIST} **HEIST SETUP**\n"
+            f"Route: **{route['label']}** ×{route['mult']:g}\n"
+            "Choose your tool.\n"
+            + "\n".join(
+                f"**{tool['label']}**: {tool['text']}"
+                for tool in HEIST_TOOLS.values()
+            )
+        )
+
+    async def run_heist(interaction):
+        route = HEIST_ROUTES[route_choice]
+        tool = HEIST_TOOLS[tool_choice]
+        await interaction.response.edit_message(content=f"{Q_HEIST} **HEIST STARTED**\nRoute: **{route['label']}** | Tool: **{tool['label']}**", view=view)
+        await show_heist_stage()
+
+    async def show_heist_stage():
+        stage = heist_stages[heist_stage]
+        view.clear_items()
+        for label, chance_delta, mult_delta in stage["options"]:
+            view.add_item(HeistStageButton(label, chance_delta, mult_delta))
+        await prompt_message.edit(
+            content=(
+                f"{Q_HEIST} **HEIST - {stage['name']}** `{heist_stage + 1}/3`\n"
+                "Choose how to handle this step.\n"
+                + "\n".join(
+                    f"**{label}**: chance {chance_delta:+.0%}, payout {mult_delta:+.2f}"
+                    for label, chance_delta, mult_delta in stage["options"]
+                )
+            ),
+            view=view
+        )
+
+    async def finish_heist(interaction):
+        route = HEIST_ROUTES[route_choice]
+        tool = HEIST_TOOLS[tool_choice]
+        latest = get_user(ctx.author.id)
+        chance = min(0.90, max(0.05, route["chance"] + tool["chance"] + heist_chance_bonus + active_luck_bonus(latest)))
+        base_mult = max(1.1, route["mult"] + tool["mult"] + heist_mult_bonus)
+        won = random.random() < chance
+        result = settle_gambling_result(ctx.author.id, "heist", amount, base_mult, won, data=latest)
+        details = (
+            f"{Q_HEIST} Route: **{route['label']}** | Tool: **{tool['label']}**\n"
+            f"Choices: **{' / '.join(stage_choices)}**\n"
+            f"Success chance: **{int(chance * 100)}%** | Target payout: **×{base_mult:g}**"
+        )
+        await interaction.response.edit_message(content=f"{Q_HEIST} **HEIST COMPLETE**\nEscaping...", view=None)
+        await prompt_message.delete()
+        await send_new_game_result(ctx, "heist", f"{Q_HEIST} **HEIST**", amount, result, details, base_mult if won else None)
 
     class HeistButton(discord.ui.Button):
         def __init__(self, route_key, route):
@@ -6024,19 +6109,50 @@ async def heist(ctx, amount: str):
             self.route = route
 
         async def callback(self, interaction):
+            nonlocal route_choice
             if interaction.user.id != ctx.author.id:
                 await interaction.response.send_message("Use your own heist.", ephemeral=True)
                 return
-            view.stop()
-            for item in view.children:
-                item.disabled = True
-            await interaction.response.edit_message(view=view)
-            latest = get_user(ctx.author.id)
-            chance = min(0.90, self.route["chance"] + active_luck_bonus(latest))
-            won = random.random() < chance
-            result = settle_gambling_result(ctx.author.id, "heist", amount, self.route["mult"], won, data=latest)
-            details = f"{Q_HEIST} Route: **{self.route['label']}** | Risk: **{self.route['risk']}** | Success chance: **{int(chance * 100)}%**"
-            await send_new_game_result(ctx, "heist", f"{Q_HEIST} **HEIST**", amount, result, details, self.route["mult"] if won else None)
+            route_choice = self.route_key
+            view.clear_items()
+            for tool_key, tool in HEIST_TOOLS.items():
+                view.add_item(HeistToolButton(tool_key, tool))
+            await interaction.response.edit_message(content=heist_prompt(), view=view)
+
+    class HeistToolButton(discord.ui.Button):
+        def __init__(self, tool_key, tool):
+            super().__init__(label=tool["label"], style=discord.ButtonStyle.secondary)
+            self.tool_key = tool_key
+
+        async def callback(self, interaction):
+            nonlocal tool_choice
+            if interaction.user.id != ctx.author.id:
+                await interaction.response.send_message("Use your own heist.", ephemeral=True)
+                return
+            tool_choice = self.tool_key
+            await run_heist(interaction)
+
+    class HeistStageButton(discord.ui.Button):
+        def __init__(self, label, chance_delta, mult_delta):
+            super().__init__(label=label, style=discord.ButtonStyle.primary)
+            self.choice_label = label
+            self.chance_delta = chance_delta
+            self.mult_delta = mult_delta
+
+        async def callback(self, interaction):
+            nonlocal heist_stage, heist_chance_bonus, heist_mult_bonus
+            if interaction.user.id != ctx.author.id:
+                await interaction.response.send_message("Use your own heist.", ephemeral=True)
+                return
+            stage_choices.append(self.choice_label)
+            heist_chance_bonus += self.chance_delta
+            heist_mult_bonus += self.mult_delta
+            heist_stage += 1
+            if heist_stage >= len(heist_stages):
+                await finish_heist(interaction)
+                return
+            await interaction.response.defer()
+            await show_heist_stage()
 
     class HeistView(discord.ui.View):
         def __init__(self):
@@ -6045,30 +6161,118 @@ async def heist(ctx, amount: str):
                 self.add_item(HeistButton(route_key, route))
 
     view = HeistView()
-    await ctx.send(
-        f"{Q_HEIST} **HEIST**\nChoose a route.\n"
-        + "\n".join(f"**{route['label']}**: {route['risk']} risk, pays ×{route['mult']:g}" for route in HEIST_ROUTES.values()),
-        view=view
-    )
+    prompt_message = await ctx.send(heist_prompt(), view=view)
 
 @commands.command(name="diceduel", aliases=["dice", "dd"])
 async def dice_duel(ctx, amount: str):
     data, amount = await prepare_gamble(ctx, amount, "diceduel")
     if data is None:
         return
-    player = (random.randint(1, 6), random.randint(1, 6))
-    dealer = (random.randint(1, 6), random.randint(1, 6))
-    player_total = sum(player)
-    dealer_total = sum(dealer)
-    if player_total == dealer_total:
-        result = settle_gambling_result(ctx.author.id, "diceduel", amount, neutral=True, data=data)
-        details = f"{Q_DICE_DUEL} You rolled **{player[0]} + {player[1]} = {player_total}**\nDealer rolled **{dealer[0]} + {dealer[1]} = {dealer_total}**\nPush. Nothing won or lost."
-        await ctx.send(f"{Q_DICE_DUEL} **DICE DUEL**\n─────────────────\n{details}\nNew Balance: **{format_balance(result['balance'])}**")
-        return
-    won = player_total > dealer_total
-    result = settle_gambling_result(ctx.author.id, "diceduel", amount, 2, won, data=data)
-    details = f"{Q_DICE_DUEL} You rolled **{player[0]} + {player[1]} = {player_total}**\nDealer rolled **{dealer[0]} + {dealer[1]} = {dealer_total}**"
-    await send_new_game_result(ctx, "diceduel", f"{Q_DICE_DUEL} **DICE DUEL**", amount, result, details, 2 if won else None)
+
+    tactics = {
+        "steady": {"label": "Steady", "mult": 1.75, "bonus": 1, "text": "+1 to your roll, lower payout"},
+        "normal": {"label": "Normal", "mult": 2.0, "bonus": 0, "text": "classic dice duel"},
+        "push": {"label": "Push", "mult": 2.75, "bonus": -1, "text": "-1 to your roll, higher payout"},
+    }
+    tactic = None
+    player = []
+    dealer = []
+
+    def dice_content(extra=""):
+        tactic_label = tactic["label"] if tactic else "not chosen"
+        player_text = " + ".join(str(v) for v in player) if player else "-"
+        dealer_text = " + ".join(str(v) for v in dealer) if dealer else "-"
+        return (
+            f"{Q_DICE_DUEL} **DICE DUEL**\n"
+            f"Tactic: **{tactic_label}**\n"
+            f"You: **{player_text}**\n"
+            f"Dealer: **{dealer_text}**\n"
+            f"{extra}"
+        ).strip()
+
+    class DiceButton(discord.ui.Button):
+        def __init__(self, tactic_key, tactic):
+            super().__init__(label=f"{tactic['label']} ×{tactic['mult']:g}", style=discord.ButtonStyle.primary)
+            self.tactic_key = tactic_key
+            self.tactic = tactic
+
+        async def callback(self, interaction):
+            nonlocal tactic
+            if interaction.user.id != ctx.author.id:
+                await interaction.response.send_message("Use your own dice duel.", ephemeral=True)
+                return
+            tactic = self.tactic
+            view.clear_items()
+            view.add_item(RollPlayerDie())
+            await interaction.response.edit_message(content=dice_content("Press **Roll Die** twice."), view=view)
+
+    class RollPlayerDie(discord.ui.Button):
+        def __init__(self):
+            super().__init__(label="Roll Die", style=discord.ButtonStyle.success)
+
+        async def callback(self, interaction):
+            if interaction.user.id != ctx.author.id:
+                await interaction.response.send_message("Use your own dice duel.", ephemeral=True)
+                return
+            roll = random.randint(1, 6)
+            player.append(roll)
+            if len(player) < 2:
+                await interaction.response.edit_message(content=dice_content(f"You rolled **{roll}**. Roll the second die."), view=view)
+                return
+            view.clear_items()
+            view.add_item(DealerRollButton())
+            await interaction.response.edit_message(
+                content=dice_content(f"You rolled **{roll}**. Your modifier is **{tactic['bonus']:+d}**. Now make the dealer roll."),
+                view=view
+            )
+
+    class DealerRollButton(discord.ui.Button):
+        def __init__(self):
+            super().__init__(label="Dealer Roll", style=discord.ButtonStyle.danger)
+
+        async def callback(self, interaction):
+            if interaction.user.id != ctx.author.id:
+                await interaction.response.send_message("Use your own dice duel.", ephemeral=True)
+                return
+            for item in view.children:
+                item.disabled = True
+            dealer.extend([random.randint(1, 6), random.randint(1, 6)])
+            player_total = sum(player) + tactic["bonus"]
+            dealer_total = sum(dealer)
+            latest = get_user(ctx.author.id)
+            if player_total == dealer_total:
+                result = settle_gambling_result(ctx.author.id, "diceduel", amount, neutral=True, data=latest)
+                details = (
+                    f"{Q_DICE_DUEL} Tactic: **{tactic['label']}**\n"
+                    f"You rolled **{player[0]} + {player[1]} {tactic['bonus']:+d} = {player_total}**\n"
+                    f"Dealer rolled **{dealer[0]} + {dealer[1]} = {dealer_total}**\n"
+                    "Push. Nothing won or lost."
+                )
+                await interaction.response.edit_message(content=f"{Q_DICE_DUEL} **DICE DUEL**\n─────────────────\n{details}\nNew Balance: **{format_balance(result['balance'])}**", view=view)
+                return
+            won = player_total > dealer_total
+            result = settle_gambling_result(ctx.author.id, "diceduel", amount, tactic["mult"], won, data=latest)
+            details = (
+                f"{Q_DICE_DUEL} Tactic: **{tactic['label']}**\n"
+                f"You rolled **{player[0]} + {player[1]} {tactic['bonus']:+d} = {player_total}**\n"
+                f"Dealer rolled **{dealer[0]} + {dealer[1]} = {dealer_total}**"
+            )
+            await interaction.response.edit_message(content=dice_content("Settling result..."), view=view)
+            await message.delete()
+            await send_new_game_result(ctx, "diceduel", f"{Q_DICE_DUEL} **DICE DUEL**", amount, result, details, tactic["mult"] if won else None)
+
+    class DiceDuelView(discord.ui.View):
+        def __init__(self):
+            super().__init__(timeout=45)
+            for tactic_key, tactic in tactics.items():
+                self.add_item(DiceButton(tactic_key, tactic))
+
+    view = DiceDuelView()
+    message = await ctx.send(
+        f"{Q_DICE_DUEL} **DICE DUEL**\nChoose how you roll.\n"
+        + "\n".join(f"**{t['label']}**: {t['text']}" for t in tactics.values()),
+        view=view
+    )
 
 CASE_TABLE = [
     ("Empty Case", 0, 42),
@@ -6083,15 +6287,83 @@ async def cases(ctx, amount: str):
     data, amount = await prepare_gamble(ctx, amount, "cases")
     if data is None:
         return
-    names, multipliers, weights = zip(*CASE_TABLE)
-    index = random.choices(range(len(CASE_TABLE)), weights=weights)[0]
-    name, multiplier, _ = CASE_TABLE[index]
-    if multiplier <= 0:
-        result = settle_gambling_result(ctx.author.id, "cases", amount, won=False, data=data)
-    else:
-        result = settle_gambling_result(ctx.author.id, "cases", amount, multiplier, True, data=data)
-    details = f"{Q_CASES} Opened: **{name}** | Result: **×{multiplier:g}**"
-    await send_new_game_result(ctx, "cases", f"{Q_CASES} **Q CASES**", amount, result, details, multiplier if multiplier > 0 else None)
+    case_slots = []
+    for _ in range(3):
+        index = random.choices(range(len(CASE_TABLE)), weights=[row[2] for row in CASE_TABLE])[0]
+        case_slots.append(CASE_TABLE[index])
+    picked_case = None
+    key_mods = {
+        "safe": {"label": "Safe Key", "shift": -1, "text": "safer but can downgrade"},
+        "clean": {"label": "Clean Key", "shift": 0, "text": "normal open"},
+        "royal": {"label": "Royal Key", "shift": 1, "text": "riskier, can upgrade"},
+    }
+
+    class CaseButton(discord.ui.Button):
+        def __init__(self, index):
+            super().__init__(label=f"Case {index + 1}", style=discord.ButtonStyle.primary)
+            self.index = index
+
+        async def callback(self, interaction):
+            nonlocal picked_case
+            if interaction.user.id != ctx.author.id:
+                await interaction.response.send_message("Use your own case.", ephemeral=True)
+                return
+            picked_case = self.index
+            view.clear_items()
+            for key, key_data in key_mods.items():
+                view.add_item(KeyButton(key, key_data))
+            await interaction.response.edit_message(
+                content=(
+                    f"{Q_CASES} **Q CASES**\n"
+                    f"Case **{self.index + 1}** selected. Now choose the key.\n"
+                    + "\n".join(f"**{key_data['label']}**: {key_data['text']}" for key_data in key_mods.values())
+                ),
+                view=view
+            )
+
+    class KeyButton(discord.ui.Button):
+        def __init__(self, key, key_data):
+            super().__init__(label=key_data["label"], style=discord.ButtonStyle.secondary)
+            self.key_data = key_data
+
+        async def callback(self, interaction):
+            if interaction.user.id != ctx.author.id:
+                await interaction.response.send_message("Use your own case.", ephemeral=True)
+                return
+            for item in view.children:
+                item.disabled = True
+            await interaction.response.edit_message(
+                content=f"{Q_CASES} **Q CASES**\nCase **{picked_case + 1}** | Key: **{self.key_data['label']}**\nUnlocking...",
+                view=view
+            )
+            reveal = [Q_CASES, Q_CASES, Q_CASES]
+            for i in range(3):
+                await asyncio.sleep(0.7)
+                reveal[i] = QOIN_CHEST if i == picked_case else Q_LOCK
+                await message.edit(content=f"{Q_CASES} **Q CASES**\n{'  '.join(reveal)}\n_Revealing locks..._", view=None)
+            name, multiplier, _ = case_slots[picked_case]
+            if multiplier > 0 and self.key_data["shift"]:
+                table_index = next((i for i, row in enumerate(CASE_TABLE) if row[0] == name), 0)
+                shifted_index = max(0, min(len(CASE_TABLE) - 1, table_index + self.key_data["shift"]))
+                name, multiplier, _ = CASE_TABLE[shifted_index]
+            latest = get_user(ctx.author.id)
+            result = settle_gambling_result(ctx.author.id, "cases", amount, multiplier, multiplier > 0, data=latest)
+            details = f"{Q_CASES} Picked: **Case {picked_case + 1}** | Key: **{self.key_data['label']}**\nOpened: **{name}** | Result: **×{multiplier:g}**"
+            await message.delete()
+            await send_new_game_result(ctx, "cases", f"{Q_CASES} **Q CASES**", amount, result, details, multiplier if multiplier > 0 else None)
+
+    class CaseView(discord.ui.View):
+        def __init__(self):
+            super().__init__(timeout=45)
+            for i in range(3):
+                self.add_item(CaseButton(i))
+
+    view = CaseView()
+    message = await ctx.send(
+        f"{Q_CASES} **Q CASES**\nThree locked cases are on the table. Pick one to open.\n"
+        f"{Q_CASES}  {Q_CASES}  {Q_CASES}",
+        view=view
+    )
 
 PLINKO_SLOTS = [
     (Q_WHEEL_BLANK, 0, 25),
@@ -6103,22 +6375,114 @@ PLINKO_SLOTS = [
     (Q_WHEEL_PINK, 10, 2),
 ]
 
+def plinko_board(ball_row=None, ball_col=None):
+    rows = []
+    for row in range(6):
+        cells = []
+        for col in range(5):
+            cells.append(QOIN_BAG if row == ball_row and col == ball_col else Q_MS_HIDDEN)
+        rows.append(" ".join(cells))
+    slots = " ".join(f"{emoji}×{mult:g}" for emoji, mult, _ in PLINKO_SLOTS)
+    return "\n".join(rows) + "\n" + slots
+
+def plinko_landing_from_drop(drop_col):
+    col = drop_col
+    path = [(0, col)]
+    for row in range(1, 6):
+        move = random.choice([-1, 0, 1])
+        col = max(0, min(4, col + move))
+        path.append((row, col))
+    index = max(0, min(len(PLINKO_SLOTS) - 1, col + random.choice([0, 1, 2])))
+    return path, index
+
 @commands.command(name="plinko", aliases=["plink", "drop"])
 async def plinko(ctx, amount: str):
     data, amount = await prepare_gamble(ctx, amount, "plinko")
     if data is None:
         return
-    index = random.choices(range(len(PLINKO_SLOTS)), weights=[slot[2] for slot in PLINKO_SLOTS])[0]
-    emoji, multiplier, _ = PLINKO_SLOTS[index]
-    path = " ".join(random.choice([Q_WHEEL_BLUE, Q_WHEEL_PURPLE, Q_WHEEL_GREEN]) for _ in range(5))
-    if multiplier == 1:
-        result = settle_gambling_result(ctx.author.id, "plinko", amount, neutral=True, data=data)
-        await ctx.send(f"{Q_PLINKO} **PLINKO**\n─────────────────\nPath: {path}\nLanded: **{emoji} ×1**\nRefund. New Balance: **{format_balance(result['balance'])}**")
-        return
-    won = multiplier > 1
-    result = settle_gambling_result(ctx.author.id, "plinko", amount, multiplier, won, data=data)
-    details = f"{Q_PLINKO} Path: {path}\nLanded: **{emoji} ×{multiplier:g}**"
-    await send_new_game_result(ctx, "plinko", f"{Q_PLINKO} **PLINKO**", amount, result, details, multiplier if won else None)
+    ball_row = 0
+    ball_col = None
+
+    class DropButton(discord.ui.Button):
+        def __init__(self, index):
+            super().__init__(label=f"Drop {index + 1}", style=discord.ButtonStyle.primary)
+            self.index = index
+
+        async def callback(self, interaction):
+            nonlocal ball_col
+            if interaction.user.id != ctx.author.id:
+                await interaction.response.send_message("Use your own plinko board.", ephemeral=True)
+                return
+            ball_col = self.index
+            view.clear_items()
+            view.add_item(NudgeButton("left", "Nudge Left", -1))
+            view.add_item(NudgeButton("drop", "Let Drop", 0))
+            view.add_item(NudgeButton("right", "Nudge Right", 1))
+            await interaction.response.edit_message(
+                content=f"{Q_PLINKO} **PLINKO**\nDrop lane **{self.index + 1}** selected.\nChoose a nudge each row.\n{plinko_board(ball_row, ball_col)}",
+                view=view
+            )
+
+    class NudgeButton(discord.ui.Button):
+        def __init__(self, key, label, direction):
+            style = discord.ButtonStyle.secondary if direction == 0 else discord.ButtonStyle.primary
+            super().__init__(label=label, style=style)
+            self.direction = direction
+
+        async def callback(self, interaction):
+            nonlocal ball_row, ball_col
+            if interaction.user.id != ctx.author.id:
+                await interaction.response.send_message("Use your own plinko board.", ephemeral=True)
+                return
+            if ball_col is None:
+                await interaction.response.defer()
+                return
+            drift = random.choice([-1, 0, 1])
+            ball_col = max(0, min(4, ball_col + self.direction + drift))
+            ball_row += 1
+            if ball_row < 6:
+                await interaction.response.edit_message(
+                    content=(
+                        f"{Q_PLINKO} **PLINKO**\n"
+                        f"Your nudge: **{self.label}** | Peg bounce: **{drift:+d}**\n"
+                        f"{plinko_board(ball_row, ball_col)}"
+                    ),
+                    view=view
+                )
+                return
+            for item in view.children:
+                item.disabled = True
+            slot_index = max(0, min(len(PLINKO_SLOTS) - 1, ball_col + random.choice([0, 1, 2])))
+            emoji, multiplier, _ = PLINKO_SLOTS[slot_index]
+            latest = get_user(ctx.author.id)
+            if multiplier == 1:
+                result = settle_gambling_result(ctx.author.id, "plinko", amount, neutral=True, data=latest)
+                await interaction.response.edit_message(
+                    content=(
+                        f"{Q_PLINKO} **PLINKO**\n{plinko_board(5, ball_col)}\n"
+                        f"Landed: **{emoji} ×1**\nRefund. New Balance: **{format_balance(result['balance'])}**"
+                    ),
+                    view=view
+                )
+                return
+            won = multiplier > 1
+            result = settle_gambling_result(ctx.author.id, "plinko", amount, multiplier, won, data=latest)
+            details = f"{Q_PLINKO} Final lane: **{ball_col + 1}**\nLanded: **{emoji} ×{multiplier:g}**"
+            await interaction.response.edit_message(content=f"{Q_PLINKO} **PLINKO COMPLETE**\n{plinko_board(5, ball_col)}", view=view)
+            await message.delete()
+            await send_new_game_result(ctx, "plinko", f"{Q_PLINKO} **PLINKO**", amount, result, details, multiplier if won else None)
+
+    class PlinkoView(discord.ui.View):
+        def __init__(self):
+            super().__init__(timeout=45)
+            for i in range(5):
+                self.add_item(DropButton(i))
+
+    view = PlinkoView()
+    message = await ctx.send(
+        f"{Q_PLINKO} **PLINKO BOARD**\nPick a drop lane.\n{plinko_board()}",
+        view=view
+    )
 
 LUCKY_NUMBER_OPTIONS = {
     10: 3,
@@ -6193,18 +6557,88 @@ JACKPOT_SPIN_TABLE = [
     ("Mega Hit", 10, 3),
     ("Jackpot", 50, 1),
 ]
+JACKPOT_SYMBOLS = [
+    (Q_SLOT_STAR, "Star Hit", 2, 42),
+    (Q_SLOT_DIAMOND, "Diamond Hit", 5, 28),
+    (Q_SLOT_CROWN, "Crown Hit", 10, 20),
+    (Q_SLOT_JACKPOT, "Jackpot", 50, 10),
+]
 
 @commands.command(name="jackpotspin", aliases=["jackpot", "jspin", "jps"])
 async def jackpot_spin(ctx, amount: str):
     data, amount = await prepare_gamble(ctx, amount, "jackpotspin")
     if data is None:
         return
-    index = random.choices(range(len(JACKPOT_SPIN_TABLE)), weights=[row[2] for row in JACKPOT_SPIN_TABLE])[0]
-    label, multiplier, _ = JACKPOT_SPIN_TABLE[index]
-    strip = " ".join(random.choice([Q_SLOT_STAR, Q_SLOT_DIAMOND, Q_SLOT_CROWN, Q_SLOT_JACKPOT]) for _ in range(5))
-    result = settle_gambling_result(ctx.author.id, "jackpotspin", amount, multiplier, multiplier > 0, data=data)
-    details = f"{Q_JACKPOT_SPIN} Reels: {strip}\nResult: **{label} ×{multiplier:g}**"
-    await send_new_game_result(ctx, "jackpotspin", f"{Q_JACKPOT_SPIN} **JACKPOT SPIN**", amount, result, details, multiplier if multiplier > 0 else None)
+    reels = [None, None, None]
+    stop_count = 0
+    weights = [row[3] for row in JACKPOT_SYMBOLS]
+
+    def reel_line(spinning=True):
+        shown = []
+        for value in reels:
+            shown.append(value or (Q_JACKPOT_SPIN if spinning else Q_SLOTS))
+        return f"| {shown[0]} | {shown[1]} | {shown[2]} |"
+
+    def evaluate_jackpot():
+        if reels[0] == reels[1] == reels[2]:
+            for emoji, label, multiplier, _ in JACKPOT_SYMBOLS:
+                if reels[0] == emoji:
+                    return label, multiplier
+        if reels.count(Q_SLOT_JACKPOT) == 2:
+            return "Two Jackpot Symbols", 2
+        return "Miss", 0
+
+    class StopReel(discord.ui.Button):
+        def __init__(self):
+            super().__init__(label="Stop Reel", style=discord.ButtonStyle.danger)
+
+        async def callback(self, interaction):
+            nonlocal stop_count
+            if interaction.user.id != ctx.author.id:
+                await interaction.response.send_message("Use your own jackpot spin.", ephemeral=True)
+                return
+            if stop_count >= 3:
+                await interaction.response.defer()
+                return
+            symbol, _, _, _ = random.choices(JACKPOT_SYMBOLS, weights=weights)[0]
+            reels[stop_count] = symbol
+            stop_count += 1
+            if stop_count < 3:
+                await interaction.response.edit_message(
+                    content=(
+                        f"{Q_JACKPOT_SPIN} **JACKPOT SPIN**\n"
+                        f"{reel_line()}\n"
+                        f"Stopped **{stop_count}/3** reels. Press again."
+                    ),
+                    view=view
+                )
+                return
+            for item in view.children:
+                item.disabled = True
+            await interaction.response.edit_message(
+                content=f"{Q_JACKPOT_SPIN} **JACKPOT SPIN**\n{reel_line(False)}\nChecking payout...",
+                view=view
+            )
+            await asyncio.sleep(0.8)
+            label, multiplier = evaluate_jackpot()
+            latest = get_user(ctx.author.id)
+            result = settle_gambling_result(ctx.author.id, "jackpotspin", amount, multiplier, multiplier > 0, data=latest)
+            details = f"{Q_JACKPOT_SPIN} Reels: {reel_line(False)}\nResult: **{label} ×{multiplier:g}**"
+            await message.delete()
+            await send_new_game_result(ctx, "jackpotspin", f"{Q_JACKPOT_SPIN} **JACKPOT SPIN**", amount, result, details, multiplier if multiplier > 0 else None)
+
+    class JackpotView(discord.ui.View):
+        def __init__(self):
+            super().__init__(timeout=45)
+            self.add_item(StopReel())
+
+    view = JackpotView()
+    message = await ctx.send(
+        f"{Q_JACKPOT_SPIN} **JACKPOT SPIN**\n"
+        f"{reel_line()}\n"
+        "Press **Stop Reel** three times. Three matching symbols win.",
+        view=view
+    )
 
 @commands.command(name="gamestats", aliases=["gstats", "gamestat", "playstats"])
 async def gamestats(ctx, member: discord.Member = None):
@@ -6596,7 +7030,7 @@ async def wheel(ctx, amount: str):
                 header += f"\n> {Q_WHEEL} Landed on: **{emoji} {label}**"
         else:
             header += "\n> _Spinning..._"
-        return header + "\n```text\n" + wheel_art + "\n```"
+        return header + "\n" + wheel_art
 
     msg = await ctx.send(render_wheel(spinning=True))
 
@@ -6666,6 +7100,53 @@ async def wheel(ctx, amount: str):
         await send_error(ctx, "Database unavailable. Try again shortly.")
 
 
+class ReplayContext:
+    def __init__(self, interaction):
+        self.author = interaction.user
+        self.guild = interaction.guild
+        self.channel = interaction.channel
+        self.bot = bot
+        self.command = None
+        self.prefix = "."
+        self.message = getattr(interaction, "message", None)
+
+    async def send(self, *args, **kwargs):
+        return await self.channel.send(*args, **kwargs)
+
+    async def reply(self, *args, **kwargs):
+        return await self.send(*args, **kwargs)
+
+
+async def replay_double_or_nothing_game(interaction, game_key, stake):
+    command_map = {
+        "cf": gamble,
+        "roulette": roulette,
+        "slots": slots,
+        "blackjack": blackjack,
+        "scratch": scratch,
+        "tower": tower,
+        "vault": vault,
+        "memory": memory_game,
+        "cardladder": card_ladder,
+        "lockpick": lockpick,
+        "heist": heist,
+        "diceduel": dice_duel,
+        "cases": cases,
+        "plinko": plinko,
+        "luckynumber": lucky_number,
+        "jackpotspin": jackpot_spin,
+        "ms": minesweeper,
+        "wheel": wheel,
+    }
+    command = command_map.get(game_key)
+    if command is None:
+        await interaction.followup.send(f"{Q_DENIED} Double or Nothing is not available for this game yet.")
+        return
+    _cooldowns.pop((interaction.user.id, "quewo"), None)
+    replay_ctx = ReplayContext(interaction)
+    await command.callback(replay_ctx, str(int(stake)))
+
+
 # =====================
 # EXPLAIN
 # =====================
@@ -6715,26 +7196,26 @@ EXPLANATIONS = {
     "lockpick": f"{Q_LOCKPICK} Adjust lock pins, use high/low hints, and open the lock before your tests run out.",
     "lp": "Alias for `.lockpick`. Adjust lock pins and open the lock before your tests run out.",
     "picklock": "Alias for `.lockpick`. Adjust lock pins and open the lock before your tests run out.",
-    "heist": f"{Q_HEIST} Pick a robbery route. Higher risk routes pay more if they succeed.",
-    "robbery": "Alias for `.heist`. Pick a robbery route and try to escape.",
-    "qh": "Alias for `.heist`. Pick a robbery route and try to escape.",
-    "diceduel": f"{Q_DICE_DUEL} Roll against the dealer. Higher total wins.",
-    "dice": "Alias for `.diceduel`. Roll against the dealer.",
-    "dd": "Alias for `.diceduel`. Roll against the dealer.",
-    "cases": f"{Q_CASES} Open a random case with tiered prizes.",
-    "case": "Alias for `.cases`. Open a random case.",
-    "qcase": "Alias for `.cases`. Open a random case.",
-    "plinko": f"{Q_PLINKO} Drop a ball into weighted multiplier slots.",
-    "plink": "Alias for `.plinko`. Drop a ball into weighted multiplier slots.",
-    "drop": "Alias for `.plinko`. Drop a ball into weighted multiplier slots.",
+    "heist": f"{Q_HEIST} Choose a route, tool, entry plan, vault plan, and escape plan.",
+    "robbery": "Alias for `.heist`. Choose a route and tool, then try to escape.",
+    "qh": "Alias for `.heist`. Choose a route and tool, then try to escape.",
+    "diceduel": f"{Q_DICE_DUEL} Pick a tactic, roll both dice yourself, then make the dealer roll.",
+    "dice": "Alias for `.diceduel`. Pick a tactic and roll against the dealer.",
+    "dd": "Alias for `.diceduel`. Pick a tactic and roll against the dealer.",
+    "cases": f"{Q_CASES} Pick a locked case, then pick the key that changes risk/reward.",
+    "case": "Alias for `.cases`. Pick one of three locked cases.",
+    "qcase": "Alias for `.cases`. Pick one of three locked cases.",
+    "plinko": f"{Q_PLINKO} Choose a drop lane, then nudge the ball every row.",
+    "plink": "Alias for `.plinko`. Choose a drop lane and watch the board.",
+    "drop": "Alias for `.plinko`. Choose a drop lane and watch the board.",
     "luckynumber": f"{Q_LUCKY_NUMBER} Pick a range and a number. Bigger ranges pay more.",
     "ln": "Alias for `.luckynumber`. Pick a range and a number.",
     "lucky": "Alias for `.luckynumber`. Pick a range and a number.",
     "number": "Alias for `.luckynumber`. Pick a range and a number.",
-    "jackpotspin": f"{Q_JACKPOT_SPIN} Rare jackpot wheel with high-risk payouts.",
-    "jackpot": "Alias for `.jackpotspin`. Rare jackpot wheel.",
-    "jspin": "Alias for `.jackpotspin`. Rare jackpot wheel.",
-    "jps": "Alias for `.jackpotspin`. Rare jackpot wheel.",
+    "jackpotspin": f"{Q_JACKPOT_SPIN} Stop three reels yourself. Matching reels pay high.",
+    "jackpot": "Alias for `.jackpotspin`. Stop three reels yourself.",
+    "jspin": "Alias for `.jackpotspin`. Stop three reels yourself.",
+    "jps": "Alias for `.jackpotspin`. Stop three reels yourself.",
     "gamestats": "Shows tracked game wins, losses, profit, and game badges.",
     "gstats": "Alias for `.gamestats`. Shows tracked game stats.",
     "gamestat": "Alias for `.gamestats`. Shows tracked game stats.",
@@ -6862,12 +7343,12 @@ DETAILED_EXPLANATIONS = {
     "lockpick": f"Set {LOCKPICK_PINS} lock pins from 1-{LOCKPICK_HEIGHTS}. Press each pin to raise it, Test to spend one try, and use the per-pin high/low/set hints to solve the lock. Opening it within {LOCKPICK_TRIES} tests pays ×{LOCKPICK_MULTIPLIER:g} before the universal gambling streak bonus. Running out of tests or timing out resets the streak.",
     "lp": "Alias for `.lockpick`. Adjust lock pins and open the lock before your tests run out.",
     "picklock": "Alias for `.lockpick`. Adjust lock pins and open the lock before your tests run out.",
-    "heist": "Choose Silent, Balanced, or Loud. Safer routes hit more often and pay less; risky routes hit less often and pay more. Wins can use Double or Nothing after payout.",
-    "diceduel": "You and the dealer each roll two dice. Higher total wins ×2 before streak bonus. Ties refund. Wins can use Double or Nothing.",
-    "cases": "Opens one case with weighted tiers: empty, small, medium, rare, or mythic. Better cases are rarer. Wins can use Double or Nothing.",
-    "plinko": "Drops into weighted slots from ×0 to ×10. ×1 refunds, higher than ×1 wins, lower than ×1 loses part/all by current settlement. Wins can use Double or Nothing.",
-    "luckynumber": "Choose a range, then type your number. Options: 1-10 pays ×3, 1-20 pays ×5, 1-50 pays ×10, and 1-100 pays ×20. Wins can use Double or Nothing.",
-    "jackpotspin": "High-risk spin with rare huge outcomes. Most spins miss, but jackpot tier pays ×50 before streak bonus. Wins can use Double or Nothing.",
+    "heist": "Choose a route and a tool, then play through Entry, Vault, and Escape choices. Safer choices raise success chance and lower payout; louder choices lower success chance and raise payout. Wins can use Double or Nothing to replay the same game with the prize at risk.",
+    "diceduel": "Choose Steady, Normal, or Push, then press Roll Die twice yourself and make the dealer roll. Steady adds +1 with lower payout, Push subtracts -1 with higher payout, and Normal is classic. Higher total wins; ties refund.",
+    "cases": "Three locked cases appear. Pick a case, then pick Safe, Clean, or Royal key. Safe can downgrade, Royal can upgrade, and Clean opens normally. Better case tiers are rarer. Wins can use Double or Nothing to replay the same game with the prize at risk.",
+    "plinko": "Choose one of five drop lanes, then nudge left, let drop, or nudge right every row. Peg bounce still adds luck, but your row choices affect the final lane and multiplier. ×1 refunds; higher than ×1 wins.",
+    "luckynumber": "Choose a range, then type your number. Options: 1-10 pays ×3, 1-20 pays ×5, 1-50 pays ×10, and 1-100 pays ×20. Wins can use Double or Nothing to replay the same game with the prize at risk.",
+    "jackpotspin": f"Press Stop Reel three times. Three {Q_SLOT_STAR} pays ×2, three {Q_SLOT_DIAMOND} pays ×5, three {Q_SLOT_CROWN} pays ×10, and three {Q_SLOT_JACKPOT} pays ×50. Two jackpot symbols pay ×2. Wins can use Double or Nothing to replay the same game with the prize at risk.",
     "gamestats": "Shows tracked game stats for you or a mentioned user: total played, wins, profit, per-game records, and hard game badges. Example: `.gamestats` or `.gamestats @user`.",
     "ms": f"Choose 3x3, 4x4, or 5x5, then reveal tiles. Hidden tiles show as {Q_MS_HIDDEN}, safe gems show as {Q_XP}, bombs show as {Q_MINE}, and your cursor shows as {Q_MS_CURSOR}. 3x3 has 1 bomb, 4x4 has 3 bombs, and 5x5 has 5 bombs. Reveal every safe tile to win. The final multiplier starts at ×2.00 and each safe reveal adds +0.15, then the universal gambling streak bonus applies. Hitting a bomb or timing out loses the bet and resets the streak.",
     "minesweeper": f"Choose 3x3, 4x4, or 5x5, then reveal tiles. Hidden tiles show as {Q_MS_HIDDEN}, safe gems show as {Q_XP}, bombs show as {Q_MINE}, and your cursor shows as {Q_MS_CURSOR}. 3x3 has 1 bomb, 4x4 has 3 bombs, and 5x5 has 5 bombs. Reveal every safe tile to win. The final multiplier starts at ×2.00 and each safe reveal adds +0.15, then the universal gambling streak bonus applies. Hitting a bomb or timing out loses the bet and resets the streak.",

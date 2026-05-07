@@ -1987,7 +1987,7 @@ COMMAND_EXAMPLE_OVERRIDES = {
 }
 
 ARGUMENT_HINTS = {
-    "amount": "Use a number like `1000`, `4k`, `1.5m`, or `all` where allowed.",
+    "amount": "Use a number like `1000`, `4k`, or `all` where allowed.",
     "member": "Mention a member or paste their user ID.",
     "user": "Mention a user or paste their user ID.",
     "target": "Mention the target or paste their ID.",
@@ -1998,6 +1998,16 @@ ARGUMENT_HINTS = {
     "message": "Type the message text after the command.",
     "reason": "Type the reason after the member.",
     "choice": "Use one of the choices shown in the command example.",
+}
+
+GAMBLING_AMOUNT_COMMANDS = {
+    "cf", "flip", "coinflip", "roulette", "slots", "slot", "blackjack", "bj",
+    "scratch", "tower", "towers", "qtower", "vault", "memory", "mem",
+    "cardladder", "ladder", "cards", "cladder", "lockpick", "lp", "picklock",
+    "heist", "robbery", "qh", "diceduel", "dice", "dd", "cases", "case",
+    "qcase", "open", "plinko", "plink", "drop", "luckynumber", "ln",
+    "lucky", "number", "jackpotspin", "jackpot", "jspin", "jps", "ms",
+    "minesweeper", "minesweepeer", "wheel", "spin",
 }
 
 def command_usage_example(ctx):
@@ -2018,8 +2028,15 @@ def command_usage_example(ctx):
         usage += f" {command.signature}"
     return usage
 
-def command_argument_hint(error):
+def command_argument_hint(error, ctx=None):
     param_name = getattr(getattr(error, "param", None), "name", "")
+    command_name = getattr(getattr(ctx, "command", None), "name", "")
+    command_aliases = set(getattr(getattr(ctx, "command", None), "aliases", []) or [])
+    if param_name == "amount":
+        command_keys = {command_name, *command_aliases}
+        if command_keys & GAMBLING_AMOUNT_COMMANDS:
+            return "Use a number like `1000`, `4k`, or `all`. Gambling commands cap normal users at `200k`."
+        return "Use a number like `1000`, `4k`, `1m`, `1.5b`, or `all` where allowed."
     if param_name in ARGUMENT_HINTS:
         return ARGUMENT_HINTS[param_name]
     if isinstance(error, (commands.MemberNotFound, commands.UserNotFound)):
@@ -2032,7 +2049,7 @@ def command_argument_hint(error):
 
 async def send_command_usage_correction(ctx, error=None):
     usage = command_usage_example(ctx)
-    hint = command_argument_hint(error)
+    hint = command_argument_hint(error, ctx)
     lines = [f"Type: `{usage}`"]
     if hint:
         lines.append(hint)
@@ -4082,10 +4099,11 @@ def parse_uncapped_game_amount(raw, balance):
     raw = str(raw).strip().lower().replace(",", "").replace("_", "")
     if raw in {"all", "max"}:
         return int(balance)
-    multipliers = {"k": 1_000, "m": 1_000_000, "b": 1_000_000_000}
+    multipliers = {"k": 1_000, "m": 1_000_000, "b": 1_000_000_000, "bn": 1_000_000_000}
     try:
-        if raw and raw[-1] in multipliers:
-            return int(float(raw[:-1]) * multipliers[raw[-1]])
+        for suffix in sorted(multipliers, key=len, reverse=True):
+            if raw.endswith(suffix):
+                return int(float(raw[:-len(suffix)]) * multipliers[suffix])
         return int(float(raw))
     except (TypeError, ValueError):
         return None
