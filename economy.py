@@ -6904,38 +6904,48 @@ async def minesweeper(ctx, amount: str):
             nonlocal game_over, game_won, revealed_count, multiplier
 
             if game_over or revealed[self.row][self.col]:
+                await interaction.response.defer()
                 return
 
             if interaction.user.id != ctx.author.id:
+                await interaction.response.send_message("Use your own Mine Hunt game.", ephemeral=True)
                 return
 
+            await interaction.response.defer()
             revealed[self.row][self.col] = True
             cell = board[self.row][self.col]
 
             if cell == 'bomb':
                 game_over = True
                 game_won = False
-                new_balance = max(0, data['balance'] - amount)
                 # Reveal all
                 for r in range(rows):
                     for c in range(cols):
                         revealed[r][c] = True
+                try:
+                    latest = get_user(user_id)
+                    new_balance = max(0, latest['balance'] - amount)
+                    update_user(
+                        user_id,
+                        balance=new_balance,
+                        gamble_streak=0,
+                        total_lost=latest['total_lost'] + amount
+                    )
+                    record_game_result(user_id, "ms", False, -amount, 0)
+                except Exception:
+                    self.view.clear_items()
+                    await interaction.edit_original_response(
+                        content=render_board() + f"\n{Q_DENIED} Database unavailable. Try again shortly.",
+                        view=self.view
+                    )
+                    return
                 new_content = (
                     render_board() +
                     f"\nLost: **{format_balance(amount)}**\n"
                     f"New Balance: **{format_balance(new_balance)}**"
                 )
                 self.view.clear_items()
-                await interaction.response.edit_message(content=new_content, view=double_or_nothing_view(user_id, "ms", {"winnings": winnings}))
-                try:
-                    update_user(
-                        user_id,
-                        balance=new_balance,
-                        gamble_streak=0,
-                        total_lost=data['total_lost'] + amount
-                    )
-                except:
-                    pass
+                await interaction.edit_original_response(content=new_content, view=self.view)
                 return
 
             revealed_count += 1
@@ -6945,33 +6955,42 @@ async def minesweeper(ctx, amount: str):
             if revealed_count == safe_cells:
                 game_over = True
                 game_won = True
-                new_streak = next_gambling_streak(data)
-                streak_mult = payout_multiplier(data, new_streak)
-                winnings = int(amount * multiplier * streak_mult)
-                new_balance = data['balance'] + winnings - amount
-                new_content = (
-                    render_board() +
-                    f"\nMultiplier: ×{multiplier * streak_mult:.3f} (base ×{multiplier:.2f}, streak ×{streak_mult:.3f})" +
-                    gambling_streak_text(data, new_streak) +
-                    f"\nPrize: **{format_balance(winnings)}**\n"
-                    f"New Balance: **{format_balance(new_balance)}**"
-                )
-                self.view.clear_items()
-                await interaction.response.edit_message(content=new_content, view=self.view)
                 try:
+                    latest = get_user(user_id)
+                    new_streak = next_gambling_streak(latest)
+                    streak_mult = payout_multiplier(latest, new_streak)
+                    winnings = int(amount * multiplier * streak_mult)
+                    new_balance = latest['balance'] + winnings - amount
                     update_user(
                         user_id,
                         balance=new_balance,
                         gamble_streak=new_streak,
-                        total_won=data['total_won'] + winnings - amount
+                        total_won=latest['total_won'] + winnings - amount
                     )
-                except:
-                    pass
+                    stats = record_game_result(user_id, "ms", True, winnings - amount, winnings)
+                    achievements = maybe_award_game_achievements(user_id, "ms", stats)
+                except Exception:
+                    self.view.clear_items()
+                    await interaction.edit_original_response(
+                        content=render_board() + f"\n{Q_DENIED} Database unavailable. Try again shortly.",
+                        view=self.view
+                    )
+                    return
+                new_content = (
+                    render_board() +
+                    f"\nMultiplier: ×{multiplier * streak_mult:.3f} (base ×{multiplier:.2f}, streak ×{streak_mult:.3f})" +
+                    gambling_streak_text(latest, new_streak) +
+                    f"\nPrize: **{format_balance(winnings)}**\n"
+                    f"New Balance: **{format_balance(new_balance)}**"
+                    f"{achievement_reward_text(achievements)}"
+                )
+                self.view.clear_items()
+                await interaction.edit_original_response(content=new_content, view=double_or_nothing_view(user_id, "ms", {"winnings": winnings}))
                 return
 
             # Update board
             new_content = render_board()
-            await interaction.response.edit_message(content=new_content, view=self.view)
+            await interaction.edit_original_response(content=new_content, view=self.view)
 
     class MSView(discord.ui.View):
         def __init__(self):
@@ -6992,15 +7011,17 @@ async def minesweeper(ctx, amount: str):
                 game_over = True
                 game_won = False
                 self.clear_items()
-                new_balance = max(0, data['balance'] - amount)
-                content = (
-                    render_board() +
-                    f"\n> {Q_TIMER} Timed out! Lost **{format_balance(amount)}**\n"
-                    f"New Balance: **{format_balance(new_balance)}**"
-                )
                 try:
+                    latest = get_user(user_id)
+                    new_balance = max(0, latest['balance'] - amount)
+                    update_user(user_id, balance=new_balance, gamble_streak=0, total_lost=latest['total_lost'] + amount)
+                    record_game_result(user_id, "ms", False, -amount, 0)
+                    content = (
+                        render_board() +
+                        f"\n> {Q_TIMER} Timed out! Lost **{format_balance(amount)}**\n"
+                        f"New Balance: **{format_balance(new_balance)}**"
+                    )
                     await self.message.edit(content=content, view=self)
-                    update_user(user_id, balance=new_balance, gamble_streak=0, total_lost=data['total_lost'] + amount)
                 except:
                     pass
 
