@@ -1923,8 +1923,46 @@ GAME_ACHIEVEMENTS = {
     "all_games_1000_played": {"game": None, "field": "played", "target": 1000, "name": "Quewo Grinder", "reward": 10_000_000},
 }
 
+GAME_RISK_ALIASES = {
+    "flip": "cf",
+    "towers": "tower",
+    "mem": "memory",
+    "qmemory": "memory",
+    "ladder": "cardladder",
+    "cards": "cardladder",
+    "cladder": "cardladder",
+    "lp": "lockpick",
+    "picklock": "lockpick",
+    "robbery": "heist",
+    "qh": "heist",
+    "dice": "diceduel",
+    "dd": "diceduel",
+    "case": "cases",
+    "qcase": "cases",
+    "plink": "plinko",
+    "drop": "plinko",
+    "ln": "luckynumber",
+    "lucky": "luckynumber",
+    "number": "luckynumber",
+    "jackpot": "jackpotspin",
+    "jspin": "jackpotspin",
+    "jps": "jackpotspin",
+    "minesweeper": "ms",
+    "minesweepeer": "ms",
+}
+
+def risk_key(game_key):
+    key = str(game_key or "").casefold()
+    return GAME_RISK_ALIASES.get(key, key)
+
 def risk_label(game_key):
-    return GAME_RISK_LABELS.get(game_key, "Medium")
+    return GAME_RISK_LABELS.get(risk_key(game_key), "Medium")
+
+def risk_text(game_key):
+    key = risk_key(game_key)
+    if key not in GAME_RISK_LABELS:
+        return ""
+    return f"{Q_WARNING} Risk: **{risk_label(key)}**"
 
 def game_display_name(game_key):
     return GAME_DISPLAY_NAMES.get(game_key, str(game_key).replace("_", " ").title())
@@ -2154,31 +2192,97 @@ def owned_item_lines(data):
             lines.append(f"{item_display_name(item)}{suffix}")
     return lines
 
-def build_inventory_embed(user, data):
+def item_owned_text(data, item_id, item):
     inventory = user_inventory(data)
+    if "duration_hours" in item:
+        return luck_boost_text(data) if item_id == "fortune_vial" and luck_boost_text(data) else "not active"
+    qty = inventory.count(item_id)
+    max_qty = item.get("max_qty", 1)
+    return f"{qty}/{max_qty}" if max_qty > 1 else ("owned" if qty else "not owned")
+
+def passive_bonus_lines(data):
+    lines = []
+    passive_items = [
+        ("lucky_charm", "+1% gambling payout each"),
+        ("streak_polish", "+0.5% gambling payout each"),
+        ("xp_tonic", "+5% chat XP each"),
+        ("queso_magnet", "+5% level-up rewards each"),
+        ("daily_spice", "+2% claim rewards each"),
+        ("ticket_charm", "+2% lottery bonus entries each"),
+        ("cooldown_clock", "-4% gambling cooldown each"),
+    ]
+    for item_id, text in passive_items:
+        item = SHOP_ITEMS[item_id]
+        qty = item_count(data, item_id)
+        if qty:
+            lines.append(f"{item_display_name(item)} x{qty} - {text}")
+    cosmetics = [item_display_name(SHOP_ITEMS[item_id]) for item_id in ("gold_badge", "high_roller", "velvet_frame", "royal_crown") if has_item(data, item_id)]
+    if cosmetics:
+        lines.append(f"Cosmetics: {', '.join(cosmetics)}")
+    return lines
+
+def inventory_category_lines(data, category, owned_only=False):
+    lines = []
+    for item_id, item in SHOP_ITEMS.items():
+        if item["category"] != category:
+            continue
+        qty = item_count(data, item_id)
+        if owned_only and qty <= 0 and "duration_hours" not in item:
+            continue
+        if owned_only and "duration_hours" in item and not active_luck_bonus(data):
+            continue
+        lines.append(
+            f"**{item_display_name(item)}** - {item_owned_text(data, item_id, item)}\n"
+            f"{item['description']}"
+        )
+    return lines
+
+def build_inventory_embed(user, data, page="overview"):
+    inventory = user_inventory(data)
+    categories = sorted({item["category"] for item in SHOP_ITEMS.values()})
     embed = discord.Embed(
         title=f"{QOIN_BAG} Inventory",
         description=user_mention(user.id),
         color=discord.Color.gold()
     )
+    embed.set_thumbnail(url=user.display_avatar.url)
     boost_text = luck_boost_text(data)
-    if boost_text:
-        embed.add_field(name="Active Effects", value=boost_text, inline=False)
+    total_owned = len(inventory)
+    unique_owned = len(set(inventory))
 
-    for category in sorted({item["category"] for item in SHOP_ITEMS.values()}):
-        lines = []
+    if page == "overview":
+        embed.add_field(name=f"{QASH_EMOJI} Balance", value=format_balance(data["balance"]), inline=True)
+        embed.add_field(name="Owned Items", value=f"{total_owned} total\n{unique_owned} unique", inline=True)
+        embed.add_field(name="Active Effects", value=boost_text or "None active.", inline=False)
+        passive_lines = passive_bonus_lines(data)
+        add_split_embed_field(embed, "Passive Bonuses", passive_lines or ["No passive item bonuses yet."], inline=False)
+        owned_lines = []
+        for category in categories:
+            count = sum(inventory.count(item_id) for item_id, item in SHOP_ITEMS.items() if item["category"] == category)
+            active_temp = any("duration_hours" in item and item_id == "fortune_vial" and active_luck_bonus(data) for item_id, item in SHOP_ITEMS.items() if item["category"] == category)
+            if count or active_temp:
+                owned_lines.append(f"**{category}** - {count} item(s)" + (" + active effect" if active_temp else ""))
+        add_split_embed_field(embed, "Owned By Category", owned_lines or ["Nothing owned yet."], inline=False)
+    elif page == "active":
+        embed.add_field(name="Temporary Effects", value=boost_text or "No temporary effects active.", inline=False)
+        add_split_embed_field(embed, "Passive Bonuses", passive_bonus_lines(data) or ["No passive item bonuses yet."], inline=False)
+    elif page == "owned":
+        owned_lines = []
         for item_id, item in SHOP_ITEMS.items():
-            if item["category"] != category:
-                continue
-            if "duration_hours" in item:
-                text = boost_text if item_id == "fortune_vial" and boost_text else "not active"
-            else:
-                qty = inventory.count(item_id)
-                max_qty = item.get("max_qty", 1)
-                text = f"{qty}/{max_qty}" if max_qty > 1 else ("owned" if qty else "not owned")
-            lines.append(f"**{item_display_name(item)}** - {text}")
-        add_split_embed_field(embed, category, lines, inline=False)
-    embed.set_footer(text="Use .shop to buy items.")
+            qty = item_count(data, item_id)
+            if qty:
+                suffix = f" x{qty}" if item.get("max_qty", 1) > 1 else ""
+                owned_lines.append(f"**{item_display_name(item)}{suffix}**\n{item['description']}")
+        if boost_text:
+            owned_lines.insert(0, f"**{item_display_name(SHOP_ITEMS['fortune_vial'])}**\n{boost_text}")
+        add_split_embed_field(embed, "Owned Items", owned_lines or ["Nothing owned yet."], inline=False)
+    elif page.startswith("category:"):
+        category = page.split(":", 1)[1]
+        add_split_embed_field(embed, category, inventory_category_lines(data, category) or ["No items in this category."], inline=False)
+    else:
+        add_split_embed_field(embed, "Inventory", ["Unknown page."], inline=False)
+
+    embed.set_footer(text="Use the menu to switch pages. Use .shop to buy items.")
     return embed
 
 def user_mention(user_id):
@@ -2598,7 +2702,64 @@ async def inventory(ctx, member: discord.Member = None):
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
 
-    await ctx.send(embed=build_inventory_embed(user, data), allowed_mentions=discord.AllowedMentions.none())
+    class InventoryView(discord.ui.View):
+        def __init__(self):
+            super().__init__(timeout=180)
+            self.page = "overview"
+            self.message = None
+            self.page_select = discord.ui.Select(
+                placeholder="Inventory page",
+                options=[
+                    discord.SelectOption(label="Overview", value="overview", description="Balance, active effects, and bonus summary"),
+                    discord.SelectOption(label="Active Effects", value="active", description="Temporary effects and passive bonuses"),
+                    discord.SelectOption(label="Owned Items", value="owned", description="Only items this user owns"),
+                    *[
+                        discord.SelectOption(label=category, value=f"category:{category}", description=f"All {category.lower()} shop items")
+                        for category in sorted({item["category"] for item in SHOP_ITEMS.values()})
+                    ],
+                ],
+                min_values=1,
+                max_values=1
+            )
+            self.page_select.callback = self.select_page
+            self.add_item(self.page_select)
+
+        async def interaction_check(self, interaction):
+            if interaction.user.id == ctx.author.id:
+                return True
+            await interaction.response.send_message("Open your own inventory with `.inventory`.", ephemeral=True)
+            return False
+
+        async def refresh(self, interaction=None):
+            try:
+                updated = await asyncio.to_thread(get_user, user.id)
+            except Exception:
+                if interaction:
+                    await interaction.followup.send(f"{Q_DENIED} Database unavailable. Try again shortly.", ephemeral=True)
+                return
+            embed = build_inventory_embed(user, updated, self.page)
+            if interaction:
+                await interaction.edit_original_response(embed=embed, view=self, allowed_mentions=discord.AllowedMentions.none())
+            elif self.message:
+                await self.message.edit(embed=embed, view=self, allowed_mentions=discord.AllowedMentions.none())
+
+        async def select_page(self, interaction):
+            self.page = self.page_select.values[0]
+            await interaction.response.defer()
+            await self.refresh(interaction)
+
+        @discord.ui.button(label="Refresh", style=discord.ButtonStyle.secondary)
+        async def refresh_button(self, interaction, button):
+            await interaction.response.defer()
+            await self.refresh(interaction)
+
+        async def on_timeout(self):
+            for item in self.children:
+                item.disabled = True
+            await self.refresh()
+
+    view = InventoryView()
+    view.message = await ctx.send(embed=build_inventory_embed(user, data), view=view, allowed_mentions=discord.AllowedMentions.none())
 
 @commands.command()
 async def quests(ctx):
@@ -7260,9 +7421,9 @@ EXPLANATIONS = {
     "profile": "Shows level, XP, balance, stats, and owned items. Use `.profile` or `.profile @user`.",
     "level": "Alias for `.profile`. Shows level, XP, balance, stats, and owned items.",
     "lvl": "Alias for `.profile`. Shows level, XP, balance, stats, and owned items.",
-    "inventory": "Shows your owned Quewo shop items and active temporary effects.",
-    "inv": "Alias for `.inventory`. Shows owned Quewo shop items and active temporary effects.",
-    "items": "Alias for `.inventory`. Shows owned Quewo shop items and active temporary effects.",
+    "inventory": "Opens a paged inventory UI for owned items, active effects, passive bonuses, and item categories.",
+    "inv": "Alias for `.inventory`. Opens the paged Quewo inventory UI.",
+    "items": "Alias for `.inventory`. Opens the paged Quewo inventory UI.",
     "quests": "Opens your quests UI with main, daily, weekly, and monthly quests plus claim/refresh buttons.",
     "shop": "Opens the categorized Quewo shop UI. Select an item, press Buy, then enter quantity. The shop refreshes after purchases and while the UI is open.",
     "cooldowns": "Shows daily, weekly, monthly, and gambling cooldowns. Use `.cooldowns` or `.cd`.",
@@ -7408,9 +7569,9 @@ DETAILED_EXPLANATIONS = {
     "profile": f"Shows level, current XP toward the next level, balance, net gambling result, and shop items. Chat XP can level you up and level rewards start at {format_balance(LEVEL_REWARD_BASE)}.",
     "level": f"Alias for `.profile`. Shows level, current XP toward the next level, balance, net gambling result, and shop items. Level rewards start at {format_balance(LEVEL_REWARD_BASE)}.",
     "lvl": f"Alias for `.profile`. Shows level, current XP toward the next level, balance, net gambling result, and shop items. Level rewards start at {format_balance(LEVEL_REWARD_BASE)}.",
-    "inventory": "Shows every Quewo shop item by category, your owned count, and active temporary effects like Fortune Vial with a live Discord timestamp.",
-    "inv": "Alias for `.inventory`. Shows every Quewo shop item by category, owned counts, and active temporary effects.",
-    "items": "Alias for `.inventory`. Shows every Quewo shop item by category, owned counts, and active temporary effects.",
+    "inventory": "Opens a paged inventory UI. Overview shows balance, item count, active temporary effects, passive bonuses, and owned categories. Other pages show Active Effects, Owned Items, or a full category list with descriptions and owned counts.",
+    "inv": "Alias for `.inventory`. Opens the paged Quewo inventory UI.",
+    "items": "Alias for `.inventory`. Opens the paged Quewo inventory UI.",
     "quests": "Main quests track long streak achievements: 30 daily claims, 8 weekly claims, and 5 monthly claims. Daily, weekly, and monthly random quests rotate by period and can be claimed from the `.quests` UI.",
     "shop": "Opens an interactive categorized Quewo shop. Select an item, press Buy, then enter the quantity. The bot checks your balance, item limit, and total price before purchasing.",
     "cooldowns": "Shows daily, weekly, monthly, and active gambling command cooldowns in one place.",
@@ -7512,6 +7673,9 @@ def command_help_line(command_name, prefix="."):
     if not text:
         text = (command.help or "").strip().splitlines()[0] if command and command.help else "Runs this Quewo command."
     text = apply_prefix_to_help_text(text, prefix)
+    risk = risk_text(command.name if command and command.name in GAME_RISK_LABELS else command_name)
+    if risk:
+        text = f"{risk}\n{text}"
     return f"`{prefix}{usage_name}`{alias_text}\n{text}"
 
 def add_split_embed_field(embed, name, lines, inline=False, limit=1024):
@@ -7582,6 +7746,9 @@ async def explain(ctx, command_name: str = None):
     detail = DETAILED_EXPLANATIONS.get(key)
     if command and not detail:
         detail = DETAILED_EXPLANATIONS.get(command.name)
+    risk = risk_text(command.name if command and command.name in GAME_RISK_LABELS else key)
+    if risk:
+        text = f"{risk}\n{text}"
     if detail:
         text = f"{text}\n\nDetails: {detail}"
     text = apply_prefix_to_help_text(text, prefix)

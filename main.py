@@ -73,6 +73,7 @@ from economy import (
     Q_USER_EDIT as economy_q_user_edit,
     Q_VOICE as economy_q_voice,
     Q_WARNING as economy_q_warning,
+    risk_label as economy_risk_label,
     setup as economy_setup,
     update_user as economy_update_user,
 )
@@ -2530,22 +2531,22 @@ async def settings_command(ctx):
     await ctx.send(embed=await build_settings_embed(ctx.guild), view=SettingsView(ctx.author.id), allowed_mentions=discord.AllowedMentions.none())
 
 GAME_MENU = [
-    ("PvP", "Tic Tac Toe", "`.ttt @user [bet]`", "Quick 2-player strategy. Supports bets."),
-    ("PvP", "Connect 4", "`.c4 @user [bet]`", "Column strategy game. Supports bets."),
-    ("PvP", "Chess", "`.chess @user [bet]`", "Full chess with UI moves and 10-minute clocks."),
-    ("Skill", "Tower", "`.tower <amount>`", "High risk. Climb floors or cash out."),
-    ("Skill", "Vault", "`.vault <amount>`", "Think through code hints before tries run out."),
-    ("Skill", "Memory", "`.memory <amount>`", "Match pairs before too many mistakes."),
-    ("Skill", "Card Ladder", "`.cardladder <amount>`", "Higher/lower card climb with cash-out."),
-    ("Skill", "Lockpick", "`.lockpick <amount>`", "Set pins using high/low hints before tries run out."),
-    ("Skill", "Minesweeper", "`.ms <amount>`", "Reveal safe tiles and avoid bombs."),
-    ("Luck", "Heist", "`.heist <amount>`", "Pick a route. Riskier routes pay more."),
-    ("Luck", "Dice Duel", "`.diceduel <amount>`", "Roll against the dealer."),
-    ("Luck", "Q Cases", "`.cases <amount>`", "Open weighted prize cases."),
-    ("Luck", "Plinko", "`.plinko <amount>`", "Drop into multiplier slots."),
-    ("Luck", "Lucky Number", "`.luckynumber <amount>`", "Solo or public guessing with chosen range."),
-    ("Luck", "Jackpot Spin", "`.jackpotspin <amount>`", "Pick a target, then spin up to 3 times."),
-    ("Utility", "Picker", "`.picker`", "Randomly picks from options."),
+    ("PvP", "Tic Tac Toe", None, "`.ttt @user [bet]`", "Quick 2-player strategy. Supports bets."),
+    ("PvP", "Connect 4", None, "`.c4 @user [bet]`", "Column strategy game. Supports bets."),
+    ("PvP", "Chess", None, "`.chess @user [bet]`", "Full chess with UI moves and 10-minute clocks."),
+    ("Skill", "Tower", "tower", "`.tower <amount>`", "Climb floors or cash out."),
+    ("Skill", "Vault", "vault", "`.vault <amount>`", "Think through code hints before tries run out."),
+    ("Skill", "Memory", "memory", "`.memory <amount>`", "Match pairs before too many mistakes."),
+    ("Skill", "Card Ladder", "cardladder", "`.cardladder <amount>`", "Higher/lower card climb with cash-out."),
+    ("Skill", "Lockpick", "lockpick", "`.lockpick <amount>`", "Set pins using high/low hints before tries run out."),
+    ("Skill", "Minesweeper", "ms", "`.ms <amount>`", "Reveal safe tiles and avoid bombs."),
+    ("Luck", "Heist", "heist", "`.heist <amount>`", "Pick a route. Riskier routes pay more."),
+    ("Luck", "Dice Duel", "diceduel", "`.diceduel <amount>`", "Roll against the dealer."),
+    ("Luck", "Q Cases", "cases", "`.cases <amount>`", "Open weighted prize cases."),
+    ("Luck", "Plinko", "plinko", "`.plinko <amount>`", "Drop into multiplier slots."),
+    ("Luck", "Lucky Number", "luckynumber", "`.luckynumber <amount>`", "Solo or public guessing with chosen range."),
+    ("Luck", "Jackpot Spin", "jackpotspin", "`.jackpotspin <amount>`", "Pick a target, then spin up to 3 times."),
+    ("Utility", "Picker", None, "`.picker`", "Randomly picks from options."),
 ]
 
 def games_embed(prefix="."):
@@ -2556,10 +2557,11 @@ def games_embed(prefix="."):
     )
     for category in ["PvP", "Skill", "Luck", "Utility"]:
         lines = []
-        for item_category, name, usage, desc in GAME_MENU:
+        for item_category, name, game_key, usage, desc in GAME_MENU:
             if item_category != category:
                 continue
-            lines.append(f"**{name}** - {usage.replace('`.', f'`{prefix}')} — {desc}")
+            risk = f" | Risk: **{economy_risk_label(game_key)}**" if game_key else ""
+            lines.append(f"**{name}** - {usage.replace('`.', f'`{prefix}')} — {desc}{risk}")
         if lines:
             embed.add_field(name=category, value="\n".join(lines), inline=False)
     embed.set_footer(text="Use .explain <game> for full rules.")
@@ -2579,11 +2581,18 @@ class GamesView(View):
 
     @discord.ui.select(
         placeholder="Choose a game",
-        options=[discord.SelectOption(label=name, description=f"{category}: {desc}"[:95], value=name) for category, name, _, desc in GAME_MENU[:25]]
+        options=[
+            discord.SelectOption(
+                label=name,
+                description=(f"{category} | Risk: {economy_risk_label(game_key)} | {desc}" if game_key else f"{category}: {desc}")[:95],
+                value=name
+            )
+            for category, name, game_key, _, desc in GAME_MENU[:25]
+        ]
     )
     async def select_game(self, interaction, select):
         selected = select.values[0]
-        usage = next((usage for _, name, usage, _ in GAME_MENU if name == selected), None)
+        usage = next((usage for _, name, _, usage, _ in GAME_MENU if name == selected), None)
         usage = usage.replace("`.", f"`{self.prefix}") if usage else f"`{self.prefix}help games`"
         await interaction.response.send_message(f"Start with {usage}", ephemeral=True)
 
