@@ -275,6 +275,7 @@ active_polls = load_active_polls()
 runtime_state_restored = False
 user_mentions = {}
 activity_buffer = Counter()
+active_activity_status_messages = {}
 daily_cooldown = {}
 weekly_cooldown = {}
 monthly_cooldown = {}
@@ -1258,8 +1259,9 @@ async def clear_activity_report_channel(channel):
         print(f"Activity manual clear failed: {type(e).__name__} - {e}")
     return deleted_count
 
-async def activity_status_embed(guild, config):
-    await flush_activity_buffer()
+async def activity_status_embed(guild, config, *, flush=True):
+    if flush:
+        await flush_activity_buffer()
     rows = await asyncio.to_thread(get_guild_activity_top, guild.id, 5)
     channel = guild.get_channel(config["channel_id"]) or bot.get_channel(config["channel_id"])
     next_report = config.get("next_report")
@@ -1303,6 +1305,45 @@ async def activity_status_embed(guild, config):
     embed.set_footer(text="Use .activity setup to change the report channel.")
     return embed
 
+def register_activity_status_message(message):
+    if not message or not getattr(message, "guild", None):
+        return
+    active_activity_status_messages[int(message.id)] = {
+        "guild_id": int(message.guild.id),
+        "channel_id": int(message.channel.id),
+        "expires_at": time.time() + 86400,
+    }
+    while len(active_activity_status_messages) > 100:
+        oldest_id = next(iter(active_activity_status_messages))
+        active_activity_status_messages.pop(oldest_id, None)
+
+async def refresh_activity_status_messages():
+    if not active_activity_status_messages:
+        return
+    now = time.time()
+    for message_id, meta in list(active_activity_status_messages.items()):
+        if meta.get("expires_at", 0) <= now:
+            active_activity_status_messages.pop(message_id, None)
+            continue
+        guild_id = int(meta["guild_id"])
+        config = guild_activity_channels.get(guild_id)
+        if not config:
+            active_activity_status_messages.pop(message_id, None)
+            continue
+        guild = bot.get_guild(guild_id)
+        channel = bot.get_channel(int(meta["channel_id"]))
+        if guild is None or channel is None:
+            active_activity_status_messages.pop(message_id, None)
+            continue
+        try:
+            message = await channel.fetch_message(int(message_id))
+            embed = await activity_status_embed(guild, config, flush=False)
+            await message.edit(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+        except (discord.NotFound, discord.Forbidden):
+            active_activity_status_messages.pop(message_id, None)
+        except discord.HTTPException as e:
+            print(f"Activity status message edit failed for guild {guild_id}: {type(e).__name__} - {e}")
+
 async def send_activity_report(guild_id, config):
     guild = bot.get_guild(int(guild_id))
     if guild is None:
@@ -1336,6 +1377,7 @@ async def activity_report_loop():
             await flush_activity_buffer()
             for guild_id, config in list(guild_activity_channels.items()):
                 await refresh_activity_live_message(guild_id, config)
+            await refresh_activity_status_messages()
             last_flush = time.time()
         for guild_id, config in list(guild_activity_channels.items()):
             next_report = config.get("next_report")
@@ -1467,7 +1509,9 @@ async def activity(ctx, action: str = None):
     setup_requested = action and action.casefold() in {"setup", "set", "config", "channel", "reset"}
     if existing_config and not setup_requested:
         embed = await activity_status_embed(ctx.guild, existing_config)
-        return await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+        message = await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+        register_activity_status_message(message)
+        return
 
     if not await can_manage_activity_channel(ctx.author, ctx.guild):
         return await ctx.send("Only the person who added me, an admin, the server owner, or the superowner can set the activity channel.")
@@ -1591,7 +1635,8 @@ async def activitystats(ctx):
         return await ctx.send(f"{economy_q_warning} Activity reports are not set up. Use `.activity setup` first.")
 
     embed = await activity_status_embed(ctx.guild, config)
-    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+    message = await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+    register_activity_status_message(message)
 
 @bot.command(name="editactivity", aliases=["activityedit"])
 async def editactivity(ctx, setting: str = None, *, value: str = None):
@@ -2563,7 +2608,7 @@ def games_embed(prefix="."):
             risk = f" | Risk: **{economy_risk_label(game_key)}**" if game_key else ""
             lines.append(f"**{name}** - {usage.replace('`.', f'`{prefix}')} — {desc}{risk}")
         if lines:
-            embed.add_field(name=category, value="\n".join(lines), inline=False)
+            embed.add_field(name=category, value=joined_embed_value(lines), inline=False)
     embed.set_footer(text="Use .explain <game> for full rules.")
     return embed
 

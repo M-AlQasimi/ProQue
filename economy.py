@@ -6651,6 +6651,7 @@ LUCKY_NUMBER_OPTIONS = {
     50: 10,
     100: 20,
 }
+LUCKY_NUMBER_PUBLIC_WINNER_SHARE = 0.80
 
 @commands.command(name="luckynumber", aliases=["ln", "lucky", "number"])
 async def lucky_number(ctx, amount: str):
@@ -6702,7 +6703,7 @@ async def lucky_number(ctx, amount: str):
                 content=(
                     f"{Q_LUCKY_NUMBER} **LUCKY NUMBER**\n"
                     f"Range: **1-{self.max_number}** | Prize: **×{self.multiplier}**\n"
-                    f"{'Anyone in this channel can guess.' if mode == 'public' else 'Type your guess.'}\n"
+                    f"{'Anyone in this channel can guess. Correct guesser gets 80%; starter gets 20%.' if mode == 'public' else 'Type your guess.'}\n"
                     "You have **30 seconds**."
                 ),
                 view=view
@@ -6735,16 +6736,82 @@ async def lucky_number(ctx, amount: str):
                         break
                     await ctx.send(f"{Q_DENIED} {user_mention(message.author.id)} guessed **{guess}**. Not it.", allowed_mentions=discord.AllowedMentions.none())
             except asyncio.TimeoutError:
-                guesser = guesser or ctx.author
+                pass
 
             won = picked == drawn
-            latest = get_user(ctx.author.id)
-            result = settle_gambling_result(ctx.author.id, "luckynumber", amount, self.multiplier, won, data=latest)
+            starter_id = ctx.author.id
+            winner_id = guesser.id if won and guesser else starter_id
             details = (
                 f"{Q_LUCKY_NUMBER} Mode: **{'Public' if mode == 'public' else 'Solo'}** | Range: **1-{self.max_number}**\n"
                 f"Last Guess: **{picked if picked is not None else 'none'}** | Drawn: **{drawn}**\n"
-                f"Guesser: **{user_mention(guesser.id if guesser else ctx.author.id)}**"
+                f"Guesser: **{user_mention(guesser.id) if guesser else 'none'}**"
             )
+            if won and mode == "public" and winner_id != starter_id:
+                winner_data = get_user(winner_id)
+                new_streak = next_gambling_streak(winner_data)
+                streak_mult = payout_multiplier(winner_data, new_streak)
+                total_prize = int(amount * self.multiplier * streak_mult)
+                winner_share = int(total_prize * LUCKY_NUMBER_PUBLIC_WINNER_SHARE)
+                starter_share = total_prize - winner_share
+
+                starter_data = get_user(starter_id)
+                starter_net = starter_share - amount
+                starter_balance = max(0, int(starter_data["balance"]) + starter_net)
+                starter_updates = {
+                    "balance": starter_balance,
+                    "gamble_streak": 0,
+                }
+                if starter_net >= 0:
+                    starter_updates["total_won"] = int(starter_data["total_won"]) + starter_net
+                else:
+                    starter_updates["total_lost"] = int(starter_data["total_lost"]) + abs(starter_net)
+                update_user(
+                    starter_id,
+                    **starter_updates
+                )
+                record_game_result(starter_id, "luckynumber", False, starter_net, starter_share)
+
+                winner_updated = update_user(
+                    winner_id,
+                    balance=int(winner_data["balance"]) + winner_share,
+                    gamble_streak=new_streak,
+                    total_won=int(winner_data["total_won"]) + winner_share
+                )
+                stats = record_game_result(winner_id, "luckynumber", True, winner_share, winner_share)
+                achievements = maybe_award_game_achievements(winner_id, "luckynumber", stats)
+                result = {
+                    "balance": int(winner_updated["balance"]),
+                    "winnings": winner_share,
+                    "net": winner_share,
+                    "streak": new_streak,
+                    "streak_mult": streak_mult,
+                    "achievements": achievements,
+                }
+                lines = [
+                    f"{Q_LUCKY_NUMBER} **LUCKY NUMBER**",
+                    "─────────────────",
+                    details,
+                    f"Risk: **{risk_label('luckynumber')}**",
+                    f"Starter: **{user_mention(starter_id)}**",
+                    f"Winner: **{user_mention(winner_id)}**",
+                    f"Total Prize: **{format_balance(total_prize)}**",
+                    f"Winner Share (80%): **{format_balance(winner_share)}**",
+                    f"Starter Share (20%): **{format_balance(starter_share)}**",
+                    f"Winner Balance: **{format_balance(result['balance'])}**",
+                    f"Starter Balance: **{format_balance(starter_balance)}**",
+                    f"Streak: **{new_streak}** win(s)",
+                    "Double or Nothing replays the same game with the prize at risk.",
+                    achievement_reward_text(achievements),
+                ]
+                await ctx.send(
+                    "\n".join(line for line in lines if line),
+                    view=double_or_nothing_view(winner_id, "luckynumber", result),
+                    allowed_mentions=discord.AllowedMentions.none()
+                )
+                return
+
+            latest = get_user(starter_id)
+            result = settle_gambling_result(starter_id, "luckynumber", amount, self.multiplier, won, data=latest)
             await send_new_game_result(ctx, "luckynumber", f"{Q_LUCKY_NUMBER} **LUCKY NUMBER**", amount, result, details, self.multiplier if won else None)
 
     class LuckyNumberView(discord.ui.View):
@@ -6909,10 +6976,10 @@ async def gamestats(ctx, member: discord.Member = None):
             lines.append(
                 f"**{game_display_name(row['game_key'])}** - {wins:,}W/{losses:,}L, {win_rate:.1f}% win, {format_balance(int(row['profit'] or 0))}"
             )
-        embed.add_field(name="By Game", value="\n".join(lines), inline=False)
+        add_split_embed_field(embed, "By Game", lines, inline=False)
     achievements = achievement_ids(data)
     game_badges = [GAME_ACHIEVEMENTS[achievement_id]["name"] for achievement_id in achievements if achievement_id in GAME_ACHIEVEMENTS]
-    embed.add_field(name="Badges", value=", ".join(game_badges[:20]) if game_badges else "No game badges yet.", inline=False)
+    add_split_embed_field(embed, "Badges", [", ".join(game_badges[:20])] if game_badges else ["No game badges yet."], inline=False)
     await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
 
@@ -7466,7 +7533,7 @@ EXPLANATIONS = {
     "plinko": f"{Q_PLINKO} Choose a drop lane, then nudge the ball every row.",
     "plink": "Alias for `.plinko`. Choose a drop lane and watch the board.",
     "drop": "Alias for `.plinko`. Choose a drop lane and watch the board.",
-    "luckynumber": f"{Q_LUCKY_NUMBER} Choose solo or public guessing, then choose the number range.",
+    "luckynumber": f"{Q_LUCKY_NUMBER} Choose solo or public guessing, then choose the number range. Public winners split 80% to guesser and 20% to starter.",
     "ln": "Alias for `.luckynumber`. Choose solo/public guessing and a range.",
     "lucky": "Alias for `.luckynumber`. Choose solo/public guessing and a range.",
     "number": "Alias for `.luckynumber`. Choose solo/public guessing and a range.",
@@ -7605,7 +7672,7 @@ DETAILED_EXPLANATIONS = {
     "diceduel": "Choose Steady, Normal, or Push, then press Roll Die twice yourself and make the dealer roll. Steady adds +1 with lower payout, Push subtracts -1 with higher payout, and Normal is classic. Higher total wins; ties refund.",
     "cases": "Three locked cases appear. Pick a case, then pick Safe, Clean, or Royal key. Safe can downgrade, Royal can upgrade, and Clean opens normally. Better case tiers are rarer. Wins can use Double or Nothing to replay the same game with the prize at risk.",
     "plinko": "Choose one of five drop lanes, then nudge left, let drop, or nudge right every row. Peg bounce still adds luck, but your row choices affect the final lane and multiplier. ×1 refunds; higher than ×1 wins.",
-    "luckynumber": "Choose Solo or Public Channel, then choose a range. Solo means only you can guess. Public means anyone in the channel can guess, but the stake and payout still belong to the player who started it. Options: 1-10 pays ×3, 1-20 pays ×5, 1-50 pays ×10, and 1-100 pays ×20.",
+    "luckynumber": "Choose Solo or Public Channel, then choose a range. Solo means only you can guess. Public means anyone in the channel can guess. If another user guesses the public number, they get 80% of the prize and the starter gets 20%. If nobody gets it, only the starter loses. Options: 1-10 pays ×3, 1-20 pays ×5, 1-50 pays ×10, and 1-100 pays ×20.",
     "jackpotspin": f"Choose a target symbol, then press Spin Wheel up to 3 times. Landing on {Q_SLOT_STAR} pays ×2, {Q_SLOT_DIAMOND} pays ×5, {Q_SLOT_CROWN} pays ×10, and {Q_SLOT_JACKPOT} pays ×50 if that was your target. Missing all 3 spins loses the bet.",
     "gamestats": "Shows tracked game stats for you or a mentioned user: total played, wins, profit, per-game records, and hard game badges. Example: `.gamestats` or `.gamestats @user`.",
     "ms": f"Choose 3x3, 4x4, or 5x5, then reveal tiles. Hidden tiles show as {Q_MS_HIDDEN}, safe gems show as {Q_XP}, bombs show as {Q_MINE}, and your cursor shows as {Q_MS_CURSOR}. 3x3 has 1 bomb, 4x4 has 3 bombs, and 5x5 has 5 bombs. Reveal every safe tile to win. The final multiplier starts at ×2.00 and each safe reveal adds +0.15, then the universal gambling streak bonus applies. Hitting a bomb or timing out loses the bet and resets the streak.",
@@ -7701,19 +7768,64 @@ def add_split_embed_field(embed, name, lines, inline=False, limit=1024):
 async def econhelp(ctx):
     """Shows Quewo commands, aliases, and short explanations."""
     prefix = getattr(ctx, "prefix", ".")
-    embed = discord.Embed(
-        title=f"{Q_BOOK} Quewo Help",
-        description=(
-            f"Quewo commands only. Use `{prefix}explain <command>` for detailed help, "
-            f"or `{prefix}help` for the full bot command list if it is enabled."
-        ),
-        color=discord.Color.gold()
-    )
-    for category, commands_ in ECONHELP_COMMANDS:
+
+    def build_embed(category_name="Core"):
+        selected = next(
+            ((category, commands_) for category, commands_ in ECONHELP_COMMANDS if category == category_name),
+            ECONHELP_COMMANDS[0],
+        )
+        category, commands_ = selected
+        category_list = " | ".join(name for name, _ in ECONHELP_COMMANDS)
+        embed = discord.Embed(
+            title=f"{Q_BOOK} Quewo Help - {category}",
+            description=(
+                f"Use `{prefix}explain <command>` for detailed help, or `{prefix}help` for the full bot command list.\n"
+                f"Categories: {category_list}"
+            ),
+            color=discord.Color.gold()
+        )
         lines = [command_help_line(command_name, prefix) for command_name in commands_]
         add_split_embed_field(embed, category, lines, inline=False)
-    embed.set_footer(text=f"Tip: examples: {prefix}explain lottery, {prefix}explain shop, {prefix}explain cf")
-    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+        embed.set_footer(text=f"Select a category below. Examples: {prefix}explain lottery, {prefix}explain shop, {prefix}explain cf")
+        return embed
+
+    class EconHelpSelect(discord.ui.Select):
+        def __init__(self):
+            options = [
+                discord.SelectOption(
+                    label=category,
+                    value=category,
+                    description=f"{len(commands_)} Quewo command(s)"
+                )
+                for category, commands_ in ECONHELP_COMMANDS
+            ]
+            super().__init__(placeholder="Choose a Quewo help category", min_values=1, max_values=1, options=options)
+
+        async def callback(self, interaction):
+            if interaction.user.id != ctx.author.id:
+                await interaction.response.send_message("Use your own econhelp menu.", ephemeral=True)
+                return
+            await interaction.response.edit_message(embed=build_embed(self.values[0]), view=self.view)
+
+    class EconHelpView(discord.ui.View):
+        def __init__(self):
+            super().__init__(timeout=120)
+            self.add_item(EconHelpSelect())
+
+        async def on_timeout(self):
+            for item in self.children:
+                item.disabled = True
+            try:
+                await self.message.edit(view=self)
+            except Exception:
+                pass
+
+    view = EconHelpView()
+    view.message = await ctx.send(
+        embed=build_embed("Core"),
+        view=view,
+        allowed_mentions=discord.AllowedMentions.none()
+    )
 
 @commands.command()
 async def explain(ctx, command_name: str = None):
