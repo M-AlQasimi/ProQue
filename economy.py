@@ -7621,6 +7621,7 @@ EXPLANATIONS = {
     "economyhelp": "Alias for `.econhelp`. Shows Quewo commands, aliases, and short explanations.",
     "quewohelp": "Alias for `.econhelp`. Shows Quewo commands, aliases, and short explanations.",
     "ehelp": "Alias for `.econhelp`. Shows Quewo commands, aliases, and short explanations.",
+    "explain": "Shows detailed help for one command. Use `.explain <command>`.",
     "prefix": "Shows or changes this server's command prefix.",
     "preifx": "Typo alias for `.prefix`. Shows or changes this server's command prefix.",
     "ttt": "Starts Tic Tac Toe against another user. If the challenger sets a bet, the opponent must accept that bet too.",
@@ -7708,6 +7709,7 @@ DETAILED_EXPLANATIONS = {
     "setbday": "Saves your birthday as day/month. Use `.setbday 25/12`, or run `.setbday` to enter it through a UI. Birthday announcements use the server's configured birthday channel.",
     "translate": "Translates provided text or the message you reply to. Friendly forms work: `.translate hello to Italian`, `.translate to Spanish hello`, `.translate it hello`, or reply to a message with `.translate to Spanish`. If no target is given, it translates to English.",
     "settings": "Admin-power server setup dashboard. It summarizes prefix, logs, reaction logs, birthday channel, activity reports, lottery, and disabled command count. Buttons let admins refresh the dashboard, change the prefix, rerun log setup, or set birthdays/activity to the current channel.",
+    "explain": "Shows detailed help for a command, including usage, aliases, short explanation, and longer details when available. Example: `.explain slots`.",
     "games": "Shows a central game menu with quick usage for Tic Tac Toe, Connect 4, chess, Tower, Vault, Memory, Minesweeper, and Picker. The select menu gives the start command for each game.",
     "ttt": "Challenge a user to Tic Tac Toe. The opponent accepts the game first. If the challenger enables a bet and enters an amount, the opponent gets a second accept/decline prompt for that exact bet before the game starts.",
     "c4": "Challenge a user to Connect 4. The opponent accepts the game first. If the challenger enables a bet and enters an amount, the opponent gets a second accept/decline prompt for that exact bet before the game starts. The board shows column numbers below the grid.",
@@ -7738,7 +7740,7 @@ def command_help_line(command_name, prefix="."):
     if command and not text:
         text = EXPLANATIONS.get(command.name)
     if not text:
-        text = (command.help or "").strip().splitlines()[0] if command and command.help else "Runs this Quewo command."
+        text = (command.help or "").strip().splitlines()[0] if command and command.help else "No short explanation is written for this command yet."
     text = apply_prefix_to_help_text(text, prefix)
     risk = risk_text(command.name if command and command.name in GAME_RISK_LABELS else command_name)
     if risk:
@@ -7829,6 +7831,7 @@ async def econhelp(ctx):
 
 @commands.command()
 async def explain(ctx, command_name: str = None):
+    """Shows detailed help for one command."""
     prefix = getattr(ctx, "prefix", ".")
     if not command_name:
         command_names = sorted({command.name for command in bot.commands})
@@ -7851,7 +7854,7 @@ async def explain(ctx, command_name: str = None):
     if command and not text:
         text = EXPLANATIONS.get(command.name)
     if command and not text:
-        text = (command.help or "").strip().splitlines()[0] if command.help else "Runs this bot command."
+        text = (command.help or "").strip().splitlines()[0] if command.help else "No short explanation is written for this command yet."
     if not text and key != "admin":
         await ctx.send("I don't have a short explanation for that command.", delete_after=30)
         return

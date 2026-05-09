@@ -34,6 +34,7 @@ from economy import (
     award_chat_xp as economy_award_chat_xp,
     build_level_up_embed as economy_build_level_up_embed,
     ensure_db_ready as economy_ensure_db_ready,
+    EXPLANATIONS as economy_explanations,
     format_balance as economy_format_balance,
     get_lottery_config as economy_get_lottery_config,
     get_user as economy_get_user,
@@ -2403,6 +2404,21 @@ def render_help_embed(guild=None, category_name=None):
             embed.add_field(name=category, value=f"{len(loaded)} commands", inline=True)
     return embed
 
+def command_short_description(command):
+    if not command:
+        return "No extra help available."
+    explanation = economy_explanations.get(command.name)
+    if explanation:
+        return explanation
+    for alias in getattr(command, "aliases", []) or []:
+        explanation = economy_explanations.get(alias)
+        if explanation:
+            return explanation
+    help_text = (command.help or "").strip()
+    if help_text:
+        return help_text.splitlines()[0]
+    return "No short explanation is written for this command yet."
+
 class HelpCategoryButton(Button):
     def __init__(self, category_name):
         super().__init__(label=category_name, style=discord.ButtonStyle.secondary)
@@ -2444,7 +2460,7 @@ async def help_command(ctx, command_name: str = None):
         if command.signature:
             usage += f" {command.signature}"
         aliases = f"\nAliases: {', '.join(command.aliases)}" if command.aliases else ""
-        description = (command.help or "").strip().splitlines()[0] if command.help else "No extra help available."
+        description = command_short_description(command)
         setup_note = "\nRun it with no arguments to open the setup UI." if command.name in SETUP_UI_COMMANDS else ""
         return await ctx.send(
             f"**{usage}**\n{description}{aliases}{setup_note}",
@@ -2693,7 +2709,7 @@ async def slash_help(interaction: discord.Interaction, command: str = ""):
         if command_obj.signature:
             usage += f" {command_obj.signature}"
         aliases = f"\nAliases: {', '.join(command_obj.aliases)}" if command_obj.aliases else ""
-        description = (command_obj.help or "").strip().splitlines()[0] if command_obj.help else "No extra help available."
+        description = command_short_description(command_obj)
         setup_note = "\nRun it through `/run`, or use the setup UI where available." if command_obj.name in SETUP_UI_COMMANDS else "\nRun it through `/run command args`."
         return await interaction.response.send_message(f"**{usage}**\n{description}{aliases}{setup_note}", ephemeral=True)
     await interaction.response.send_message(embed=render_help_embed(interaction.guild), ephemeral=True)
