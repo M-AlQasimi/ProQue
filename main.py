@@ -1999,12 +1999,12 @@ COMMAND_EXAMPLE_OVERRIDES = {
     "poll": ".poll Best color? | Blue | Red | 10m",
     "prefix": ".prefix !",
     "preifx": ".preifx !",
-    "purge": ".purge 20",
+    "purge": ".purge @user 20",
     "remove": ".remove @user 1000",
     "removerole": ".removerole @user @role",
     "reply": ".reply <message id/link> message",
     "roulette": ".roulette 1000 red",
-    "rpurge": ".rpurge 20",
+    "rpurge": ".rpurge @user 20",
     "rshut": ".rshut @user",
     "scratch": ".scratch 1000",
     "send": ".send #channel message",
@@ -2419,6 +2419,15 @@ def command_short_description(command):
         return help_text.splitlines()[0]
     return "No short explanation is written for this command yet."
 
+def command_usage_text(command, prefix):
+    example = COMMAND_EXAMPLE_OVERRIDES.get(command.name)
+    if example:
+        return example.replace(".", prefix, 1) if example.startswith(".") else example
+    usage = f"{prefix}{command.qualified_name}"
+    if command.signature:
+        usage += f" {command.signature}"
+    return usage
+
 class HelpCategoryButton(Button):
     def __init__(self, category_name):
         super().__init__(label=category_name, style=discord.ButtonStyle.secondary)
@@ -2456,9 +2465,7 @@ async def help_command(ctx, command_name: str = None):
             return await ctx.send("Command not found.", delete_after=30)
 
         current_prefix = prefix_for_guild(ctx.guild)
-        usage = f"{current_prefix}{command.qualified_name}"
-        if command.signature:
-            usage += f" {command.signature}"
+        usage = command_usage_text(command, current_prefix)
         aliases = f"\nAliases: {', '.join(command.aliases)}" if command.aliases else ""
         description = command_short_description(command)
         setup_note = "\nRun it with no arguments to open the setup UI." if command.name in SETUP_UI_COMMANDS else ""
@@ -2705,9 +2712,7 @@ async def slash_help(interaction: discord.Interaction, command: str = ""):
         if not command_obj:
             return await interaction.response.send_message("Command not found.", ephemeral=True)
         prefix = prefix_for_guild(interaction.guild)
-        usage = f"{prefix}{command_obj.qualified_name}"
-        if command_obj.signature:
-            usage += f" {command_obj.signature}"
+        usage = command_usage_text(command_obj, prefix)
         aliases = f"\nAliases: {', '.join(command_obj.aliases)}" if command_obj.aliases else ""
         description = command_short_description(command_obj)
         setup_note = "\nRun it through `/run`, or use the setup UI where available." if command_obj.name in SETUP_UI_COMMANDS else "\nRun it through `/run command args`."
@@ -5253,9 +5258,82 @@ async def runlock(ctx):
 
 from collections import Counter
 
+async def parse_member_count_args(ctx, args):
+    try:
+        tokens = shlex.split(str(args or ""))
+    except ValueError:
+        return None, None
+    if not tokens:
+        return None, None
+
+    count_indexes = []
+    for index, token in enumerate(tokens):
+        if token.isdigit():
+            count_indexes.append(index)
+    if not count_indexes:
+        return None, None
+
+    count_index = len(tokens) - 1 if len(tokens) - 1 in count_indexes else count_indexes[0]
+    amount = int(tokens[count_index])
+    member_text = " ".join(tokens[:count_index] + tokens[count_index + 1:]).strip()
+    if not member_text:
+        return amount, None
+    try:
+        member = await commands.MemberConverter().convert(ctx, member_text)
+    except commands.BadArgument:
+        return amount, False
+    return amount, member
+
+async def parse_member_role_args(ctx, args):
+    try:
+        tokens = shlex.split(str(args or ""))
+    except ValueError:
+        return None, None
+    if len(tokens) < 2:
+        return None, None
+
+    member = None
+    role = None
+    used = set()
+    for index, token in enumerate(tokens):
+        if member is None:
+            try:
+                member = await commands.MemberConverter().convert(ctx, token)
+                used.add(index)
+                continue
+            except commands.BadArgument:
+                pass
+        if role is None:
+            try:
+                role = await commands.RoleConverter().convert(ctx, token)
+                used.add(index)
+            except commands.BadArgument:
+                pass
+    if member is not None and role is not None:
+        return member, role
+
+    remaining = [token for index, token in enumerate(tokens) if index not in used]
+    remaining_text = " ".join(remaining)
+    if member is None and remaining_text:
+        try:
+            member = await commands.MemberConverter().convert(ctx, remaining_text)
+        except commands.BadArgument:
+            pass
+    if role is None and remaining_text:
+        try:
+            role = await commands.RoleConverter().convert(ctx, remaining_text)
+        except commands.BadArgument:
+            pass
+    return member, role
+
 @bot.command()
 @is_admin_power()
-async def purge(ctx, amount: int, member: discord.Member = None):
+async def purge(ctx, *, args: str = None):
+    amount, member = await parse_member_count_args(ctx, args)
+    if amount is None:
+        return await ctx.send("Use `.purge 20`, `.purge @user 20`, or `.purge 20 @user`.", delete_after=10)
+    if member is False:
+        return await ctx.send("I couldn't find that member. Use `.purge @user 20` or `.purge 20 @user`.", delete_after=10)
     if amount <= 0:
         return await ctx.send("Amount must be greater than 0.", delete_after=5)
     await safe_delete_message(ctx.message)
@@ -5292,7 +5370,12 @@ async def purge(ctx, amount: int, member: discord.Member = None):
 
 @bot.command()
 @is_admin_power()
-async def rpurge(ctx, amount: int, member: discord.Member = None):
+async def rpurge(ctx, *, args: str = None):
+    amount, member = await parse_member_count_args(ctx, args)
+    if amount is None:
+        return await ctx.send("Use `.rpurge 20`, `.rpurge @user 20`, or `.rpurge 20 @user`.", delete_after=10)
+    if member is False:
+        return await ctx.send("I couldn't find that member. Use `.rpurge @user 20` or `.rpurge 20 @user`.", delete_after=10)
     if amount <= 0:
         return await ctx.send("Amount must be greater than 0.", delete_after=5)
 
@@ -5422,7 +5505,11 @@ async def kick(ctx, member: discord.Member, *, reason=None):
 
 @bot.command()
 @is_admin_power()
-async def addrole(ctx, member: discord.Member, role: discord.Role):
+async def addrole(ctx, *, args: str = None):
+    """Adds a role to a member. Member and role can be in either order."""
+    member, role = await parse_member_role_args(ctx, args)
+    if member is None or role is None:
+        return await ctx.send("Use `.addrole @user @role` or `.addrole @role @user`.")
     if not can_act_on(ctx.author, member, ctx.guild):
         return await ctx.send("You can't edit that member's roles.")
     await member.add_roles(role)
@@ -5430,7 +5517,11 @@ async def addrole(ctx, member: discord.Member, role: discord.Role):
 
 @bot.command()
 @is_admin_power()
-async def removerole(ctx, member: discord.Member, role: discord.Role):
+async def removerole(ctx, *, args: str = None):
+    """Removes a role from a member. Member and role can be in either order."""
+    member, role = await parse_member_role_args(ctx, args)
+    if member is None or role is None:
+        return await ctx.send("Use `.removerole @user @role` or `.removerole @role @user`.")
     if not can_act_on(ctx.author, member, ctx.guild):
         return await ctx.send("You can't edit that member's roles.")
     await member.remove_roles(role)

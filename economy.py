@@ -2,6 +2,7 @@ import asyncio
 import random
 import os
 import re
+import shlex
 import time
 import psycopg2
 from psycopg2.extras import RealDictCursor
@@ -2585,6 +2586,31 @@ def parse_whole_number(raw):
     except (TypeError, ValueError):
         return None
 
+def parse_target_amount_args(raw_args, *, allow_all=False):
+    try:
+        tokens = shlex.split(str(raw_args or ""))
+    except ValueError:
+        return None, None
+    if len(tokens) < 2:
+        return None, None
+
+    amount_indexes = []
+    for index, token in enumerate(tokens):
+        if allow_all and token.casefold() == "all":
+            amount_indexes.append(index)
+            continue
+        if parse_whole_number(token) is not None:
+            amount_indexes.append(index)
+    if not amount_indexes:
+        return None, None
+
+    amount_index = len(tokens) - 1 if len(tokens) - 1 in amount_indexes else amount_indexes[0]
+    amount = tokens[amount_index]
+    target = " ".join(tokens[:amount_index] + tokens[amount_index + 1:]).strip()
+    if not target:
+        return None, None
+    return target, amount
+
 async def send_nonpositive_amount_error(ctx, raw_amount):
     if str(raw_amount).lower() == "all":
         await ctx.send(f"{Q_DENIED} You don't have any {CURRENCY_EMOJI} to use.")
@@ -4658,8 +4684,18 @@ async def blackjack(ctx, amount: str):
 # GIVE
 # =====================
 @commands.command(aliases=["pay"])
-async def give(ctx, member: discord.Member, amount: str):
+async def give(ctx, *, args: str = None):
     if not await ensure_db_ready(ctx):
+        return
+
+    target, amount = parse_target_amount_args(args, allow_all=True)
+    if not target:
+        await ctx.send(f"{Q_DENIED} Use `.give @user <amount>` or `.give <amount> @user`.")
+        return
+    try:
+        member = await commands.MemberConverter().convert(ctx, target)
+    except commands.BadArgument:
+        await ctx.send(f"{Q_DENIED} Mention a user or paste their ID. Example: `.give @user 10k`.")
         return
 
     user_id = ctx.author.id
@@ -4677,7 +4713,7 @@ async def give(ctx, member: discord.Member, amount: str):
         raw_amount = amount
         parsed = parse_whole_number(amount)
         if parsed is None:
-            await ctx.send(f"{Q_DENIED} Use `.give @user all` or `.give @user <amount>`")
+            await ctx.send(f"{Q_DENIED} Use `.give @user all`, `.give all @user`, or a number like `10k`.")
             return
         amount = parsed
 
@@ -4789,7 +4825,7 @@ async def qstats(ctx):
 # ADD / REMOVE (OWNER)
 # =====================
 @commands.command()
-async def add(ctx, target: str, amount: str):
+async def add(ctx, *, args: str = None):
     if not await ensure_db_ready(ctx):
         return
 
@@ -4797,6 +4833,10 @@ async def add(ctx, target: str, amount: str):
         await ctx.send(f"{Q_DENIED} Server owner or admin only.")
         return
 
+    target, amount = parse_target_amount_args(args)
+    if not target:
+        await ctx.send(f"{Q_DENIED} Use `.add @user <amount>` or `.add <amount> @user`.")
+        return
     amount = parse_whole_number(amount)
     if amount is None:
         await ctx.send(f"{Q_DENIED} Use `.add @user <amount>`, `.add @role <amount>`, or `.add @everyone <amount>`.")
@@ -4896,12 +4936,21 @@ async def add(ctx, target: str, amount: str):
     ], color=discord.Color.green())
 
 @commands.command()
-async def remove(ctx, member: discord.Member, amount: str):
+async def remove(ctx, *, args: str = None):
     if not await ensure_db_ready(ctx):
         return
 
     if not has_economy_owner_power(ctx.author.id, ctx.guild):
         await ctx.send(f"{Q_DENIED} Server owner or admin only.")
+        return
+    target, amount = parse_target_amount_args(args, allow_all=True)
+    if not target:
+        await ctx.send(f"{Q_DENIED} Use `.remove @user <amount>` or `.remove <amount> @user`.")
+        return
+    try:
+        member = await commands.MemberConverter().convert(ctx, target)
+    except commands.BadArgument:
+        await ctx.send(f"{Q_DENIED} Mention a user or paste their ID. Example: `.remove @user 10k`.")
         return
     if not can_economy_act_on(ctx.author.id, member.id, ctx.guild):
         await ctx.send(f"{Q_DENIED} You can't edit that user's Quewo balance.")
@@ -4924,7 +4973,7 @@ async def remove(ctx, member: discord.Member, amount: str):
         update_user(member.id, balance=new_balance)
         log_transaction(member.id, "owner_remove", -amount, f"By {ctx.author.id}")
     except ValueError:
-        await ctx.send(f"{Q_DENIED} Use `.remove @user all` or `.remove @user <amount>`")
+        await ctx.send(f"{Q_DENIED} Use `.remove @user all`, `.remove all @user`, or a number like `10k`.")
         return
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
@@ -4943,7 +4992,7 @@ async def remove(ctx, member: discord.Member, amount: str):
     ], color=discord.Color.red())
 
 @commands.command()
-async def addtick(ctx, target: str, amount: str):
+async def addtick(ctx, *, args: str = None):
     """Superowner only. Adds free lottery tickets to a user, role, or everyone."""
     if ctx.guild is None:
         await ctx.send(f"{Q_DENIED} `.addtick` only works in servers.")
@@ -4952,6 +5001,10 @@ async def addtick(ctx, target: str, amount: str):
         return
     if not is_superowner_id(ctx.author.id):
         await ctx.send(f"{Q_DENIED} Superowner only.")
+        return
+    target, amount = parse_target_amount_args(args)
+    if not target:
+        await ctx.send(f"{Q_DENIED} Use `.addtick @user <tickets>` or `.addtick <tickets> @user`.")
         return
     amount = parse_whole_number(amount)
     if amount is None:
@@ -5000,7 +5053,7 @@ async def addtick(ctx, target: str, amount: str):
     ], color=discord.Color.green())
 
 @commands.command()
-async def settick(ctx, target: str, amount: str):
+async def settick(ctx, *, args: str = None):
     """Superowner only. Sets lottery tickets for a user, role, or everyone."""
     if ctx.guild is None:
         await ctx.send(f"{Q_DENIED} `.settick` only works in servers.")
@@ -5009,6 +5062,10 @@ async def settick(ctx, target: str, amount: str):
         return
     if not is_superowner_id(ctx.author.id):
         await ctx.send(f"{Q_DENIED} Superowner only.")
+        return
+    target, amount = parse_target_amount_args(args)
+    if not target:
+        await ctx.send(f"{Q_DENIED} Use `.settick @user <tickets>` or `.settick <tickets> @user`.")
         return
     amount = parse_whole_number(amount)
     if amount is None:
@@ -5054,7 +5111,7 @@ async def settick(ctx, target: str, amount: str):
     ], color=discord.Color.gold())
 
 @commands.command()
-async def setquesos(ctx, target: str, amount: str):
+async def setquesos(ctx, *, args: str = None):
     """Superowner only. Sets balances for a user, role, or everyone."""
     if ctx.guild is None:
         await ctx.send(f"{Q_DENIED} `.setquesos` only works in servers.")
@@ -5063,6 +5120,10 @@ async def setquesos(ctx, target: str, amount: str):
         return
     if not is_superowner_id(ctx.author.id):
         await ctx.send(f"{Q_DENIED} Superowner only.")
+        return
+    target, amount = parse_target_amount_args(args)
+    if not target:
+        await ctx.send(f"{Q_DENIED} Use `.setquesos @user <amount>` or `.setquesos <amount> @user`.")
         return
     amount = parse_whole_number(amount)
     if amount is None:
@@ -7549,17 +7610,17 @@ EXPLANATIONS = {
     "minesweeper": f"Pick a grid size, reveal safe tiles {Q_XP}, avoid bombs {Q_MINE}.",
     "minesweepeer": f"Pick a grid size, reveal safe tiles {Q_XP}, avoid bombs {Q_MINE}.",
     "wheel": f"Spin the wheel for a multiplier or blank result: {wheel_segment_help_text()}.",
-    "give": "Transfers quesos to another user. Normal transfers burn 3% tax.",
+    "give": "Transfers quesos to another user. Target and amount can be in either order.",
     "lb": "Shows a paginated local/global leaderboard with ranking types for quesos, level, earnings, wins, losses, net gambling, and messages.",
     "leaderboard": "Shows a paginated local/global leaderboard with ranking types for quesos, level, earnings, wins, losses, net gambling, and messages.",
     "qstats": "Admin-power command. Shows global Quewo economy health, money supply, gambling totals, lotteries, and tracked taxes/payments.",
     "economystats": "Alias for `.qstats`. Shows global Quewo economy health.",
     "qstatus": "Alias for `.qstats`. Shows global Quewo economy health.",
-    "add": "Admin-power command. Adds quesos to a user. Superowner can bulk add to @everyone or a role.",
-    "remove": "Admin-power command. Removes quesos from a user.",
-    "addtick": "Superowner command. Adds free lottery tickets to a user, role, or @everyone.",
-    "settick": "Superowner command. Sets lottery tickets for a user, role, or @everyone.",
-    "setquesos": "Superowner command. Sets balances for a user, role, or @everyone.",
+    "add": "Admin-power command. Adds quesos. Target and amount can be in either order.",
+    "remove": "Admin-power command. Removes quesos. Target and amount can be in either order.",
+    "addtick": "Superowner command. Adds free lottery tickets. Target and tickets can be in either order.",
+    "settick": "Superowner command. Sets lottery tickets. Target and tickets can be in either order.",
+    "setquesos": "Superowner command. Sets balances. Target and amount can be in either order.",
     "disable": "Admin-power command. Disables one bot command. Superowner can still bypass disabled commands.",
     "enable": "Admin-power command. Enables one disabled command.",
     "disableall": "Admin-power command. Disables all commands except enableall.",
@@ -7577,7 +7638,9 @@ EXPLANATIONS = {
     "unlock": "Admin-power command. Unlocks this channel.",
     "rlockdown": "Admin-power command. Disables reactions in this channel.",
     "runlock": "Admin-power command. Enables reactions in this channel.",
-    "purge": "Admin-power command. Deletes messages.",
+    "purge": "Admin-power command. Deletes messages. Count and member can be in either order.",
+    "addrole": "Admin-power command. Adds a role to a member. Member and role can be in either order.",
+    "removerole": "Admin-power command. Removes a role from a member. Member and role can be in either order.",
     "reactcount": "Admin-power command. Counts reactions on a message.",
     "sleep": "Marks you as sleeping until you send a message.",
     "fsleep": "Superowner command. Marks members as sleeping.",
@@ -7680,15 +7743,15 @@ DETAILED_EXPLANATIONS = {
     "minesweeper": f"Choose 3x3, 4x4, or 5x5, then reveal tiles. Hidden tiles show as {Q_MS_HIDDEN}, safe gems show as {Q_XP}, bombs show as {Q_MINE}, and your cursor shows as {Q_MS_CURSOR}. 3x3 has 1 bomb, 4x4 has 3 bombs, and 5x5 has 5 bombs. Reveal every safe tile to win. The final multiplier starts at ×2.00 and each safe reveal adds +0.15, then the universal gambling streak bonus applies. Hitting a bomb or timing out loses the bet and resets the streak.",
     "minesweepeer": f"Choose 3x3, 4x4, or 5x5, then reveal tiles. Hidden tiles show as {Q_MS_HIDDEN}, safe gems show as {Q_XP}, bombs show as {Q_MINE}, and your cursor shows as {Q_MS_CURSOR}. 3x3 has 1 bomb, 4x4 has 3 bombs, and 5x5 has 5 bombs. Reveal every safe tile to win. The final multiplier starts at ×2.00 and each safe reveal adds +0.15, then the universal gambling streak bonus applies. Hitting a bomb or timing out loses the bet and resets the streak.",
     "wheel": f"The wheel lands on a segment: {wheel_segment_help_text()}. ×2, ×3, and ×5 are wins. ×1 gives your stake back, ×0.5 loses half the bet, and BLANK changes nothing. Wins use the universal gambling streak bonus; losses and partial losses reset it.",
-    "give": f"Moves quesos from you to another user. Normal transfers burn {int(TRANSFER_TAX_RATE * 100)}% as tax. Admin-power users can use `.give @user all`. The message shows sent amount, tax, received amount, and balances.",
+    "give": f"Moves quesos from you to another user. Normal transfers burn {int(TRANSFER_TAX_RATE * 100)}% as tax. Use `.give @user 10k` or `.give 10k @user`. Admin-power users can use `all`. The message shows sent amount, tax, received amount, and balances.",
     "lb": "Shows a paginated leaderboard. Use the buttons to switch between local server rankings and global all-server rankings. Use the ranking type menu to sort by quesos, level, earnings, total won, total lost, net gambling, or messages. The embed also shows your rank for the selected scope and type.",
     "leaderboard": "Alias for `.lb`. Shows local/global paginated rankings with selectable ranking types and your rank.",
     "qstats": "Admin-power command for checking the global Quewo economy. It shows total money supply, total earned, gambling won/lost/net, active lotteries, lottery pots, ticket count, tracked taxes/payments, richest user, and tracked messages.",
-    "add": "Admin-power command. `.add @user <amount>` adds new quesos to one user. Superowner can use `.add @everyone <amount>` or `.add @role <amount>` to add that amount to every server member or every member with that role. It does not support `all`.",
-    "remove": "Admin-power command. Removes quesos from a user. `.remove @user all` removes their full balance. The balance cannot go below 0, and the message shows old and new balance.",
-    "addtick": "Superowner-only lottery admin command. Use `.addtick @user <tickets>`, `.addtick @role <tickets>`, or `.addtick @everyone <tickets>` to add free entries to the current lottery without changing the prize pot or charging users. The lottery panel refreshes after the change.",
-    "settick": "Superowner-only lottery admin command. Use `.settick @user <tickets>`, `.settick @role <tickets>`, or `.settick @everyone <tickets>` to set current lottery entries to an exact number. Setting tickets does not charge users or change the prize pot. The lottery panel refreshes after the change.",
-    "setquesos": f"Superowner-only Quewo admin command. Use `.setquesos @user <amount>`, `.setquesos @role <amount>`, or `.setquesos @everyone <amount>` to set balances to an exact {CURRENCY_EMOJI} amount. This sets balance directly instead of adding or removing a delta.",
+    "add": "Admin-power command. Adds new quesos to a user. `.add @user <amount>` and `.add <amount> @user` both work. Superowner can use @everyone or a role. It does not support `all`.",
+    "remove": "Admin-power command. Removes quesos from a user. `.remove @user <amount>` and `.remove <amount> @user` both work. Use `all` to remove their full balance.",
+    "addtick": "Superowner-only lottery admin command. Adds free entries to the current lottery. `.addtick @user <tickets>` and `.addtick <tickets> @user` both work, including roles and @everyone.",
+    "settick": "Superowner-only lottery admin command. Sets current lottery entries to an exact number. `.settick @user <tickets>` and `.settick <tickets> @user` both work, including roles and @everyone.",
+    "setquesos": f"Superowner-only Quewo admin command. Sets balances directly. `.setquesos @user <amount>` and `.setquesos <amount> @user` both work, including roles and @everyone.",
     "prefix": "Changes the command prefix for this server. Use `.prefix !` or `.preifx !`. If the superowner is in the server, only the superowner can change it. If not, the server owner or admins can change it.",
     "preifx": "Typo alias for `.prefix`. Changes the command prefix for this server.",
     "setbdaychannel": "Sets the birthday announcement channel for this server. Use `.setbdaychannel #birthdays` or `.setbdaychannel <channel id>`. Users keep one birthday date globally, and the bot announces it in every server where they are still a member and a birthday channel is configured.",

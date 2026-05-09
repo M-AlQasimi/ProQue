@@ -169,8 +169,8 @@ Run safe versions first:
 - `.rolesinfo`
 - `.roleinfo @role`
 - `.test`
-- `.purge 1`
-- `.rpurge 1`
+- `.purge 1` and `.purge @normal 1`
+- `.rpurge 1` and `.rpurge @normal 1`
 - `.steal` by replying to an emoji/sticker/image
 - `.giveaway 1m test prize`
 - `.giveaway test prize 1m`
@@ -190,8 +190,8 @@ Run only if safe:
 - `.kick @normal test`
 - `.ban @normal test`
 - `.unban <normal_user_id>`
-- `.addrole @normal @role`
-- `.removerole @normal @role`
+- `.addrole @normal @role` and `.addrole @role @normal`
+- `.removerole @normal @role` and `.removerole @role @normal`
 - `.deleterole @role`
 - `.setlogs`
 - `.lock`
@@ -272,7 +272,7 @@ Run:
 - `.ms 1000`
 - `.wheel 1000`
 - `.gamestats`
-- `.give @normal 1000`
+- `.give @normal 1000` and `.give 1000 @normal`
 - `.lb`
 - `.qstats`
 - `.econhelp`
@@ -292,16 +292,16 @@ Run:
 - `.editlottery cut 10`
 - `.editlottery channel #channel`
 - `.buytick 1`
-- `.add @normal 1000`
-- `.remove @normal 100`
-- `.addtick @normal 2`
-- `.settick @normal 5`
-- `.setquesos @normal 2500000`
-- `.add @role 1000`
-- `.add @everyone 1000`
-- `.addtick @role 1`
-- `.settick @role 1`
-- `.setquesos @role 1000`
+- `.add @normal 1000` and `.add 1000 @normal`
+- `.remove @normal 100` and `.remove 100 @normal`
+- `.addtick @normal 2` and `.addtick 2 @normal`
+- `.settick @normal 5` and `.settick 5 @normal`
+- `.setquesos @normal 2500000` and `.setquesos 2500000 @normal`
+- `.add @role 1000` and `.add 1000 @role`
+- `.add @everyone 1000` and `.add 1000 @everyone`
+- `.addtick @role 1` and `.addtick 1 @role`
+- `.settick @role 1` and `.settick 1 @role`
+- `.setquesos @role 1000` and `.setquesos 1000 @role`
 - `.stoplottery`
 - `.qstats`
 
@@ -339,8 +339,8 @@ Run:
 - `.roleinfo @role`
 - `.test`
 - `.endttt`
-- `.purge 1` and confirm/cancel once.
-- `.rpurge 1` and confirm/cancel once.
+- `.purge 1` and `.purge @normal 1` and confirm/cancel once.
+- `.rpurge 1` and `.rpurge @normal 1` and confirm/cancel once.
 - `.steal`
 - `.giveaway 1m test prize`
 - `.giveaway test prize 1m`
@@ -367,8 +367,8 @@ Run only if safe:
 - `.kick @normal test`
 - `.ban @normal test`
 - `.unban <normal_user_id>`
-- `.addrole @normal @role`
-- `.removerole @normal @role`
+- `.addrole @normal @role` and `.addrole @role @normal`
+- `.removerole @normal @role` and `.removerole @role @normal`
 - `.deleterole @role`
 - `.lockdown`
 - `.rlockdown`
@@ -399,11 +399,11 @@ Run:
 - `.editlottery cut 10`
 - `.editlottery channel #channel`
 - `.stoplottery`
-- `.add @normal 1000`
-- `.remove @normal 100`
-- `.addtick @normal 2`
-- `.settick @normal 5`
-- `.setquesos @normal 1000`
+- `.add @normal 1000` and `.add 1000 @normal`
+- `.remove @normal 100` and `.remove 100 @normal`
+- `.addtick @normal 2` and `.addtick 2 @normal`
+- `.settick @normal 5` and `.settick 5 @normal`
+- `.setquesos @normal 1000` and `.setquesos 1000 @normal`
 
 Expected: works for server owner.
 
@@ -441,8 +441,8 @@ Run:
 - `.roleinfo @role`
 - `.test`
 - `.endttt`
-- `.purge 1`
-- `.rpurge 1`
+- `.purge 1` and `.purge @normal 1`
+- `.rpurge 1` and `.rpurge @normal 1`
 - `.steal`
 - `.giveaway 1m test prize`
 - `.giveaway test prize 1m`
@@ -467,8 +467,8 @@ Run only if safe:
 - `.kick @normal test`
 - `.ban @normal test`
 - `.unban <normal_user_id>`
-- `.addrole @normal @role`
-- `.removerole @normal @role`
+- `.addrole @normal @role` and `.addrole @role @normal`
+- `.removerole @normal @role` and `.removerole @role @normal`
 - `.deleterole @role`
 - `.lockdown`
 - `.rlockdown`
@@ -499,11 +499,11 @@ Run:
 - `.editlottery cut 10`
 - `.editlottery channel #channel`
 - `.stoplottery`
-- `.add @normal 1000`
-- `.remove @normal 100`
-- `.addtick @normal 2`
-- `.settick @normal 5`
-- `.setquesos @normal 1000`
+- `.add @normal 1000` and `.add 1000 @normal`
+- `.remove @normal 100` and `.remove 100 @normal`
+- `.addtick @normal 2` and `.addtick 2 @normal`
+- `.settick @normal 5` and `.settick 5 @normal`
+- `.setquesos @normal 1000` and `.setquesos 1000 @normal`
 
 Expected: works for admin.
 
@@ -626,7 +626,7 @@ Run:
 - `.ms 1000`
 - `.wheel 1000`
 - `.gamestats`
-- `.give @other_user 1000`
+- `.give @other_user 1000` and `.give 1000 @other_user`
 - `.lottery`
 - `.lotterystats`
 - `.buytick 1`
@@ -643,10 +643,10 @@ Run:
 
 - `.disable calc`
 - `.setlogs`
-- `.purge 1`
+- `.purge 1` and `.purge @normal 1`
 - `.kick @other_user`
 - `.ban @other_user`
-- `.addrole @other_user @role`
+- `.addrole @other_user @role` and `.addrole @role @other_user`
 - `.setbdaychannel #channel`
 - `.setbdaychannel <channel id>`
 - `.activity setup`
@@ -655,11 +655,11 @@ Run:
 - `.stopactivity`
 - `.editlottery price 200000`
 - `.stoplottery`
-- `.add @normal 1000`
-- `.remove @normal 100`
-- `.addtick @normal 1`
-- `.settick @normal 1`
-- `.setquesos @normal 1000`
+- `.add @normal 1000` and `.add 1000 @normal`
+- `.remove @normal 100` and `.remove 100 @normal`
+- `.addtick @normal 1` and `.addtick 1 @normal`
+- `.settick @normal 1` and `.settick 1 @normal`
+- `.setquesos @normal 1000` and `.setquesos 1000 @normal`
 - `.fsleep @other_user 1m`
 
 Expected: denied, unless this normal user is the person who added the bot for birthday/activity setup.
@@ -707,7 +707,7 @@ Run these after role tests because they need multiple users, waiting, or restart
 - Winner path pays pot, clears lottery channel, posts winner message, then posts fresh lottery panel.
 - `.editlottery price/duration/cut/channel` updates panel.
 - `.stoplottery` clears config/tickets.
-- `.addtick`, `.settick`, `.setquesos` work with user, role, and everyone.
+- `.addtick`, `.settick`, `.setquesos` work with user, role, and everyone in either target/value order.
 
 ### Activity Reports
 
