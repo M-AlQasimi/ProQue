@@ -6706,12 +6706,14 @@ async def plinko(ctx, amount: str):
         view=view
     )
 
-LUCKY_NUMBER_OPTIONS = {
-    10: 3,
-    20: 5,
-    50: 10,
-    100: 20,
+LUCKY_NUMBER_RANGES = (10, 20, 50, 100)
+LUCKY_NUMBER_DIFFICULTIES = {
+    10: ((2, 3), (3, 2), (5, 1)),
+    20: ((3, 5), (4, 4), (6, 2)),
+    50: ((4, 10), (6, 6), (8, 4)),
+    100: ((3, 15), (8, 8), (20, 2)),
 }
+LUCKY_NUMBER_GUESS_SECONDS = 60
 LUCKY_NUMBER_PUBLIC_WINNER_SHARE = 0.80
 
 @commands.command(name="luckynumber", aliases=["ln", "lucky", "number"])
@@ -6723,13 +6725,13 @@ async def lucky_number(ctx, amount: str):
 
     async def ask_range(interaction):
         view.clear_items()
-        for max_number, multiplier in LUCKY_NUMBER_OPTIONS.items():
-            view.add_item(RangeButton(max_number, multiplier))
+        for max_number in LUCKY_NUMBER_RANGES:
+            view.add_item(RangeButton(max_number))
         await interaction.response.edit_message(
             content=(
                 f"{Q_LUCKY_NUMBER} **LUCKY NUMBER**\n"
                 f"Mode: **{'Public channel' if mode == 'public' else 'Solo'}**\n"
-                "Choose your number range."
+                "Choose your number range first."
             ),
             view=view
         )
@@ -6748,32 +6750,59 @@ async def lucky_number(ctx, amount: str):
             await ask_range(interaction)
 
     class RangeButton(discord.ui.Button):
-        def __init__(self, max_number, multiplier):
-            super().__init__(label=f"1-{max_number} ×{multiplier}", style=discord.ButtonStyle.primary)
+        def __init__(self, max_number):
+            super().__init__(label=f"1-{max_number}", style=discord.ButtonStyle.primary)
             self.max_number = max_number
-            self.multiplier = multiplier
 
         async def callback(self, interaction):
             if interaction.user.id != ctx.author.id:
                 await interaction.response.send_message("Only the player who started Lucky Number can choose the range.", ephemeral=True)
                 return
-            for item in view.children:
-                item.disabled = True
-            drawn = random.randint(1, self.max_number)
+            view.clear_items()
+            for multiplier, tries in LUCKY_NUMBER_DIFFICULTIES[self.max_number]:
+                view.add_item(DifficultyButton(self.max_number, multiplier, tries))
             await interaction.response.edit_message(
                 content=(
                     f"{Q_LUCKY_NUMBER} **LUCKY NUMBER**\n"
-                    f"Range: **1-{self.max_number}** | Prize: **×{self.multiplier}**\n"
-                    f"{'Anyone in this channel can guess. Correct guesser gets 80%; starter gets 20%.' if mode == 'public' else 'Type your guess.'}\n"
-                    "You have **30 seconds**."
+                    f"Mode: **{'Public channel' if mode == 'public' else 'Solo'}** | Range: **1-{self.max_number}**\n"
+                    "Choose payout and tries."
                 ),
                 view=view
             )
+
+    class DifficultyButton(discord.ui.Button):
+        def __init__(self, max_number, multiplier, tries):
+            super().__init__(label=f"×{multiplier} ({tries} tries)", style=discord.ButtonStyle.primary)
+            self.max_number = max_number
+            self.multiplier = multiplier
+            self.tries = tries
+
+        async def callback(self, interaction):
+            if interaction.user.id != ctx.author.id:
+                await interaction.response.send_message("Only the player who started Lucky Number can choose the payout.", ephemeral=True)
+                return
+            for item in view.children:
+                item.disabled = True
+            drawn = random.randint(1, self.max_number)
+            deadline_ts = int(time.time() + LUCKY_NUMBER_GUESS_SECONDS)
+            await interaction.response.edit_message(
+                content=(
+                    f"{Q_LUCKY_NUMBER} **LUCKY NUMBER**\n"
+                    f"Range: **1-{self.max_number}** | Prize: **×{self.multiplier}** | Tries: **{self.tries}**\n"
+                    f"{'Anyone in this channel can guess. Each user gets their own tries. Correct guesser gets 80%; starter gets 20%.' if mode == 'public' else 'Type your guess.'}\n"
+                    f"Ends <t:{deadline_ts}:R>."
+                ),
+                view=view
+            )
+
+            attempts_by_user = {}
 
             def check(message):
                 if message.author.bot or message.channel.id != ctx.channel.id:
                     return False
                 if mode != "public" and message.author.id != ctx.author.id:
+                    return False
+                if attempts_by_user.get(message.author.id, 0) >= self.tries:
                     return False
                 try:
                     guess = int(message.content.strip())
@@ -6783,9 +6812,9 @@ async def lucky_number(ctx, amount: str):
 
             picked = None
             guesser = None
-            deadline = time.time() + 30
+            deadline = time.time() + LUCKY_NUMBER_GUESS_SECONDS
             try:
-                while True:
+                while mode == "public" or attempts_by_user.get(ctx.author.id, 0) < self.tries:
                     remaining = deadline - time.time()
                     if remaining <= 0:
                         raise asyncio.TimeoutError
@@ -6793,9 +6822,15 @@ async def lucky_number(ctx, amount: str):
                     guess = int(message.content.strip())
                     picked = guess
                     guesser = message.author
+                    attempts_by_user[message.author.id] = attempts_by_user.get(message.author.id, 0) + 1
                     if guess == drawn:
                         break
-                    await ctx.send(f"{Q_DENIED} {user_mention(message.author.id)} guessed **{guess}**. Not it.", allowed_mentions=discord.AllowedMentions.none())
+                    tries_left = self.tries - attempts_by_user[message.author.id]
+                    if tries_left > 0:
+                        await ctx.send(
+                            f"{Q_DENIED} {user_mention(message.author.id)} guessed **{guess}**. Not it. **{tries_left}** tries left.",
+                            allowed_mentions=discord.AllowedMentions.none()
+                        )
             except asyncio.TimeoutError:
                 pass
 
@@ -6804,6 +6839,7 @@ async def lucky_number(ctx, amount: str):
             winner_id = guesser.id if won and guesser else starter_id
             details = (
                 f"{Q_LUCKY_NUMBER} Mode: **{'Public' if mode == 'public' else 'Solo'}** | Range: **1-{self.max_number}**\n"
+                f"Tries: **{attempts_by_user.get((guesser or ctx.author).id, 0)}/{self.tries}** for {user_mention((guesser or ctx.author).id)} | Prize: **×{self.multiplier}**\n"
                 f"Last Guess: **{picked if picked is not None else 'none'}** | Drawn: **{drawn}**\n"
                 f"Guesser: **{user_mention(guesser.id) if guesser else 'none'}**"
             )
@@ -7594,10 +7630,10 @@ EXPLANATIONS = {
     "plinko": f"{Q_PLINKO} Choose a drop lane, then nudge the ball every row.",
     "plink": "Alias for `.plinko`. Choose a drop lane and watch the board.",
     "drop": "Alias for `.plinko`. Choose a drop lane and watch the board.",
-    "luckynumber": f"{Q_LUCKY_NUMBER} Choose solo or public guessing, then choose the number range. Public winners split 80% to guesser and 20% to starter.",
-    "ln": "Alias for `.luckynumber`. Choose solo/public guessing and a range.",
-    "lucky": "Alias for `.luckynumber`. Choose solo/public guessing and a range.",
-    "number": "Alias for `.luckynumber`. Choose solo/public guessing and a range.",
+    "luckynumber": f"{Q_LUCKY_NUMBER} Choose solo/public mode, a number range, then payout/tries. Public winners split 80% to guesser and 20% to starter.",
+    "ln": "Alias for `.luckynumber`. Choose mode, range, and payout/tries.",
+    "lucky": "Alias for `.luckynumber`. Choose mode, range, and payout/tries.",
+    "number": "Alias for `.luckynumber`. Choose mode, range, and payout/tries.",
     "jackpotspin": f"{Q_JACKPOT_SPIN} Pick a target symbol, then spin up to 3 times to land on it.",
     "jackpot": "Alias for `.jackpotspin`. Pick a target and spin the wheel.",
     "jspin": "Alias for `.jackpotspin`. Pick a target and spin the wheel.",
@@ -7736,7 +7772,7 @@ DETAILED_EXPLANATIONS = {
     "diceduel": "Choose Steady, Normal, or Push, then press Roll Die twice yourself and make the dealer roll. Steady adds +1 with lower payout, Push subtracts -1 with higher payout, and Normal is classic. Higher total wins; ties refund.",
     "cases": "Three locked cases appear. Pick a case, then pick Safe, Clean, or Royal key. Safe can downgrade, Royal can upgrade, and Clean opens normally. Better case tiers are rarer. Wins can use Double or Nothing to replay the same game with the prize at risk.",
     "plinko": "Choose one of five drop lanes, then nudge left, let drop, or nudge right every row. Peg bounce still adds luck, but your row choices affect the final lane and multiplier. ×1 refunds; higher than ×1 wins.",
-    "luckynumber": "Choose Solo or Public Channel, then choose a range. Solo means only you can guess. Public means anyone in the channel can guess. If another user guesses the public number, they get 80% of the prize and the starter gets 20%. If nobody gets it, only the starter loses. Options: 1-10 pays ×3, 1-20 pays ×5, 1-50 pays ×10, and 1-100 pays ×20.",
+    "luckynumber": "Choose Solo or Public Channel, then choose a range: 1-10, 1-20, 1-50, or 1-100. After the range, choose payout/tries. 1-10: 3 tries ×2, 2 tries ×3, 1 try ×5. 1-20: 5 tries ×3, 4 tries ×4, 2 tries ×6. 1-50: 10 tries ×4, 6 tries ×6, 4 tries ×8. 1-100: 15 tries ×3, 8 tries ×8, 2 tries ×20. All modes have 1 minute to finish. In public mode, each user gets their own tries. If another user guesses correctly, they get 80% of the prize and the starter gets 20%. If nobody gets it, only the starter loses.",
     "jackpotspin": f"Choose a target symbol, then press Spin Wheel up to 3 times. Landing on {Q_SLOT_STAR} pays ×2, {Q_SLOT_DIAMOND} pays ×5, {Q_SLOT_CROWN} pays ×10, and {Q_SLOT_JACKPOT} pays ×50 if that was your target. Missing all 3 spins loses the bet.",
     "gamestats": "Shows tracked game stats for you or a mentioned user: total played, wins, profit, per-game records, and hard game badges. Example: `.gamestats` or `.gamestats @user`.",
     "ms": f"Choose 3x3, 4x4, or 5x5, then reveal tiles. Hidden tiles show as {Q_MS_HIDDEN}, safe gems show as {Q_XP}, bombs show as {Q_MINE}, and your cursor shows as {Q_MS_CURSOR}. 3x3 has 1 bomb, 4x4 has 3 bombs, and 5x5 has 5 bombs. Reveal every safe tile to win. The final multiplier starts at ×2.00 and each safe reveal adds +0.15, then the universal gambling streak bonus applies. Hitting a bomb or timing out loses the bet and resets the streak.",

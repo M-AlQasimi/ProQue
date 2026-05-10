@@ -2612,7 +2612,7 @@ GAME_MENU = [
     ("Luck", "Dice Duel", "diceduel", "`.diceduel <amount>`", "Roll against the dealer."),
     ("Luck", "Q Cases", "cases", "`.cases <amount>`", "Open weighted prize cases."),
     ("Luck", "Plinko", "plinko", "`.plinko <amount>`", "Drop into multiplier slots."),
-    ("Luck", "Lucky Number", "luckynumber", "`.luckynumber <amount>`", "Solo or public guessing with chosen range."),
+    ("Luck", "Lucky Number", "luckynumber", "`.luckynumber <amount>`", "Choose mode, range, and limited tries."),
     ("Luck", "Jackpot Spin", "jackpotspin", "`.jackpotspin <amount>`", "Pick a target, then spin up to 3 times."),
     ("Utility", "Picker", None, "`.picker`", "Randomly picks from options."),
 ]
