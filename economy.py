@@ -6990,11 +6990,20 @@ async def lucky_number(ctx, amount: str):
     )
 
 JACKPOT_SYMBOLS = [
-    (Q_SLOT_STAR, "Star", 2, 42),
-    (Q_SLOT_DIAMOND, "Diamond", 5, 28),
-    (Q_SLOT_CROWN, "Crown", 10, 20),
-    (Q_SLOT_JACKPOT, "Jackpot", 50, 10),
+    (Q_SLOT_STAR, "Star", 2, 0.42),
+    (Q_SLOT_DIAMOND, "Diamond", 5, 0.16),
+    (Q_SLOT_CROWN, "Crown", 10, 0.07),
+    (Q_SLOT_JACKPOT, "Jackpot", 50, 0.014),
 ]
+
+def jackpot_total_hit_chance(symbol, data=None):
+    _, _, multiplier, base_chance = symbol
+    luck = active_luck_bonus(data) / max(multiplier, 2)
+    return min(0.48, max(0.005, base_chance + luck))
+
+def jackpot_spin_hit_chance(symbol, data=None, max_spins=3):
+    total_chance = jackpot_total_hit_chance(symbol, data)
+    return 1 - ((1 - total_chance) ** (1 / max_spins))
 
 @commands.command(name="jackpotspin", aliases=["jackpot", "jspin", "jps"])
 async def jackpot_spin(ctx, amount: str):
@@ -7017,7 +7026,8 @@ async def jackpot_spin(ctx, amount: str):
         if target is None:
             return "No target selected."
         emoji, label, multiplier, _ = target
-        return f"Target: **{emoji} {label} ×{multiplier:g}**"
+        total_chance = jackpot_total_hit_chance(target, data)
+        return f"Target: **{emoji} {label} ×{multiplier:g}** | Chance: **{total_chance * 100:.1f}%**"
 
     async def settle_jackpot(interaction):
         nonlocal spins_used
@@ -7079,13 +7089,15 @@ async def jackpot_spin(ctx, amount: str):
                 await interaction.response.send_message("Use your own jackpot spin.", ephemeral=True)
                 return
             spins_used += 1
-            pointer_index = (pointer_index + random.randint(1, 7)) % len(JACKPOT_SYMBOLS)
-            landed_emoji = JACKPOT_SYMBOLS[pointer_index][0]
-            target_emoji = target[0]
             latest = get_user(ctx.author.id)
-            if landed_emoji != target_emoji and random.random() < active_luck_bonus(latest):
+            target_emoji = target[0]
+            hit_chance = jackpot_spin_hit_chance(target, latest, max_spins)
+            if random.random() < hit_chance:
                 pointer_index = next(index for index, symbol in enumerate(JACKPOT_SYMBOLS) if symbol[0] == target_emoji)
-                landed_emoji = target_emoji
+            else:
+                miss_indexes = [index for index, symbol in enumerate(JACKPOT_SYMBOLS) if symbol[0] != target_emoji]
+                pointer_index = random.choice(miss_indexes)
+            landed_emoji = JACKPOT_SYMBOLS[pointer_index][0]
             if landed_emoji == target_emoji or spins_used >= max_spins:
                 await settle_jackpot(interaction)
                 return
@@ -7845,7 +7857,7 @@ DETAILED_EXPLANATIONS = {
     "cases": "Three locked cases appear. Pick a case, then pick Safe, Clean, or Royal key. Safe can downgrade, Royal can upgrade, and Clean opens normally. Better case tiers are rarer. Wins can use Double or Nothing to replay the same game with the prize at risk.",
     "plinko": "Choose one of five drop lanes, then nudge left, let drop, or nudge right every row. Peg bounce still adds luck, but your row choices affect the final lane and multiplier. ×1 refunds; higher than ×1 wins.",
     "luckynumber": "Choose Solo or Public Channel, then choose a range: 1-10, 1-20, 1-50, or 1-100. After the range, choose payout/tries. 1-10: 3 tries ×2, 2 tries ×3, 1 try ×5. 1-20: 5 tries ×3, 4 tries ×4, 2 tries ×6. 1-50: 10 tries ×4, 6 tries ×6, 4 tries ×8. 1-100: 15 tries ×3, 8 tries ×8, 2 tries ×20. All modes have 1 minute to finish. In public mode, each user gets their own tries. If another user guesses correctly, they get 80% of the prize and the starter gets 20%. If nobody gets it, only the starter loses.",
-    "jackpotspin": f"Choose a target symbol, then press Spin Wheel up to 3 times. Landing on {Q_SLOT_STAR} pays ×2, {Q_SLOT_DIAMOND} pays ×5, {Q_SLOT_CROWN} pays ×10, and {Q_SLOT_JACKPOT} pays ×50 if that was your target. Missing all 3 spins loses the bet.",
+    "jackpotspin": f"Choose a target symbol, then press Spin Wheel up to 3 times. Normal total hit chances are {Q_SLOT_STAR} ×2 at 42%, {Q_SLOT_DIAMOND} ×5 at 16%, {Q_SLOT_CROWN} ×10 at 7%, and {Q_SLOT_JACKPOT} ×50 at 1.4%. Luck bonuses help smaller targets more than huge targets, so ×50 stays rare. Missing all 3 spins loses the bet.",
     "gamestats": "Shows tracked game stats for you or a mentioned user: total played, wins, profit, per-game records, and hard game badges. Example: `.gamestats` or `.gamestats @user`.",
     "ms": f"Choose 3x3, 4x4, or 5x5, then reveal tiles. Hidden tiles show as {Q_MS_HIDDEN}, safe gems show as {Q_XP}, bombs show as {Q_MINE}, and your cursor shows as {Q_MS_CURSOR}. 3x3 has 1 bomb, 4x4 has 3 bombs, and 5x5 has 5 bombs. Reveal every safe tile to win. The final multiplier starts at ×2.00 and each safe reveal adds +0.15, then the universal gambling streak bonus applies. Hitting a bomb or timing out loses the bet and resets the streak.",
     "minesweeper": f"Choose 3x3, 4x4, or 5x5, then reveal tiles. Hidden tiles show as {Q_MS_HIDDEN}, safe gems show as {Q_XP}, bombs show as {Q_MINE}, and your cursor shows as {Q_MS_CURSOR}. 3x3 has 1 bomb, 4x4 has 3 bombs, and 5x5 has 5 bombs. Reveal every safe tile to win. The final multiplier starts at ×2.00 and each safe reveal adds +0.15, then the universal gambling streak bonus applies. Hitting a bomb or timing out loses the bet and resets the streak.",
