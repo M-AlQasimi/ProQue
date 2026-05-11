@@ -1236,6 +1236,14 @@ async def refresh_activity_live_message(guild_id, config, rows=None):
         print(f"Activity live message send failed for guild {guild.id}: {type(e).__name__} - {e}")
         return None
 
+def schedule_activity_live_refresh(guild_id, config, rows=None):
+    async def runner():
+        try:
+            await refresh_activity_live_message(guild_id, config, rows=rows)
+        except Exception as e:
+            print(f"Activity background refresh failed for guild {guild_id}: {type(e).__name__} - {e}")
+    asyncio.create_task(runner())
+
 async def clear_activity_report_channel(channel):
     if channel is None:
         return 0
@@ -1503,11 +1511,12 @@ async def activity(ctx, action: str = None):
     if ctx.guild is None:
         return await ctx.send("Activity reports only work in servers.")
 
-    saved_configs = await asyncio.to_thread(load_guild_activity_channels)
-    if saved_configs:
-        guild_activity_channels.update(saved_configs)
-
     existing_config = guild_activity_channels.get(ctx.guild.id)
+    if existing_config is None:
+        saved_configs = await asyncio.to_thread(load_guild_activity_channels)
+        if saved_configs:
+            guild_activity_channels.update(saved_configs)
+        existing_config = guild_activity_channels.get(ctx.guild.id)
     setup_requested = action and action.casefold() in {"setup", "set", "config", "channel", "reset"}
     if existing_config and not setup_requested:
         embed = await activity_status_embed(ctx.guild, existing_config)
@@ -1542,7 +1551,7 @@ async def activity(ctx, action: str = None):
             if not ok:
                 return await interaction.followup.send(message, ephemeral=True)
             self.view.saved = True
-            await refresh_activity_live_message(ctx.guild.id, guild_activity_channels[ctx.guild.id])
+            schedule_activity_live_refresh(ctx.guild.id, guild_activity_channels[ctx.guild.id])
             await interaction.edit_original_response(
                 embed=activity_saved_embed(ctx.guild, selected_channel, next_report, interaction.user.id),
                 view=None,
@@ -1609,7 +1618,7 @@ async def activity(ctx, action: str = None):
         for item in view.children:
             item.disabled = True
         if ok:
-            await refresh_activity_live_message(ctx.guild.id, guild_activity_channels[ctx.guild.id])
+            schedule_activity_live_refresh(ctx.guild.id, guild_activity_channels[ctx.guild.id])
             await prompt.edit(
                 embed=activity_saved_embed(ctx.guild, selected_channel, next_report, ctx.author.id),
                 view=None,
@@ -1629,10 +1638,12 @@ async def activitystats(ctx):
     if ctx.guild is None:
         return await ctx.send("Activity reports only work in servers.")
 
-    saved_configs = await asyncio.to_thread(load_guild_activity_channels)
-    if saved_configs:
-        guild_activity_channels.update(saved_configs)
     config = guild_activity_channels.get(ctx.guild.id)
+    if config is None:
+        saved_configs = await asyncio.to_thread(load_guild_activity_channels)
+        if saved_configs:
+            guild_activity_channels.update(saved_configs)
+        config = guild_activity_channels.get(ctx.guild.id)
     if not config:
         return await ctx.send(f"{economy_q_warning} Activity reports are not set up. Use `.activity setup` first.")
 
@@ -1648,10 +1659,12 @@ async def editactivity(ctx, setting: str = None, *, value: str = None):
     if not await can_manage_activity_channel(ctx.author, ctx.guild):
         return await ctx.send("Only the person who added me, an admin, the server owner, or the superowner can edit activity reports.")
 
-    saved_configs = await asyncio.to_thread(load_guild_activity_channels)
-    if saved_configs:
-        guild_activity_channels.update(saved_configs)
     config = guild_activity_channels.get(ctx.guild.id)
+    if config is None:
+        saved_configs = await asyncio.to_thread(load_guild_activity_channels)
+        if saved_configs:
+            guild_activity_channels.update(saved_configs)
+        config = guild_activity_channels.get(ctx.guild.id)
     if not config:
         return await ctx.send(f"{economy_q_warning} Activity reports are not set up. Use `.activity setup` first.")
 
@@ -1673,7 +1686,7 @@ async def editactivity(ctx, setting: str = None, *, value: str = None):
         ok, message, _ = await save_activity_report_config(ctx.guild, selected_channel, ctx.author.id, next_report)
         if not ok:
             return await ctx.send(f"{economy_q_warning} {message}")
-        await refresh_activity_live_message(ctx.guild.id, guild_activity_channels[ctx.guild.id])
+        schedule_activity_live_refresh(ctx.guild.id, guild_activity_channels[ctx.guild.id])
         embed = activity_saved_embed(ctx.guild, selected_channel, next_report, ctx.author.id)
         embed.title = f"{economy_q_activity} Activity Channel Updated"
         embed.description = "Daily activity reports were moved to a new channel."
@@ -1690,7 +1703,7 @@ async def editactivity(ctx, setting: str = None, *, value: str = None):
         ok, message, _ = await save_activity_report_config(ctx.guild, channel, config.get("set_by_user_id") or ctx.author.id, next_report)
         if not ok:
             return await ctx.send(f"{economy_q_warning} {message}")
-        await refresh_activity_live_message(ctx.guild.id, guild_activity_channels[ctx.guild.id])
+        schedule_activity_live_refresh(ctx.guild.id, guild_activity_channels[ctx.guild.id])
         return await ctx.send(
             f"{economy_q_activity} Next activity report set for <t:{int(next_report.timestamp())}:R>.",
             allowed_mentions=discord.AllowedMentions.none()
@@ -2615,7 +2628,7 @@ class SettingsView(View):
         ok, message, _ = await save_activity_report_config(interaction.guild, interaction.channel, interaction.user.id)
         if not ok:
             return await interaction.response.send_message(message, ephemeral=True)
-        await refresh_activity_live_message(interaction.guild.id, guild_activity_channels[interaction.guild.id])
+        schedule_activity_live_refresh(interaction.guild.id, guild_activity_channels[interaction.guild.id])
         await interaction.response.edit_message(embed=await build_settings_embed(interaction.guild), view=self)
 
 @bot.command(name="settings", aliases=["setup", "config"])

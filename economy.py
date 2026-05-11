@@ -1465,8 +1465,24 @@ def load_lottery_status_messages(guild_id):
 async def build_lottery_status_embed(guild, config, panel_message=None):
     embed = await asyncio.to_thread(build_lottery_embed, guild, config)
     if panel_message:
-        embed.add_field(name="Lottery Panel", value=f"[Open Panel]({panel_message.jump_url})", inline=False)
+        panel_url = panel_message if isinstance(panel_message, str) else panel_message.jump_url
+        embed.add_field(name="Lottery Panel", value=f"[Open Panel]({panel_url})", inline=False)
     return embed
+
+def lottery_panel_url(guild, config):
+    if not guild or not config or not config.get("channel_id") or not config.get("message_id"):
+        return None
+    return f"https://discord.com/channels/{guild.id}/{int(config['channel_id'])}/{int(config['message_id'])}"
+
+def schedule_lottery_refresh(guild, config=None):
+    if not guild:
+        return
+    async def runner():
+        try:
+            await refresh_lottery_message(guild, config)
+        except Exception as e:
+            print(f"Lottery background refresh failed: {type(e).__name__} - {e}")
+    asyncio.create_task(runner())
 
 async def refresh_lottery_status_messages(guild, config=None, panel_message=None):
     if not guild:
@@ -1720,8 +1736,8 @@ async def handle_lottery_purchase(interaction, tickets):
             await interaction.followup.send(result["message"], ephemeral=True)
             return
         await assign_lottery_role(interaction.guild, interaction.user.id, result["config"].get("role_id"))
-        await refresh_lottery_message(interaction.guild, result["config"])
         await interaction.followup.send(lottery_purchase_message(result), ephemeral=True)
+        schedule_lottery_refresh(interaction.guild, result["config"])
     except Exception as e:
         print(f"Lottery button purchase failed: {type(e).__name__} - {e}")
         await interaction.followup.send(f"{Q_DENIED} Database unavailable. Try again shortly.", ephemeral=True)
@@ -1790,7 +1806,7 @@ async def announce_lottery_update(guild, config, message):
     if not channel:
         return
     role_mention = lottery_role_mention(config)
-    await refresh_lottery_message(guild, config)
+    schedule_lottery_refresh(guild, config)
     await channel.send(
         f"{role_mention} {QOIN_CHEST} **Lottery Update**\n{message}".strip(),
         allowed_mentions=discord.AllowedMentions(roles=True)
@@ -3144,7 +3160,7 @@ async def lottery(ctx, action: str = None, amount: str = None):
     if not await ensure_db_ready(ctx):
         return
 
-    config = get_lottery_config(ctx.guild.id)
+    config = await asyncio.to_thread(get_lottery_config, ctx.guild.id)
     if config is None:
         if not has_economy_owner_power(ctx.author.id, ctx.guild):
             await ctx.send("Lottery is not set up yet. Ask the server owner or an admin to run `.lottery`.")
@@ -3213,15 +3229,15 @@ async def lottery(ctx, action: str = None, amount: str = None):
         return
 
     if action and action.casefold() == "buy":
-        await refresh_lottery_message(ctx.guild, config)
+        schedule_lottery_refresh(ctx.guild, config)
         await ctx.send("Use the ticket buttons on the lottery panel to buy lottery tickets.", allowed_mentions=discord.AllowedMentions.none())
         return
 
-    panel = await refresh_lottery_message(ctx.guild, config)
-    current_config = await asyncio.to_thread(get_lottery_config, ctx.guild.id)
-    embed = await build_lottery_status_embed(ctx.guild, current_config, panel)
+    panel_url = lottery_panel_url(ctx.guild, config)
+    embed = await build_lottery_status_embed(ctx.guild, config, panel_url)
     status_message = await ctx.send(embed=embed, view=LotteryPanelView(), allowed_mentions=discord.AllowedMentions.none())
     remember_lottery_status_message(ctx.guild.id, status_message)
+    schedule_lottery_refresh(ctx.guild, config)
 
 @commands.command()
 async def editlottery(ctx, setting: str = None, *, value: str = None):
@@ -3234,7 +3250,7 @@ async def editlottery(ctx, setting: str = None, *, value: str = None):
         await ctx.send(f"{Q_DENIED} Server owner or admin only.")
         return
 
-    config = get_lottery_config(ctx.guild.id)
+    config = await asyncio.to_thread(get_lottery_config, ctx.guild.id)
     if config is None:
         await ctx.send("Lottery is not set up yet. Run `.lottery` first.")
         return
@@ -3483,11 +3499,12 @@ async def lotterystats(ctx):
         await ctx.send("Lottery is not set up yet.")
         return
 
-    rows = sorted(lottery_ticket_rows(ctx.guild.id), key=lambda row: row["tickets"], reverse=True)
-    panel = await refresh_lottery_message(ctx.guild, config)
-    panel_value = f"[Open Panel]({panel.jump_url})" if panel else "panel unavailable"
+    rows = sorted(await asyncio.to_thread(lottery_ticket_rows, ctx.guild.id), key=lambda row: row["tickets"], reverse=True)
+    panel_url = lottery_panel_url(ctx.guild, config)
+    panel_value = f"[Open Panel]({panel_url})" if panel_url else "panel unavailable"
     view = LotteryStatsView(ctx, config, rows, panel_value)
     view.message = await ctx.send(embed=view.embed(), view=view, allowed_mentions=discord.AllowedMentions.none())
+    schedule_lottery_refresh(ctx.guild, config)
 
 @commands.command()
 async def buytick(ctx, amount: str = "1"):
@@ -3497,7 +3514,7 @@ async def buytick(ctx, amount: str = "1"):
     if not await ensure_db_ready(ctx):
         return
 
-    config = get_lottery_config(ctx.guild.id)
+    config = await asyncio.to_thread(get_lottery_config, ctx.guild.id)
     if config is None:
         await ctx.send("Lottery is not set up yet.")
         return
@@ -3517,7 +3534,7 @@ async def buytick(ctx, amount: str = "1"):
             await ctx.send(result["message"], allowed_mentions=discord.AllowedMentions.none())
             return
         await assign_lottery_role(ctx.guild, ctx.author.id, result["config"].get("role_id"))
-        await refresh_lottery_message(ctx.guild, result["config"])
+        schedule_lottery_refresh(ctx.guild, result["config"])
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
@@ -5056,7 +5073,7 @@ async def addtick(ctx, *, args: str = None):
     try:
         count = bulk_adjust_lottery_tickets(ctx.guild.id, targets["user_ids"], amount, "add", ctx.author.id)
         updated = get_lottery_config(ctx.guild.id)
-        await refresh_lottery_message(ctx.guild, updated)
+        schedule_lottery_refresh(ctx.guild, updated)
         if count == 1 and targets["member"] is not None:
             await assign_lottery_role(ctx.guild, targets["member"].id, updated.get("role_id") if updated else None)
     except Exception:
@@ -5117,7 +5134,7 @@ async def settick(ctx, *, args: str = None):
     try:
         count = bulk_adjust_lottery_tickets(ctx.guild.id, targets["user_ids"], amount, "set", ctx.author.id)
         updated = get_lottery_config(ctx.guild.id)
-        await refresh_lottery_message(ctx.guild, updated)
+        schedule_lottery_refresh(ctx.guild, updated)
         if count == 1 and amount > 0 and targets["member"] is not None:
             await assign_lottery_role(ctx.guild, targets["member"].id, updated.get("role_id") if updated else None)
     except Exception:
