@@ -7193,6 +7193,20 @@ async def dungeon(ctx):
             self.loot = 0
             self.rests = 1
             self.finished = False
+            self.lock_active = False
+            self.lock_target = []
+            self.lock_pins = []
+            self.lock_tries = 0
+            self.lock_hint = ""
+            self.duel_active = False
+            self.duel_hits = 0
+            self.duel_misses = 0
+            self.duel_stance = None
+            self.trap_active = False
+            self.trap_target = []
+            self.trap_dials = []
+            self.trap_tries = 0
+            self.trap_hint = ""
             self.room = random.choice(DUNGEON_ROOMS)
             self.message = None
             self.refresh_buttons()
@@ -7228,6 +7242,70 @@ async def dungeon(ctx):
                 "",
                 f"**{dungeon_room_title(self.room)}**",
                 self.room_text(),
+            ]
+            if result_text:
+                lines.extend(["", result_text])
+            return "\n".join(lines)
+
+        def render_lockpick(self, result_text=None):
+            pin_lines = [
+                f"Pin {index + 1}: `{self.lock_bar(value)}` **{value}/5**"
+                for index, value in enumerate(self.lock_pins)
+            ]
+            lines = [
+                f"{Q_DUNGEON} **Q DUNGEON**",
+                "─────────────────",
+                self.status_text(),
+                "",
+                f"**{Q_DUNGEON_KEY} Gate Lockpick**",
+                "Raise the pins, then test the lock. Hints tell you if each pin is low, high, or set.",
+                f"Tests: **{self.lock_tries}/3**",
+                *pin_lines,
+                f"> {self.lock_hint}",
+            ]
+            if result_text:
+                lines.extend(["", result_text])
+            return "\n".join(lines)
+
+        def lock_bar(self, value):
+            return "▰" * value + "▱" * (5 - value)
+
+        def render_duel(self, result_text=None):
+            clue = {
+                "high": "The guard lifts its blade high.",
+                "low": "The guard crouches low.",
+                "charge": "The guard starts a straight charge.",
+            }.get(self.duel_stance, "Read the guard, then answer.")
+            lines = [
+                f"{Q_DUNGEON} **Q DUNGEON**",
+                "─────────────────",
+                self.status_text(),
+                "",
+                f"**{Q_DUNGEON_MONSTER} Guard Duel**",
+                "Win 2 reads before taking 2 bad hits.",
+                f"Hits: **{self.duel_hits}/2** | Bad Reads: **{self.duel_misses}/2**",
+                f"> {clue}",
+                "High blade = Dodge | Low crouch = Strike | Charge = Guard",
+            ]
+            if result_text:
+                lines.extend(["", result_text])
+            return "\n".join(lines)
+
+        def render_trap_disarm(self, result_text=None):
+            dial_lines = [
+                f"Circuit {index + 1}: `{self.lock_bar(value)}` **{value}/5**"
+                for index, value in enumerate(self.trap_dials)
+            ]
+            lines = [
+                f"{Q_DUNGEON} **Q DUNGEON**",
+                "─────────────────",
+                self.status_text(),
+                "",
+                f"**{Q_TOWER_TRAP} Trap Circuit**",
+                "Set both circuits, then test the pressure plate.",
+                f"Tests: **{self.trap_tries}/2**",
+                *dial_lines,
+                f"> {self.trap_hint}",
             ]
             if result_text:
                 lines.extend(["", result_text])
@@ -7273,6 +7351,26 @@ async def dungeon(ctx):
                 ]
             for key, label, style in choices:
                 self.add_item(DungeonChoiceButton(key, label, style))
+
+        def refresh_lock_buttons(self):
+            self.clear_items()
+            for index in range(3):
+                self.add_item(DungeonChoiceButton(f"lock_pin_{index}", f"Pin {index + 1}", discord.ButtonStyle.secondary))
+            self.add_item(DungeonChoiceButton("lock_test", "Test", discord.ButtonStyle.success))
+            self.add_item(DungeonChoiceButton("lock_reset", "Reset", discord.ButtonStyle.danger))
+
+        def refresh_duel_buttons(self):
+            self.clear_items()
+            self.add_item(DungeonChoiceButton("duel_strike", "Strike", discord.ButtonStyle.danger))
+            self.add_item(DungeonChoiceButton("duel_guard", "Guard", discord.ButtonStyle.primary))
+            self.add_item(DungeonChoiceButton("duel_dodge", "Dodge", discord.ButtonStyle.success))
+
+        def refresh_trap_buttons(self):
+            self.clear_items()
+            for index in range(2):
+                self.add_item(DungeonChoiceButton(f"trap_dial_{index}", f"Circuit {index + 1}", discord.ButtonStyle.secondary))
+            self.add_item(DungeonChoiceButton("trap_test", "Test", discord.ButtonStyle.success))
+            self.add_item(DungeonChoiceButton("trap_reset", "Reset", discord.ButtonStyle.danger))
 
         def roll(self, chance):
             bonus = min(0.10, active_luck_bonus(self.data) / 2)
@@ -7431,9 +7529,208 @@ async def dungeon(ctx):
             self.change_hp(-1)
             return f"{Q_DENIED} No key for the final door. Lost **1 HP**.", True, False
 
+        async def start_lockpick(self, interaction):
+            self.lock_active = True
+            self.lock_target = [random.randint(1, 5) for _ in range(3)]
+            self.lock_pins = [3, 3, 3]
+            self.lock_tries = 0
+            self.lock_hint = "Adjust the pins, then test the gate."
+            self.refresh_lock_buttons()
+            await interaction.response.edit_message(content=self.render_lockpick(), view=self)
+
+        async def handle_lockpick(self, interaction, choice):
+            if choice.startswith("lock_pin_"):
+                index = int(choice.rsplit("_", 1)[1])
+                self.lock_pins[index] = 1 if self.lock_pins[index] >= 5 else self.lock_pins[index] + 1
+                self.lock_hint = f"Pin {index + 1} raised."
+                await interaction.response.edit_message(content=self.render_lockpick(), view=self)
+                return
+            if choice == "lock_reset":
+                self.lock_pins = [1, 1, 1]
+                self.lock_hint = "Pins reset to 1."
+                await interaction.response.edit_message(content=self.render_lockpick(), view=self)
+                return
+            if choice != "lock_test":
+                await interaction.response.defer()
+                return
+            self.lock_tries += 1
+            if self.lock_pins == self.lock_target:
+                self.lock_active = False
+                gain = 24_000
+                self.loot += gain
+                await self.advance_room(
+                    interaction,
+                    f"{Q_SUCCESS} Gate picked cleanly: +**{format_balance(gain)}**."
+                )
+                return
+            hints = []
+            for index, (current, goal) in enumerate(zip(self.lock_pins, self.lock_target), 1):
+                if current == goal:
+                    hints.append(f"P{index} set")
+                elif current < goal:
+                    hints.append(f"P{index} low")
+                else:
+                    hints.append(f"P{index} high")
+            self.lock_hint = " | ".join(hints)
+            if self.lock_tries >= 3:
+                self.lock_active = False
+                self.change_hp(-1)
+                await self.advance_room(
+                    interaction,
+                    f"{Q_DENIED} The lock snapped shut. Code was **{'-'.join(map(str, self.lock_target))}**. Lost **1 HP**."
+                )
+                return
+            await interaction.response.edit_message(content=self.render_lockpick(), view=self)
+
+        def next_duel_stance(self):
+            self.duel_stance = random.choice(("high", "low", "charge"))
+
+        async def start_duel(self, interaction):
+            self.duel_active = True
+            self.duel_hits = 0
+            self.duel_misses = 0
+            self.next_duel_stance()
+            self.refresh_duel_buttons()
+            await interaction.response.edit_message(content=self.render_duel(), view=self)
+
+        async def handle_duel(self, interaction, choice):
+            answers = {
+                "high": "duel_dodge",
+                "low": "duel_strike",
+                "charge": "duel_guard",
+            }
+            if choice not in {"duel_strike", "duel_guard", "duel_dodge"}:
+                await interaction.response.defer()
+                return
+            if answers.get(self.duel_stance) == choice:
+                self.duel_hits += 1
+                if self.duel_hits >= 2:
+                    self.duel_active = False
+                    gain = random.randint(24_000, 40_000)
+                    self.loot += gain
+                    bonus_text = ""
+                    if random.random() < 0.15:
+                        self.relics += 1
+                        bonus_text = f" and {Q_DUNGEON_RELIC} **1 relic**"
+                    await self.advance_room(
+                        interaction,
+                        f"{Q_SUCCESS} You read the guard perfectly: +**{format_balance(gain)}**{bonus_text}."
+                    )
+                    return
+                self.next_duel_stance()
+                await interaction.response.edit_message(
+                    content=self.render_duel(f"{Q_SUCCESS} Clean read. One more."),
+                    view=self,
+                )
+                return
+            self.duel_misses += 1
+            self.change_hp(-1)
+            if self.hp <= 0:
+                await self.finish(interaction, False, f"{Q_DENIED} Bad read. Lost **1 HP**.\n{Q_DENIED} You were knocked out. No loot escaped.")
+                return
+            if self.duel_misses >= 2:
+                self.duel_active = False
+                await self.advance_room(
+                    interaction,
+                    f"{Q_DENIED} The guard forced you back. Lost **1 HP**."
+                )
+                return
+            self.next_duel_stance()
+            await interaction.response.edit_message(
+                content=self.render_duel(f"{Q_DENIED} Bad read. Lost **1 HP**."),
+                view=self,
+            )
+
+        async def start_trap_disarm(self, interaction):
+            self.trap_active = True
+            self.trap_target = [random.randint(1, 5) for _ in range(2)]
+            self.trap_dials = [3, 3]
+            self.trap_tries = 0
+            self.trap_hint = "Set the circuits, then test. Hints tell you low, high, or set."
+            self.refresh_trap_buttons()
+            await interaction.response.edit_message(content=self.render_trap_disarm(), view=self)
+
+        async def handle_trap_disarm(self, interaction, choice):
+            if choice.startswith("trap_dial_"):
+                index = int(choice.rsplit("_", 1)[1])
+                self.trap_dials[index] = 1 if self.trap_dials[index] >= 5 else self.trap_dials[index] + 1
+                self.trap_hint = f"Circuit {index + 1} raised."
+                await interaction.response.edit_message(content=self.render_trap_disarm(), view=self)
+                return
+            if choice == "trap_reset":
+                self.trap_dials = [1, 1]
+                self.trap_hint = "Circuits reset to 1."
+                await interaction.response.edit_message(content=self.render_trap_disarm(), view=self)
+                return
+            if choice != "trap_test":
+                await interaction.response.defer()
+                return
+            self.trap_tries += 1
+            if self.trap_dials == self.trap_target:
+                self.trap_active = False
+                gain = 20_000
+                self.loot += gain
+                if random.random() < 0.25:
+                    self.keys += 1
+                    await self.advance_room(
+                        interaction,
+                        f"{Q_SUCCESS} Trap disarmed: +**{format_balance(gain)}** and {Q_DUNGEON_KEY} **1 key**."
+                    )
+                    return
+                await self.advance_room(
+                    interaction,
+                    f"{Q_SUCCESS} Trap disarmed: +**{format_balance(gain)}**."
+                )
+                return
+            hints = []
+            for index, (current, goal) in enumerate(zip(self.trap_dials, self.trap_target), 1):
+                if current == goal:
+                    hints.append(f"C{index} set")
+                elif current < goal:
+                    hints.append(f"C{index} low")
+                else:
+                    hints.append(f"C{index} high")
+            self.trap_hint = " | ".join(hints)
+            if self.trap_tries >= 2:
+                self.trap_active = False
+                self.change_hp(-1)
+                await self.advance_room(
+                    interaction,
+                    f"{Q_DENIED} Circuit failed. Code was **{'-'.join(map(str, self.trap_target))}**. Lost **1 HP**."
+                )
+                return
+            await interaction.response.edit_message(content=self.render_trap_disarm(), view=self)
+
+        async def advance_room(self, interaction, result_text):
+            if self.hp <= 0:
+                await self.finish(interaction, False, f"{result_text}\n{Q_DENIED} You were knocked out. No loot escaped.")
+                return
+            self.depth += 1
+            self.room = "boss" if self.depth >= DUNGEON_MAX_DEPTH else random.choice(DUNGEON_ROOMS)
+            self.refresh_buttons()
+            await interaction.response.edit_message(content=self.render(result_text), view=self)
+
         async def choose(self, interaction, choice):
             if self.finished:
                 await interaction.response.send_message("This dungeon run is already finished.", ephemeral=True)
+                return
+            if self.lock_active:
+                await self.handle_lockpick(interaction, choice)
+                return
+            if self.duel_active:
+                await self.handle_duel(interaction, choice)
+                return
+            if self.trap_active:
+                await self.handle_trap_disarm(interaction, choice)
+                return
+            if self.room == "locked" and choice == "pick":
+                await self.start_lockpick(interaction)
+                return
+            if self.room == "monster" and choice == "fight":
+                await self.start_duel(interaction)
+                return
+            if self.room == "trap" and choice == "disarm":
+                await self.start_trap_disarm(interaction)
                 return
             result_text, advance, cleared = self.apply_choice(choice)
             if self.hp <= 0:
@@ -7446,14 +7743,14 @@ async def dungeon(ctx):
                     await self.finish(interaction, False, f"{result_text}\n{Q_DENIED} The final room stayed sealed. No loot escaped.")
                 return
             if advance:
-                self.depth += 1
-                self.room = "boss" if self.depth >= DUNGEON_MAX_DEPTH else random.choice(DUNGEON_ROOMS)
-            self.refresh_buttons()
-            await interaction.response.edit_message(content=self.render(result_text), view=self)
+                await self.advance_room(interaction, result_text)
+                return
 
         async def finish(self, interaction, cleared, result_text):
             self.finished = True
             self.clear_items()
+            if not interaction.response.is_done():
+                await interaction.response.defer()
             reward = 0
             balance_line = ""
             achievements = []
@@ -7473,7 +7770,7 @@ async def dungeon(ctx):
                 f"{result_text}{balance_line}"
                 f"{achievement_reward_text(achievements)}"
             )
-            await interaction.response.edit_message(content=final_text, view=None)
+            await interaction.message.edit(content=final_text, view=None)
 
         async def on_timeout(self):
             if self.finished:
@@ -8240,7 +8537,7 @@ DETAILED_EXPLANATIONS = {
     "plinko": "Choose one of five drop lanes, then nudge left, let drop, or nudge right every row. Peg bounce still adds luck, but your row choices affect the final lane and multiplier. ×1 refunds; higher than ×1 wins.",
     "luckynumber": "Choose Solo or Public Channel, then choose a range: 1-10, 1-20, 1-50, or 1-100. After the range, choose payout/tries. 1-10: 3 tries ×2, 2 tries ×3, 1 try ×5. 1-20: 5 tries ×3, 4 tries ×4, 2 tries ×6. 1-50: 10 tries ×4, 6 tries ×6, 4 tries ×8. 1-100: 15 tries ×3, 8 tries ×8, 2 tries ×20. All modes have 1 minute to finish. In public mode, each user gets their own tries. If another user guesses correctly, they get 80% of the prize and the starter gets 20%. If nobody gets it, only the starter loses.",
     "jackpotspin": f"Choose a target symbol, then press Spin Wheel up to 3 times. Normal total hit chances are {Q_SLOT_STAR} ×2 at 42%, {Q_SLOT_DIAMOND} ×5 at 16%, {Q_SLOT_CROWN} ×10 at 7%, and {Q_SLOT_JACKPOT} ×50 at 1.4%. Luck bonuses help smaller targets more than huge targets, so ×50 stays rare. Missing all 3 spins loses the bet.",
-    "dungeon": f"Free solo adventure. Pick choices through 6 rooms, manage {Q_DUNGEON_HEART} HP, collect {Q_DUNGEON_KEY} keys and {Q_DUNGEON_RELIC} relics, then beat the final room to carry the loot out. Clearing the run pays the loot you escaped with and records a Dungeon win. Getting knocked out pays nothing.",
+    "dungeon": f"Free solo adventure. Pick choices through 6 rooms, manage {Q_DUNGEON_HEART} HP, collect {Q_DUNGEON_KEY} keys and {Q_DUNGEON_RELIC} relics, then beat the final room to carry the loot out. Fight starts a guard-read mini-game, Disarm starts a trap-circuit mini-game, and Pick Lock starts a 3-pin lockpick mini-game. Clearing the run pays the loot you escaped with and records a Dungeon win. Getting knocked out pays nothing.",
     "dng": "Alias for `.dungeon`. Free solo adventure with choices, HP, keys, relics, and a clear reward.",
     "qdungeon": "Alias for `.dungeon`. Free solo adventure with choices, HP, keys, relics, and a clear reward.",
     "gamestats": "Shows tracked game stats for you or a mentioned user: total played, wins, profit, per-game records, and hard game badges. Example: `.gamestats` or `.gamestats @user`.",

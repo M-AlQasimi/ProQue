@@ -690,7 +690,7 @@ Run these after role tests because they need multiple users, waiting, or restart
 - Tower: safe doors climb multipliers; cash out pays, trapped door resets the universal gambling streak.
 - Vault: 3-digit guesses show exact/close hints; correct code pays, failed tries reset the universal gambling streak.
 - Memory: matching all 8 pairs pays; too many misses or timeout resets the universal gambling streak.
-- Dungeon: free solo run shows room choices, HP, keys, relics, clear reward, timeout, and game stats.
+- Dungeon: free solo run shows room choices, HP, keys, relics, monster duel mini-game, trap disarm mini-game, locked-gate lockpick mini-game, clear reward, timeout, and game stats.
 - Roulette: matching color pays x3 and loading display matches result.
 - Mine Sweep: multiplier starts at x2.
 - Leaderboard: local/global switch, ranking type menu, pages, caller rank, user mentions open profiles.
