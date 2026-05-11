@@ -79,7 +79,7 @@ Expected: logs use non-pinging mentions like `<@id>`, not plain usernames/nickna
 
 ### Custom Emojis
 
-- Run `.bal`, `.shop`, `.inventory`, `.lottery`, `.scratch 1000`, `.tower 1000`, `.vault 1000`, `.memory 1000`, `.cardladder 1000`, `.lockpick 1000`, `.slots 1000`, `.roulette 1000 red`, `.ms 1000`, `.wheel 1000`, `.poll Test question? one two`.
+- Run `.bal`, `.shop`, `.inventory`, `.lottery`, `.scratch 1000`, `.tower 1000`, `.vault 1000`, `.memory 1000`, `.cardladder 1000`, `.lockpick 1000`, `.dungeon`, `.slots 1000`, `.roulette 1000 red`, `.ms 1000`, `.wheel 1000`, `.poll Test question? one two`.
 
 Expected: no raw custom emoji markdown appears unless Discord cannot render that emoji.
 
@@ -270,6 +270,7 @@ Run:
 - `.plinko 1000`
 - `.luckynumber 1000`
 - `.jackpotspin 1000`
+- `.dungeon`
 - `.ms 1000`
 - `.wheel 1000`
 - `.gamestats`
@@ -626,6 +627,7 @@ Run:
 - `.plinko 1000`
 - `.luckynumber 1000`
 - `.jackpotspin 1000`
+- `.dungeon`
 - `.ms 1000`
 - `.wheel 1000`
 - `.gamestats`
@@ -688,6 +690,7 @@ Run these after role tests because they need multiple users, waiting, or restart
 - Tower: safe doors climb multipliers; cash out pays, trapped door resets the universal gambling streak.
 - Vault: 3-digit guesses show exact/close hints; correct code pays, failed tries reset the universal gambling streak.
 - Memory: matching all 8 pairs pays; too many misses or timeout resets the universal gambling streak.
+- Dungeon: free solo run shows room choices, HP, keys, relics, clear reward, timeout, and game stats.
 - Roulette: matching color pays x3 and loading display matches result.
 - Mine Sweep: multiplier starts at x2.
 - Leaderboard: local/global switch, ranking type menu, pages, caller rank, user mentions open profiles.
@@ -747,6 +750,7 @@ Run these after role tests because they need multiple users, waiting, or restart
 - Chess board uses custom number labels and file-letter labels.
 - Chess rejects illegal fallback notation.
 - Chess detects checkmate, stalemate/draw, resignation, and settles bets.
+- Dungeon is solo-only, rejects other users pressing its buttons, and records clear/fail stats.
 
 ### Timers, Polls, Giveaway
 

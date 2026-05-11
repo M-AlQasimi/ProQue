@@ -983,7 +983,7 @@ async def on_ready():
         economy_command_names = [
             "bal", "profile", "inventory", "quests", "shop", "cooldowns", "transactions", "lottery", "editlottery", "stoplottery", "lotterystats", "buytick",
             "daily", "weekly", "monthly", "cf", "roulette", "slots",
-            "blackjack", "scratch", "tower", "vault", "memory", "cardladder", "lockpick", "heist", "diceduel", "cases", "plinko", "luckynumber", "jackpotspin", "ms", "wheel", "give", "lb", "gamestats",
+            "blackjack", "scratch", "tower", "vault", "memory", "cardladder", "lockpick", "heist", "diceduel", "cases", "plinko", "luckynumber", "jackpotspin", "dungeon", "ms", "wheel", "give", "lb", "gamestats",
             "add", "remove", "addtick", "settick", "setquesos", "econhelp", "explain"
         ]
         loaded_economy_commands = [name for name in economy_command_names if bot.get_command(name)]
@@ -2006,6 +2006,7 @@ COMMAND_EXAMPLE_OVERRIDES = {
     "plinko": ".plinko 1000",
     "luckynumber": ".luckynumber 1000",
     "jackpotspin": ".jackpotspin 1000",
+    "dungeon": ".dungeon",
     "gamestats": ".gamestats @user",
     "memory": ".memory 1000",
     "move": ".move e2e4",
@@ -2392,7 +2393,7 @@ HELP_CATEGORIES = {
     "Quewo": [
         "bal", "profile", "inventory", "quests", "shop", "cooldowns", "transactions", "lottery", "lotterystats", "buytick",
         "daily", "weekly", "monthly", "cf", "roulette", "slots", "blackjack", "scratch", "tower", "vault", "memory", "cardladder", "lockpick",
-        "heist", "diceduel", "cases", "plinko", "luckynumber", "jackpotspin", "ms", "wheel",
+        "heist", "diceduel", "cases", "plinko", "luckynumber", "jackpotspin", "dungeon", "ms", "wheel",
         "give", "lb", "gamestats", "qstats", "econhelp", "explain",
     ],
     "Games": ["games", "ttt", "c4", "chess", "move", "resign", "q", "picker"],
@@ -2655,6 +2656,7 @@ GAME_MENU = [
     ("Luck", "Plinko", "plinko", "`.plinko <amount>`", "Drop into multiplier slots."),
     ("Luck", "Lucky Number", "luckynumber", "`.luckynumber <amount>`", "Choose mode, range, and limited tries."),
     ("Luck", "Jackpot Spin", "jackpotspin", "`.jackpotspin <amount>`", "Pick a target, then spin up to 3 times."),
+    ("Solo", "Dungeon", "dungeon", "`.dungeon`", "Free solo rooms with HP, keys, relics, and loot."),
     ("Utility", "Picker", None, "`.picker`", "Randomly picks from options."),
 ]
 

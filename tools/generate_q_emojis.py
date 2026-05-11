@@ -755,6 +755,66 @@ def qbadge():
     c.sparkle(95, 28, 6)
     return c
 
+def qdungeon():
+    c = Canvas()
+    c.poly([(26, 104), (26, 50), (39, 31), (64, 22), (89, 31), (102, 50), (102, 104)], NAVY, outline=BLUE_DARK, width=5)
+    c.poly([(39, 104), (39, 58), (48, 43), (64, 36), (80, 43), (89, 58), (89, 104)], BLUE_MID, outline=CYAN, width=3)
+    c.rect(52, 66, 24, 38, NAVY, outline=ICE, width=2)
+    c.circle(64, 75, 18, BLUE_DARK, outline=CYAN, width=3)
+    c.text_q(64, 76, 21, ICE)
+    c.line(35, 95, 93, 95, SILVER, 3)
+    c.sparkle(99, 36, 7)
+    return c
+
+def qdungeon_heart():
+    c = Canvas()
+    c.circle(49, 52, 20, CYAN, outline=BLUE_DARK, width=4)
+    c.circle(79, 52, 20, CYAN, outline=BLUE_DARK, width=4)
+    c.poly([(31, 60), (64, 104), (97, 60), (84, 44), (64, 56), (44, 44)], BLUE, outline=BLUE_DARK, width=4)
+    c.circle(64, 70, 18, ICE, outline=CYAN, width=2)
+    c.text_q(64, 71, 20, BLUE_MID)
+    c.sparkle(96, 32, 6)
+    return c
+
+def qdungeon_key():
+    c = Canvas()
+    c.circle(45, 57, 23, GOLD, outline=BLUE_DARK, width=4)
+    c.circle(45, 57, 11, NAVY, outline=ICE, width=3)
+    c.line(61, 72, 101, 101, GOLD, 10)
+    c.line(64, 70, 104, 99, ICE, 3)
+    c.rect(88, 90, 13, 11, GOLD, outline=BLUE_DARK, width=2)
+    c.rect(99, 98, 9, 11, GOLD, outline=BLUE_DARK, width=2)
+    c.text_q(45, 57, 15, CYAN)
+    c.sparkle(94, 34, 6)
+    return c
+
+def qdungeon_relic():
+    c = Canvas()
+    c.poly([(64, 17), (99, 43), (86, 96), (64, 111), (42, 96), (29, 43)], BLUE_MID, outline=BLUE_DARK, width=5)
+    c.poly([(64, 25), (87, 45), (79, 88), (64, 99), (49, 88), (41, 45)], CYAN, outline=ICE, width=2)
+    c.line(64, 26, 64, 99, BLUE_DARK, 2)
+    c.line(42, 45, 86, 45, ICE, 2)
+    c.text_q(64, 66, 28, BLUE_DARK)
+    c.sparkle(96, 33, 7)
+    c.sparkle(31, 79, 5)
+    return c
+
+def qdungeon_monster():
+    c = Canvas()
+    c.circle(64, 67, 39, BLUE_DARK, outline=CYAN, width=5)
+    c.poly([(36, 39), (23, 22), (49, 32)], BLUE_MID, outline=BLUE_DARK, width=3)
+    c.poly([(92, 39), (105, 22), (79, 32)], BLUE_MID, outline=BLUE_DARK, width=3)
+    c.circle(50, 59, 7, ICE, outline=BLUE, width=2)
+    c.circle(78, 59, 7, ICE, outline=BLUE, width=2)
+    c.circle(50, 59, 3, RED)
+    c.circle(78, 59, 3, RED)
+    c.line(48, 83, 80, 83, ICE, 5)
+    for x in [56, 64, 72]:
+        c.poly([(x - 4, 84), (x + 4, 84), (x, 93)], CYAN, outline=BLUE_DARK, width=1)
+    c.text_q(64, 42, 17, CYAN)
+    c.sparkle(96, 33, 6)
+    return c
+
 
 def qbirthday():
     c = Canvas()
@@ -1651,6 +1711,11 @@ STATIC = {
     "QDoubleNothing": qdouble_nothing,
     "QGameStats": qgame_stats,
     "QBadge": qbadge,
+    "QDungeon": qdungeon,
+    "QDungeonHeart": qdungeon_heart,
+    "QDungeonKey": qdungeon_key,
+    "QDungeonRelic": qdungeon_relic,
+    "QDungeonMonster": qdungeon_monster,
 }
 
 STATIC_CATEGORIES = {
@@ -1732,6 +1797,9 @@ STATIC_CATEGORIES = {
     },
     "games/jackpot": {
         "QJackpotSpin",
+    },
+    "games/dungeon": {
+        "QDungeon", "QDungeonHeart", "QDungeonKey", "QDungeonRelic", "QDungeonMonster",
     },
     "polls": {
         "QPoll", "QPollOne", "QPollTwo", "QPollThree", "QPollFour", "QPollFive",

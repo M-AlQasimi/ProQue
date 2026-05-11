@@ -136,6 +136,11 @@ Q_JACKPOT_SPIN = "<a:QJackpotSpin:1502002724261330955>"
 Q_DOUBLE_NOTHING = Q_FLIP_SPIN
 Q_GAME_STATS = "<:QGameStats:1502000517201661962>"
 Q_BADGE = "<:QBadge:1502000221977055372>"
+Q_DUNGEON = "<:QDungeon:1503459478690074644>"
+Q_DUNGEON_HEART = "<:QDungeonHeart:1503459480766255104>"
+Q_DUNGEON_KEY = "<:QDungeonKey:1503459483030917270>"
+Q_DUNGEON_RELIC = "<:QDungeonRelic:1503459486633955450>"
+Q_DUNGEON_MONSTER = "<:QDungeonMonster:1503459485081927701>"
 INTERNAL_SUPEROWNER_TRANSACTION_KINDS = {"transfer_tax", "lottery_house_cut", "shop_payment"}
 SLOT_SYMBOL_PAYOUTS = [
     (Q_SLOT_STAR, 2),
@@ -1911,6 +1916,7 @@ GAME_DISPLAY_NAMES = {
     "plinko": "Plinko",
     "luckynumber": "Lucky Number",
     "jackpotspin": "Jackpot Spin",
+    "dungeon": "Dungeon",
     "memory": "Memory",
     "tower": "Tower",
     "vault": "Vault",
@@ -1932,6 +1938,7 @@ GAME_RISK_LABELS = {
     "plinko": "Medium",
     "luckynumber": "Chosen by range",
     "jackpotspin": "Extreme",
+    "dungeon": "Free/Solo",
     "memory": "Skill",
     "tower": "High",
     "vault": "Skill",
@@ -1954,6 +1961,7 @@ GAME_ACHIEVEMENTS = {
     "plinko_100_wins": {"game": "plinko", "field": "wins", "target": 100, "name": "Plinko Pro", "reward": 4_000_000},
     "luckynumber_100_wins": {"game": "luckynumber", "field": "wins", "target": 100, "name": "Number Oracle", "reward": 4_000_000},
     "jackpotspin_25_wins": {"game": "jackpotspin", "field": "wins", "target": 25, "name": "Jackpot Hunter", "reward": 7_500_000},
+    "dungeon_50_clears": {"game": "dungeon", "field": "wins", "target": 50, "name": "Dungeon Delver", "reward": 3_000_000},
     "all_games_1000_played": {"game": None, "field": "played", "target": 1000, "name": "Quewo Grinder", "reward": 10_000_000},
 }
 
@@ -1981,6 +1989,8 @@ GAME_RISK_ALIASES = {
     "jackpot": "jackpotspin",
     "jspin": "jackpotspin",
     "jps": "jackpotspin",
+    "dng": "dungeon",
+    "qdungeon": "dungeon",
     "minesweeper": "ms",
     "minesweepeer": "ms",
 }
@@ -7123,6 +7133,375 @@ async def jackpot_spin(ctx, amount: str):
         view=view
     )
 
+DUNGEON_MAX_DEPTH = 6
+DUNGEON_MAX_HP = 5
+DUNGEON_CLEAR_BONUS = 30_000
+DUNGEON_RELIC_VALUE = 25_000
+DUNGEON_REWARD_CAP = 175_000
+DUNGEON_ROOMS = ("chest", "monster", "trap", "shrine", "locked")
+
+def dungeon_hp_text(hp):
+    hp = max(0, int(hp))
+    return f"{Q_DUNGEON_HEART} " * hp + f"`{hp}/{DUNGEON_MAX_HP}`"
+
+def dungeon_room_title(room):
+    return {
+        "chest": f"{QOIN_CHEST} Treasure Room",
+        "monster": f"{Q_DUNGEON_MONSTER} Crystal Guard",
+        "trap": f"{Q_TOWER_TRAP} Trap Hall",
+        "shrine": f"{Q_DUNGEON_RELIC} Relic Shrine",
+        "locked": f"{Q_DUNGEON_KEY} Locked Gate",
+        "boss": f"{Q_DUNGEON} Final Door",
+    }.get(room, "Dungeon Room")
+
+@commands.command(name="dungeon", aliases=["dng", "qdungeon"])
+async def dungeon(ctx):
+    """Free solo dungeon run with choices, HP, keys, relics, and a clear reward."""
+    if not await ensure_db_ready(ctx):
+        return
+    try:
+        data = get_user(ctx.author.id)
+    except Exception:
+        await send_error(ctx, "Database unavailable. Try again shortly.")
+        return
+
+    class DungeonChoiceButton(discord.ui.Button):
+        def __init__(self, key, label, style=discord.ButtonStyle.primary):
+            super().__init__(label=label, style=style)
+            self.key = key
+
+        async def callback(self, interaction):
+            try:
+                await self.view.choose(interaction, self.key)
+            except Exception as e:
+                print(f"Dungeon interaction failed: {type(e).__name__} - {e}")
+                message = f"{Q_DENIED} Dungeon action failed. Try starting a new run."
+                if interaction.response.is_done():
+                    await interaction.followup.send(message, ephemeral=True)
+                else:
+                    await interaction.response.send_message(message, ephemeral=True)
+
+    class DungeonView(discord.ui.View):
+        def __init__(self):
+            super().__init__(timeout=180)
+            self.user_id = ctx.author.id
+            self.data = data
+            self.depth = 1
+            self.hp = DUNGEON_MAX_HP
+            self.keys = 0
+            self.relics = 0
+            self.loot = 0
+            self.rests = 1
+            self.finished = False
+            self.room = random.choice(DUNGEON_ROOMS)
+            self.message = None
+            self.refresh_buttons()
+
+        async def interaction_check(self, interaction):
+            if interaction.user.id != self.user_id:
+                await interaction.response.send_message("Use your own dungeon run.", ephemeral=True)
+                return False
+            return True
+
+        def room_text(self):
+            text = {
+                "chest": "A sealed chest hums with queso light.",
+                "monster": "A crystal guard blocks the path.",
+                "trap": "The floor is wired with glowing pressure plates.",
+                "shrine": "A quiet shrine offers a risky blessing.",
+                "locked": "A heavy gate blocks the next hallway.",
+                "boss": "The final door wakes up. One choice decides the run.",
+            }
+            return text.get(self.room, "The dungeon shifts around you.")
+
+        def status_text(self):
+            return (
+                f"Room: **{self.depth}/{DUNGEON_MAX_DEPTH}** | HP: {dungeon_hp_text(self.hp)}\n"
+                f"Loot: **{format_balance(self.loot)}** | {Q_DUNGEON_KEY} Keys: **{self.keys}** | {Q_DUNGEON_RELIC} Relics: **{self.relics}**"
+            )
+
+        def render(self, result_text=None):
+            lines = [
+                f"{Q_DUNGEON} **Q DUNGEON**",
+                "─────────────────",
+                self.status_text(),
+                "",
+                f"**{dungeon_room_title(self.room)}**",
+                self.room_text(),
+            ]
+            if result_text:
+                lines.extend(["", result_text])
+            return "\n".join(lines)
+
+        def refresh_buttons(self):
+            self.clear_items()
+            if self.room == "chest":
+                choices = [
+                    ("open", "Open Chest", discord.ButtonStyle.success),
+                    ("inspect", "Inspect", discord.ButtonStyle.primary),
+                    ("leave", "Take Scraps", discord.ButtonStyle.secondary),
+                ]
+            elif self.room == "monster":
+                choices = [
+                    ("fight", "Fight", discord.ButtonStyle.danger),
+                    ("sneak", "Sneak", discord.ButtonStyle.primary),
+                    ("key", "Use Key", discord.ButtonStyle.success),
+                ]
+            elif self.room == "trap":
+                choices = [
+                    ("disarm", "Disarm", discord.ButtonStyle.primary),
+                    ("dash", "Dash", discord.ButtonStyle.danger),
+                    ("careful", "Careful Step", discord.ButtonStyle.secondary),
+                ]
+            elif self.room == "shrine":
+                choices = [
+                    ("pray", "Pray", discord.ButtonStyle.primary),
+                    ("relic", "Take Relic", discord.ButtonStyle.success),
+                    ("rest", "Rest", discord.ButtonStyle.secondary),
+                ]
+            elif self.room == "locked":
+                choices = [
+                    ("pick", "Pick Lock", discord.ButtonStyle.primary),
+                    ("force", "Force Door", discord.ButtonStyle.danger),
+                    ("key", "Use Key", discord.ButtonStyle.success),
+                ]
+            else:
+                choices = [
+                    ("strike", "Strike", discord.ButtonStyle.danger),
+                    ("guard", "Guard", discord.ButtonStyle.primary),
+                    ("key", "Use Key", discord.ButtonStyle.success),
+                ]
+            for key, label, style in choices:
+                self.add_item(DungeonChoiceButton(key, label, style))
+
+        def roll(self, chance):
+            bonus = min(0.10, active_luck_bonus(self.data) / 2)
+            return random.random() < min(0.95, chance + bonus)
+
+        def change_hp(self, amount):
+            self.hp = max(0, min(DUNGEON_MAX_HP, self.hp + int(amount)))
+
+        def apply_choice(self, choice):
+            if self.room == "chest":
+                if choice == "open":
+                    gain = random.randint(18_000, 38_000)
+                    self.loot += gain
+                    text = f"{Q_SUCCESS} Chest opened: +**{format_balance(gain)}**."
+                    if random.random() < 0.25:
+                        self.change_hp(-1)
+                        text += " A hidden spike hit you for **1 HP**."
+                    if random.random() < 0.15:
+                        self.keys += 1
+                        text += f" Found {Q_DUNGEON_KEY} **1 key**."
+                    return text, True, False
+                if choice == "inspect":
+                    gain = random.randint(10_000, 18_000)
+                    self.loot += gain
+                    if random.random() < 0.35:
+                        self.keys += 1
+                        return f"{Q_DUNGEON_KEY} You inspected safely: +**{format_balance(gain)}** and found **1 key**.", True, False
+                    return f"{Q_SUCCESS} You inspected safely: +**{format_balance(gain)}**.", True, False
+                gain = 5_000
+                self.loot += gain
+                return f"{Q_SUCCESS} You took loose scraps: +**{format_balance(gain)}**.", True, False
+
+            if self.room == "monster":
+                if choice == "fight":
+                    if self.roll(0.64):
+                        gain = random.randint(22_000, 38_000)
+                        self.loot += gain
+                        if random.random() < 0.12:
+                            self.relics += 1
+                            return f"{Q_SUCCESS} Guard defeated: +**{format_balance(gain)}** and **1 relic**.", True, False
+                        return f"{Q_SUCCESS} Guard defeated: +**{format_balance(gain)}**.", True, False
+                    self.change_hp(-2)
+                    return f"{Q_DENIED} The guard punished the attack. Lost **2 HP**.", True, False
+                if choice == "sneak":
+                    if self.roll(0.72):
+                        gain = random.randint(8_000, 18_000)
+                        self.loot += gain
+                        return f"{Q_SUCCESS} You slipped past and lifted +**{format_balance(gain)}**.", True, False
+                    self.change_hp(-1)
+                    return f"{Q_DENIED} You were spotted. Lost **1 HP**.", True, False
+                if self.keys > 0:
+                    self.keys -= 1
+                    gain = 25_000
+                    self.loot += gain
+                    return f"{Q_DUNGEON_KEY} Key flash stunned the guard: +**{format_balance(gain)}**.", True, False
+                self.change_hp(-1)
+                return f"{Q_DENIED} No key. The guard clipped you for **1 HP**.", True, False
+
+            if self.room == "trap":
+                if choice == "disarm":
+                    if self.roll(0.60):
+                        gain = 15_000
+                        self.loot += gain
+                        if random.random() < 0.20:
+                            self.keys += 1
+                            return f"{Q_SUCCESS} Trap disarmed: +**{format_balance(gain)}** and **1 key**.", True, False
+                        return f"{Q_SUCCESS} Trap disarmed: +**{format_balance(gain)}**.", True, False
+                    self.change_hp(-1)
+                    return f"{Q_DENIED} Bad wire. Lost **1 HP**.", True, False
+                if choice == "dash":
+                    if self.roll(0.45):
+                        gain = 28_000
+                        self.loot += gain
+                        return f"{Q_SUCCESS} Clean dash: +**{format_balance(gain)}**.", True, False
+                    self.change_hp(-2)
+                    return f"{Q_DENIED} The trap caught you. Lost **2 HP**.", True, False
+                gain = 7_000
+                self.loot += gain
+                if random.random() < 0.10:
+                    self.change_hp(-1)
+                    return f"{Q_WARNING} Careful path: +**{format_balance(gain)}**, but lost **1 HP**.", True, False
+                return f"{Q_SUCCESS} Careful path: +**{format_balance(gain)}**.", True, False
+
+            if self.room == "shrine":
+                if choice == "pray":
+                    outcome = random.choice(("heal", "relic", "loot", "hurt"))
+                    if outcome == "heal":
+                        self.change_hp(1)
+                        return f"{Q_SUCCESS} The shrine healed **1 HP**.", True, False
+                    if outcome == "relic":
+                        self.relics += 1
+                        return f"{Q_DUNGEON_RELIC} The shrine gave **1 relic**.", True, False
+                    if outcome == "loot":
+                        gain = 18_000
+                        self.loot += gain
+                        return f"{Q_SUCCESS} The shrine gave +**{format_balance(gain)}**.", True, False
+                    self.change_hp(-1)
+                    return f"{Q_DENIED} The shrine rejected you. Lost **1 HP**.", True, False
+                if choice == "relic":
+                    self.relics += 1
+                    text = f"{Q_DUNGEON_RELIC} Relic taken."
+                    if random.random() < 0.35:
+                        self.change_hp(-1)
+                        text += " The shrine burned **1 HP**."
+                    return text, True, False
+                if self.rests > 0:
+                    self.rests -= 1
+                    self.change_hp(2)
+                    return f"{Q_SUCCESS} You rested and recovered **2 HP**. Rests left: **{self.rests}**.", True, False
+                gain = 5_000
+                self.loot += gain
+                return f"{Q_WARNING} No rests left. You took +**{format_balance(gain)}** incense coins instead.", True, False
+
+            if self.room == "locked":
+                if choice == "pick":
+                    if self.roll(0.55):
+                        gain = 20_000
+                        self.loot += gain
+                        return f"{Q_SUCCESS} Lock picked: +**{format_balance(gain)}**.", True, False
+                    self.change_hp(-1)
+                    return f"{Q_DENIED} Lock snapped back. Lost **1 HP**.", True, False
+                if choice == "force":
+                    if self.roll(0.40):
+                        gain = 35_000
+                        self.loot += gain
+                        return f"{Q_SUCCESS} Gate forced open: +**{format_balance(gain)}**.", True, False
+                    self.change_hp(-2)
+                    return f"{Q_DENIED} The gate slammed shut. Lost **2 HP**.", True, False
+                if self.keys > 0:
+                    self.keys -= 1
+                    gain = 30_000
+                    self.loot += gain
+                    return f"{Q_DUNGEON_KEY} Key used: +**{format_balance(gain)}**.", True, False
+                self.change_hp(-1)
+                return f"{Q_DENIED} No key. The lock bit you for **1 HP**.", True, False
+
+            if choice == "strike":
+                if self.roll(0.58):
+                    gain = 50_000
+                    self.loot += gain
+                    return f"{Q_SUCCESS} Final door cracked open: +**{format_balance(gain)}**.", True, True
+                self.change_hp(-2)
+                return f"{Q_DENIED} The final door threw you back. Lost **2 HP**.", True, False
+            if choice == "guard":
+                if self.roll(0.75):
+                    gain = 25_000
+                    self.loot += gain
+                    return f"{Q_SUCCESS} You outlasted the final door: +**{format_balance(gain)}**.", True, True
+                self.change_hp(-1)
+                return f"{Q_DENIED} Guard broke. Lost **1 HP**.", True, False
+            if self.keys > 0:
+                self.keys -= 1
+                gain = 40_000
+                self.loot += gain
+                return f"{Q_DUNGEON_KEY} Master key opened the final door: +**{format_balance(gain)}**.", True, True
+            self.change_hp(-1)
+            return f"{Q_DENIED} No key for the final door. Lost **1 HP**.", True, False
+
+        async def choose(self, interaction, choice):
+            if self.finished:
+                await interaction.response.send_message("This dungeon run is already finished.", ephemeral=True)
+                return
+            result_text, advance, cleared = self.apply_choice(choice)
+            if self.hp <= 0:
+                await self.finish(interaction, False, f"{result_text}\n{Q_DENIED} You were knocked out. No loot escaped.")
+                return
+            if self.room == "boss":
+                if cleared:
+                    await self.finish(interaction, True, result_text)
+                else:
+                    await self.finish(interaction, False, f"{result_text}\n{Q_DENIED} The final room stayed sealed. No loot escaped.")
+                return
+            if advance:
+                self.depth += 1
+                self.room = "boss" if self.depth >= DUNGEON_MAX_DEPTH else random.choice(DUNGEON_ROOMS)
+            self.refresh_buttons()
+            await interaction.response.edit_message(content=self.render(result_text), view=self)
+
+        async def finish(self, interaction, cleared, result_text):
+            self.finished = True
+            self.clear_items()
+            reward = 0
+            balance_line = ""
+            achievements = []
+            if cleared:
+                reward = min(DUNGEON_REWARD_CAP, self.loot + self.relics * DUNGEON_RELIC_VALUE + DUNGEON_CLEAR_BONUS)
+                old_balance, new_balance = add_user_balance(self.user_id, reward, earned_delta=reward)
+                log_transaction(self.user_id, "dungeon_clear", reward, "Dungeon clear reward")
+                stats = record_game_result(self.user_id, "dungeon", True, reward, reward)
+                achievements = maybe_award_game_achievements(self.user_id, "dungeon", stats)
+                balance_line = f"\nReward: **{format_balance(reward)}**\nBalance: **{format_balance(old_balance)}** -> **{format_balance(new_balance)}**"
+            else:
+                record_game_result(self.user_id, "dungeon", False, 0, 0)
+            final_text = (
+                f"{Q_DUNGEON} **Q DUNGEON**\n"
+                "─────────────────\n"
+                f"{self.status_text()}\n\n"
+                f"{result_text}{balance_line}"
+                f"{achievement_reward_text(achievements)}"
+            )
+            await interaction.response.edit_message(content=final_text, view=None)
+
+        async def on_timeout(self):
+            if self.finished:
+                return
+            self.finished = True
+            self.clear_items()
+            try:
+                record_game_result(self.user_id, "dungeon", False, 0, 0)
+                await self.message.edit(
+                    content=(
+                        f"{Q_DUNGEON} **Q DUNGEON**\n"
+                        "─────────────────\n"
+                        f"{self.status_text()}\n\n"
+                        f"{Q_TIMEOUT} Dungeon run expired. No loot escaped."
+                    ),
+                    view=None,
+                )
+            except Exception:
+                pass
+
+    view = DungeonView()
+    view.message = await ctx.reply(
+        view.render(),
+        view=view,
+        mention_author=False,
+        allowed_mentions=discord.AllowedMentions.none(),
+    )
+
 @commands.command(name="gamestats", aliases=["gstats", "gamestat", "playstats"])
 async def gamestats(ctx, member: discord.Member = None):
     if not await ensure_db_ready(ctx):
@@ -7720,6 +8099,9 @@ EXPLANATIONS = {
     "jackpot": "Alias for `.jackpotspin`. Pick a target and spin the wheel.",
     "jspin": "Alias for `.jackpotspin`. Pick a target and spin the wheel.",
     "jps": "Alias for `.jackpotspin`. Pick a target and spin the wheel.",
+    "dungeon": f"{Q_DUNGEON} Free solo dungeon run. Choose through 6 rooms, manage HP/keys/relics, and escape with loot.",
+    "dng": "Alias for `.dungeon`. Free solo dungeon run.",
+    "qdungeon": "Alias for `.dungeon`. Free solo dungeon run.",
     "gamestats": "Shows tracked game wins, losses, profit, and game badges.",
     "gstats": "Alias for `.gamestats`. Shows tracked game stats.",
     "gamestat": "Alias for `.gamestats`. Shows tracked game stats.",
@@ -7858,6 +8240,9 @@ DETAILED_EXPLANATIONS = {
     "plinko": "Choose one of five drop lanes, then nudge left, let drop, or nudge right every row. Peg bounce still adds luck, but your row choices affect the final lane and multiplier. ×1 refunds; higher than ×1 wins.",
     "luckynumber": "Choose Solo or Public Channel, then choose a range: 1-10, 1-20, 1-50, or 1-100. After the range, choose payout/tries. 1-10: 3 tries ×2, 2 tries ×3, 1 try ×5. 1-20: 5 tries ×3, 4 tries ×4, 2 tries ×6. 1-50: 10 tries ×4, 6 tries ×6, 4 tries ×8. 1-100: 15 tries ×3, 8 tries ×8, 2 tries ×20. All modes have 1 minute to finish. In public mode, each user gets their own tries. If another user guesses correctly, they get 80% of the prize and the starter gets 20%. If nobody gets it, only the starter loses.",
     "jackpotspin": f"Choose a target symbol, then press Spin Wheel up to 3 times. Normal total hit chances are {Q_SLOT_STAR} ×2 at 42%, {Q_SLOT_DIAMOND} ×5 at 16%, {Q_SLOT_CROWN} ×10 at 7%, and {Q_SLOT_JACKPOT} ×50 at 1.4%. Luck bonuses help smaller targets more than huge targets, so ×50 stays rare. Missing all 3 spins loses the bet.",
+    "dungeon": f"Free solo adventure. Pick choices through 6 rooms, manage {Q_DUNGEON_HEART} HP, collect {Q_DUNGEON_KEY} keys and {Q_DUNGEON_RELIC} relics, then beat the final room to carry the loot out. Clearing the run pays the loot you escaped with and records a Dungeon win. Getting knocked out pays nothing.",
+    "dng": "Alias for `.dungeon`. Free solo adventure with choices, HP, keys, relics, and a clear reward.",
+    "qdungeon": "Alias for `.dungeon`. Free solo adventure with choices, HP, keys, relics, and a clear reward.",
     "gamestats": "Shows tracked game stats for you or a mentioned user: total played, wins, profit, per-game records, and hard game badges. Example: `.gamestats` or `.gamestats @user`.",
     "ms": f"Choose 3x3, 4x4, or 5x5, then reveal tiles. Hidden tiles show as {Q_MS_HIDDEN}, safe gems show as {Q_XP}, bombs show as {Q_MINE}, and your cursor shows as {Q_MS_CURSOR}. 3x3 has 1 bomb, 4x4 has 3 bombs, and 5x5 has 5 bombs. Reveal every safe tile to win. The final multiplier starts at ×2.00 and each safe reveal adds +0.15, then the universal gambling streak bonus applies. Hitting a bomb or timing out loses the bet and resets the streak.",
     "minesweeper": f"Choose 3x3, 4x4, or 5x5, then reveal tiles. Hidden tiles show as {Q_MS_HIDDEN}, safe gems show as {Q_XP}, bombs show as {Q_MINE}, and your cursor shows as {Q_MS_CURSOR}. 3x3 has 1 bomb, 4x4 has 3 bombs, and 5x5 has 5 bombs. Reveal every safe tile to win. The final multiplier starts at ×2.00 and each safe reveal adds +0.15, then the universal gambling streak bonus applies. Hitting a bomb or timing out loses the bet and resets the streak.",
@@ -7906,7 +8291,7 @@ ECONHELP_COMMANDS = [
     ("Core", ["bal", "profile", "inventory", "quests", "shop", "cooldowns", "transactions", "lb", "gamestats", "qstats"]),
     ("Claims", ["daily", "weekly", "monthly"]),
     ("Lottery", ["lottery", "buytick", "lotterystats", "editlottery", "stoplottery"]),
-    ("Gambling", ["cf", "roulette", "slots", "blackjack", "scratch", "tower", "vault", "memory", "cardladder", "lockpick", "heist", "diceduel", "cases", "plinko", "luckynumber", "jackpotspin", "ms", "wheel"]),
+    ("Gambling", ["cf", "roulette", "slots", "blackjack", "scratch", "tower", "vault", "memory", "cardladder", "lockpick", "heist", "diceduel", "cases", "plinko", "luckynumber", "jackpotspin", "dungeon", "ms", "wheel"]),
     ("Transfers", ["give"]),
     ("Help", ["econhelp", "explain"]),
 ]
@@ -8075,7 +8460,7 @@ async def setup(bot_ref, log_callback=None):
     economy_commands = [
         bal, profile, inventory, quests, shop, cooldowns, transactions, lottery, editlottery, stoplottery, lotterystats, buytick,
         daily, weekly, monthly, gamble, roulette, slots, blackjack,
-        scratch, tower, vault, memory_game, card_ladder, lockpick, heist, dice_duel, cases, plinko, lucky_number, jackpot_spin, minesweeper, wheel, give, lb, gamestats, qstats, add, remove, addtick, settick, setquesos, econhelp, explain
+        scratch, tower, vault, memory_game, card_ladder, lockpick, heist, dice_duel, cases, plinko, lucky_number, jackpot_spin, dungeon, minesweeper, wheel, give, lb, gamestats, qstats, add, remove, addtick, settick, setquesos, econhelp, explain
     ]
     for command in economy_commands:
         if bot.get_command(command.name):
