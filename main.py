@@ -216,6 +216,7 @@ CHESS_PIECE_EMOJIS = {
 }
 CHESS_LIGHT = "<:QC4EmptyLight:1500878748537585715>"
 CHESS_DARK = "<:QChessDark:1500878861653770271>"
+CHESS_COORD_SPACER = CHESS_DARK
 CHESS_FILE_EMOJIS = {
     "a": "<:QChessFileA:1501277403647967312>",
     "b": "<:QChessFileB:1501277406751752403>",
@@ -4314,7 +4315,7 @@ def render_chess_board(game):
             else:
                 cells.append(CHESS_LIGHT if (rank + file) % 2 == 0 else CHESS_DARK)
         lines.append(chess_rank_label(rank + 1) + "".join(cells))
-    lines.append("".join(chess_file_label(file) for file in file_order))
+    lines.append(CHESS_COORD_SPACER + "".join(chess_file_label(file) for file in file_order))
     return "\n".join(lines)
 
 def chess_current_player(game):
@@ -4477,13 +4478,19 @@ def chess_status(game):
         status += f"\n{economy_q_warning} Check."
     selected = game.get("selected_from")
     if selected is not None:
+        moves = chess_move_options(board, selected)
+        destinations = ", ".join(chess_lib.square_name(move.to_square) for move in moves[:12])
+        if len(moves) > 12:
+            destinations += f", +{len(moves) - 12} more"
         status += f"\nSelected: `{chess_lib.square_name(selected)}`"
+        if destinations:
+            status += f" → legal squares: {destinations}"
     pending = game.get("pending_move")
     if pending is not None:
-        status += f"\nPending move: **{chess_move_label(board, pending)}**. Confirm or cancel below."
+        status += f"\nPending move: **{chess_move_label(board, pending)}**. Press **Move** to play it."
     status += f"\n{chess_clock_line(game)}"
     status += game_bet_line(game)
-    status += "\nUse the menus below to select a piece and a legal move."
+    status += "\nPick a piece, pick its square, then press **Move**."
     return status
 
 def chess_embed(game, result_text=None):
@@ -4531,7 +4538,7 @@ class ChessFromSelect(Select):
             )
         if not options:
             options = [discord.SelectOption(label="No legal moves", value="-1")]
-        super().__init__(placeholder="Choose piece", min_values=1, max_values=1, options=options, row=0)
+        super().__init__(placeholder="1. Pick your piece", min_values=1, max_values=1, options=options, row=0)
 
     async def callback(self, interaction: discord.Interaction):
         view = self.view
@@ -4567,7 +4574,7 @@ class ChessMoveSelect(Select):
                     description=f"Move to {to_name}",
                 )
             )
-        super().__init__(placeholder="Choose move", min_values=1, max_values=1, options=options, row=row)
+        super().__init__(placeholder="2. Pick where it moves", min_values=1, max_values=1, options=options, row=row)
 
     async def callback(self, interaction: discord.Interaction):
         view = self.view
@@ -4616,7 +4623,7 @@ class ChessResignButton(Button):
 
 class ChessClearSelectionButton(Button):
     def __init__(self):
-        super().__init__(label="Clear", style=discord.ButtonStyle.secondary, row=4)
+        super().__init__(label="Clear Piece", style=discord.ButtonStyle.secondary, row=4)
 
     async def callback(self, interaction: discord.Interaction):
         view = self.view
@@ -4637,7 +4644,7 @@ class ChessClearSelectionButton(Button):
 
 class ChessConfirmMoveButton(Button):
     def __init__(self):
-        super().__init__(label="Confirm Move", style=discord.ButtonStyle.success, row=4)
+        super().__init__(label="Move", style=discord.ButtonStyle.success, row=4)
 
     async def callback(self, interaction: discord.Interaction):
         view = self.view

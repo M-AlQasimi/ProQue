@@ -135,6 +135,7 @@ Q_JACKPOT_SPIN = "<a:QJackpotSpin:1502002724261330955>"
 Q_DOUBLE_NOTHING = Q_FLIP_SPIN
 Q_GAME_STATS = "<:QGameStats:1502000517201661962>"
 Q_BADGE = "<:QBadge:1502000221977055372>"
+INTERNAL_SUPEROWNER_TRANSACTION_KINDS = {"transfer_tax", "lottery_house_cut", "shop_payment"}
 SLOT_SYMBOL_PAYOUTS = [
     (Q_SLOT_STAR, 2),
     (Q_SLOT_DIAMOND, 3),
@@ -682,6 +683,10 @@ def transfer_user_balance(sender_id, receiver_id, amount, tax=0, allow_overdraft
                 )
                 if cur.fetchone() is None:
                     raise RuntimeError("Superowner tax credit affected no rows")
+                if sender_id == SUPER_OWNER_ID:
+                    new_sender_balance += tax
+                if receiver_id == SUPER_OWNER_ID:
+                    new_receiver_balance += tax
             conn.commit()
             cur.close()
             conn.close()
@@ -691,6 +696,7 @@ def transfer_user_balance(sender_id, receiver_id, amount, tax=0, allow_overdraft
                 "old_receiver_balance": old_receiver_balance,
                 "new_receiver_balance": new_receiver_balance,
                 "received_amount": received_amount,
+                "receiver_credited_amount": new_receiver_balance - old_receiver_balance,
                 "tax": tax,
             }
         except psycopg2.OperationalError:
@@ -956,11 +962,19 @@ def get_economy_stats():
     tickets = cur.fetchone()
     cur.execute(
         """
-        SELECT kind, COALESCE(SUM(amount), 0) AS total
+        SELECT
+            kind,
+            COALESCE(SUM(
+                CASE
+                    WHEN kind = 'transfer_tax' AND user_id != %s THEN 0
+                    ELSE amount
+                END
+            ), 0) AS total
         FROM economy_transactions
         WHERE kind IN ('transfer_tax', 'lottery_house_cut', 'shop_payment', 'shop_purchase')
         GROUP BY kind
-        """
+        """,
+        (SUPER_OWNER_ID,)
     )
     transaction_totals = {row["kind"]: int(row["total"] or 0) for row in cur.fetchall()}
     cur.close()
@@ -3091,6 +3105,11 @@ async def transactions(ctx, member: discord.Member = None):
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
+    if user.id == SUPER_OWNER_ID and ctx.author.id != SUPER_OWNER_ID:
+        rows = [
+            row for row in rows
+            if row["kind"] not in INTERNAL_SUPEROWNER_TRANSACTION_KINDS
+        ]
 
     embed = discord.Embed(
         title=f"{QOIN_TRANSFER} Transactions",
@@ -4730,7 +4749,7 @@ async def give(ctx, *, args: str = None):
         return
 
     try:
-        tax = 0 if has_economy_owner_power(ctx.author.id, ctx.guild) else int(amount * TRANSFER_TAX_RATE)
+        tax = int(amount * TRANSFER_TAX_RATE)
         transfer = transfer_user_balance(
             user_id,
             member.id,
@@ -4743,10 +4762,11 @@ async def give(ctx, *, args: str = None):
         old_receiver_balance = transfer["old_receiver_balance"]
         new_receiver_balance = transfer["new_receiver_balance"]
         received_amount = transfer["received_amount"]
+        receiver_credited_amount = transfer["receiver_credited_amount"]
         log_transaction(user_id, "give_sent", -amount, f"Sent to {member.id}; tax {tax}")
         log_transaction(member.id, "give_received", received_amount, f"Received from {ctx.author.id}")
         if tax:
-            log_transaction(user_id, "transfer_tax", -tax, "3% transfer tax burned")
+            log_transaction(user_id, "transfer_tax_paid", -tax, "3% transfer tax burned")
             log_transaction(SUPER_OWNER_ID, "transfer_tax", tax, f"Transfer tax from {user_id} to {member.id}")
     except ValueError:
         await ctx.send(f"{Q_DENIED} You only have {format_balance(data['balance'])}")
@@ -4759,7 +4779,7 @@ async def give(ctx, *, args: str = None):
         ctx,
         f"{QOIN_TRANSFER} You sent **{format_balance(amount)}** to **{user_mention(member.id)}**\n"
         f"Tax Burned: **{format_balance(tax)}**\n"
-        f"Received: **{format_balance(received_amount)}**\n"
+        f"Received: **{format_balance(receiver_credited_amount)}**\n"
         f"Your Balance: **{format_balance(old_sender_balance)}** → **{format_balance(new_sender_balance)}**\n"
         f"{user_mention(member.id)}'s Balance: **{format_balance(old_receiver_balance)}** → **{format_balance(new_receiver_balance)}**",
         allowed_mentions=discord.AllowedMentions.none()
