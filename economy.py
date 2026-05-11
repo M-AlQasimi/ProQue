@@ -7203,9 +7203,9 @@ async def dungeon(ctx):
             self.duel_misses = 0
             self.duel_stance = None
             self.trap_active = False
-            self.trap_target = []
-            self.trap_dials = []
-            self.trap_tries = 0
+            self.trap_sequence = []
+            self.trap_progress = 0
+            self.trap_mistakes = 0
             self.trap_hint = ""
             self.room = random.choice(DUNGEON_ROOMS)
             self.message = None
@@ -7292,19 +7292,16 @@ async def dungeon(ctx):
             return "\n".join(lines)
 
         def render_trap_disarm(self, result_text=None):
-            dial_lines = [
-                f"Circuit {index + 1}: `{self.lock_bar(value)}` **{value}/5**"
-                for index, value in enumerate(self.trap_dials)
-            ]
+            sequence = " -> ".join(label for _, label in self.trap_sequence)
             lines = [
                 f"{Q_DUNGEON} **Q DUNGEON**",
                 "─────────────────",
                 self.status_text(),
                 "",
-                f"**{Q_TOWER_TRAP} Trap Circuit**",
-                "Set both circuits, then test the pressure plate.",
-                f"Tests: **{self.trap_tries}/2**",
-                *dial_lines,
+                f"**{Q_TOWER_TRAP} Wire Sequence**",
+                "Cut the wires in the shown order. One wrong cut resets the sequence. Two wrong cuts triggers the trap.",
+                f"Sequence: **{sequence}**",
+                f"Progress: **{self.trap_progress}/{len(self.trap_sequence)}** | Mistakes: **{self.trap_mistakes}/2**",
                 f"> {self.trap_hint}",
             ]
             if result_text:
@@ -7367,10 +7364,10 @@ async def dungeon(ctx):
 
         def refresh_trap_buttons(self):
             self.clear_items()
-            for index in range(2):
-                self.add_item(DungeonChoiceButton(f"trap_dial_{index}", f"Circuit {index + 1}", discord.ButtonStyle.secondary))
-            self.add_item(DungeonChoiceButton("trap_test", "Test", discord.ButtonStyle.success))
-            self.add_item(DungeonChoiceButton("trap_reset", "Reset", discord.ButtonStyle.danger))
+            self.add_item(DungeonChoiceButton("trap_wire_blue", "Blue Wire", discord.ButtonStyle.primary))
+            self.add_item(DungeonChoiceButton("trap_wire_cyan", "Cyan Wire", discord.ButtonStyle.success))
+            self.add_item(DungeonChoiceButton("trap_wire_gold", "Gold Wire", discord.ButtonStyle.secondary))
+            self.add_item(DungeonChoiceButton("trap_restart", "Restart", discord.ButtonStyle.danger))
 
         def roll(self, chance):
             bonus = min(0.10, active_luck_bonus(self.data) / 2)
@@ -7643,30 +7640,40 @@ async def dungeon(ctx):
 
         async def start_trap_disarm(self, interaction):
             self.trap_active = True
-            self.trap_target = [random.randint(1, 5) for _ in range(2)]
-            self.trap_dials = [3, 3]
-            self.trap_tries = 0
-            self.trap_hint = "Set the circuits, then test. Hints tell you low, high, or set."
+            wires = [
+                ("trap_wire_blue", "Blue"),
+                ("trap_wire_cyan", "Cyan"),
+                ("trap_wire_gold", "Gold"),
+            ]
+            self.trap_sequence = [random.choice(wires) for _ in range(3)]
+            self.trap_progress = 0
+            self.trap_mistakes = 0
+            self.trap_hint = "Start with the first wire in the sequence."
             self.refresh_trap_buttons()
             await interaction.response.edit_message(content=self.render_trap_disarm(), view=self)
 
         async def handle_trap_disarm(self, interaction, choice):
-            if choice.startswith("trap_dial_"):
-                index = int(choice.rsplit("_", 1)[1])
-                self.trap_dials[index] = 1 if self.trap_dials[index] >= 5 else self.trap_dials[index] + 1
-                self.trap_hint = f"Circuit {index + 1} raised."
+            if choice == "trap_restart":
+                self.trap_progress = 0
+                self.trap_hint = "Sequence restarted."
                 await interaction.response.edit_message(content=self.render_trap_disarm(), view=self)
                 return
-            if choice == "trap_reset":
-                self.trap_dials = [1, 1]
-                self.trap_hint = "Circuits reset to 1."
-                await interaction.response.edit_message(content=self.render_trap_disarm(), view=self)
-                return
-            if choice != "trap_test":
+            if not choice.startswith("trap_wire_"):
                 await interaction.response.defer()
                 return
-            self.trap_tries += 1
-            if self.trap_dials == self.trap_target:
+            expected_key, expected_label = self.trap_sequence[self.trap_progress]
+            pressed_label = {
+                "trap_wire_blue": "Blue",
+                "trap_wire_cyan": "Cyan",
+                "trap_wire_gold": "Gold",
+            }.get(choice, "Unknown")
+            if choice == expected_key:
+                self.trap_progress += 1
+                if self.trap_progress < len(self.trap_sequence):
+                    next_label = self.trap_sequence[self.trap_progress][1]
+                    self.trap_hint = f"{Q_SUCCESS} {pressed_label} cut. Next: **{next_label}**."
+                    await interaction.response.edit_message(content=self.render_trap_disarm(), view=self)
+                    return
                 self.trap_active = False
                 gain = 20_000
                 self.loot += gain
@@ -7682,23 +7689,18 @@ async def dungeon(ctx):
                     f"{Q_SUCCESS} Trap disarmed: +**{format_balance(gain)}**."
                 )
                 return
-            hints = []
-            for index, (current, goal) in enumerate(zip(self.trap_dials, self.trap_target), 1):
-                if current == goal:
-                    hints.append(f"C{index} set")
-                elif current < goal:
-                    hints.append(f"C{index} low")
-                else:
-                    hints.append(f"C{index} high")
-            self.trap_hint = " | ".join(hints)
-            if self.trap_tries >= 2:
+            self.trap_mistakes += 1
+            self.trap_progress = 0
+            if self.trap_mistakes >= 2:
                 self.trap_active = False
                 self.change_hp(-1)
+                sequence = " -> ".join(label for _, label in self.trap_sequence)
                 await self.advance_room(
                     interaction,
-                    f"{Q_DENIED} Circuit failed. Code was **{'-'.join(map(str, self.trap_target))}**. Lost **1 HP**."
+                    f"{Q_DENIED} Wrong wire. Sequence was **{sequence}**. Lost **1 HP**."
                 )
                 return
+            self.trap_hint = f"{Q_DENIED} Wrong wire. You cut **{pressed_label}**, needed **{expected_label}**. Start over."
             await interaction.response.edit_message(content=self.render_trap_disarm(), view=self)
 
         async def advance_room(self, interaction, result_text):
@@ -8537,7 +8539,7 @@ DETAILED_EXPLANATIONS = {
     "plinko": "Choose one of five drop lanes, then nudge left, let drop, or nudge right every row. Peg bounce still adds luck, but your row choices affect the final lane and multiplier. ×1 refunds; higher than ×1 wins.",
     "luckynumber": "Choose Solo or Public Channel, then choose a range: 1-10, 1-20, 1-50, or 1-100. After the range, choose payout/tries. 1-10: 3 tries ×2, 2 tries ×3, 1 try ×5. 1-20: 5 tries ×3, 4 tries ×4, 2 tries ×6. 1-50: 10 tries ×4, 6 tries ×6, 4 tries ×8. 1-100: 15 tries ×3, 8 tries ×8, 2 tries ×20. All modes have 1 minute to finish. In public mode, each user gets their own tries. If another user guesses correctly, they get 80% of the prize and the starter gets 20%. If nobody gets it, only the starter loses.",
     "jackpotspin": f"Choose a target symbol, then press Spin Wheel up to 3 times. Normal total hit chances are {Q_SLOT_STAR} ×2 at 42%, {Q_SLOT_DIAMOND} ×5 at 16%, {Q_SLOT_CROWN} ×10 at 7%, and {Q_SLOT_JACKPOT} ×50 at 1.4%. Luck bonuses help smaller targets more than huge targets, so ×50 stays rare. Missing all 3 spins loses the bet.",
-    "dungeon": f"Free solo adventure. Pick choices through 6 rooms, manage {Q_DUNGEON_HEART} HP, collect {Q_DUNGEON_KEY} keys and {Q_DUNGEON_RELIC} relics, then beat the final room to carry the loot out. Fight starts a guard-read mini-game, Disarm starts a trap-circuit mini-game, and Pick Lock starts a 3-pin lockpick mini-game. Clearing the run pays the loot you escaped with and records a Dungeon win. Getting knocked out pays nothing.",
+    "dungeon": f"Free solo adventure. Pick choices through 6 rooms, manage {Q_DUNGEON_HEART} HP, collect {Q_DUNGEON_KEY} keys and {Q_DUNGEON_RELIC} relics, then beat the final room to carry the loot out. Fight starts a guard-read mini-game, Disarm starts a wire-sequence mini-game, and Pick Lock starts a 3-pin lockpick mini-game. Clearing the run pays the loot you escaped with and records a Dungeon win. Getting knocked out pays nothing.",
     "dng": "Alias for `.dungeon`. Free solo adventure with choices, HP, keys, relics, and a clear reward.",
     "qdungeon": "Alias for `.dungeon`. Free solo adventure with choices, HP, keys, relics, and a clear reward.",
     "gamestats": "Shows tracked game stats for you or a mentioned user: total played, wins, profit, per-game records, and hard game badges. Example: `.gamestats` or `.gamestats @user`.",
