@@ -302,6 +302,7 @@ lottery_status_messages = {}
 # --- Cooldown tracking ---
 _cooldowns = {}  # {(user_id, command): timestamp}
 _command_cooldowns = {}  # {user_id: timestamp}
+_cooldown_multiplier_cache = {}  # {user_id: (expires_at, multiplier)}
 QUEWO_COOLDOWN_EXEMPT = {
     "bal", "profile", "quests", "shop", "cooldowns", "transactions",
     "lottery", "lotterystats", "daily", "weekly", "monthly",
@@ -776,6 +777,7 @@ def apply_shop_purchase(user_id, item_id, total_cost, new_balance, inventory=Non
             (SUPER_OWNER_ID, "shop_payment", total_cost, f"Shop payment from {user_id}: {note}")
         )
         conn.commit()
+        _cooldown_multiplier_cache.pop(int(user_id), None)
         return new_balance
     except Exception:
         conn.rollback()
@@ -2431,13 +2433,7 @@ def command_cooldown_text(user_id, command):
     last_used = _cooldowns.get((user_id, "quewo"))
     if not last_used:
         return "Ready"
-    cooldown = COOLDOWN_SECS
-    try:
-        data = get_user(user_id) if db_ready else None
-        if data:
-            cooldown *= max(0.5, 1 - item_bonus(data, "cooldown_clock", 0.04, 5))
-    except Exception:
-        pass
+    cooldown = COOLDOWN_SECS * cooldown_multiplier_for_user(user_id)
     remaining = cooldown - (time.time() - last_used)
     return "Ready" if remaining <= 0 else discord_relative_from_now(remaining)
 
@@ -2543,18 +2539,27 @@ async def resolve_admin_targets(ctx, target):
         "role": None,
     }
 
-def check_cooldown(user_id, command):
+def cooldown_multiplier_for_user(user_id, data=None):
+    user_id = int(user_id)
+    now = time.time()
+    if data is None:
+        cached = _cooldown_multiplier_cache.get(user_id)
+        if cached and cached[0] > now:
+            return cached[1]
+    try:
+        latest = data if data is not None else (get_user(user_id) if db_ready else None)
+        multiplier = max(0.5, 1 - item_bonus(latest, "cooldown_clock", 0.04, 5)) if latest else 1
+    except Exception:
+        multiplier = 1
+    _cooldown_multiplier_cache[user_id] = (now + 60, multiplier)
+    return multiplier
+
+def check_cooldown(user_id, command, data=None):
     if is_super_owner(user_id):
         return 0
     key = (user_id, "quewo")
     now = time.time()
-    cooldown = COOLDOWN_SECS
-    try:
-        data = get_user(user_id) if db_ready else None
-        if data:
-            cooldown *= max(0.5, 1 - item_bonus(data, "cooldown_clock", 0.04, 5))
-    except Exception:
-        pass
+    cooldown = COOLDOWN_SECS * cooldown_multiplier_for_user(user_id, data)
     if key in _cooldowns:
         elapsed = now - _cooldowns[key]
         if elapsed < cooldown:
@@ -6205,14 +6210,14 @@ async def lockpick(ctx, amount: str):
 async def prepare_gamble(ctx, amount_text, command_name):
     if not await ensure_db_ready(ctx):
         return None, None
-    cd = check_cooldown(ctx.author.id, command_name)
-    if cd > 0:
-        await send_gambling_cooldown(ctx, cd)
-        return None, None
     try:
         data = get_user(ctx.author.id)
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
+        return None, None
+    cd = check_cooldown(ctx.author.id, command_name, data=data)
+    if cd > 0:
+        await send_gambling_cooldown(ctx, cd)
         return None, None
     parsed = parse_amount(amount_text, ctx.author.id, ctx.guild, data["balance"])
     if parsed is None:
@@ -7690,8 +7695,10 @@ EXPLANATIONS = {
     "unshut": "Admin-power command. Unsilences a user's messages.",
     "rshut": "Admin-power command. Silences a user's reactions if they are below you in the permission order.",
     "unrshut": "Admin-power command. Unsilences a user's reactions.",
-    "lockdown": "Admin-power command. Locks this channel so only admin-power users can speak.",
-    "unlock": "Admin-power command. Unlocks this channel.",
+    "lock": "Admin-power command. Permission-locks this channel for @everyone.",
+    "unlock": "Admin-power command. Undoes `.lock` and restores the channel send-message override.",
+    "lockdown": "Admin-power command. Bot-level channel lockdown: non-admin messages are deleted.",
+    "reopen": "Admin-power command. Reopens a bot-level `.lockdown` channel.",
     "rlockdown": "Admin-power command. Disables reactions in this channel.",
     "runlock": "Admin-power command. Enables reactions in this channel.",
     "purge": "Admin-power command. Deletes messages. Count and member can be in either order.",

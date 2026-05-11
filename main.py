@@ -2001,6 +2001,7 @@ COMMAND_EXAMPLE_OVERRIDES = {
     "prefix": ".prefix !",
     "preifx": ".preifx !",
     "purge": ".purge @user 20",
+    "reopen": ".reopen",
     "remove": ".remove @user 1000",
     "removerole": ".removerole @user @role",
     "reply": ".reply <message id/link> message",
@@ -2111,6 +2112,42 @@ async def on_message(message):
     if message.author.bot:
         return
 
+    is_command = looks_like_command_message(message)
+    if is_command:
+        if message.guild:
+            if message.channel.id in guild_shutdown_channels(message.guild) and not has_owner_power(message.author, message.guild):
+                try:
+                    await message.delete()
+                except:
+                    pass
+                return
+
+            if not has_owner_power(message.author, message.guild):
+                normalized_content = normalize(message.content)
+                for phrase in guild_censored_phrases(message.guild):
+                    if phrase in normalized_content:
+                        try:
+                            await message.delete()
+                        except discord.Forbidden:
+                            pass
+                        return
+
+            if message.author.id in guild_watchlist(message.guild) and not has_owner_power(message.author, message.guild):
+                try:
+                    await message.delete()
+                except:
+                    pass
+                return
+
+        ctx = await bot.get_context(message)
+        if ctx.valid:
+            print(
+                f"Command received: {ctx.command} by {message.author} "
+                f"({message.author.id}) in guild {message.guild.id if message.guild else 'DM'}"
+            )
+            await bot.invoke(ctx)
+        return
+
     # AI mention handling
     content = message.content.strip()
     is_mention = message.mentions and any(u.id == bot.user.id for u in message.mentions)
@@ -2158,14 +2195,14 @@ async def on_message(message):
                 await message.channel.send(f"Error: {str(e)[:100]}")
             return
 
-    if message.channel.id in guild_shutdown_channels(message.guild) and not has_owner_power(message.author, message.guild):
+    if message.guild and message.channel.id in guild_shutdown_channels(message.guild) and not has_owner_power(message.author, message.guild):
         try:
             await message.delete()
         except:
             pass
         return
 
-    if not has_owner_power(message.author, message.guild):
+    if message.guild and not has_owner_power(message.author, message.guild):
         content = normalize(message.content)
         for phrase in guild_censored_phrases(message.guild):
             if phrase in content:
@@ -2272,7 +2309,7 @@ async def on_message(message):
 
         await message.channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
-    if message.author.id in guild_watchlist(message.guild) and not has_owner_power(message.author, message.guild):
+    if message.guild and message.author.id in guild_watchlist(message.guild) and not has_owner_power(message.author, message.guild):
         try:
             await message.delete()
         except:
@@ -2287,16 +2324,6 @@ async def on_message(message):
         if now_ts - last_xp >= 60:
             chat_xp_memory[message.author.id] = now_ts
             asyncio.create_task(award_chat_xp_background(message))
-
-    if looks_like_command_message(message):
-        ctx = await bot.get_context(message)
-        if ctx.valid:
-            print(
-                f"Command received: {ctx.command} by {message.author} "
-                f"({message.author.id}) in guild {message.guild.id if message.guild else 'DM'}"
-            )
-            await bot.invoke(ctx)
-            return
 
 @bot.event
 async def on_command_error(ctx, error):
@@ -2366,7 +2393,7 @@ HELP_CATEGORIES = {
     "Admin": [
         "settings", "setlogs", "prefix", "disable", "enable", "disableall", "enableall", "dclist", "test", "testlog", "testrlog",
         "endttt", "setnick", "unmute", "kick", "ban", "unban", "addrole", "removerole", "deleterole",
-        "lock", "lockdown", "unlock", "rlockdown", "runlock", "shut", "unshut", "clearwatchlist", "rshut", "unrshut",
+        "lock", "unlock", "lockdown", "reopen", "rlockdown", "runlock", "shut", "unshut", "clearwatchlist", "rshut", "unrshut",
         "send", "reply", "aban", "raban", "abanlist", "summon", "summon2", "block", "unblock",
         "censor", "uncensor", "clearcensors", "editlottery", "stoplottery", "editactivity", "endactivity", "stopactivity",
         "add", "remove", "addtick", "settick", "setquesos",
@@ -5234,18 +5261,20 @@ async def unrshut(ctx, member: discord.Member):
 @bot.command()
 @is_admin_power()
 async def lockdown(ctx):
+    """Bot-level channel lockdown. Non-admin messages are deleted."""
     channels = guild_shutdown_channels(ctx.guild)
     channels.add(ctx.channel.id)
     save_shutdown_channels(scoped_id(ctx.guild), channels)
     await ctx.send("This channel is now in lockdown mode. Only admins can speak.")
 
-@bot.command()
+@bot.command(name="reopen")
 @is_admin_power()
-async def unlock(ctx):
+async def reopen(ctx):
+    """Reopen a bot-level locked-down channel."""
     channels = guild_shutdown_channels(ctx.guild)
     channels.discard(ctx.channel.id)
     save_shutdown_channels(scoped_id(ctx.guild), channels)
-    await ctx.send("This channel has been unlocked. All users may speak now.")
+    await ctx.send("This channel has been reopened. All users may speak now.")
 
 @bot.command()
 @is_admin_power()
@@ -5430,10 +5459,20 @@ async def rpurge(ctx, *, args: str = None):
 @bot.command(name="lock")
 @is_admin_power()
 async def lock_channel(ctx):
+    """Permission-lock this channel for @everyone."""
     overwrite = ctx.channel.overwrites_for(ctx.guild.default_role)
     overwrite.send_messages = False
     await ctx.channel.set_permissions(ctx.guild.default_role, overwrite=overwrite)
     await ctx.send("Channel locked.")
+
+@bot.command(name="unlock")
+@is_admin_power()
+async def unlock_channel(ctx):
+    """Undo `.lock` and allow @everyone to send messages again."""
+    overwrite = ctx.channel.overwrites_for(ctx.guild.default_role)
+    overwrite.send_messages = None
+    await ctx.channel.set_permissions(ctx.guild.default_role, overwrite=overwrite)
+    await ctx.send("Channel unlocked.")
 
 
 @bot.command()

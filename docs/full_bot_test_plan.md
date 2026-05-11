@@ -197,6 +197,7 @@ Run only if safe:
 - `.lock`
 - `.unlock`
 - `.lockdown`
+- `.reopen`
 - `.rlockdown`
 - `.runlock`
 - `.shut @normal`
@@ -371,6 +372,7 @@ Run only if safe:
 - `.removerole @normal @role` and `.removerole @role @normal`
 - `.deleterole @role`
 - `.lockdown`
+- `.reopen`
 - `.rlockdown`
 - `.runlock`
 - `.shut @normal`
@@ -471,6 +473,7 @@ Run only if safe:
 - `.removerole @normal @role` and `.removerole @role @normal`
 - `.deleterole @role`
 - `.lockdown`
+- `.reopen`
 - `.rlockdown`
 - `.runlock`
 - `.shut @normal`
