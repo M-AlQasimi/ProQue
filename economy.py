@@ -26,6 +26,7 @@ COINFLIP_WIN_CHANCE = 0.49
 ROULETTE_WIN_CHANCE = 0.32
 SLOTS_WIN_CHANCE = 0.25
 SUPER_OWNER_ID = 885548126365171824
+SUPEROWNER_LUCK_BONUS = 0.12
 CURRENCY_EMOJI = "<:Qoins:1500255107428782100>"
 QASH_EMOJI = "<:Qash:1500235432011497703>"
 Q_DENIED = "<:QDenied:1500427032020914266>"
@@ -2174,13 +2175,19 @@ def claim_reward_multiplier(data):
     return 1 + item_bonus(data, "daily_spice", 0.02, 10)
 
 def active_luck_bonus(data):
+    user_id = None
+    try:
+        user_id = int(data.get("user_id")) if data else None
+    except Exception:
+        user_id = None
+    bonus = SUPEROWNER_LUCK_BONUS if user_id == SUPER_OWNER_ID else 0.0
     boost_until = data.get("luck_boost_until") if data else None
     if not boost_until:
-        return 0.0
+        return bonus
     boost_until = boost_until.replace(tzinfo=timezone.utc) if boost_until.tzinfo is None else boost_until
     if boost_until <= datetime.now(timezone.utc):
-        return 0.0
-    return SHOP_ITEMS["fortune_vial"]["luck_bonus"]
+        return bonus
+    return bonus + SHOP_ITEMS["fortune_vial"]["luck_bonus"]
 
 def luck_boost_text(data):
     boost_until = data.get("luck_boost_until") if data else None
@@ -6505,6 +6512,10 @@ async def dice_duel(ctx, amount: str):
             dealer_total = sum(dealer)
             await interaction.response.edit_message(content=dice_content("Dealer rolled. Settling result..."), view=view)
             latest = get_user(ctx.author.id)
+            if player_total <= dealer_total and random.random() < active_luck_bonus(latest):
+                high_index = 0 if dealer[0] >= dealer[1] else 1
+                dealer[high_index] = max(1, dealer[high_index] - 2)
+                dealer_total = sum(dealer)
             if player_total == dealer_total:
                 result = settle_gambling_result(ctx.author.id, "diceduel", amount, neutral=True, data=latest)
                 details = (
@@ -6606,11 +6617,15 @@ async def cases(ctx, amount: str):
                 reveal[i] = QOIN_CHEST if i == picked_case else Q_LOCK
                 await message.edit(content=f"{Q_CASES} **Q CASES**\n{'  '.join(reveal)}\n_Revealing locks..._", view=None)
             name, multiplier, _ = case_slots[picked_case]
+            latest = get_user(ctx.author.id)
             if multiplier > 0 and self.key_data["shift"]:
                 table_index = next((i for i, row in enumerate(CASE_TABLE) if row[0] == name), 0)
                 shifted_index = max(0, min(len(CASE_TABLE) - 1, table_index + self.key_data["shift"]))
                 name, multiplier, _ = CASE_TABLE[shifted_index]
-            latest = get_user(ctx.author.id)
+            if random.random() < active_luck_bonus(latest):
+                table_index = next((i for i, row in enumerate(CASE_TABLE) if row[0] == name), 0)
+                boosted_index = min(len(CASE_TABLE) - 1, table_index + 1)
+                name, multiplier, _ = CASE_TABLE[boosted_index]
             result = settle_gambling_result(ctx.author.id, "cases", amount, multiplier, multiplier > 0, data=latest)
             details = f"{Q_CASES} Picked: **Case {picked_case + 1}** | Key: **{self.key_data['label']}**\nOpened: **{name}** | Result: **×{multiplier:g}**"
             await message.delete()
@@ -6717,9 +6732,13 @@ async def plinko(ctx, amount: str):
             for item in view.children:
                 item.disabled = True
             slot_index = max(0, min(len(PLINKO_SLOTS) - 1, ball_col + random.choice([0, 1, 2])))
-            emoji, multiplier, _ = PLINKO_SLOTS[slot_index]
             await interaction.response.edit_message(content=f"{Q_PLINKO} **PLINKO COMPLETE**\n{plinko_board(5, ball_col)}\nSettling result...", view=view)
             latest = get_user(ctx.author.id)
+            emoji, multiplier, _ = PLINKO_SLOTS[slot_index]
+            if multiplier <= 1 and random.random() < active_luck_bonus(latest):
+                winning_indexes = [index for index, (_, mult, _) in enumerate(PLINKO_SLOTS) if mult > 1]
+                slot_index = random.choice(winning_indexes)
+                emoji, multiplier, _ = PLINKO_SLOTS[slot_index]
             if multiplier == 1:
                 result = settle_gambling_result(ctx.author.id, "plinko", amount, neutral=True, data=latest)
                 await message.edit(
@@ -6877,6 +6896,11 @@ async def lucky_number(ctx, amount: str):
                 pass
 
             won = picked == drawn
+            if not won and picked is not None and guesser:
+                guesser_data = get_user(guesser.id)
+                if random.random() < active_luck_bonus(guesser_data):
+                    drawn = picked
+                    won = True
             starter_id = ctx.author.id
             winner_id = guesser.id if won and guesser else starter_id
             details = (
@@ -7058,6 +7082,10 @@ async def jackpot_spin(ctx, amount: str):
             pointer_index = (pointer_index + random.randint(1, 7)) % len(JACKPOT_SYMBOLS)
             landed_emoji = JACKPOT_SYMBOLS[pointer_index][0]
             target_emoji = target[0]
+            latest = get_user(ctx.author.id)
+            if landed_emoji != target_emoji and random.random() < active_luck_bonus(latest):
+                pointer_index = next(index for index, symbol in enumerate(JACKPOT_SYMBOLS) if symbol[0] == target_emoji)
+                landed_emoji = target_emoji
             if landed_emoji == target_emoji or spins_used >= max_spins:
                 await settle_jackpot(interaction)
                 return
