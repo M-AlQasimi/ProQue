@@ -2921,8 +2921,8 @@ def normalize_flag_answer(value):
     value = value.replace("&", "and")
     return re.sub(r"[^a-z0-9]+", "", value)
 
-def flag_emoji_from_code(code):
-    return "".join(chr(0x1F1E6 + ord(char) - ord("A")) for char in code.upper())
+def flag_image_url(code):
+    return f"https://flagcdn.com/w640/{code.lower()}.png"
 
 def parse_flag_countries():
     countries = []
@@ -2936,7 +2936,6 @@ def parse_flag_countries():
         countries.append({
             "code": code,
             "name": name,
-            "flag": flag_emoji_from_code(code),
             "accepted": accepted,
         })
     return countries
@@ -2956,6 +2955,60 @@ def parse_flag_round_count(value):
     except ValueError:
         return None
     return count if count in FLAG_QUIZ_ROUND_OPTIONS else None
+
+def edit_distance_limited(left, right, limit):
+    if abs(len(left) - len(right)) > limit:
+        return limit + 1
+    previous = list(range(len(right) + 1))
+    for i, left_char in enumerate(left, 1):
+        current = [i]
+        row_min = i
+        for j, right_char in enumerate(right, 1):
+            cost = 0 if left_char == right_char else 1
+            current_value = min(
+                previous[j] + 1,
+                current[j - 1] + 1,
+                previous[j - 1] + cost,
+            )
+            if i > 1 and j > 1 and left_char == right[j - 2] and left[i - 2] == right_char:
+                current_value = min(current_value, previous[j - 2] + 1)
+            current.append(current_value)
+            row_min = min(row_min, current_value)
+        if row_min > limit:
+            return limit + 1
+        previous = current
+    return previous[-1]
+
+def flag_answer_matches(guess, country):
+    guess_norm = normalize_flag_answer(guess)
+    if not guess_norm:
+        return False
+    if guess_norm in country["accepted"]:
+        return True
+    for accepted in country["accepted"]:
+        if len(accepted) <= 4:
+            continue
+        if guess_norm[0] != accepted[0]:
+            continue
+        limit = 1 if len(accepted) <= 7 else 2
+        if len(accepted) >= 16:
+            limit = 3
+        if edit_distance_limited(guess_norm, accepted, limit) <= limit:
+            return True
+    return False
+
+def build_flag_quiz_embed(country, index, total, points, attempt):
+    embed = discord.Embed(
+        title=f"Flag Quiz {index}/{total}",
+        description=(
+            f"Try: **{attempt}/2** | Points: **{points}**\n"
+            "Type the country name. Mini typos are accepted."
+        ),
+        color=discord.Color.blurple()
+    )
+    embed.set_image(url=flag_image_url(country["code"]))
+    embed.set_footer(text="Type skip to skip, or stop to finish early.")
+    return embed
 
 class FlagQuizRoundsButton(Button):
     def __init__(self, rounds):
@@ -2987,61 +3040,49 @@ async def run_flag_quiz(ctx, rounds):
     points = 0
     answered = 0
     countries = random.sample(FLAG_COUNTRIES, min(rounds, len(FLAG_COUNTRIES)))
-    prompt = None
     try:
-        prompt = await ctx.send(f"{economy_q_game_win} **FLAG QUIZ**\nType the country name. Type `skip` or `stop` anytime.")
+        await ctx.send(f"{economy_q_game_win} **FLAG QUIZ**\nType the country name. You get **2 tries** per flag. Type `skip` or `stop` anytime.")
         for index, country in enumerate(countries, 1):
-            embed = discord.Embed(
-                title=f"Flag Quiz {index}/{len(countries)}",
-                description=(
-                    f"# {country['flag']}\n"
-                    f"Points: **{points}**\n"
-                    "Type your guess in chat. You have **20s**."
-                ),
-                color=discord.Color.blurple()
-            )
-            await prompt.edit(content=None, embed=embed, view=None)
+            guessed_correctly = False
+            stopped = False
+            for attempt in range(1, 3):
+                await ctx.send(embed=build_flag_quiz_embed(country, index, len(countries), points, attempt))
 
-            def check(message):
-                return message.author.id == ctx.author.id and message.channel.id == ctx.channel.id
+                def check(message):
+                    return message.author.id == ctx.author.id and message.channel.id == ctx.channel.id
 
-            try:
-                guess_message = await bot.wait_for("message", timeout=20, check=check)
-            except asyncio.TimeoutError:
-                await prompt.edit(
-                    content=f"{economy_q_timeout} Time. Answer: **{country['name']}**\nScore: **{points}/{index}**",
-                    embed=None,
-                    view=None,
-                )
-                await asyncio.sleep(1.2)
-                continue
+                try:
+                    guess_message = await bot.wait_for("message", timeout=25, check=check)
+                except asyncio.TimeoutError:
+                    await ctx.send(
+                        f"{economy_q_timeout} Time on try **{attempt}/2**."
+                        + (f" Answer: **{country['name']}**\nScore: **{points}/{index}**" if attempt == 2 else " Try again.")
+                    )
+                    if attempt == 2:
+                        break
+                    continue
 
-            guess = guess_message.content.strip()
-            if guess.casefold() == "stop":
+                guess = guess_message.content.strip()
+                if guess.casefold() == "stop":
+                    stopped = True
+                    break
+                if guess.casefold() == "skip":
+                    await ctx.send(f"{economy_q_warning} Skipped. Answer: **{country['name']}**\nScore: **{points}/{index}**")
+                    break
+                answered += 1
+                if flag_answer_matches(guess, country):
+                    points += 1
+                    guessed_correctly = True
+                    await ctx.send(f"{economy_q_accept} Correct: **{country['name']}**\nScore: **{points}/{index}**")
+                    break
+                if attempt == 1:
+                    await ctx.send(f"{economy_q_reject} Not quite. Try again. **1 try left**.")
+                else:
+                    await ctx.send(f"{economy_q_reject} Wrong. Answer: **{country['name']}**\nScore: **{points}/{index}**")
+            if stopped:
                 break
-            if guess.casefold() == "skip":
-                await prompt.edit(
-                    content=f"{economy_q_warning} Skipped. Answer: **{country['name']}**\nScore: **{points}/{index}**",
-                    embed=None,
-                    view=None,
-                )
-                await asyncio.sleep(1.2)
-                continue
-            answered += 1
-            if normalize_flag_answer(guess) in country["accepted"]:
-                points += 1
-                await prompt.edit(
-                    content=f"{economy_q_accept} Correct: **{country['name']}**\nScore: **{points}/{index}**",
-                    embed=None,
-                    view=None,
-                )
-            else:
-                await prompt.edit(
-                    content=f"{economy_q_reject} Wrong. Answer: **{country['name']}**\nScore: **{points}/{index}**",
-                    embed=None,
-                    view=None,
-                )
-            await asyncio.sleep(1.2)
+            if guessed_correctly:
+                await asyncio.sleep(0.4)
 
         reward = points * 25_000
         reward_line = "No reward earned."
@@ -3068,7 +3109,7 @@ async def run_flag_quiz(ctx, rounds):
 
 @bot.command(name="flagquiz", aliases=["flags", "fq"])
 async def flagquiz(ctx, rounds: str = None):
-    """Starts a flag quiz. Pick 10, 20, 50, or all 197 flags, then guess country names for points and quesos."""
+    """Starts a flag quiz. Pick 10, 20, 50, or all 197 flags, then guess country names with 2 tries per flag."""
     if not await economy_ensure_db_ready(ctx):
         return
     count = parse_flag_round_count(rounds)
@@ -3076,7 +3117,7 @@ async def flagquiz(ctx, rounds: str = None):
         return await run_flag_quiz(ctx, count)
     prefix = prefix_for_guild(ctx.guild)
     await ctx.send(
-        f"{economy_q_game_win} **FLAG QUIZ**\nChoose quiz length, or use `{prefix}flagquiz 10`, `{prefix}flagquiz 20`, `{prefix}flagquiz 50`, or `{prefix}flagquiz all`.\nReward: **25,000 quesos per correct flag**.",
+        f"{economy_q_game_win} **FLAG QUIZ**\nChoose quiz length, or use `{prefix}flagquiz 10`, `{prefix}flagquiz 20`, `{prefix}flagquiz 50`, or `{prefix}flagquiz all`.\nYou get **2 tries** per flag, and small typos are accepted.\nReward: **25,000 quesos per correct flag**.",
         view=FlagQuizSetupView(ctx)
     )
 
