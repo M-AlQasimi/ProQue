@@ -132,7 +132,8 @@ Run:
 - `.activity`
 - `.activitystats`
 - `.settings`
-- In `.settings`, test Refresh, Prefix, Birthdays Here, and Activity Here if safe.
+- In `.settings`, test Refresh, Prefix, Birthdays Here, Activity Here, and Admin Commands if safe.
+- `.perf`
 - `.find <normal_user_id>`
 - `.listtargets`
 - `.listcensors`
@@ -246,10 +247,14 @@ Run:
 - `.profile`
 - `.level`
 - `.lvl`
+- `.guide`
+- `.streaks`
 - `.inventory`
 - `.inv`
 - `.items`
 - `.quests`
+- `.dailychallenge`
+- `.dailychallenge claim`
 - `.shop`
 - `.cooldowns`
 - `.transactions`
@@ -276,9 +281,17 @@ Run:
 - `.ms 1000`
 - `.wheel 1000`
 - `.gamestats`
+- `.achievements`
+- `.setbadge`
+- `.setbadge clear`
+- `.gamebalance`
+- `.gamehistory`
+- `.limits`
+- `.flagstats`
 - `.give @normal 1000` and `.give 1000 @normal`
 - `.lb`
 - `.qstats`
+- `.economyaudit`
 - `.econhelp`
 - `.quewohelp`
 - `.explain scratch`
@@ -308,8 +321,9 @@ Run:
 - `.setquesos @role 1000` and `.setquesos 1000 @role`
 - `.stoplottery`
 - `.qstats`
+- `.economyaudit`
 
-Expected: all work. Role/everyone operations affect the expected users. Balances/tickets shown after admin changes match `.bal` and `.lotterystats`.
+Expected: all work. Role/everyone operations affect the expected users. Balances/tickets shown after admin changes match `.bal` and `.lotterystats`. Audit shows game signals without embed errors.
 
 ### Superowner Permission Checks
 
@@ -592,7 +606,7 @@ Run:
 - `.move e2e4` or `.chessmove e2e4` during chess fallback testing
 - `.resign`
 
-Expected: games work, bet accept prompts appear, payouts mention both users with pings where game result should ping.
+Expected: games work, bet accept prompts appear, risk labels show where relevant, daily loss warning appears near 70%, and gambling is blocked before daily losses can exceed 85%.
 
 ### Quewo
 
@@ -603,10 +617,13 @@ Run:
 - `.profile`
 - `.level`
 - `.lvl`
+- `.guide`
+- `.streaks`
 - `.inventory`
 - `.inv`
 - `.items`
 - `.quests`
+- `.dailychallenge`
 - `.shop`
 - `.cooldowns`
 - `.transactions`
@@ -633,6 +650,13 @@ Run:
 - `.ms 1000`
 - `.wheel 1000`
 - `.gamestats`
+- `.achievements`
+- `.setbadge`
+- `.setbadge clear`
+- `.gamebalance`
+- `.gamehistory`
+- `.limits`
+- `.flagstats`
 - `.give @other_user 1000` and `.give 1000 @other_user`
 - `.lottery`
 - `.lotterystats`

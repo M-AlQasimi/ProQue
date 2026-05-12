@@ -37,7 +37,9 @@ from economy import (
     EXPLANATIONS as economy_explanations,
     format_balance as economy_format_balance,
     get_lottery_config as economy_get_lottery_config,
+    get_game_stat as economy_get_game_stat,
     get_user as economy_get_user,
+    log_transaction as economy_log_transaction,
     Q_ACCEPT as economy_q_accept,
     Q_ACTIVITY as economy_q_activity,
     Q_ALARM as economy_q_alarm,
@@ -51,6 +53,7 @@ from economy import (
     Q_CONNECT_BLACK as economy_q_connect_black,
     Q_CONNECT_WHITE as economy_q_connect_white,
     Q_EDIT as economy_q_edit,
+    Q_FILTER as economy_q_filter,
     Q_GAME_O as economy_q_game_o,
     Q_GAME_TIMEOUT as economy_q_game_timeout,
     Q_GAME_WIN as economy_q_game_win,
@@ -61,6 +64,7 @@ from economy import (
     Q_LEVEL_PULSE as economy_q_level_pulse,
     Q_LOCK as economy_q_lock,
     Q_PERMISSIONS as economy_q_permissions,
+    Q_PERF as economy_q_perf,
     Q_POLL as economy_q_poll,
     Q_REACTION as economy_q_reaction,
     Q_REJECT as economy_q_reject,
@@ -75,7 +79,10 @@ from economy import (
     Q_VOICE as economy_q_voice,
     Q_WARNING as economy_q_warning,
     risk_label as economy_risk_label,
+    record_game_result as economy_record_game_result,
     setup as economy_setup,
+    todays_daily_challenge as economy_todays_daily_challenge,
+    track_daily_challenge_progress as economy_track_daily_challenge_progress,
     update_user as economy_update_user,
 )
 from pgdata import (
@@ -278,6 +285,7 @@ runtime_state_restored = False
 user_mentions = {}
 activity_buffer = Counter()
 active_activity_status_messages = {}
+command_timing_stats = {}
 daily_cooldown = {}
 weekly_cooldown = {}
 monthly_cooldown = {}
@@ -981,10 +989,10 @@ async def on_ready():
     try:
         await economy_setup(bot, send_log)
         economy_command_names = [
-            "bal", "profile", "inventory", "quests", "shop", "cooldowns", "transactions", "lottery", "editlottery", "stoplottery", "lotterystats", "buytick",
+            "bal", "profile", "inventory", "quests", "dailychallenge", "streaks", "guide", "shop", "cooldowns", "transactions", "limits", "lottery", "editlottery", "stoplottery", "lotterystats", "buytick",
             "daily", "weekly", "monthly", "cf", "roulette", "slots",
-            "blackjack", "scratch", "tower", "vault", "memory", "cardladder", "lockpick", "heist", "diceduel", "cases", "plinko", "luckynumber", "jackpotspin", "dungeon", "ms", "wheel", "give", "lb", "gamestats",
-            "add", "remove", "addtick", "settick", "setquesos", "econhelp", "explain"
+            "blackjack", "scratch", "tower", "vault", "memory", "cardladder", "lockpick", "heist", "diceduel", "cases", "plinko", "luckynumber", "jackpotspin", "dungeon", "ms", "wheel", "give", "lb", "gamestats", "achievements", "setbadge", "gamebalance", "gamehistory",
+            "qstats", "economyaudit", "add", "remove", "addtick", "settick", "setquesos", "econhelp", "explain"
         ]
         loaded_economy_commands = [name for name in economy_command_names if bot.get_command(name)]
         print(f"Quewo system loaded ({len(loaded_economy_commands)}/{len(economy_command_names)} commands)")
@@ -2160,7 +2168,16 @@ async def on_message(message):
                 f"Command received: {ctx.command} by {message.author} "
                 f"({message.author.id}) in guild {message.guild.id if message.guild else 'DM'}"
             )
+            started = time.perf_counter()
             await bot.invoke(ctx)
+            elapsed_ms = int((time.perf_counter() - started) * 1000)
+            name = ctx.command.qualified_name if ctx.command else "unknown"
+            stats = command_timing_stats.setdefault(name, {"count": 0, "total_ms": 0, "max_ms": 0})
+            stats["count"] += 1
+            stats["total_ms"] += elapsed_ms
+            stats["max_ms"] = max(stats["max_ms"], elapsed_ms)
+            if elapsed_ms >= 1500:
+                print(f"Slow command: {name} took {elapsed_ms}ms in guild {message.guild.id if message.guild else 'DM'}")
         return
 
     # AI mention handling
@@ -2392,12 +2409,12 @@ async def on_command_error(ctx, error):
 
 HELP_CATEGORIES = {
     "Quewo": [
-        "bal", "profile", "inventory", "quests", "shop", "cooldowns", "transactions", "lottery", "lotterystats", "buytick",
+        "guide", "bal", "profile", "inventory", "quests", "dailychallenge", "streaks", "shop", "cooldowns", "transactions", "lottery", "lotterystats", "buytick",
         "daily", "weekly", "monthly", "cf", "roulette", "slots", "blackjack", "scratch", "tower", "vault", "memory", "cardladder", "lockpick",
         "heist", "diceduel", "cases", "plinko", "luckynumber", "jackpotspin", "dungeon", "ms", "wheel",
-        "give", "lb", "gamestats", "qstats", "econhelp", "explain",
+        "give", "lb", "gamestats", "achievements", "setbadge", "gamebalance", "gamehistory", "limits", "qstats", "economyaudit", "econhelp", "explain",
     ],
-    "Games": ["games", "ttt", "c4", "chess", "move", "resign", "flagquiz", "q", "picker"],
+    "Games": ["games", "ttt", "c4", "chess", "move", "resign", "flagquiz", "flagstats", "q", "picker"],
     "Utility": ["help", "userinfo", "pfp", "calc", "define", "timer", "ctimer", "alarm", "poll", "epoll", "translate", "find"],
     "AI": ["ask", "generate", "analyse", "analyze"],
     "Server Tools": [
@@ -2406,7 +2423,7 @@ HELP_CATEGORIES = {
     ],
     "Status": ["afk", "sleep", "wake", "fsleep", "away", "setbday", "removebday", "setbdaychannel", "activity", "activitystats"],
     "Admin": [
-        "settings", "setlogs", "prefix", "disable", "enable", "disableall", "enableall", "dclist", "test", "testlog", "testrlog",
+        "settings", "setlogs", "prefix", "disable", "enable", "disableall", "enableall", "dclist", "perf", "test", "testlog", "testrlog",
         "endttt", "setnick", "unmute", "kick", "ban", "unban", "addrole", "removerole", "deleterole",
         "lock", "unlock", "lockdown", "reopen", "rlockdown", "runlock", "shut", "unshut", "clearwatchlist", "rshut", "unrshut",
         "send", "reply", "aban", "raban", "abanlist", "summon", "summon2", "block", "unblock",
@@ -2633,6 +2650,22 @@ class SettingsView(View):
         schedule_activity_live_refresh(interaction.guild.id, guild_activity_channels[interaction.guild.id])
         await interaction.response.edit_message(embed=await build_settings_embed(interaction.guild), view=self)
 
+    @discord.ui.button(label="Admin Commands", style=discord.ButtonStyle.secondary)
+    async def admin_commands_button(self, interaction, button):
+        prefix = prefix_for_guild(interaction.guild)
+        await interaction.response.send_message(
+            "Quick setup commands:\n"
+            f"`{prefix}prefix <new>` - change prefix\n"
+            f"`{prefix}setlogs` - setup logs\n"
+            f"`{prefix}setbdaychannel #channel` - birthdays\n"
+            f"`{prefix}activity setup` - activity reports\n"
+            f"`{prefix}lottery` - lottery panel\n"
+            f"`{prefix}editlottery <setting> <value>` - lottery settings\n"
+            f"`{prefix}disable <command>` / `{prefix}enable <command>` - command access\n"
+            f"`{prefix}economyaudit` - economy audit",
+            ephemeral=True,
+        )
+
 @bot.command(name="settings", aliases=["setup", "config"])
 @is_admin_power()
 async def settings_command(ctx):
@@ -2640,6 +2673,25 @@ async def settings_command(ctx):
     if ctx.guild is None:
         return await ctx.send("Settings only work in servers.")
     await ctx.send(embed=await build_settings_embed(ctx.guild), view=SettingsView(ctx.author.id), allowed_mentions=discord.AllowedMentions.none())
+
+@bot.command(name="perf", aliases=["performance", "slowcommands"])
+@is_admin_power()
+async def perf_command(ctx):
+    """Shows slow command timing stats since the last restart."""
+    if not command_timing_stats:
+        return await ctx.send("No command timing data yet.")
+    rows = []
+    for name, stats in sorted(command_timing_stats.items(), key=lambda item: item[1]["max_ms"], reverse=True)[:15]:
+        count = max(1, int(stats["count"]))
+        avg = int(stats["total_ms"] / count)
+        rows.append(f"**{name}** - avg `{avg}ms`, max `{int(stats['max_ms'])}ms`, runs `{count}`")
+    embed = discord.Embed(
+        title=f"{economy_q_perf} Command Performance",
+        description="Tracked since this bot process started.",
+        color=discord.Color.orange(),
+    )
+    embed.add_field(name="Slowest", value=joined_embed_value(rows), inline=False)
+    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
 GAME_MENU = [
     ("PvP", "Tic Tac Toe", None, "`.ttt @user [bet]`", "Quick 2-player strategy. Supports bets."),
@@ -2662,29 +2714,64 @@ GAME_MENU = [
     ("Utility", "Picker", None, "`.picker`", "Randomly picks from options."),
 ]
 
-def games_embed(prefix="."):
+GAME_FILTERS = {
+    "All": lambda item: True,
+    "Solo": lambda item: item[0] == "Solo",
+    "PvP": lambda item: item[0] == "PvP",
+    "Skill": lambda item: item[0] == "Skill",
+    "Luck": lambda item: item[0] == "Luck",
+    "Free": lambda item: item[2] in {"dungeon"} or item[1] in {"Flag Quiz", "Picker"},
+    "High Risk": lambda item: item[2] and economy_risk_label(item[2]).casefold() in {"high", "extreme", "medium/high", "skill/high"},
+    "No Bet": lambda item: item[2] in {"dungeon"} or item[1] in {"Flag Quiz", "Picker"},
+}
+
+def games_embed(prefix=".", selected_filter="All"):
+    filter_fn = GAME_FILTERS.get(selected_filter, GAME_FILTERS["All"])
     embed = discord.Embed(
-        title=f"{economy_q_game_win} Games",
-        description="Pick a game by skill, luck, or bets.",
+        title=f"{economy_q_game_win} Games - {selected_filter}",
+        description="Filter by solo, multiplayer, skill, luck, free, high risk, or no-bet games.",
         color=discord.Color.green()
     )
-    for category in ["PvP", "Skill", "Luck", "Utility"]:
+    for category in ["PvP", "Skill", "Luck", "Solo", "Utility"]:
         lines = []
-        for item_category, name, game_key, usage, desc in GAME_MENU:
+        for item in GAME_MENU:
+            item_category, name, game_key, usage, desc = item
             if item_category != category:
+                continue
+            if not filter_fn(item):
                 continue
             risk = f" | Risk: **{economy_risk_label(game_key)}**" if game_key else ""
             lines.append(f"**{name}** - {usage.replace('`.', f'`{prefix}')} — {desc}{risk}")
         if lines:
             embed.add_field(name=category, value=joined_embed_value(lines), inline=False)
+    if not embed.fields:
+        embed.add_field(name="Games", value="No games match this filter.", inline=False)
     embed.set_footer(text="Use .explain <game> for full rules.")
     return embed
+
+class GamesFilterButton(Button):
+    def __init__(self, filter_name):
+        super().__init__(label=filter_name, emoji=reaction_emoji(economy_q_filter), style=discord.ButtonStyle.primary if filter_name == "All" else discord.ButtonStyle.secondary)
+        self.filter_name = filter_name
+
+    async def callback(self, interaction):
+        view = self.view
+        if interaction.user.id != view.author_id:
+            return await interaction.response.send_message("Use your own games menu.", ephemeral=True)
+        view.selected_filter = self.filter_name
+        for item in view.children:
+            if isinstance(item, GamesFilterButton):
+                item.style = discord.ButtonStyle.primary if item.filter_name == self.filter_name else discord.ButtonStyle.secondary
+        await interaction.response.edit_message(embed=games_embed(view.prefix, self.filter_name), view=view)
 
 class GamesView(View):
     def __init__(self, author_id, prefix):
         super().__init__(timeout=180)
         self.author_id = author_id
         self.prefix = prefix
+        self.selected_filter = "All"
+        for filter_name in ["All", "Solo", "PvP", "Skill", "Luck", "Free", "High Risk", "No Bet"]:
+            self.add_item(GamesFilterButton(filter_name))
 
     async def interaction_check(self, interaction):
         if interaction.user.id == self.author_id:
@@ -3277,6 +3364,10 @@ async def run_flag_quiz(ctx, rounds, mode="solo"):
             reward = points * FLAG_QUIZ_REWARD_PER_POINT
             try:
                 old_balance, new_balance = await asyncio.to_thread(economy_add_user_balance, user_id, reward, reward)
+                await asyncio.to_thread(economy_record_game_result, user_id, "flagquiz", points > 0, reward, reward)
+                if points > 0 and economy_todays_daily_challenge()["game"] == "flagquiz":
+                    await asyncio.to_thread(economy_track_daily_challenge_progress, user_id, "flagquiz", True, points)
+                await asyncio.to_thread(economy_log_transaction, user_id, "flagquiz_reward", reward, f"{points} point(s) in {mode} flag quiz")
                 reward_lines.append(
                     f"<@{user_id}>: **{points}** point(s), **{economy_format_balance(reward)}** "
                     f"({economy_format_balance(old_balance)} -> {economy_format_balance(new_balance)})"
@@ -3311,6 +3402,32 @@ async def flagquiz(ctx, rounds: str = None):
         f"{economy_q_game_win} **FLAG QUIZ**\nChoose solo or public mode, then choose quiz length.\nYou can also use `{prefix}flagquiz 10`, `{prefix}flagquiz 20`, `{prefix}flagquiz 50`, or `{prefix}flagquiz all`.\nEach guess has **30s**. You get **2 tries** per flag, and small typos are accepted.\nReward: **{economy_format_balance(FLAG_QUIZ_REWARD_PER_POINT)} per correct flag**.",
         view=FlagQuizSetupView(ctx)
     )
+
+@bot.command(name="flagstats", aliases=["flagscore", "fqstats"])
+async def flagstats(ctx, member: discord.Member = None):
+    user = member or ctx.author
+    try:
+        row = await asyncio.to_thread(economy_get_game_stat, user.id, "flagquiz")
+    except Exception:
+        await ctx.reply(f"{economy_q_warning} Flag quiz stats are unavailable right now.", mention_author=False)
+        return
+    if not row:
+        await ctx.reply(f"{economy_q_game_win} {user.mention} has no Flag Quiz history yet.", mention_author=False, allowed_mentions=discord.AllowedMentions.none())
+        return
+    played = int(row["played"] or 0)
+    earned = int(row["profit"] or 0)
+    points = earned // FLAG_QUIZ_REWARD_PER_POINT if FLAG_QUIZ_REWARD_PER_POINT else 0
+    embed = discord.Embed(
+        title=f"{economy_q_game_win} Flag Quiz Stats",
+        description=(
+            f"{user.mention}\n"
+            f"Quizzes: **{played:,}**\n"
+            f"Scoring runs: **{points:,}**\n"
+            f"Rewards Earned: **{economy_format_balance(earned)}**"
+        ),
+        color=discord.Color.green(),
+    )
+    await ctx.reply(embed=embed, mention_author=False, allowed_mentions=discord.AllowedMentions.none())
 
 @bot.tree.command(name="run", description="Run any ProQue prefix command through slash commands.")
 @app_commands.describe(command="Command name", args="Everything after the command, like @user 1000 or 10m title")

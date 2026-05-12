@@ -755,6 +755,92 @@ def qbadge():
     c.sparkle(95, 28, 6)
     return c
 
+def qaudit():
+    c = qgame_stats()
+    c.circle(84, 82, 18, TRANSPARENT, outline=ICE, width=5)
+    c.line(97, 95, 111, 109, ICE, 6)
+    c.line(97, 95, 111, 109, BLUE_DARK, 2)
+    c.sparkle(23, 30, 6)
+    return c
+
+def qlimits():
+    c = Canvas()
+    c.poly([(64, 14), (103, 30), (96, 83), (64, 113), (32, 83), (25, 30)], BLUE_MID, outline=BLUE_DARK, width=5)
+    c.circle(64, 62, 27, NAVY, outline=CYAN, width=4)
+    c.line(64, 62, 79, 47, GOLD, 6)
+    c.circle(64, 62, 5, ICE)
+    c.line(44, 83, 84, 83, ICE, 4)
+    c.sparkle(96, 29, 7)
+    return c
+
+def qhistory():
+    c = Canvas()
+    c.rect(30, 24, 62, 82, ICE, outline=BLUE_DARK, width=4)
+    c.rect(38, 36, 46, 8, BLUE, outline=CYAN, width=1)
+    c.rect(38, 53, 38, 7, BLUE_MID, outline=CYAN, width=1)
+    c.rect(38, 69, 46, 7, BLUE_MID, outline=CYAN, width=1)
+    c.circle(85, 86, 20, NAVY, outline=CYAN, width=4)
+    c.line(85, 86, 85, 73, ICE, 4)
+    c.line(85, 86, 96, 92, ICE, 4)
+    return c
+
+def qachievement_locked():
+    c = qbadge()
+    c.rect(78, 72, 28, 25, NAVY, outline=BLUE_DARK, width=3)
+    c.circle(92, 72, 11, TRANSPARENT, outline=ICE, width=4)
+    c.circle(92, 84, 4, GOLD)
+    return c
+
+def qachievement_unlocked():
+    c = qbadge()
+    c.circle(91, 84, 18, GREEN, outline=BLUE_DARK, width=3)
+    c.line(82, 84, 89, 91, ICE, 4)
+    c.line(89, 91, 101, 76, ICE, 4)
+    return c
+
+def qrisk(color):
+    c = Canvas()
+    c.poly([(64, 14), (111, 102), (17, 102)], color, outline=BLUE_DARK, width=5)
+    c.line(64, 42, 64, 75, NAVY, 8)
+    c.circle(64, 90, 5, NAVY)
+    c.sparkle(98, 36, 6)
+    return c
+
+def qrisk_low():
+    return qrisk(GREEN)
+
+def qrisk_medium():
+    return qrisk(GOLD)
+
+def qrisk_high():
+    return qrisk(RED)
+
+def qrisk_extreme():
+    return qrisk(PURPLE)
+
+def qperf():
+    c = Canvas()
+    c.circle(64, 71, 43, NAVY, outline=BLUE_DARK, width=5)
+    c.circle(64, 71, 31, BLUE_MID, outline=CYAN, width=3)
+    for angle in [-0.85, -0.35, 0.15, 0.65]:
+        x1 = 64 + math.cos(angle) * 23
+        y1 = 71 + math.sin(angle) * 23
+        x2 = 64 + math.cos(angle) * 30
+        y2 = 71 + math.sin(angle) * 30
+        c.line(x1, y1, x2, y2, ICE, 2)
+    c.line(64, 71, 89, 52, GOLD, 5)
+    c.circle(64, 71, 5, ICE)
+    c.text_q(64, 104, 18, CYAN)
+    return c
+
+def qfilter():
+    c = Canvas()
+    c.poly([(21, 28), (107, 28), (76, 66), (76, 100), (54, 112), (54, 66)], BLUE, outline=BLUE_DARK, width=5)
+    c.line(34, 39, 94, 39, ICE, 4)
+    c.line(49, 58, 79, 58, CYAN, 3)
+    c.sparkle(94, 88, 7)
+    return c
+
 def qdungeon():
     c = Canvas()
     c.poly([(26, 104), (26, 50), (39, 31), (64, 22), (89, 31), (102, 50), (102, 104)], NAVY, outline=BLUE_DARK, width=5)
@@ -1711,6 +1797,17 @@ STATIC = {
     "QDoubleNothing": qdouble_nothing,
     "QGameStats": qgame_stats,
     "QBadge": qbadge,
+    "QAudit": qaudit,
+    "QLimits": qlimits,
+    "QHistory": qhistory,
+    "QAchievementLocked": qachievement_locked,
+    "QAchievementUnlocked": qachievement_unlocked,
+    "QRiskLow": qrisk_low,
+    "QRiskMedium": qrisk_medium,
+    "QRiskHigh": qrisk_high,
+    "QRiskExtreme": qrisk_extreme,
+    "QPerf": qperf,
+    "QFilter": qfilter,
     "QDungeon": qdungeon,
     "QDungeonHeart": qdungeon_heart,
     "QDungeonKey": qdungeon_key,
@@ -1729,6 +1826,7 @@ STATIC_CATEGORIES = {
         "QTicket", "QLuckyCharm", "QXPTonic", "QQuesoMagnet", "QDailySpice",
         "QStreakPolish", "QGoldBadge", "QHighRoller", "QVelvetFrame", "QTicketCharm",
         "QCooldownClock", "QRoyalCrown", "QStreakFire", "QFortuneVial",
+        "QAudit", "QLimits", "QPerf", "QFilter",
     },
     "moderation": {
         "QHammer", "QTrash", "QEdit", "QLock", "QBroom", "QReaction", "QUserEdit",
@@ -1736,7 +1834,8 @@ STATIC_CATEGORIES = {
     },
     "games/common": {
         "QGameWin", "QGameTimeout", "QGameX", "QGameO", "QCards",
-        "QDoubleNothing", "QGameStats", "QBadge",
+        "QDoubleNothing", "QGameStats", "QBadge", "QHistory", "QAchievementLocked",
+        "QAchievementUnlocked", "QRiskLow", "QRiskMedium", "QRiskHigh", "QRiskExtreme",
     },
     "games/coinflip": {
         "QFlip",

@@ -19,6 +19,8 @@ bot = None
 # --- Config ---
 MAX_BET = 200_000
 COOLDOWN_SECS = 10
+DAILY_LOSS_WARNING_RATIO = 0.70
+DAILY_LOSS_HARD_RATIO = 0.85
 STREAK_BASE_BONUS = 0.01
 STREAK_STEP_BONUS = 0.0025
 BLACKJACK_DEALER_STAND_ON_16_CHANCE = 0.20
@@ -133,9 +135,20 @@ Q_CASES = "<:QCases:1501999740429271040>"
 Q_PLINKO = "<a:QPlinkoDrop:1502002567427915866>"
 Q_LUCKY_NUMBER = "<:QLuckyNumber:1501999889150775488>"
 Q_JACKPOT_SPIN = "<a:QJackpotSpin:1502002724261330955>"
-Q_DOUBLE_NOTHING = Q_FLIP_SPIN
+Q_DOUBLE_NOTHING = "<:QDoubleNothing:1503820795745534062>"
 Q_GAME_STATS = "<:QGameStats:1502000517201661962>"
 Q_BADGE = "<:QBadge:1502000221977055372>"
+Q_AUDIT = "<:QAudit:1503820565599748308>"
+Q_LIMITS = "<:QLimits:1503820580267495605>"
+Q_HISTORY = "<:QHistory:1503820805853806824>"
+Q_ACHIEVEMENT_LOCKED = "<:QAchievementLocked:1503820788560826589>"
+Q_ACHIEVEMENT_UNLOCKED = "<:QAchievementUnlocked:1503820790339080282>"
+Q_RISK_LOW = "<:QRiskLow:1503820811822301274>"
+Q_RISK_MEDIUM = "<:QRiskMedium:1503820813491638434>"
+Q_RISK_HIGH = "<:QRiskHigh:1503820809293135954>"
+Q_RISK_EXTREME = "<:QRiskExtreme:1503820807691046912>"
+Q_PERF = "<:QPerf:1503820589121671199>"
+Q_FILTER = "<:QFilter:1503820570553356408>"
 Q_DUNGEON = "<:QDungeon:1503459478690074644>"
 Q_DUNGEON_HEART = "<:QDungeonHeart:1503459480766255104>"
 Q_DUNGEON_KEY = "<:QDungeonKey:1503459483030917270>"
@@ -372,6 +385,7 @@ def init_db():
                     last_xp TIMESTAMP,
                     inventory TEXT[] DEFAULT '{}',
                     achievements TEXT[] DEFAULT '{}',
+                    equipped_badges TEXT[] DEFAULT '{}',
                     quest_claims TEXT[] DEFAULT '{}',
                     steal_blacklist BIGINT[] DEFAULT '{}',
                     luck_boost_until TIMESTAMP
@@ -397,6 +411,37 @@ def init_db():
                     profit BIGINT NOT NULL DEFAULT 0,
                     biggest_win BIGINT NOT NULL DEFAULT 0,
                     PRIMARY KEY (user_id, game_key)
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS economy_game_history (
+                    id BIGSERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    game_key TEXT NOT NULL,
+                    won BOOLEAN,
+                    net_amount BIGINT NOT NULL DEFAULT 0,
+                    payout BIGINT NOT NULL DEFAULT 0,
+                    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+                )
+            """)
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_economy_game_history_user_id_created_at ON economy_game_history (user_id, created_at DESC)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_economy_game_history_game_key_created_at ON economy_game_history (game_key, created_at DESC)")
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS economy_daily_losses (
+                    user_id BIGINT NOT NULL,
+                    loss_date DATE NOT NULL,
+                    amount BIGINT NOT NULL DEFAULT 0,
+                    PRIMARY KEY (user_id, loss_date)
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS economy_daily_challenges (
+                    user_id BIGINT NOT NULL,
+                    challenge_date DATE NOT NULL,
+                    challenge_id TEXT NOT NULL,
+                    progress BIGINT NOT NULL DEFAULT 0,
+                    claimed BOOLEAN NOT NULL DEFAULT FALSE,
+                    PRIMARY KEY (user_id, challenge_date, challenge_id)
                 )
             """)
             cur.execute("""
@@ -454,6 +499,7 @@ def init_db():
             cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS last_xp TIMESTAMP")
             cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS inventory TEXT[] DEFAULT '{}'")
             cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS achievements TEXT[] DEFAULT '{}'")
+            cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS equipped_badges TEXT[] DEFAULT '{}'")
             cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS quest_claims TEXT[] DEFAULT '{}'")
             cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS steal_blacklist BIGINT[] DEFAULT '{}'")
             cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS luck_boost_until TIMESTAMP")
@@ -535,6 +581,11 @@ def update_user(user_id, **kwargs):
                 "INSERT INTO economy (user_id, balance) VALUES (%s, 0) ON CONFLICT (user_id) DO NOTHING",
                 (user_id,)
             )
+            old_total_lost = None
+            if "total_lost" in kwargs:
+                cur.execute("SELECT total_lost FROM economy WHERE user_id = %s FOR UPDATE", (user_id,))
+                row = cur.fetchone()
+                old_total_lost = int((row or {}).get("total_lost", 0) or 0)
 
             set_clauses = []
             values = []
@@ -548,6 +599,19 @@ def update_user(user_id, **kwargs):
             updated = cur.fetchone()
             if updated is None:
                 raise RuntimeError(f"Economy update affected no rows for user {user_id}")
+            if old_total_lost is not None:
+                new_total_lost = int(updated["total_lost"] or 0)
+                loss_delta = new_total_lost - old_total_lost
+                if loss_delta > 0:
+                    cur.execute(
+                        """
+                        INSERT INTO economy_daily_losses (user_id, loss_date, amount)
+                        VALUES (%s, CURRENT_DATE, %s)
+                        ON CONFLICT (user_id, loss_date) DO UPDATE SET
+                            amount = economy_daily_losses.amount + EXCLUDED.amount
+                        """,
+                        (user_id, loss_delta)
+                    )
             conn.commit()
             cur.close()
             conn.close()
@@ -908,7 +972,19 @@ def record_game_result(user_id, game_key, won, net_amount, payout=0):
             (user_id, game_key, 1 if won is True else 0, 1 if won is False else 0, int(net_amount), int(payout) if won is True else 0)
         )
         row = cur.fetchone()
+        cur.execute(
+            """
+            INSERT INTO economy_game_history (user_id, game_key, won, net_amount, payout)
+            VALUES (%s, %s, %s, %s, %s)
+            """,
+            (user_id, game_key, won, int(net_amount), int(payout))
+        )
         conn.commit()
+        if won is True:
+            try:
+                track_daily_challenge_progress(user_id, game_key, True, 1)
+            except Exception as e:
+                print(f"Daily challenge progress failed: {type(e).__name__} - {e}")
         return row
     finally:
         cur.close()
@@ -937,6 +1013,129 @@ def get_game_stat(user_id, game_key):
     cur.close()
     conn.close()
     return row
+
+def get_game_history(user_id, limit=12):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT game_key, won, net_amount, payout, created_at
+        FROM economy_game_history
+        WHERE user_id = %s
+        ORDER BY id DESC
+        LIMIT %s
+        """,
+        (user_id, limit)
+    )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
+
+def get_economy_audit():
+    stats = get_economy_stats()
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT
+            game_key,
+            SUM(played) AS played,
+            SUM(wins) AS wins,
+            SUM(losses) AS losses,
+            SUM(profit) AS profit,
+            MAX(biggest_win) AS biggest_win
+        FROM economy_game_stats
+        GROUP BY game_key
+        ORDER BY ABS(SUM(profit)) DESC, SUM(played) DESC
+        LIMIT 12
+        """
+    )
+    games = cur.fetchall()
+    cur.execute(
+        """
+        SELECT COALESCE(SUM(amount), 0) AS lost_today
+        FROM economy_daily_losses
+        WHERE loss_date = CURRENT_DATE
+        """
+    )
+    daily_losses = cur.fetchone()
+    cur.execute(
+        """
+        SELECT COUNT(*) AS rows, COALESCE(SUM(amount), 0) AS amount
+        FROM economy_transactions
+        WHERE created_at >= NOW() - INTERVAL '24 hours'
+        """
+    )
+    tx_24h = cur.fetchone()
+    cur.close()
+    conn.close()
+    stats["games"] = games
+    stats["lost_today"] = int(daily_losses["lost_today"] or 0)
+    stats["transactions_24h"] = int(tx_24h["rows"] or 0)
+    stats["transaction_amount_24h"] = int(tx_24h["amount"] or 0)
+    return stats
+
+def get_lottery_user_spend(guild_id, user_id):
+    if not guild_id:
+        return None
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT tickets, spent FROM lottery_tickets WHERE guild_id = %s AND user_id = %s",
+        (guild_id, user_id)
+    )
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    return row
+
+def get_daily_loss_amount(user_id):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT amount FROM economy_daily_losses WHERE user_id = %s AND loss_date = CURRENT_DATE",
+        (user_id,)
+    )
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    return int((row or {}).get("amount", 0) or 0)
+
+def daily_loss_status(user_id, balance, proposed_loss=0):
+    lost_today = get_daily_loss_amount(user_id)
+    balance = max(0, int(balance or 0))
+    proposed_loss = max(0, int(proposed_loss or 0))
+    bankroll = max(1, balance + lost_today)
+    hard_limit = int(bankroll * DAILY_LOSS_HARD_RATIO)
+    warning_limit = int(bankroll * DAILY_LOSS_WARNING_RATIO)
+    after_loss = lost_today + proposed_loss
+    remaining = max(0, hard_limit - lost_today)
+    return {
+        "lost_today": lost_today,
+        "bankroll": bankroll,
+        "hard_limit": hard_limit,
+        "warning_limit": warning_limit,
+        "after_loss": after_loss,
+        "remaining": remaining,
+        "blocked": after_loss > hard_limit,
+        "warn": after_loss >= warning_limit,
+    }
+
+async def check_daily_loss_limit(ctx, data, amount):
+    status = await asyncio.to_thread(daily_loss_status, ctx.author.id, int(data["balance"]), int(amount))
+    if status["blocked"]:
+        await ctx.send(
+            f"{Q_WARNING} Daily safety limit reached. You can risk up to **{format_balance(status['remaining'])}** more today.\n"
+            f"Lost today: **{format_balance(status['lost_today'])}** / limit **{format_balance(status['hard_limit'])}**."
+        )
+        return False
+    if status["warn"]:
+        await ctx.send(
+            f"{Q_WARNING} Warning: this could put your daily gambling losses near the safety limit "
+            f"(**{format_balance(status['after_loss'])}** / **{format_balance(status['hard_limit'])}**)."
+        )
+    return True
 
 def get_economy_stats():
     conn = get_db_connection()
@@ -1029,6 +1228,16 @@ def quest_claim_id(period, quest_name):
 
 def achievement_ids(data):
     return list(data.get("achievements") or [])
+
+def equipped_badge_ids(data):
+    return [badge for badge in list(data.get("equipped_badges") or []) if badge in achievement_ids(data)]
+
+def achievement_display(achievement_id):
+    achievement = GAME_ACHIEVEMENTS.get(achievement_id)
+    if not achievement:
+        return achievement_id
+    tier = achievement.get("tier")
+    return f"{achievement['name']} ({tier})" if tier else achievement["name"]
 
 def quest_claim_ids(data):
     return list(data.get("quest_claims") or [])
@@ -1917,6 +2126,7 @@ GAME_DISPLAY_NAMES = {
     "luckynumber": "Lucky Number",
     "jackpotspin": "Jackpot Spin",
     "dungeon": "Dungeon",
+    "flagquiz": "Flag Quiz",
     "memory": "Memory",
     "tower": "Tower",
     "vault": "Vault",
@@ -1939,6 +2149,7 @@ GAME_RISK_LABELS = {
     "luckynumber": "Chosen by range",
     "jackpotspin": "Extreme",
     "dungeon": "Free/Solo",
+    "flagquiz": "Free/Knowledge",
     "memory": "Skill",
     "tower": "High",
     "vault": "Skill",
@@ -1954,16 +2165,50 @@ GAME_RISK_LABELS = {
 }
 
 GAME_ACHIEVEMENTS = {
+    "memory_25_wins": {"game": "memory", "field": "wins", "target": 25, "name": "Memory Bronze", "reward": 750_000, "tier": "Bronze"},
     "memory_100_wins": {"game": "memory", "field": "wins", "target": 100, "name": "Memory Master", "reward": 5_000_000},
+    "memory_250_wins": {"game": "memory", "field": "wins", "target": 250, "name": "Memory Gold", "reward": 10_000_000, "tier": "Gold"},
+    "memory_500_wins": {"game": "memory", "field": "wins", "target": 500, "name": "Memory Royal", "reward": 25_000_000, "tier": "Royal"},
+    "heist_25_wins": {"game": "heist", "field": "wins", "target": 25, "name": "Heist Bronze", "reward": 750_000, "tier": "Bronze"},
     "heist_100_wins": {"game": "heist", "field": "wins", "target": 100, "name": "Clean Getaway", "reward": 5_000_000},
+    "heist_250_wins": {"game": "heist", "field": "wins", "target": 250, "name": "Heist Gold", "reward": 10_000_000, "tier": "Gold"},
+    "heist_500_wins": {"game": "heist", "field": "wins", "target": 500, "name": "Heist Royal", "reward": 25_000_000, "tier": "Royal"},
+    "diceduel_25_wins": {"game": "diceduel", "field": "wins", "target": 25, "name": "Dice Bronze", "reward": 600_000, "tier": "Bronze"},
     "diceduel_100_wins": {"game": "diceduel", "field": "wins", "target": 100, "name": "Dice Duelist", "reward": 4_000_000},
+    "diceduel_250_wins": {"game": "diceduel", "field": "wins", "target": 250, "name": "Dice Gold", "reward": 8_000_000, "tier": "Gold"},
+    "diceduel_500_wins": {"game": "diceduel", "field": "wins", "target": 500, "name": "Dice Royal", "reward": 20_000_000, "tier": "Royal"},
+    "cases_25_wins": {"game": "cases", "field": "wins", "target": 25, "name": "Case Bronze", "reward": 600_000, "tier": "Bronze"},
     "cases_100_wins": {"game": "cases", "field": "wins", "target": 100, "name": "Case Collector", "reward": 4_000_000},
+    "cases_250_wins": {"game": "cases", "field": "wins", "target": 250, "name": "Case Gold", "reward": 8_000_000, "tier": "Gold"},
+    "cases_500_wins": {"game": "cases", "field": "wins", "target": 500, "name": "Case Royal", "reward": 20_000_000, "tier": "Royal"},
+    "plinko_25_wins": {"game": "plinko", "field": "wins", "target": 25, "name": "Plinko Bronze", "reward": 600_000, "tier": "Bronze"},
     "plinko_100_wins": {"game": "plinko", "field": "wins", "target": 100, "name": "Plinko Pro", "reward": 4_000_000},
+    "plinko_250_wins": {"game": "plinko", "field": "wins", "target": 250, "name": "Plinko Gold", "reward": 8_000_000, "tier": "Gold"},
+    "plinko_500_wins": {"game": "plinko", "field": "wins", "target": 500, "name": "Plinko Royal", "reward": 20_000_000, "tier": "Royal"},
+    "luckynumber_25_wins": {"game": "luckynumber", "field": "wins", "target": 25, "name": "Number Bronze", "reward": 600_000, "tier": "Bronze"},
     "luckynumber_100_wins": {"game": "luckynumber", "field": "wins", "target": 100, "name": "Number Oracle", "reward": 4_000_000},
+    "luckynumber_250_wins": {"game": "luckynumber", "field": "wins", "target": 250, "name": "Number Gold", "reward": 8_000_000, "tier": "Gold"},
+    "luckynumber_500_wins": {"game": "luckynumber", "field": "wins", "target": 500, "name": "Number Royal", "reward": 20_000_000, "tier": "Royal"},
+    "jackpotspin_10_wins": {"game": "jackpotspin", "field": "wins", "target": 10, "name": "Jackpot Bronze", "reward": 1_000_000, "tier": "Bronze"},
     "jackpotspin_25_wins": {"game": "jackpotspin", "field": "wins", "target": 25, "name": "Jackpot Hunter", "reward": 7_500_000},
+    "jackpotspin_75_wins": {"game": "jackpotspin", "field": "wins", "target": 75, "name": "Jackpot Gold", "reward": 15_000_000, "tier": "Gold"},
+    "jackpotspin_150_wins": {"game": "jackpotspin", "field": "wins", "target": 150, "name": "Jackpot Royal", "reward": 35_000_000, "tier": "Royal"},
+    "dungeon_10_clears": {"game": "dungeon", "field": "wins", "target": 10, "name": "Dungeon Bronze", "reward": 750_000, "tier": "Bronze"},
     "dungeon_50_clears": {"game": "dungeon", "field": "wins", "target": 50, "name": "Dungeon Delver", "reward": 3_000_000},
+    "dungeon_150_clears": {"game": "dungeon", "field": "wins", "target": 150, "name": "Dungeon Gold", "reward": 8_000_000, "tier": "Gold"},
+    "dungeon_300_clears": {"game": "dungeon", "field": "wins", "target": 300, "name": "Dungeon Royal", "reward": 20_000_000, "tier": "Royal"},
     "all_games_1000_played": {"game": None, "field": "played", "target": 1000, "name": "Quewo Grinder", "reward": 10_000_000},
+    "all_games_2500_played": {"game": None, "field": "played", "target": 2500, "name": "Quewo Gold Grinder", "reward": 25_000_000, "tier": "Gold"},
+    "all_games_5000_played": {"game": None, "field": "played", "target": 5000, "name": "Quewo Royal Grinder", "reward": 50_000_000, "tier": "Royal"},
 }
+
+DAILY_CHALLENGES = [
+    {"id": "any_wins_3", "name": "Win 3 Quewo games", "game": None, "target": 3, "reward": 250_000},
+    {"id": "memory_wins_2", "name": "Win Memory 2 times", "game": "memory", "target": 2, "reward": 300_000},
+    {"id": "tower_wins_2", "name": "Win Tower 2 times", "game": "tower", "target": 2, "reward": 300_000},
+    {"id": "dungeon_clear_1", "name": "Clear Dungeon once", "game": "dungeon", "target": 1, "reward": 300_000},
+    {"id": "flag_points_10", "name": "Score 10 Flag Quiz points", "game": "flagquiz", "target": 10, "reward": 400_000},
+]
 
 GAME_RISK_ALIASES = {
     "flip": "cf",
@@ -2008,8 +2253,138 @@ def risk_text(game_key):
         return ""
     return f"{Q_WARNING} Risk: **{risk_label(key)}**"
 
+def risk_emoji(game_key):
+    label = risk_label(game_key).casefold()
+    if "extreme" in label:
+        return Q_RISK_EXTREME
+    if "high" in label:
+        return Q_RISK_HIGH
+    if "low" in label or "free" in label:
+        return Q_RISK_LOW
+    return Q_RISK_MEDIUM
+
 def game_display_name(game_key):
     return GAME_DISPLAY_NAMES.get(game_key, str(game_key).replace("_", " ").title())
+
+def todays_daily_challenge(now=None):
+    now = now or datetime.now(timezone.utc)
+    index = int(now.strftime("%Y%m%d")) % len(DAILY_CHALLENGES)
+    return DAILY_CHALLENGES[index]
+
+def track_daily_challenge_progress(user_id, game_key, won=True, amount=1):
+    challenge = todays_daily_challenge()
+    if not won:
+        return None
+    if challenge["game"] is not None and challenge["game"] != game_key:
+        return None
+    amount = max(0, int(amount or 0))
+    if amount <= 0:
+        return None
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            INSERT INTO economy_daily_challenges (user_id, challenge_date, challenge_id, progress, claimed)
+            VALUES (%s, CURRENT_DATE, %s, %s, FALSE)
+            ON CONFLICT (user_id, challenge_date, challenge_id) DO UPDATE SET
+                progress = economy_daily_challenges.progress + EXCLUDED.progress
+            RETURNING progress, claimed
+            """,
+            (user_id, challenge["id"], amount)
+        )
+        row = cur.fetchone()
+        conn.commit()
+        return row
+    finally:
+        cur.close()
+        conn.close()
+
+def get_daily_challenge_status(user_id):
+    challenge = todays_daily_challenge()
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT progress, claimed
+        FROM economy_daily_challenges
+        WHERE user_id = %s AND challenge_date = CURRENT_DATE AND challenge_id = %s
+        """,
+        (user_id, challenge["id"])
+    )
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    progress = int((row or {}).get("progress", 0) or 0)
+    claimed = bool((row or {}).get("claimed", False))
+    return challenge, progress, claimed
+
+def claim_daily_challenge(user_id):
+    challenge = todays_daily_challenge()
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            INSERT INTO economy_daily_challenges (user_id, challenge_date, challenge_id, progress, claimed)
+            VALUES (%s, CURRENT_DATE, %s, 0, FALSE)
+            ON CONFLICT (user_id, challenge_date, challenge_id) DO NOTHING
+            """,
+            (user_id, challenge["id"])
+        )
+        cur.execute(
+            """
+            SELECT progress, claimed
+            FROM economy_daily_challenges
+            WHERE user_id = %s AND challenge_date = CURRENT_DATE AND challenge_id = %s
+            FOR UPDATE
+            """,
+            (user_id, challenge["id"])
+        )
+        row = cur.fetchone()
+        progress = int((row or {}).get("progress", 0) or 0)
+        claimed = bool((row or {}).get("claimed", False))
+        if claimed:
+            conn.rollback()
+            return False, "claimed", challenge, progress, None
+        if progress < int(challenge["target"]):
+            conn.rollback()
+            return False, "incomplete", challenge, progress, None
+        cur.execute(
+            "INSERT INTO economy (user_id, balance) VALUES (%s, 0) ON CONFLICT (user_id) DO NOTHING",
+            (user_id,)
+        )
+        cur.execute(
+            """
+            UPDATE economy
+            SET balance = balance + %s,
+                total_earned = total_earned + %s
+            WHERE user_id = %s
+            RETURNING balance
+            """,
+            (challenge["reward"], challenge["reward"], user_id)
+        )
+        updated = cur.fetchone()
+        cur.execute(
+            """
+            UPDATE economy_daily_challenges
+            SET claimed = TRUE
+            WHERE user_id = %s AND challenge_date = CURRENT_DATE AND challenge_id = %s
+            """,
+            (user_id, challenge["id"])
+        )
+        cur.execute(
+            "INSERT INTO economy_transactions (user_id, kind, amount, note) VALUES (%s, %s, %s, %s)",
+            (user_id, "daily_challenge", challenge["reward"], challenge["name"])
+        )
+        conn.commit()
+        return True, "claimed_now", challenge, progress, int(updated["balance"])
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cur.close()
+        conn.close()
 
 def maybe_award_game_achievements(user_id, game_key, stats_row=None):
     try:
@@ -2127,7 +2502,7 @@ class DoubleOrNothingView(discord.ui.View):
         await interaction.response.send_message("Use your own double or nothing.", ephemeral=True)
         return False
 
-    @discord.ui.button(label="Double or Nothing", style=discord.ButtonStyle.danger)
+    @discord.ui.button(label="Double or Nothing", emoji=Q_DOUBLE_NOTHING, style=discord.ButtonStyle.danger)
     async def double_or_nothing(self, interaction, button):
         if self.used:
             await interaction.response.defer()
@@ -2153,7 +2528,7 @@ def double_or_nothing_view(user_id, game_key, result):
 
 def gamble_result_block(game_key, amount, result, base_multiplier=None):
     lines = [
-        f"Risk: **{risk_label(game_key)}**",
+        f"{risk_emoji(game_key)} Risk: **{risk_label(game_key)}**",
         f"Bet: **{format_balance(amount)}**",
     ]
     if result["winnings"] > 0:
@@ -2161,12 +2536,14 @@ def gamble_result_block(game_key, amount, result, base_multiplier=None):
         if multiplier:
             lines.append(f"Multiplier: **×{multiplier:.3f}** (base ×{base_multiplier:g}, streak ×{result['streak_mult']:.3f})")
         lines.extend([
+            f"Result: **Win**",
             f"Prize: **{format_balance(result['winnings'])}**",
             f"Streak: **{result['streak']}** win(s)",
             f"New Balance: **{format_balance(result['balance'])}**",
         ])
     else:
         lines.extend([
+            f"Result: **Loss**",
             f"Lost: **{format_balance(amount)}**",
             f"New Balance: **{format_balance(result['balance'])}**",
             "Streak reset.",
@@ -2361,6 +2738,10 @@ def build_profile_embed(user, data):
     boost_text = luck_boost_text(data)
     if boost_text:
         embed.add_field(name="Luck Boost", value=boost_text, inline=False)
+    badges = equipped_badge_ids(data)
+    if badges:
+        badge_text = " | ".join(f"{Q_BADGE} {achievement_display(badge)}" for badge in badges[:3])
+        embed.add_field(name="Profile Badges", value=badge_text, inline=False)
     embed.add_field(name="Items", value=", ".join(items) if items else "None", inline=False)
     return embed
 
@@ -4088,6 +4469,9 @@ async def gamble(ctx, amount: str, choice: str = None):
         await ctx.send(f"{Q_DENIED} You only have {format_balance(data['balance'])}")
         return
 
+    if not await check_daily_loss_limit(ctx, data, amount):
+        return
+
     if choice:
         choice = choice.lower()
         if choice in ("h", "heads"):
@@ -4293,6 +4677,9 @@ async def roulette(ctx, amount: str, color: str = None):
         await ctx.send(f"{Q_DENIED} You only have {format_balance(data['balance'])}")
         return
 
+    if not await check_daily_loss_limit(ctx, data, amount):
+        return
+
     colors = ["red", "black", "green"]
     win_chance = chance_with_luck(ROULETTE_WIN_CHANCE, data, cap=0.45)
     result = color if random.random() < win_chance else random.choice([entry for entry in colors if entry != color])
@@ -4408,6 +4795,9 @@ async def slots(ctx, amount: str):
 
     if amount > data['balance'] and not has_economy_owner_power(ctx.author.id, ctx.guild):
         await ctx.send(f"{Q_DENIED} You only have {format_balance(data['balance'])}")
+        return
+
+    if not await check_daily_loss_limit(ctx, data, amount):
         return
 
     slot_symbols = SLOT_SYMBOL_PAYOUTS
@@ -4572,6 +4962,9 @@ async def blackjack(ctx, amount: str):
 
     if amount > data['balance'] and not has_economy_owner_power(ctx.author.id, ctx.guild):
         await ctx.send(f"{Q_DENIED} You only have {format_balance(data['balance'])}")
+        return
+
+    if not await check_daily_loss_limit(ctx, data, amount):
         return
 
     deck = shuffle_deck()
@@ -4785,6 +5178,9 @@ async def give(ctx, *, args: str = None):
 
     if amount > data['balance'] and not has_economy_owner_power(ctx.author.id, ctx.guild):
         await ctx.send(f"{Q_DENIED} You only have {format_balance(data['balance'])}")
+        return
+
+    if not await check_daily_loss_limit(ctx, data, amount):
         return
 
     try:
@@ -5265,6 +5661,9 @@ async def scratch(ctx, amount: str):
         await ctx.send(f"{Q_DENIED} You only have {format_balance(data['balance'])}")
         return
 
+    if not await check_daily_loss_limit(ctx, data, amount):
+        return
+
     if random.random() < chance_with_luck(SCRATCH_WIN_CHANCE, data, cap=0.25):
         win_symbol, _, _ = random.choices(
             SCRATCH_TIERS,
@@ -5397,6 +5796,9 @@ async def tower(ctx, amount: str):
         return
     if amount > data["balance"] and not has_economy_owner_power(ctx.author.id, ctx.guild):
         await ctx.send(f"{Q_DENIED} You only have {format_balance(data['balance'])}")
+        return
+
+    if not await check_daily_loss_limit(ctx, data, amount):
         return
 
     floor = 0
@@ -5563,6 +5965,9 @@ async def vault(ctx, amount: str):
         await ctx.send(f"{Q_DENIED} You only have {format_balance(data['balance'])}")
         return
 
+    if not await check_daily_loss_limit(ctx, data, amount):
+        return
+
     code = "".join(random.sample("0123456789", 3))
     guesses = []
     prompt = await ctx.send(
@@ -5667,6 +6072,9 @@ async def memory_game(ctx, amount: str):
         return
     if amount > data["balance"] and not has_economy_owner_power(ctx.author.id, ctx.guild):
         await ctx.send(f"{Q_DENIED} You only have {format_balance(data['balance'])}")
+        return
+
+    if not await check_daily_loss_limit(ctx, data, amount):
         return
 
     symbols = MEMORY_SYMBOLS * 2
@@ -5892,6 +6300,9 @@ async def card_ladder(ctx, amount: str):
         await ctx.send(f"{Q_DENIED} You only have {format_balance(data['balance'])}")
         return
 
+    if not await check_daily_loss_limit(ctx, data, amount):
+        return
+
     current_card = random_ladder_card()
     rung = 0
     game_over = False
@@ -6075,6 +6486,9 @@ async def lockpick(ctx, amount: str):
         return
     if amount > data["balance"] and not has_economy_owner_power(ctx.author.id, ctx.guild):
         await ctx.send(f"{Q_DENIED} You only have {format_balance(data['balance'])}")
+        return
+
+    if not await check_daily_loss_limit(ctx, data, amount):
         return
 
     target = [random.randint(1, LOCKPICK_HEIGHTS) for _ in range(LOCKPICK_PINS)]
@@ -6262,6 +6676,8 @@ async def prepare_gamble(ctx, amount_text, command_name):
         return None, None
     if parsed > data["balance"] and not has_economy_owner_power(ctx.author.id, ctx.guild):
         await ctx.send(f"{Q_DENIED} You only have {format_balance(data['balance'])}")
+        return None, None
+    if not await check_daily_loss_limit(ctx, data, parsed):
         return None, None
     return data, parsed
 
@@ -7207,6 +7623,11 @@ async def dungeon(ctx):
             self.trap_progress = 0
             self.trap_mistakes = 0
             self.trap_hint = ""
+            self.boss_active = False
+            self.boss_sequence = []
+            self.boss_progress = 0
+            self.boss_mistakes = 0
+            self.boss_hint = ""
             self.room = random.choice(DUNGEON_ROOMS)
             self.message = None
             self.refresh_buttons()
@@ -7224,7 +7645,7 @@ async def dungeon(ctx):
                 "trap": "The floor is wired with glowing pressure plates.",
                 "shrine": "A quiet shrine offers a risky blessing.",
                 "locked": "A heavy gate blocks the next hallway.",
-                "boss": "The final door wakes up. One choice decides the run.",
+                "boss": "The final door wakes up. Crack its rune pattern or spend a key.",
             }
             return text.get(self.room, "The dungeon shifts around you.")
 
@@ -7342,8 +7763,8 @@ async def dungeon(ctx):
                 ]
             else:
                 choices = [
-                    ("strike", "Strike", discord.ButtonStyle.danger),
-                    ("guard", "Guard", discord.ButtonStyle.primary),
+                    ("strike", "Rune Clash", discord.ButtonStyle.danger),
+                    ("guard", "Brace", discord.ButtonStyle.primary),
                     ("key", "Use Key", discord.ButtonStyle.success),
                 ]
             for key, label, style in choices:
@@ -7368,6 +7789,30 @@ async def dungeon(ctx):
             self.add_item(DungeonChoiceButton("trap_wire_cyan", "Cyan Wire", discord.ButtonStyle.success))
             self.add_item(DungeonChoiceButton("trap_wire_gold", "Gold Wire", discord.ButtonStyle.secondary))
             self.add_item(DungeonChoiceButton("trap_restart", "Restart", discord.ButtonStyle.danger))
+
+        def render_boss_clash(self, result_text=None):
+            sequence = " -> ".join(label for _, label in self.boss_sequence)
+            lines = [
+                f"{Q_DUNGEON} **Q DUNGEON**",
+                "─────────────────",
+                self.status_text(),
+                "",
+                f"**{Q_DUNGEON} Rune Clash**",
+                "Press the runes in order. Two wrong presses seals the door.",
+                f"Sequence: **{sequence}**",
+                f"Progress: **{self.boss_progress}/{len(self.boss_sequence)}** | Mistakes: **{self.boss_mistakes}/2**",
+                f"> {self.boss_hint}",
+            ]
+            if result_text:
+                lines.extend(["", result_text])
+            return "\n".join(lines)
+
+        def refresh_boss_buttons(self):
+            self.clear_items()
+            self.add_item(DungeonChoiceButton("boss_heart", "Heart Rune", discord.ButtonStyle.danger))
+            self.add_item(DungeonChoiceButton("boss_key", "Key Rune", discord.ButtonStyle.primary))
+            self.add_item(DungeonChoiceButton("boss_relic", "Relic Rune", discord.ButtonStyle.success))
+            self.add_item(DungeonChoiceButton("boss_restart", "Restart", discord.ButtonStyle.secondary))
 
         def roll(self, chance):
             bonus = min(0.10, active_luck_bonus(self.data) / 2)
@@ -7505,12 +7950,7 @@ async def dungeon(ctx):
                 return f"{Q_DENIED} No key. The lock bit you for **1 HP**.", True, False
 
             if choice == "strike":
-                if self.roll(0.58):
-                    gain = 50_000
-                    self.loot += gain
-                    return f"{Q_SUCCESS} Final door cracked open: +**{format_balance(gain)}**.", True, True
-                self.change_hp(-2)
-                return f"{Q_DENIED} The final door threw you back. Lost **2 HP**.", True, False
+                return f"{Q_DUNGEON} The runes wake up.", False, False
             if choice == "guard":
                 if self.roll(0.75):
                     gain = 25_000
@@ -7703,6 +8143,60 @@ async def dungeon(ctx):
             self.trap_hint = f"{Q_DENIED} Wrong wire. You cut **{pressed_label}**, needed **{expected_label}**. Start over."
             await interaction.response.edit_message(content=self.render_trap_disarm(), view=self)
 
+        async def start_boss_clash(self, interaction):
+            self.boss_active = True
+            runes = [
+                ("boss_heart", "Heart"),
+                ("boss_key", "Key"),
+                ("boss_relic", "Relic"),
+            ]
+            self.boss_sequence = [random.choice(runes) for _ in range(4)]
+            self.boss_progress = 0
+            self.boss_mistakes = 0
+            self.boss_hint = "Start with the first rune."
+            self.refresh_boss_buttons()
+            await interaction.response.edit_message(content=self.render_boss_clash(), view=self)
+
+        async def handle_boss_clash(self, interaction, choice):
+            if choice == "boss_restart":
+                self.boss_progress = 0
+                self.boss_hint = "Rune sequence restarted."
+                await interaction.response.edit_message(content=self.render_boss_clash(), view=self)
+                return
+            if not choice.startswith("boss_"):
+                await interaction.response.defer()
+                return
+            expected_key, expected_label = self.boss_sequence[self.boss_progress]
+            pressed_label = {
+                "boss_heart": "Heart",
+                "boss_key": "Key",
+                "boss_relic": "Relic",
+            }.get(choice, "Unknown")
+            if choice == expected_key:
+                self.boss_progress += 1
+                if self.boss_progress < len(self.boss_sequence):
+                    self.boss_hint = f"{Q_SUCCESS} {pressed_label} rune lit. Next: **{self.boss_sequence[self.boss_progress][1]}**."
+                    await interaction.response.edit_message(content=self.render_boss_clash(), view=self)
+                    return
+                self.boss_active = False
+                gain = 60_000
+                self.loot += gain
+                await self.finish(interaction, True, f"{Q_SUCCESS} Rune clash solved: +**{format_balance(gain)}**.")
+                return
+            self.boss_mistakes += 1
+            self.boss_progress = 0
+            if self.boss_mistakes >= 2:
+                self.boss_active = False
+                self.change_hp(-2)
+                sequence = " -> ".join(label for _, label in self.boss_sequence)
+                if self.hp <= 0:
+                    await self.finish(interaction, False, f"{Q_DENIED} Wrong rune. Sequence was **{sequence}**. You were knocked out.")
+                    return
+                await self.finish(interaction, False, f"{Q_DENIED} Wrong rune. Sequence was **{sequence}**. The final door stayed sealed.")
+                return
+            self.boss_hint = f"{Q_DENIED} Wrong rune. You pressed **{pressed_label}**, needed **{expected_label}**. Start over."
+            await interaction.response.edit_message(content=self.render_boss_clash(), view=self)
+
         async def advance_room(self, interaction, result_text):
             if self.hp <= 0:
                 await self.finish(interaction, False, f"{result_text}\n{Q_DENIED} You were knocked out. No loot escaped.")
@@ -7725,6 +8219,9 @@ async def dungeon(ctx):
             if self.trap_active:
                 await self.handle_trap_disarm(interaction, choice)
                 return
+            if self.boss_active:
+                await self.handle_boss_clash(interaction, choice)
+                return
             if self.room == "locked" and choice == "pick":
                 await self.start_lockpick(interaction)
                 return
@@ -7733,6 +8230,9 @@ async def dungeon(ctx):
                 return
             if self.room == "trap" and choice == "disarm":
                 await self.start_trap_disarm(interaction)
+                return
+            if self.room == "boss" and choice == "strike":
+                await self.start_boss_clash(interaction)
                 return
             result_text, advance, cleared = self.apply_choice(choice)
             if self.hp <= 0:
@@ -7839,6 +8339,347 @@ async def gamestats(ctx, member: discord.Member = None):
     add_split_embed_field(embed, "Badges", [", ".join(game_badges[:20])] if game_badges else ["No game badges yet."], inline=False)
     await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
+@commands.command(name="achievements", aliases=["achievement", "badges", "achs"])
+async def achievements(ctx, member: discord.Member = None):
+    if not await ensure_db_ready(ctx):
+        return
+    user = member or ctx.author
+    try:
+        data = get_user(user.id)
+        rows = get_game_stats(user.id)
+    except Exception:
+        await send_error(ctx, "Database unavailable. Try again shortly.")
+        return
+    owned = set(achievement_ids(data))
+    per_game = {row["game_key"]: row for row in rows}
+    totals = {
+        "played": sum(int(row["played"] or 0) for row in rows),
+        "wins": sum(int(row["wins"] or 0) for row in rows),
+        "losses": sum(int(row["losses"] or 0) for row in rows),
+    }
+    closest = []
+    embed = discord.Embed(
+        title=f"{Q_ACHIEVEMENT_UNLOCKED} Achievements",
+        description=user_mention(user.id),
+        color=discord.Color.gold(),
+    )
+    lines = []
+    for achievement_id, achievement in GAME_ACHIEVEMENTS.items():
+        if achievement["game"] is None:
+            progress = totals.get(achievement["field"], 0)
+        else:
+            row = per_game.get(achievement["game"], {})
+            progress = int(row.get(achievement["field"], 0) or 0)
+        target = int(achievement["target"])
+        status = Q_ACHIEVEMENT_UNLOCKED if achievement_id in owned else Q_ACHIEVEMENT_LOCKED
+        if achievement_id not in owned:
+            closest.append((progress / target if target else 0, achievement["name"], progress, target, achievement["reward"]))
+        lines.append(
+            f"{status} **{achievement['name']}** - {min(progress, target):,}/{target:,} "
+            f"({format_balance(achievement['reward'])})"
+        )
+    add_split_embed_field(embed, "Game Badges", lines, inline=False)
+    if closest:
+        closest.sort(reverse=True)
+        close_lines = [
+            f"**{name}** - {progress:,}/{target:,} ({format_balance(reward)})"
+            for _, name, progress, target, reward in closest[:3]
+        ]
+        embed.add_field(name="Closest", value="\n".join(close_lines), inline=False)
+    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
+@commands.command(name="setbadge", aliases=["badge", "equipbadge", "profilebadge"])
+async def setbadge(ctx, *, badge_ids: str = None):
+    if not await ensure_db_ready(ctx):
+        return
+    try:
+        data = get_user(ctx.author.id)
+    except Exception:
+        await send_error(ctx, "Database unavailable. Try again shortly.")
+        return
+    owned = achievement_ids(data)
+    if not badge_ids:
+        if not owned:
+            await ctx.reply(f"{Q_DENIED} You have no earned badges yet.", mention_author=False)
+            return
+        lines = [
+            f"`{badge_id}` - {achievement_display(badge_id)}"
+            for badge_id in owned
+            if badge_id in GAME_ACHIEVEMENTS
+        ]
+        await ctx.reply(
+            f"{Q_ACHIEVEMENT_UNLOCKED} Use `.setbadge <badge id> [badge id] [badge id]` to show up to 3 on your profile, or `.setbadge clear`.\n"
+            + "\n".join(lines[:20]),
+            mention_author=False,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+        return
+    raw = [part.strip() for part in re.split(r"[,\s]+", badge_ids) if part.strip()]
+    if raw and raw[0].casefold() in {"clear", "none", "reset"}:
+        update_user(ctx.author.id, equipped_badges=[])
+        await ctx.reply(f"{Q_SUCCESS} Profile badges cleared.", mention_author=False)
+        return
+    selected = []
+    for badge_id in raw:
+        if badge_id not in owned or badge_id not in GAME_ACHIEVEMENTS:
+            await ctx.reply(f"{Q_DENIED} You have not earned `{badge_id}`.", mention_author=False)
+            return
+        if badge_id not in selected:
+            selected.append(badge_id)
+    selected = selected[:3]
+    update_user(ctx.author.id, equipped_badges=selected)
+    label = " | ".join(achievement_display(badge_id) for badge_id in selected) if selected else "None"
+    await ctx.reply(f"{Q_SUCCESS} Profile badges set: **{label}**", mention_author=False, allowed_mentions=discord.AllowedMentions.none())
+
+@commands.command(name="streaks", aliases=["streak", "claimstreaks"])
+async def streaks(ctx, member: discord.Member = None):
+    if not await ensure_db_ready(ctx):
+        return
+    user = member or ctx.author
+    try:
+        data = get_user(user.id)
+    except Exception:
+        await send_error(ctx, "Database unavailable. Try again shortly.")
+        return
+    embed = discord.Embed(
+        title=f"{Q_STREAK_FIRE} Streaks",
+        description=user_mention(user.id),
+        color=discord.Color.gold(),
+    )
+    embed.add_field(name="Daily", value=f"{plural_unit(data['daily_streak'], 'day')}\nNext: {claim_cooldown_text(data.get('last_daily'), 86400)}", inline=True)
+    embed.add_field(name="Weekly", value=f"{plural_unit(data['weekly_streak'], 'week')}\nNext: {claim_cooldown_text(data.get('last_weekly'), 604800)}", inline=True)
+    embed.add_field(name="Monthly", value=f"{plural_unit(data['monthly_streak'], 'month')}\nNext: {claim_cooldown_text(data.get('last_monthly'), 2592000)}", inline=True)
+    gamble_streak = int(data.get("gamble_streak", 0) or 0)
+    embed.add_field(
+        name="Gambling",
+        value=f"{gamble_streak} win(s)\nPayout: ×{payout_multiplier(data, gamble_streak):.3f}" if gamble_streak else "No active gambling streak.",
+        inline=False,
+    )
+    await ctx.reply(embed=embed, mention_author=False, allowed_mentions=discord.AllowedMentions.none())
+
+@commands.command(name="dailychallenge", aliases=["challenge", "dc", "qchallenge"])
+async def dailychallenge(ctx, action: str = None):
+    if not await ensure_db_ready(ctx):
+        return
+    try:
+        if action and action.casefold() in {"claim", "collect", "reward"}:
+            ok, reason, challenge, progress, balance = await asyncio.to_thread(claim_daily_challenge, ctx.author.id)
+            if ok:
+                await ctx.reply(
+                    f"{Q_SUCCESS} Claimed **{challenge['name']}** for **{format_balance(challenge['reward'])}**.\n"
+                    f"New Balance: **{format_balance(balance)}**",
+                    mention_author=False,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+                return
+            if reason == "claimed":
+                await ctx.reply(f"{Q_DENIED} You already claimed today's challenge.", mention_author=False)
+                return
+            await ctx.reply(
+                f"{Q_TIMER_TICK} Not finished yet: **{progress:,}/{challenge['target']:,}**.",
+                mention_author=False,
+            )
+            return
+        challenge, progress, claimed = await asyncio.to_thread(get_daily_challenge_status, ctx.author.id)
+    except Exception:
+        await send_error(ctx, "Database unavailable. Try again shortly.")
+        return
+    target = int(challenge["target"])
+    reset = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+    status = "Claimed" if claimed else ("Ready to claim" if progress >= target else "In progress")
+    embed = discord.Embed(
+        title=f"{Q_QUEST} Daily Challenge",
+        description=(
+            f"**{challenge['name']}**\n"
+            f"Progress: **{min(progress, target):,}/{target:,}**\n"
+            f"Reward: **{format_balance(challenge['reward'])}**\n"
+            f"Status: **{status}**\n"
+            f"Resets {discord_relative_time(reset)}"
+        ),
+        color=discord.Color.green(),
+    )
+    embed.set_footer(text=f"Use {getattr(ctx, 'prefix', '.')}dailychallenge claim when it is ready.")
+    await ctx.reply(embed=embed, mention_author=False, allowed_mentions=discord.AllowedMentions.none())
+
+@commands.command(name="gamebalance", aliases=["balancegames", "risks", "gamerisks"])
+async def gamebalance(ctx):
+    lines = []
+    for game_key in GAME_DISPLAY_NAMES:
+        lines.append(f"**{game_display_name(game_key)}** - Risk: **{risk_label(game_key)}**")
+    embed = discord.Embed(
+        title=f"{Q_WARNING} Game Balance",
+        description="Risk labels are the quick balance audit for current Quewo games. Higher risk means harder wins or larger loss swings.",
+        color=discord.Color.orange(),
+    )
+    add_split_embed_field(embed, "Games", lines, inline=False)
+    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
+@commands.command(name="limits", aliases=["limit", "safety", "safetylimits"])
+async def limits(ctx, member: discord.Member = None):
+    if not await ensure_db_ready(ctx):
+        return
+    user = member or ctx.author
+    try:
+        data = get_user(user.id)
+        loss = await asyncio.to_thread(daily_loss_status, user.id, int(data["balance"]), 0)
+        lottery_spend = await asyncio.to_thread(get_lottery_user_spend, ctx.guild.id if ctx.guild else None, user.id)
+    except Exception:
+        await send_error(ctx, "Database unavailable. Try again shortly.")
+        return
+    remaining = max(0, int(loss["hard_limit"]) - int(loss["lost_today"]))
+    embed = discord.Embed(
+        title=f"{Q_LIMITS} Safety Limits",
+        description=user_mention(user.id),
+        color=discord.Color.orange(),
+    )
+    embed.add_field(
+        name="Daily Gambling Loss",
+        value=(
+            f"Lost Today: **{format_balance(loss['lost_today'])}**\n"
+            f"Warning At: **{format_balance(loss['warning_limit'])}**\n"
+            f"Hard Limit: **{format_balance(loss['hard_limit'])}**\n"
+            f"Remaining Risk: **{format_balance(remaining)}**"
+        ),
+        inline=False,
+    )
+    if lottery_spend:
+        round_spent = int(lottery_spend["spent"] or 0)
+        spend_base = int(data["balance"]) + round_spent
+        max_round_spend = int(spend_base * LOTTERY_MAX_BALANCE_SPEND_RATIO)
+        embed.add_field(
+            name="Lottery Round",
+            value=(
+                f"Tickets: **{int(lottery_spend['tickets'] or 0):,}**\n"
+                f"Spent: **{format_balance(round_spent)}**\n"
+                f"Limit: **{format_balance(max_round_spend)}**"
+            ),
+            inline=False,
+        )
+    else:
+        embed.add_field(name="Lottery Round", value="No current lottery tickets in this server.", inline=False)
+    embed.add_field(name="Max Normal Bet", value=format_balance(MAX_BET), inline=True)
+    embed.add_field(name="Gambling Cooldown", value=plural_unit(COOLDOWN_SECS, "second"), inline=True)
+    await ctx.reply(embed=embed, mention_author=False, allowed_mentions=discord.AllowedMentions.none())
+
+@commands.command(name="gamehistory", aliases=["history", "ghistory", "recentgames"])
+async def gamehistory(ctx, member: discord.Member = None):
+    if not await ensure_db_ready(ctx):
+        return
+    user = member or ctx.author
+    try:
+        rows = await asyncio.to_thread(get_game_history, user.id, 12)
+    except Exception:
+        await send_error(ctx, "Database unavailable. Try again shortly.")
+        return
+    embed = discord.Embed(
+        title=f"{Q_HISTORY} Game History",
+        description=user_mention(user.id),
+        color=discord.Color.blurple(),
+    )
+    if not rows:
+        embed.add_field(name="Recent", value="No tracked game history yet.", inline=False)
+    else:
+        lines = []
+        for row in rows:
+            ts = row["created_at"]
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            result = "Win" if row["won"] is True else ("Loss" if row["won"] is False else "Push")
+            net = int(row["net_amount"] or 0)
+            sign = "+" if net > 0 else ""
+            lines.append(
+                f"**{game_display_name(row['game_key'])}** - {result} `{sign}{net:,}` {CURRENCY_EMOJI} <t:{int(ts.timestamp())}:R>"
+            )
+        add_split_embed_field(embed, "Recent", lines, inline=False)
+    await ctx.reply(embed=embed, mention_author=False, allowed_mentions=discord.AllowedMentions.none())
+
+@commands.command(name="economyaudit", aliases=["audit", "qaudit", "econaudit"])
+async def economyaudit(ctx):
+    if not await ensure_db_ready(ctx):
+        return
+    if not has_economy_owner_power(ctx.author.id, ctx.guild):
+        await ctx.send(f"{Q_DENIED} Server owner or admin only.")
+        return
+    try:
+        stats = await asyncio.to_thread(get_economy_audit)
+    except Exception:
+        await send_error(ctx, "Database unavailable. Try again shortly.")
+        return
+    net_gambling = stats["total_won"] - stats["total_lost"]
+    embed = discord.Embed(
+        title=f"{Q_AUDIT} Economy Audit",
+        description="Money flow, risk, and balancing signals.",
+        color=discord.Color.gold(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.add_field(name="Money Supply", value=format_balance(stats["total_balance"]), inline=True)
+    embed.add_field(name="Total Earned", value=format_balance(stats["total_earned"]), inline=True)
+    embed.add_field(name="Net Gambling", value=format_balance(net_gambling), inline=True)
+    embed.add_field(name="Lost Today", value=format_balance(stats["lost_today"]), inline=True)
+    embed.add_field(name="24h Transactions", value=f"{stats['transactions_24h']:,}", inline=True)
+    embed.add_field(name="24h Net Tx Amount", value=format_balance(stats["transaction_amount_24h"]), inline=True)
+    tx = stats["transaction_totals"]
+    tracked_sink = abs(tx.get("shop_purchase", 0)) + tx.get("transfer_tax", 0) + tx.get("lottery_house_cut", 0)
+    embed.add_field(name="Tracked Taxes / Payments", value=format_balance(tracked_sink), inline=True)
+    embed.add_field(name="Lottery Pots", value=format_balance(stats["lottery_pots"]), inline=True)
+    embed.add_field(name="Lottery Tickets", value=f"{stats['lottery_tickets']:,}", inline=True)
+    game_lines = []
+    for row in stats["games"]:
+        played = int(row["played"] or 0)
+        wins = int(row["wins"] or 0)
+        win_rate = wins / played * 100 if played else 0
+        profit = int(row["profit"] or 0)
+        game_lines.append(
+            f"**{game_display_name(row['game_key'])}** - {played:,} played, {win_rate:.1f}% win, profit {format_balance(profit)}"
+        )
+    add_split_embed_field(embed, "Game Signals", game_lines or ["No game stats yet."], inline=False)
+    warnings = []
+    supply = max(1, int(stats["total_balance"] or 0))
+    if stats["lost_today"] > supply * 0.08:
+        warnings.append(f"{Q_WARNING} Daily gambling losses are high versus current supply.")
+    if abs(stats["transaction_amount_24h"]) > supply * 0.15:
+        warnings.append(f"{Q_WARNING} 24h transaction flow is high versus current supply.")
+    for row in stats["games"]:
+        played = int(row["played"] or 0)
+        profit = int(row["profit"] or 0)
+        if played >= 50 and profit > 0:
+            warnings.append(f"{Q_WARNING} {game_display_name(row['game_key'])} is net-positive for players; review odds.")
+        if len(warnings) >= 4:
+            break
+    add_split_embed_field(embed, "Warnings", warnings or [f"{Q_SUCCESS} No obvious audit warnings."], inline=False)
+    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
+@commands.command(name="guide", aliases=["start", "begin", "gettingstarted"])
+async def guide(ctx):
+    prefix = getattr(ctx, "prefix", ".")
+    embed = discord.Embed(
+        title=f"{Q_BOOK} ProQue Guide",
+        description="Quick path for new users.",
+        color=discord.Color.blurple(),
+    )
+    embed.add_field(
+        name="Earn",
+        value=f"`{prefix}daily`, `{prefix}weekly`, `{prefix}monthly`, chat XP, Flag Quiz, Dungeon, quests, and achievements.",
+        inline=False,
+    )
+    embed.add_field(
+        name="Play",
+        value=f"`{prefix}games` for filters. Start safe with `{prefix}dungeon`, `{prefix}flagquiz`, or small bets.",
+        inline=False,
+    )
+    embed.add_field(
+        name="Spend",
+        value=f"`{prefix}shop` for boosts, `{prefix}inventory` for owned items, `{prefix}setbadge` for profile badges.",
+        inline=False,
+    )
+    embed.add_field(
+        name="Stay Safe",
+        value=f"`{prefix}limits` shows daily gambling risk, lottery spend, max bet, and cooldowns.",
+        inline=False,
+    )
+    embed.set_footer(text=f"More: {prefix}econhelp, {prefix}help, {prefix}explain <command>")
+    await ctx.reply(embed=embed, mention_author=False, allowed_mentions=discord.AllowedMentions.none())
+
 
 # MINESWEEPER
 # =====================
@@ -7887,6 +8728,9 @@ async def minesweeper(ctx, amount: str):
 
     if amount > data['balance'] and not has_economy_owner_power(ctx.author.id, ctx.guild):
         await ctx.send(f"{Q_DENIED} You only have {format_balance(data['balance'])}")
+        return
+
+    if not await check_daily_loss_limit(ctx, data, amount):
         return
 
     class SizeView(discord.ui.View):
@@ -8183,6 +9027,9 @@ async def wheel(ctx, amount: str):
         await ctx.send(f"{Q_DENIED} You only have {format_balance(data['balance'])}")
         return
 
+    if not await check_daily_loss_limit(ctx, data, amount):
+        return
+
     # Pre-select outcome
     if random.random() < active_luck_bonus(data):
         winning_segments = [
@@ -8339,6 +9186,12 @@ EXPLANATIONS = {
     "config": "Alias for `.settings`. Opens the server setup dashboard.",
     "games": "Shows the bot's games, short rules, bet support, and how to start each one.",
     "gamelist": "Alias for `.games`. Shows available games.",
+    "flagquiz": "Starts a flag quiz with solo/public mode and 10, 20, 50, or all flags.",
+    "flags": "Alias for `.flagquiz`. Starts a flag quiz.",
+    "fq": "Alias for `.flagquiz`. Starts a flag quiz.",
+    "flagstats": "Shows tracked Flag Quiz attempts, correct flags, and rewards.",
+    "flagscore": "Alias for `.flagstats`. Shows Flag Quiz stats.",
+    "fqstats": "Alias for `.flagstats`. Shows Flag Quiz stats.",
     "bal": "Shows balance, streaks, and total earned/won/lost. Use `.bal` or `.bal @user`.",
     "balance": "Alias for `.bal`. Shows balance, streaks, and total earned/won/lost.",
     "cash": "Alias for `.bal`. Shows balance, streaks, and total earned/won/lost.",
@@ -8348,8 +9201,23 @@ EXPLANATIONS = {
     "inventory": "Opens a paged inventory UI for owned items, active effects, passive bonuses, and item categories.",
     "inv": "Alias for `.inventory`. Opens the paged Quewo inventory UI.",
     "items": "Alias for `.inventory`. Opens the paged Quewo inventory UI.",
+    "streaks": "Shows daily, weekly, monthly, and gambling streaks with next claim times.",
+    "streak": "Alias for `.streaks`. Shows streaks.",
+    "claimstreaks": "Alias for `.streaks`. Shows streaks.",
+    "guide": "Shows a quick getting-started guide for Quewo.",
+    "start": "Alias for `.guide`. Shows the getting-started guide.",
+    "begin": "Alias for `.guide`. Shows the getting-started guide.",
+    "gettingstarted": "Alias for `.guide`. Shows the getting-started guide.",
     "quests": "Opens your quests UI with main, daily, weekly, and monthly quests plus claim/refresh buttons.",
+    "dailychallenge": "Shows today's Quewo challenge and lets you claim its reward when finished.",
+    "challenge": "Alias for `.dailychallenge`. Shows today's Quewo challenge.",
+    "dc": "Alias for `.dailychallenge`. Shows today's Quewo challenge.",
+    "qchallenge": "Alias for `.dailychallenge`. Shows today's Quewo challenge.",
     "shop": "Opens the categorized Quewo shop UI. Select an item, press Buy, then enter quantity. The shop refreshes after purchases and while the UI is open.",
+    "limits": "Shows daily gambling loss limits, remaining risk, lottery spend, max bet, and cooldown.",
+    "limit": "Alias for `.limits`. Shows safety limits.",
+    "safety": "Alias for `.limits`. Shows safety limits.",
+    "safetylimits": "Alias for `.limits`. Shows safety limits.",
     "cooldowns": "Shows daily, weekly, monthly, and gambling cooldowns. Use `.cooldowns` or `.cd`.",
     "transactions": "Shows recent Quewo transactions. Use `.transactions` or `.transactions @user`.",
     "lottery": "Shows and refreshes the lottery ticket panel. First server run sets channel and draw period.",
@@ -8405,6 +9273,22 @@ EXPLANATIONS = {
     "gstats": "Alias for `.gamestats`. Shows tracked game stats.",
     "gamestat": "Alias for `.gamestats`. Shows tracked game stats.",
     "playstats": "Alias for `.gamestats`. Shows tracked game stats.",
+    "achievements": "Shows hard Quewo game badges, progress, and rewards.",
+    "achievement": "Alias for `.achievements`. Shows Quewo badges.",
+    "badges": "Alias for `.achievements`. Shows Quewo badges.",
+    "achs": "Alias for `.achievements`. Shows Quewo badges.",
+    "setbadge": "Equips up to 3 earned badges on your profile.",
+    "badge": "Alias for `.setbadge`. Equips profile badges.",
+    "equipbadge": "Alias for `.setbadge`. Equips profile badges.",
+    "profilebadge": "Alias for `.setbadge`. Equips profile badges.",
+    "gamebalance": "Shows the current game risk labels in one audit page.",
+    "balancegames": "Alias for `.gamebalance`. Shows game risk labels.",
+    "risks": "Alias for `.gamebalance`. Shows game risk labels.",
+    "gamerisks": "Alias for `.gamebalance`. Shows game risk labels.",
+    "gamehistory": "Shows recent tracked game results.",
+    "history": "Alias for `.gamehistory`. Shows recent game results.",
+    "ghistory": "Alias for `.gamehistory`. Shows recent game results.",
+    "recentgames": "Alias for `.gamehistory`. Shows recent game results.",
     "ms": f"Pick a grid size, reveal safe tiles {Q_XP}, avoid bombs {Q_MINE}.",
     "minesweeper": f"Pick a grid size, reveal safe tiles {Q_XP}, avoid bombs {Q_MINE}.",
     "minesweepeer": f"Pick a grid size, reveal safe tiles {Q_XP}, avoid bombs {Q_MINE}.",
@@ -8415,6 +9299,10 @@ EXPLANATIONS = {
     "qstats": "Admin-power command. Shows global Quewo economy health, money supply, gambling totals, lotteries, and tracked taxes/payments.",
     "economystats": "Alias for `.qstats`. Shows global Quewo economy health.",
     "qstatus": "Alias for `.qstats`. Shows global Quewo economy health.",
+    "economyaudit": "Admin-power command. Shows economy audit signals, game profit rates, daily losses, taxes, and money flow.",
+    "audit": "Alias for `.economyaudit`. Shows economy audit signals.",
+    "qaudit": "Alias for `.economyaudit`. Shows economy audit signals.",
+    "econaudit": "Alias for `.economyaudit`. Shows economy audit signals.",
     "add": "Admin-power command. Adds quesos. Target and amount can be in either order.",
     "remove": "Admin-power command. Removes quesos. Target and amount can be in either order.",
     "addtick": "Superowner command. Adds free lottery tickets. Target and tickets can be in either order.",
@@ -8502,12 +9390,16 @@ DETAILED_EXPLANATIONS = {
     "level": f"Alias for `.profile`. Shows level, current XP toward the next level, balance, net gambling result, and shop items. Level rewards start at {format_balance(LEVEL_REWARD_BASE)}.",
     "lvl": f"Alias for `.profile`. Shows level, current XP toward the next level, balance, net gambling result, and shop items. Level rewards start at {format_balance(LEVEL_REWARD_BASE)}.",
     "inventory": "Opens a paged inventory UI. Overview shows balance, item count, active temporary effects, passive bonuses, and owned categories. Other pages show Active Effects, Owned Items, or a full category list with descriptions and owned counts.",
+    "streaks": "Shows claim streaks and live next-claim timestamps for daily, weekly, and monthly. Also shows the active universal gambling win streak and current payout multiplier.",
+    "guide": "New-user guide for earning, playing, spending, and safety commands. Use it when someone joins and does not know where to start.",
     "inv": "Alias for `.inventory`. Opens the paged Quewo inventory UI.",
     "items": "Alias for `.inventory`. Opens the paged Quewo inventory UI.",
     "quests": "Main quests track long streak achievements: 30 daily claims, 8 weekly claims, and 5 monthly claims. Daily, weekly, and monthly random quests rotate by period and can be claimed from the `.quests` UI.",
+    "dailychallenge": "One rotating daily challenge is active per day. Game wins update it automatically, and Flag Quiz point challenges count each correct flag. Use `.dailychallenge claim` when your progress reaches the target.",
     "shop": "Opens an interactive categorized Quewo shop. Select an item, press Buy, then enter the quantity. The bot checks your balance, item limit, and total price before purchasing.",
     "cooldowns": "Shows daily, weekly, monthly, and active gambling command cooldowns in one place.",
     "transactions": "Shows recent money movement including shop purchases, quest rewards, level rewards, transfer tax, admin changes, and lottery activity.",
+    "limits": f"Shows your daily gambling loss safety limit. The bot warns near {int(DAILY_LOSS_WARNING_RATIO * 100)}% and blocks bets before daily losses exceed {int(DAILY_LOSS_HARD_RATIO * 100)}% of your current daily gambling bankroll. It also shows lottery round spending where available.",
     "lottery": f"Server lottery. First run asks the server owner or an admin for a channel and draw period, locks the channel, and posts a persistent ticket panel with buy buttons. Existing active lottery data is preserved when the panel is refreshed. The prize is the full current pot. Tickets cost {format_balance(LOTTERY_TICKET_COST)} and {int(LOTTERY_HOUSE_CUT * 100)}% is burned as a money sink. Users can spend up to {int(LOTTERY_MAX_BALANCE_SPEND_RATIO * 100)}% of their lottery-adjusted balance per round.",
     "editlottery": "Server owner/admin command. Use `.editlottery price 250000`, `.editlottery duration 12h`, `.editlottery cut 5`, or `.editlottery channel #lottery`. Duration resets the next draw timer. Channel posts a fresh lottery panel. Updates ping the lottery participant role.",
     "stoplottery": "Server owner/admin command. Use `.stoplottery` to remove the lottery setup for this server, clear the current pot/tickets, and delete the participant role if the bot can. It leaves channels and panel messages alone.",
@@ -8543,6 +9435,10 @@ DETAILED_EXPLANATIONS = {
     "dng": "Alias for `.dungeon`. Free solo adventure with choices, HP, keys, relics, and a clear reward.",
     "qdungeon": "Alias for `.dungeon`. Free solo adventure with choices, HP, keys, relics, and a clear reward.",
     "gamestats": "Shows tracked game stats for you or a mentioned user: total played, wins, profit, per-game records, and hard game badges. Example: `.gamestats` or `.gamestats @user`.",
+    "achievements": "Shows hard game badge progress and rewards. Badges are intentionally long-term, like 100 wins in a game or 1,000 total games played. Earned badge rewards are paid automatically when the tracked game result completes.",
+    "setbadge": "Use `.setbadge` with no arguments to list earned badge IDs. Use `.setbadge <badge_id> [badge_id] [badge_id]` to show up to 3 earned badges on `.profile`, or `.setbadge clear` to remove them.",
+    "gamebalance": "Lists every Quewo game with its current risk label. Use this as the quick balance audit before changing odds, multipliers, or max-risk behavior.",
+    "gamehistory": "Shows your recent tracked game results from the shared game history table. Newer and tracked games appear here with result, net amount, and timestamp.",
     "ms": f"Choose 3x3, 4x4, or 5x5, then reveal tiles. Hidden tiles show as {Q_MS_HIDDEN}, safe gems show as {Q_XP}, bombs show as {Q_MINE}, and your cursor shows as {Q_MS_CURSOR}. 3x3 has 1 bomb, 4x4 has 3 bombs, and 5x5 has 5 bombs. Reveal every safe tile to win. The final multiplier starts at ×2.00 and each safe reveal adds +0.15, then the universal gambling streak bonus applies. Hitting a bomb or timing out loses the bet and resets the streak.",
     "minesweeper": f"Choose 3x3, 4x4, or 5x5, then reveal tiles. Hidden tiles show as {Q_MS_HIDDEN}, safe gems show as {Q_XP}, bombs show as {Q_MINE}, and your cursor shows as {Q_MS_CURSOR}. 3x3 has 1 bomb, 4x4 has 3 bombs, and 5x5 has 5 bombs. Reveal every safe tile to win. The final multiplier starts at ×2.00 and each safe reveal adds +0.15, then the universal gambling streak bonus applies. Hitting a bomb or timing out loses the bet and resets the streak.",
     "minesweepeer": f"Choose 3x3, 4x4, or 5x5, then reveal tiles. Hidden tiles show as {Q_MS_HIDDEN}, safe gems show as {Q_XP}, bombs show as {Q_MINE}, and your cursor shows as {Q_MS_CURSOR}. 3x3 has 1 bomb, 4x4 has 3 bombs, and 5x5 has 5 bombs. Reveal every safe tile to win. The final multiplier starts at ×2.00 and each safe reveal adds +0.15, then the universal gambling streak bonus applies. Hitting a bomb or timing out loses the bet and resets the streak.",
@@ -8551,6 +9447,7 @@ DETAILED_EXPLANATIONS = {
     "lb": "Shows a paginated leaderboard. Use the buttons to switch between local server rankings and global all-server rankings. Use the ranking type menu to sort by quesos, level, earnings, total won, total lost, net gambling, or messages. The embed also shows your rank for the selected scope and type.",
     "leaderboard": "Alias for `.lb`. Shows local/global paginated rankings with selectable ranking types and your rank.",
     "qstats": "Admin-power command for checking the global Quewo economy. It shows total money supply, total earned, gambling won/lost/net, active lotteries, lottery pots, ticket count, tracked taxes/payments, richest user, and tracked messages.",
+    "economyaudit": "Admin-power economy audit page. It adds balancing signals on top of qstats: daily losses, recent transaction volume, tracked sink/payment totals, and per-game play/win/profit signals sorted by biggest impact.",
     "add": "Admin-power command. Adds new quesos to a user. `.add @user <amount>` and `.add <amount> @user` both work. Superowner can use @everyone or a role. It does not support `all`.",
     "remove": "Admin-power command. Removes quesos from a user. `.remove @user <amount>` and `.remove <amount> @user` both work. Use `all` to remove their full balance.",
     "addtick": "Superowner-only lottery admin command. Adds free entries to the current lottery. `.addtick @user <tickets>` and `.addtick <tickets> @user` both work, including roles and @everyone.",
@@ -8578,6 +9475,8 @@ DETAILED_EXPLANATIONS = {
     "settings": "Admin-power server setup dashboard. It summarizes prefix, logs, reaction logs, birthday channel, activity reports, lottery, and disabled command count. Buttons let admins refresh the dashboard, change the prefix, rerun log setup, or set birthdays/activity to the current channel.",
     "explain": "Shows detailed help for a command, including usage, aliases, short explanation, and longer details when available. Example: `.explain slots`.",
     "games": "Shows a central game menu with quick usage for Tic Tac Toe, Connect 4, chess, Tower, Vault, Memory, Minesweeper, and Picker. The select menu gives the start command for each game.",
+    "flagquiz": "Starts a photo-based flag quiz. Choose Solo or Public Channel, then choose 10, 20, 50, or all 197 flags. Each flag gives 2 tries, each guess has 30 seconds, small typos are accepted, and correct answers pay 20,000 quesos each. Wrong first guesses can request a hint.",
+    "flagstats": "Shows a user's Flag Quiz tracking: quizzes played, estimated correct flags from rewards earned, and total flag rewards.",
     "ttt": "Challenge a user to Tic Tac Toe. The opponent accepts the game first. If the challenger enables a bet and enters an amount, the opponent gets a second accept/decline prompt for that exact bet before the game starts.",
     "c4": "Challenge a user to Connect 4. The opponent accepts the game first. If the challenger enables a bet and enters an amount, the opponent gets a second accept/decline prompt for that exact bet before the game starts. The board shows column numbers below the grid.",
     "chess": "Challenge a user to chess. The opponent accepts first. If the challenger enables a bet and enters an amount, the opponent gets a second accept/decline prompt. The board uses dropdown UI controls: choose one of your pieces, choose a legal move, then confirm or cancel. Each player has a live 10-minute total clock, and the board flips to the current player's perspective. Movement legality, check, checkmate, stalemate, draw detection, and time-loss handling are enforced.",
@@ -8587,7 +9486,8 @@ DETAILED_EXPLANATIONS = {
 }
 
 ECONHELP_COMMANDS = [
-    ("Core", ["bal", "profile", "inventory", "quests", "shop", "cooldowns", "transactions", "lb", "gamestats", "qstats"]),
+    ("Core", ["guide", "bal", "profile", "inventory", "quests", "dailychallenge", "streaks", "shop", "cooldowns", "transactions", "limits", "lb"]),
+    ("Stats", ["gamestats", "achievements", "setbadge", "gamebalance", "gamehistory", "qstats", "economyaudit"]),
     ("Claims", ["daily", "weekly", "monthly"]),
     ("Lottery", ["lottery", "buytick", "lotterystats", "editlottery", "stoplottery"]),
     ("Gambling", ["cf", "roulette", "slots", "blackjack", "scratch", "tower", "vault", "memory", "cardladder", "lockpick", "heist", "diceduel", "cases", "plinko", "luckynumber", "jackpotspin", "dungeon", "ms", "wheel"]),
@@ -8757,9 +9657,9 @@ async def setup(bot_ref, log_callback=None):
     print(f"Quewo db_ready = {db_ready}")
 
     economy_commands = [
-        bal, profile, inventory, quests, shop, cooldowns, transactions, lottery, editlottery, stoplottery, lotterystats, buytick,
+        bal, profile, inventory, quests, dailychallenge, streaks, guide, shop, cooldowns, transactions, limits, lottery, editlottery, stoplottery, lotterystats, buytick,
         daily, weekly, monthly, gamble, roulette, slots, blackjack,
-        scratch, tower, vault, memory_game, card_ladder, lockpick, heist, dice_duel, cases, plinko, lucky_number, jackpot_spin, dungeon, minesweeper, wheel, give, lb, gamestats, qstats, add, remove, addtick, settick, setquesos, econhelp, explain
+        scratch, tower, vault, memory_game, card_ladder, lockpick, heist, dice_duel, cases, plinko, lucky_number, jackpot_spin, dungeon, minesweeper, wheel, give, lb, gamestats, achievements, setbadge, gamebalance, gamehistory, qstats, economyaudit, add, remove, addtick, settick, setquesos, econhelp, explain
     ]
     for command in economy_commands:
         if bot.get_command(command.name):
