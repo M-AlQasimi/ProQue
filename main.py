@@ -2942,6 +2942,7 @@ def parse_flag_countries():
 
 FLAG_COUNTRIES = parse_flag_countries()
 FLAG_QUIZ_ROUND_OPTIONS = {10: "10 Flags", 20: "20 Flags", 50: "50 Flags", len(FLAG_COUNTRIES): f"All ({len(FLAG_COUNTRIES)})"}
+FLAG_QUIZ_REWARD_PER_POINT = 20_000
 active_flag_quizzes = set()
 
 def parse_flag_round_count(value):
@@ -2997,18 +2998,60 @@ def flag_answer_matches(guess, country):
             return True
     return False
 
-def build_flag_quiz_embed(country, index, total, points, attempt):
+def flag_country_hint(country):
+    name = country["name"]
+    parts = []
+    for word in re.split(r"(\s+|-)", name):
+        if not word or word.isspace() or word == "-":
+            parts.append(word)
+        elif len(word) <= 2:
+            parts.append(word[0] + "_" * (len(word) - 1))
+        else:
+            parts.append(word[0] + "_" * (len(word) - 2) + word[-1])
+    return "".join(parts)
+
+def build_flag_quiz_embed(country, index, total, score_text, mode, hint=None, status=None):
     embed = discord.Embed(
         title=f"Flag Quiz {index}/{total}",
         description=(
-            f"Try: **{attempt}/2** | Points: **{points}**\n"
-            "Type the country name. Mini typos are accepted."
+            f"Mode: **{mode.title()}** | {score_text}\n"
+            "Type the country name. Mini typos are accepted.\n"
+            "Each user gets **2 tries** per flag."
         ),
         color=discord.Color.blurple()
     )
+    if hint:
+        embed.add_field(name="Hint", value=f"`{hint}`", inline=False)
+    if status:
+        embed.add_field(name="Status", value=status, inline=False)
     embed.set_image(url=flag_image_url(country["code"]))
     embed.set_footer(text="Type skip to skip, or stop to finish early.")
     return embed
+
+class FlagQuizModeButton(Button):
+    def __init__(self, mode):
+        super().__init__(label=mode.title(), style=discord.ButtonStyle.primary if mode == "solo" else discord.ButtonStyle.success)
+        self.mode = mode
+
+    async def callback(self, interaction):
+        view = self.view
+        if interaction.user.id != view.author_id:
+            return await interaction.response.send_message("Use your own flag quiz menu.", ephemeral=True)
+        view.mode = self.mode
+        if view.rounds in FLAG_QUIZ_ROUND_OPTIONS:
+            for item in view.children:
+                item.disabled = True
+            await interaction.response.edit_message(
+                content=f"{economy_q_game_win} Starting **{view.rounds}** flag quiz rounds in **{self.mode.title()}** mode.",
+                view=view
+            )
+            await run_flag_quiz(view.ctx, view.rounds, self.mode)
+            return
+        view.show_round_buttons()
+        await interaction.response.edit_message(
+            content=f"{economy_q_game_win} **FLAG QUIZ**\nMode: **{self.mode.title()}**\nChoose quiz length.",
+            view=view
+        )
 
 class FlagQuizRoundsButton(Button):
     def __init__(self, rounds):
@@ -3021,87 +3064,165 @@ class FlagQuizRoundsButton(Button):
             return await interaction.response.send_message("Use your own flag quiz menu.", ephemeral=True)
         for item in view.children:
             item.disabled = True
-        await interaction.response.edit_message(content=f"{economy_q_game_win} Starting **{self.rounds}** flag quiz rounds.", view=view)
-        await run_flag_quiz(view.ctx, self.rounds)
+        await interaction.response.edit_message(content=f"{economy_q_game_win} Starting **{self.rounds}** flag quiz rounds in **{view.mode.title()}** mode.", view=view)
+        await run_flag_quiz(view.ctx, self.rounds, view.mode)
 
 class FlagQuizSetupView(View):
-    def __init__(self, ctx):
+    def __init__(self, ctx, rounds=None):
         super().__init__(timeout=60)
         self.ctx = ctx
         self.author_id = ctx.author.id
+        self.mode = "solo"
+        self.rounds = rounds
+        self.add_item(FlagQuizModeButton("solo"))
+        self.add_item(FlagQuizModeButton("public"))
+
+    def show_round_buttons(self):
+        self.clear_items()
         for rounds in FLAG_QUIZ_ROUND_OPTIONS:
             self.add_item(FlagQuizRoundsButton(rounds))
+        if self.rounds in FLAG_QUIZ_ROUND_OPTIONS:
+            for item in self.children:
+                if isinstance(item, FlagQuizRoundsButton) and item.rounds != self.rounds:
+                    item.disabled = True
 
-async def run_flag_quiz(ctx, rounds):
-    quiz_key = (ctx.channel.id, ctx.author.id)
+def flag_quiz_score_text(scores, author_id, mode):
+    if mode == "solo":
+        return f"Points: **{scores.get(author_id, 0)}**"
+    if not scores:
+        return "No points yet."
+    top = sorted(scores.items(), key=lambda item: item[1], reverse=True)[:3]
+    return "Top: " + " | ".join(f"<@{user_id}> **{points}**" for user_id, points in top)
+
+async def run_flag_quiz(ctx, rounds, mode="solo"):
+    quiz_key = (ctx.channel.id, "public" if mode == "public" else ctx.author.id)
     if quiz_key in active_flag_quizzes:
         return await ctx.send(f"{economy_q_warning} You already have a flag quiz running in this channel.")
     active_flag_quizzes.add(quiz_key)
-    points = 0
-    answered = 0
+    scores = {}
+    answered = {}
     countries = random.sample(FLAG_COUNTRIES, min(rounds, len(FLAG_COUNTRIES)))
     try:
-        await ctx.send(f"{economy_q_game_win} **FLAG QUIZ**\nType the country name. You get **2 tries** per flag. Type `skip` or `stop` anytime.")
+        await ctx.send(
+            f"{economy_q_game_win} **FLAG QUIZ**\n"
+            f"Mode: **{mode.title()}** | Reward: **{economy_format_balance(FLAG_QUIZ_REWARD_PER_POINT)} per point**\n"
+            "Type the country name. Everyone gets **2 tries** per flag in public mode. Type `skip` or `stop` anytime.",
+            allowed_mentions=discord.AllowedMentions.none()
+        )
         for index, country in enumerate(countries, 1):
-            guessed_correctly = False
+            prompt = await ctx.send(embed=build_flag_quiz_embed(
+                country,
+                index,
+                len(countries),
+                flag_quiz_score_text(scores, ctx.author.id, mode),
+                mode,
+            ))
             stopped = False
-            for attempt in range(1, 3):
-                await ctx.send(embed=build_flag_quiz_embed(country, index, len(countries), points, attempt))
-
+            skipped = False
+            winner_id = None
+            tries_by_user = {}
+            end_time = time.monotonic() + 35
+            while time.monotonic() < end_time and winner_id is None and not skipped:
+                remaining = max(1, end_time - time.monotonic())
                 def check(message):
-                    return message.author.id == ctx.author.id and message.channel.id == ctx.channel.id
-
+                    if message.channel.id != ctx.channel.id or message.author.bot:
+                        return False
+                    if mode == "solo" and message.author.id != ctx.author.id:
+                        return False
+                    return True
                 try:
-                    guess_message = await bot.wait_for("message", timeout=25, check=check)
+                    guess_message = await bot.wait_for("message", timeout=remaining, check=check)
                 except asyncio.TimeoutError:
-                    await ctx.send(
-                        f"{economy_q_timeout} Time on try **{attempt}/2**."
-                        + (f" Answer: **{country['name']}**\nScore: **{points}/{index}**" if attempt == 2 else " Try again.")
+                    await prompt.edit(
+                        embed=build_flag_quiz_embed(
+                            country,
+                            index,
+                            len(countries),
+                            flag_quiz_score_text(scores, ctx.author.id, mode),
+                            mode,
+                            hint=flag_country_hint(country),
+                            status=f"{economy_q_timeout} Time. Answer: **{country['name']}**",
+                        )
                     )
-                    if attempt == 2:
-                        break
-                    continue
+                    break
 
                 guess = guess_message.content.strip()
                 if guess.casefold() == "stop":
+                    if mode == "public" and guess_message.author.id != ctx.author.id:
+                        continue
                     stopped = True
                     break
                 if guess.casefold() == "skip":
-                    await ctx.send(f"{economy_q_warning} Skipped. Answer: **{country['name']}**\nScore: **{points}/{index}**")
+                    if mode == "public" and guess_message.author.id != ctx.author.id:
+                        continue
+                    skipped = True
+                    await prompt.edit(
+                        embed=build_flag_quiz_embed(
+                            country,
+                            index,
+                            len(countries),
+                            flag_quiz_score_text(scores, ctx.author.id, mode),
+                            mode,
+                            status=f"{economy_q_warning} Skipped. Answer: **{country['name']}**",
+                        )
+                    )
                     break
-                answered += 1
+                user_id = guess_message.author.id
+                if tries_by_user.get(user_id, 0) >= 2:
+                    continue
+                tries_by_user[user_id] = tries_by_user.get(user_id, 0) + 1
+                answered[user_id] = answered.get(user_id, 0) + 1
                 if flag_answer_matches(guess, country):
-                    points += 1
-                    guessed_correctly = True
-                    await ctx.send(f"{economy_q_accept} Correct: **{country['name']}**\nScore: **{points}/{index}**")
+                    scores[user_id] = scores.get(user_id, 0) + 1
+                    winner_id = user_id
+                    await ctx.send(
+                        f"{economy_q_accept} <@{user_id}> got it: **{country['name']}**\n"
+                        f"{flag_quiz_score_text(scores, ctx.author.id, mode)}",
+                        allowed_mentions=discord.AllowedMentions.none()
+                    )
                     break
-                if attempt == 1:
-                    await ctx.send(f"{economy_q_reject} Not quite. Try again. **1 try left**.")
+                status = f"{economy_q_reject} <@{user_id}> missed. "
+                if tries_by_user[user_id] == 1:
+                    status += "**1 try left.**"
                 else:
-                    await ctx.send(f"{economy_q_reject} Wrong. Answer: **{country['name']}**\nScore: **{points}/{index}**")
+                    status += "**No tries left for this flag.**"
+                await prompt.edit(
+                    embed=build_flag_quiz_embed(
+                        country,
+                        index,
+                        len(countries),
+                        flag_quiz_score_text(scores, ctx.author.id, mode),
+                        mode,
+                        hint=flag_country_hint(country),
+                        status=status,
+                    ),
+                    allowed_mentions=discord.AllowedMentions.none()
+                )
             if stopped:
                 break
-            if guessed_correctly:
+            if winner_id:
                 await asyncio.sleep(0.4)
 
-        reward = points * 25_000
-        reward_line = "No reward earned."
-        if reward > 0:
+        reward_lines = []
+        if not scores:
+            reward_lines.append("No reward earned.")
+        for user_id, points in sorted(scores.items(), key=lambda item: item[1], reverse=True):
+            reward = points * FLAG_QUIZ_REWARD_PER_POINT
             try:
-                old_balance, new_balance = await asyncio.to_thread(economy_add_user_balance, ctx.author.id, reward, reward)
-                reward_line = (
-                    f"Reward: **{economy_format_balance(reward)}**\n"
-                    f"Balance: **{economy_format_balance(old_balance)}** -> **{economy_format_balance(new_balance)}**"
+                old_balance, new_balance = await asyncio.to_thread(economy_add_user_balance, user_id, reward, reward)
+                reward_lines.append(
+                    f"<@{user_id}>: **{points}** point(s), **{economy_format_balance(reward)}** "
+                    f"({economy_format_balance(old_balance)} -> {economy_format_balance(new_balance)})"
                 )
             except Exception as e:
-                print(f"Flag quiz reward failed for {ctx.author.id}: {type(e).__name__} - {e}")
-                reward_line = "Reward could not be paid because the economy database is unavailable."
-        accuracy = (points / max(1, len(countries))) * 100
+                print(f"Flag quiz reward failed for {user_id}: {type(e).__name__} - {e}")
+                reward_lines.append(f"<@{user_id}>: **{points}** point(s), reward could not be paid.")
+        total_points = sum(scores.values())
+        accuracy = (total_points / max(1, len(countries))) * 100
         await ctx.send(
             f"{economy_q_game_win} **FLAG QUIZ FINISHED**\n"
-            f"Score: **{points}/{len(countries)}** ({accuracy:.1f}%)\n"
-            f"Answered: **{answered}**\n"
-            f"{reward_line}",
+            f"Mode: **{mode.title()}** | Total Score: **{total_points}/{len(countries)}** ({accuracy:.1f}%)\n"
+            + "\n".join(reward_lines),
             allowed_mentions=discord.AllowedMentions.none()
         )
     finally:
@@ -3114,10 +3235,13 @@ async def flagquiz(ctx, rounds: str = None):
         return
     count = parse_flag_round_count(rounds)
     if count is not None:
-        return await run_flag_quiz(ctx, count)
+        return await ctx.send(
+            f"{economy_q_game_win} **FLAG QUIZ**\nChoose mode for **{count}** flag rounds.",
+            view=FlagQuizSetupView(ctx, count)
+        )
     prefix = prefix_for_guild(ctx.guild)
     await ctx.send(
-        f"{economy_q_game_win} **FLAG QUIZ**\nChoose quiz length, or use `{prefix}flagquiz 10`, `{prefix}flagquiz 20`, `{prefix}flagquiz 50`, or `{prefix}flagquiz all`.\nYou get **2 tries** per flag, and small typos are accepted.\nReward: **25,000 quesos per correct flag**.",
+        f"{economy_q_game_win} **FLAG QUIZ**\nChoose solo or public mode, then choose quiz length.\nYou can also use `{prefix}flagquiz 10`, `{prefix}flagquiz 20`, `{prefix}flagquiz 50`, or `{prefix}flagquiz all`.\nYou get **2 tries** per flag, and small typos are accepted.\nReward: **{economy_format_balance(FLAG_QUIZ_REWARD_PER_POINT)} per correct flag**.",
         view=FlagQuizSetupView(ctx)
     )
 
