@@ -1993,6 +1993,7 @@ COMMAND_EXAMPLE_OVERRIDES = {
     "editlottery": ".editlottery duration 12h",
     "enable": ".enable command",
     "find": ".find 885548126365171824",
+    "flagquiz": ".flagquiz",
     "fsleep": ".fsleep @user 1h",
     "give": ".give @user 1000",
     "giveaway": ".giveaway 10m prize",
@@ -2396,7 +2397,7 @@ HELP_CATEGORIES = {
         "heist", "diceduel", "cases", "plinko", "luckynumber", "jackpotspin", "dungeon", "ms", "wheel",
         "give", "lb", "gamestats", "qstats", "econhelp", "explain",
     ],
-    "Games": ["games", "ttt", "c4", "chess", "move", "resign", "q", "picker"],
+    "Games": ["games", "ttt", "c4", "chess", "move", "resign", "flagquiz", "q", "picker"],
     "Utility": ["help", "userinfo", "pfp", "calc", "define", "timer", "ctimer", "alarm", "poll", "epoll", "translate", "find"],
     "AI": ["ask", "generate", "analyse", "analyze"],
     "Server Tools": [
@@ -2657,6 +2658,7 @@ GAME_MENU = [
     ("Luck", "Lucky Number", "luckynumber", "`.luckynumber <amount>`", "Choose mode, range, and limited tries."),
     ("Luck", "Jackpot Spin", "jackpotspin", "`.jackpotspin <amount>`", "Pick a target, then spin up to 3 times."),
     ("Solo", "Dungeon", "dungeon", "`.dungeon`", "Free solo rooms with HP, keys, relics, and loot."),
+    ("Solo", "Flag Quiz", None, "`.flagquiz`", "Guess 10, 20, 50, or all 197 flags for points."),
     ("Utility", "Picker", None, "`.picker`", "Randomly picks from options."),
 ]
 
@@ -2712,6 +2714,371 @@ async def games_command(ctx):
     """Shows available games and how to start them."""
     prefix = prefix_for_guild(ctx.guild)
     await ctx.send(embed=games_embed(prefix), view=GamesView(ctx.author.id, prefix))
+
+FLAG_COUNTRY_ROWS = """
+AF|Afghanistan|
+AL|Albania|
+DZ|Algeria|
+AD|Andorra|
+AO|Angola|
+AG|Antigua and Barbuda|
+AR|Argentina|
+AM|Armenia|
+AU|Australia|
+AT|Austria|
+AZ|Azerbaijan|
+BS|Bahamas|
+BH|Bahrain|
+BD|Bangladesh|
+BB|Barbados|
+BY|Belarus|
+BE|Belgium|
+BZ|Belize|
+BJ|Benin|
+BT|Bhutan|
+BO|Bolivia|
+BA|Bosnia and Herzegovina|bosnia
+BW|Botswana|
+BR|Brazil|
+BN|Brunei|
+BG|Bulgaria|
+BF|Burkina Faso|
+BI|Burundi|
+CV|Cabo Verde|cape verde
+KH|Cambodia|
+CM|Cameroon|
+CA|Canada|
+CF|Central African Republic|car
+TD|Chad|
+CL|Chile|
+CN|China|
+CO|Colombia|
+KM|Comoros|
+CG|Congo|republic of the congo
+CR|Costa Rica|
+CI|Cote d'Ivoire|ivory coast
+HR|Croatia|
+CU|Cuba|
+CY|Cyprus|
+CZ|Czechia|czech republic
+CD|Democratic Republic of the Congo|dr congo, drc, congo kinshasa
+DK|Denmark|
+DJ|Djibouti|
+DM|Dominica|
+DO|Dominican Republic|
+EC|Ecuador|
+EG|Egypt|
+SV|El Salvador|
+GQ|Equatorial Guinea|
+ER|Eritrea|
+EE|Estonia|
+SZ|Eswatini|swaziland
+ET|Ethiopia|
+FJ|Fiji|
+FI|Finland|
+FR|France|
+GA|Gabon|
+GM|Gambia|the gambia
+GE|Georgia|
+DE|Germany|
+GH|Ghana|
+GR|Greece|
+GD|Grenada|
+GT|Guatemala|
+GN|Guinea|
+GW|Guinea-Bissau|guinea bissau
+GY|Guyana|
+HT|Haiti|
+HN|Honduras|
+HU|Hungary|
+IS|Iceland|
+IN|India|
+ID|Indonesia|
+IR|Iran|
+IQ|Iraq|
+IE|Ireland|
+IL|Israel|
+IT|Italy|
+JM|Jamaica|
+JP|Japan|
+JO|Jordan|
+KZ|Kazakhstan|
+KE|Kenya|
+KI|Kiribati|
+XK|Kosovo|
+KW|Kuwait|
+KG|Kyrgyzstan|
+LA|Laos|
+LV|Latvia|
+LB|Lebanon|
+LS|Lesotho|
+LR|Liberia|
+LY|Libya|
+LI|Liechtenstein|
+LT|Lithuania|
+LU|Luxembourg|
+MG|Madagascar|
+MW|Malawi|
+MY|Malaysia|
+MV|Maldives|
+ML|Mali|
+MT|Malta|
+MH|Marshall Islands|
+MR|Mauritania|
+MU|Mauritius|
+MX|Mexico|
+FM|Micronesia|
+MD|Moldova|
+MC|Monaco|
+MN|Mongolia|
+ME|Montenegro|
+MA|Morocco|
+MZ|Mozambique|
+MM|Myanmar|burma
+NA|Namibia|
+NR|Nauru|
+NP|Nepal|
+NL|Netherlands|holland
+NZ|New Zealand|
+NI|Nicaragua|
+NE|Niger|
+NG|Nigeria|
+KP|North Korea|
+MK|North Macedonia|macedonia
+NO|Norway|
+OM|Oman|
+PK|Pakistan|
+PW|Palau|
+PS|Palestine|
+PA|Panama|
+PG|Papua New Guinea|
+PY|Paraguay|
+PE|Peru|
+PH|Philippines|
+PL|Poland|
+PT|Portugal|
+QA|Qatar|
+RO|Romania|
+RU|Russia|
+RW|Rwanda|
+KN|Saint Kitts and Nevis|st kitts and nevis
+LC|Saint Lucia|st lucia
+VC|Saint Vincent and the Grenadines|st vincent
+WS|Samoa|
+SM|San Marino|
+ST|Sao Tome and Principe|sao tome
+SA|Saudi Arabia|
+SN|Senegal|
+RS|Serbia|
+SC|Seychelles|
+SL|Sierra Leone|
+SG|Singapore|
+SK|Slovakia|
+SI|Slovenia|
+SB|Solomon Islands|
+SO|Somalia|
+ZA|South Africa|
+KR|South Korea|
+SS|South Sudan|
+ES|Spain|
+LK|Sri Lanka|
+SD|Sudan|
+SR|Suriname|
+SE|Sweden|
+CH|Switzerland|
+SY|Syria|
+TW|Taiwan|
+TJ|Tajikistan|
+TZ|Tanzania|
+TH|Thailand|
+TL|Timor-Leste|east timor, timor leste
+TG|Togo|
+TO|Tonga|
+TT|Trinidad and Tobago|
+TN|Tunisia|
+TR|Turkey|turkiye
+TM|Turkmenistan|
+TV|Tuvalu|
+UG|Uganda|
+UA|Ukraine|
+AE|United Arab Emirates|uae
+GB|United Kingdom|uk, great britain, britain
+US|United States|usa, us, america, united states of america
+UY|Uruguay|
+UZ|Uzbekistan|
+VU|Vanuatu|
+VA|Vatican City|vatican, holy see
+VE|Venezuela|
+VN|Vietnam|viet nam
+YE|Yemen|
+ZM|Zambia|
+ZW|Zimbabwe|
+""".strip()
+
+def normalize_flag_answer(value):
+    value = value.casefold().strip()
+    value = re.sub(r"^the\s+", "", value)
+    value = value.replace("&", "and")
+    return re.sub(r"[^a-z0-9]+", "", value)
+
+def flag_emoji_from_code(code):
+    return "".join(chr(0x1F1E6 + ord(char) - ord("A")) for char in code.upper())
+
+def parse_flag_countries():
+    countries = []
+    for row in FLAG_COUNTRY_ROWS.splitlines():
+        code, name, aliases = (row.split("|") + ["", ""])[:3]
+        accepted = {normalize_flag_answer(name)}
+        for alias in aliases.split(","):
+            alias = alias.strip()
+            if alias:
+                accepted.add(normalize_flag_answer(alias))
+        countries.append({
+            "code": code,
+            "name": name,
+            "flag": flag_emoji_from_code(code),
+            "accepted": accepted,
+        })
+    return countries
+
+FLAG_COUNTRIES = parse_flag_countries()
+FLAG_QUIZ_ROUND_OPTIONS = {10: "10 Flags", 20: "20 Flags", 50: "50 Flags", len(FLAG_COUNTRIES): f"All ({len(FLAG_COUNTRIES)})"}
+active_flag_quizzes = set()
+
+def parse_flag_round_count(value):
+    if value is None:
+        return None
+    value = str(value).strip().casefold()
+    if value == "all":
+        return len(FLAG_COUNTRIES)
+    try:
+        count = int(value)
+    except ValueError:
+        return None
+    return count if count in FLAG_QUIZ_ROUND_OPTIONS else None
+
+class FlagQuizRoundsButton(Button):
+    def __init__(self, rounds):
+        super().__init__(label=FLAG_QUIZ_ROUND_OPTIONS[rounds], style=discord.ButtonStyle.primary if rounds < len(FLAG_COUNTRIES) else discord.ButtonStyle.success)
+        self.rounds = rounds
+
+    async def callback(self, interaction):
+        view = self.view
+        if interaction.user.id != view.author_id:
+            return await interaction.response.send_message("Use your own flag quiz menu.", ephemeral=True)
+        for item in view.children:
+            item.disabled = True
+        await interaction.response.edit_message(content=f"{economy_q_game_win} Starting **{self.rounds}** flag quiz rounds.", view=view)
+        await run_flag_quiz(view.ctx, self.rounds)
+
+class FlagQuizSetupView(View):
+    def __init__(self, ctx):
+        super().__init__(timeout=60)
+        self.ctx = ctx
+        self.author_id = ctx.author.id
+        for rounds in FLAG_QUIZ_ROUND_OPTIONS:
+            self.add_item(FlagQuizRoundsButton(rounds))
+
+async def run_flag_quiz(ctx, rounds):
+    quiz_key = (ctx.channel.id, ctx.author.id)
+    if quiz_key in active_flag_quizzes:
+        return await ctx.send(f"{economy_q_warning} You already have a flag quiz running in this channel.")
+    active_flag_quizzes.add(quiz_key)
+    points = 0
+    answered = 0
+    countries = random.sample(FLAG_COUNTRIES, min(rounds, len(FLAG_COUNTRIES)))
+    prompt = None
+    try:
+        prompt = await ctx.send(f"{economy_q_game_win} **FLAG QUIZ**\nType the country name. Type `skip` or `stop` anytime.")
+        for index, country in enumerate(countries, 1):
+            embed = discord.Embed(
+                title=f"Flag Quiz {index}/{len(countries)}",
+                description=(
+                    f"# {country['flag']}\n"
+                    f"Points: **{points}**\n"
+                    "Type your guess in chat. You have **20s**."
+                ),
+                color=discord.Color.blurple()
+            )
+            await prompt.edit(content=None, embed=embed, view=None)
+
+            def check(message):
+                return message.author.id == ctx.author.id and message.channel.id == ctx.channel.id
+
+            try:
+                guess_message = await bot.wait_for("message", timeout=20, check=check)
+            except asyncio.TimeoutError:
+                await prompt.edit(
+                    content=f"{economy_q_timeout} Time. Answer: **{country['name']}**\nScore: **{points}/{index}**",
+                    embed=None,
+                    view=None,
+                )
+                await asyncio.sleep(1.2)
+                continue
+
+            guess = guess_message.content.strip()
+            if guess.casefold() == "stop":
+                break
+            if guess.casefold() == "skip":
+                await prompt.edit(
+                    content=f"{economy_q_warning} Skipped. Answer: **{country['name']}**\nScore: **{points}/{index}**",
+                    embed=None,
+                    view=None,
+                )
+                await asyncio.sleep(1.2)
+                continue
+            answered += 1
+            if normalize_flag_answer(guess) in country["accepted"]:
+                points += 1
+                await prompt.edit(
+                    content=f"{economy_q_accept} Correct: **{country['name']}**\nScore: **{points}/{index}**",
+                    embed=None,
+                    view=None,
+                )
+            else:
+                await prompt.edit(
+                    content=f"{economy_q_reject} Wrong. Answer: **{country['name']}**\nScore: **{points}/{index}**",
+                    embed=None,
+                    view=None,
+                )
+            await asyncio.sleep(1.2)
+
+        reward = points * 25_000
+        reward_line = "No reward earned."
+        if reward > 0:
+            try:
+                old_balance, new_balance = await asyncio.to_thread(economy_add_user_balance, ctx.author.id, reward, reward)
+                reward_line = (
+                    f"Reward: **{economy_format_balance(reward)}**\n"
+                    f"Balance: **{economy_format_balance(old_balance)}** -> **{economy_format_balance(new_balance)}**"
+                )
+            except Exception as e:
+                print(f"Flag quiz reward failed for {ctx.author.id}: {type(e).__name__} - {e}")
+                reward_line = "Reward could not be paid because the economy database is unavailable."
+        accuracy = (points / max(1, len(countries))) * 100
+        await ctx.send(
+            f"{economy_q_game_win} **FLAG QUIZ FINISHED**\n"
+            f"Score: **{points}/{len(countries)}** ({accuracy:.1f}%)\n"
+            f"Answered: **{answered}**\n"
+            f"{reward_line}",
+            allowed_mentions=discord.AllowedMentions.none()
+        )
+    finally:
+        active_flag_quizzes.discard(quiz_key)
+
+@bot.command(name="flagquiz", aliases=["flags", "fq"])
+async def flagquiz(ctx, rounds: str = None):
+    """Starts a flag quiz. Pick 10, 20, 50, or all 197 flags, then guess country names for points and quesos."""
+    if not await economy_ensure_db_ready(ctx):
+        return
+    count = parse_flag_round_count(rounds)
+    if count is not None:
+        return await run_flag_quiz(ctx, count)
+    prefix = prefix_for_guild(ctx.guild)
+    await ctx.send(
+        f"{economy_q_game_win} **FLAG QUIZ**\nChoose quiz length, or use `{prefix}flagquiz 10`, `{prefix}flagquiz 20`, `{prefix}flagquiz 50`, or `{prefix}flagquiz all`.\nReward: **25,000 quesos per correct flag**.",
+        view=FlagQuizSetupView(ctx)
+    )
 
 @bot.tree.command(name="run", description="Run any ProQue prefix command through slash commands.")
 @app_commands.describe(command="Command name", args="Everything after the command, like @user 1000 or 10m title")

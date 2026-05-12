@@ -98,6 +98,8 @@ Run:
 - `.pfp @normal`
 - `.q`
 - `.games`
+- `.flagquiz` then choose 10.
+- `.flagquiz 20`
 - `.testlog`
 - `.testrlog`
 - `.dsnipe`
@@ -750,6 +752,7 @@ Run these after role tests because they need multiple users, waiting, or restart
 - Chess board uses custom number labels and file-letter labels.
 - Chess rejects illegal fallback notation.
 - Chess detects checkmate, stalemate/draw, resignation, and settles bets.
+- Flag Quiz lets the starter choose 10/20/50/all 197 flags, accepts typed guesses, supports `skip`/`stop`, counts points, and pays 25,000 quesos per correct flag.
 - Dungeon is solo-only, rejects other users pressing its buttons, and records clear/fail stats.
 
 ### Timers, Polls, Giveaway
