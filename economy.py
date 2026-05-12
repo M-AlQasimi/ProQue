@@ -5236,11 +5236,18 @@ async def lb(ctx):
     await send_balance_rank(ctx, "DESC", "Leaderboard", QOIN_CHEST)
 
 @commands.command(name="qstats", aliases=["economystats", "qstatus"])
-async def qstats(ctx):
+async def qstats(ctx, member: discord.Member = None):
     if not await ensure_db_ready(ctx):
         return
     if not has_economy_owner_power(ctx.author.id, ctx.guild):
         await ctx.send(f"{Q_DENIED} Server owner or admin only.")
+        return
+    if member is not None:
+        command = bot.get_command("economyaudit") if bot else None
+        if command:
+            await ctx.invoke(command, member=member)
+        else:
+            await ctx.send(f"{Q_DENIED} Use `.economyaudit @user`.")
         return
     try:
         stats = await asyncio.to_thread(get_economy_stats)
@@ -8594,11 +8601,73 @@ async def gamehistory(ctx, member: discord.Member = None):
     await ctx.reply(embed=embed, mention_author=False, allowed_mentions=discord.AllowedMentions.none())
 
 @commands.command(name="economyaudit", aliases=["audit", "qaudit", "econaudit"])
-async def economyaudit(ctx):
+async def economyaudit(ctx, member: discord.Member = None):
     if not await ensure_db_ready(ctx):
         return
     if not has_economy_owner_power(ctx.author.id, ctx.guild):
         await ctx.send(f"{Q_DENIED} Server owner or admin only.")
+        return
+    if member is not None:
+        try:
+            data = await asyncio.to_thread(get_user, member.id)
+            rows = await asyncio.to_thread(get_game_stats, member.id)
+            history_rows = await asyncio.to_thread(get_game_history, member.id, 5)
+            loss = await asyncio.to_thread(daily_loss_status, member.id, int(data["balance"]), 0)
+            tx_rows = await asyncio.to_thread(get_recent_transactions, member.id, 8)
+        except Exception:
+            await send_error(ctx, "Database unavailable. Try again shortly.")
+            return
+        net = int(data["total_won"] or 0) - int(data["total_lost"] or 0)
+        embed = discord.Embed(
+            title=f"{Q_AUDIT} User Economy Audit",
+            description=user_mention(member.id),
+            color=discord.Color.gold(),
+            timestamp=datetime.now(timezone.utc),
+        )
+        embed.add_field(name="Balance", value=format_balance(data["balance"]), inline=True)
+        embed.add_field(name="Level", value=f"{int(data['level'] or 1):,}", inline=True)
+        embed.add_field(name="XP", value=f"{int(data['xp'] or 0):,}", inline=True)
+        embed.add_field(name="Total Earned", value=format_balance(data["total_earned"]), inline=True)
+        embed.add_field(name="Total Won", value=format_balance(data["total_won"]), inline=True)
+        embed.add_field(name="Total Lost", value=format_balance(data["total_lost"]), inline=True)
+        embed.add_field(name="Net Gambling", value=format_balance(net), inline=True)
+        embed.add_field(name="Lost Today", value=f"{format_balance(loss['lost_today'])}\nRemaining: {format_balance(loss['remaining'])}", inline=True)
+        embed.add_field(name="Gambling Streak", value=f"{int(data.get('gamble_streak', 0) or 0):,}", inline=True)
+        game_lines = []
+        for row in rows[:8]:
+            played = int(row["played"] or 0)
+            wins = int(row["wins"] or 0)
+            win_rate = wins / played * 100 if played else 0
+            game_lines.append(
+                f"**{game_display_name(row['game_key'])}** - {played:,} played, {win_rate:.1f}% win, {format_balance(int(row['profit'] or 0))}"
+            )
+        add_split_embed_field(embed, "Game Signals", game_lines or ["No game stats yet."], inline=False)
+        history_lines = []
+        for row in history_rows:
+            ts = row["created_at"]
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            result = "Win" if row["won"] is True else ("Loss" if row["won"] is False else "Push")
+            net_amount = int(row["net_amount"] or 0)
+            sign = "+" if net_amount > 0 else ""
+            history_lines.append(f"**{game_display_name(row['game_key'])}** - {result} `{sign}{net_amount:,}` <t:{int(ts.timestamp())}:R>")
+        add_split_embed_field(embed, "Recent Games", history_lines or ["No tracked games yet."], inline=False)
+        tx_lines = []
+        for row in tx_rows:
+            ts = row["created_at"]
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            amount = int(row["amount"] or 0)
+            sign = "+" if amount >= 0 else ""
+            tx_lines.append(f"`{row['kind']}` `{sign}{amount:,}` <t:{int(ts.timestamp())}:R>")
+        add_split_embed_field(embed, "Recent Transactions", tx_lines or ["No transactions yet."], inline=False)
+        warnings = []
+        if loss["lost_today"] >= loss["warning_limit"]:
+            warnings.append(f"{Q_WARNING} User is near or over the daily gambling warning line.")
+        if net < 0 and abs(net) > max(1, int(data["total_earned"] or 0)) * 0.5:
+            warnings.append(f"{Q_WARNING} User has heavy net gambling losses versus total earned.")
+        add_split_embed_field(embed, "Warnings", warnings or [f"{Q_SUCCESS} No obvious user audit warnings."], inline=False)
+        await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
         return
     try:
         stats = await asyncio.to_thread(get_economy_audit)
@@ -9296,10 +9365,10 @@ EXPLANATIONS = {
     "give": "Transfers quesos to another user. Target and amount can be in either order.",
     "lb": "Shows a paginated local/global leaderboard with ranking types for quesos, level, earnings, wins, losses, net gambling, and messages.",
     "leaderboard": "Shows a paginated local/global leaderboard with ranking types for quesos, level, earnings, wins, losses, net gambling, and messages.",
-    "qstats": "Admin-power command. Shows global Quewo economy health, money supply, gambling totals, lotteries, and tracked taxes/payments.",
+    "qstats": "Admin-power command. Shows global Quewo economy health, or use `.qstats @user` for that user's audit.",
     "economystats": "Alias for `.qstats`. Shows global Quewo economy health.",
     "qstatus": "Alias for `.qstats`. Shows global Quewo economy health.",
-    "economyaudit": "Admin-power command. Shows economy audit signals, game profit rates, daily losses, taxes, and money flow.",
+    "economyaudit": "Admin-power command. Shows global economy audit signals, or use `.economyaudit @user` for one user's audit.",
     "audit": "Alias for `.economyaudit`. Shows economy audit signals.",
     "qaudit": "Alias for `.economyaudit`. Shows economy audit signals.",
     "econaudit": "Alias for `.economyaudit`. Shows economy audit signals.",
@@ -9446,8 +9515,8 @@ DETAILED_EXPLANATIONS = {
     "give": f"Moves quesos from you to another user. Normal transfers burn {int(TRANSFER_TAX_RATE * 100)}% as tax. Use `.give @user 10k` or `.give 10k @user`. Admin-power users can use `all`. The message shows sent amount, tax, received amount, and balances.",
     "lb": "Shows a paginated leaderboard. Use the buttons to switch between local server rankings and global all-server rankings. Use the ranking type menu to sort by quesos, level, earnings, total won, total lost, net gambling, or messages. The embed also shows your rank for the selected scope and type.",
     "leaderboard": "Alias for `.lb`. Shows local/global paginated rankings with selectable ranking types and your rank.",
-    "qstats": "Admin-power command for checking the global Quewo economy. It shows total money supply, total earned, gambling won/lost/net, active lotteries, lottery pots, ticket count, tracked taxes/payments, richest user, and tracked messages.",
-    "economyaudit": "Admin-power economy audit page. It adds balancing signals on top of qstats: daily losses, recent transaction volume, tracked sink/payment totals, and per-game play/win/profit signals sorted by biggest impact.",
+    "qstats": "Admin-power command for checking the global Quewo economy. It shows total money supply, total earned, gambling won/lost/net, active lotteries, lottery pots, ticket count, tracked taxes/payments, richest user, and tracked messages. If you pass a member, it redirects to that user's economy audit.",
+    "economyaudit": "Admin-power economy audit page. Without a member, it adds balancing signals on top of qstats: daily losses, recent transaction volume, tracked sink/payment totals, and per-game play/win/profit signals sorted by biggest impact. With a member, it shows that user's balance, level, net gambling, daily loss usage, game signals, recent games, recent transactions, and warnings.",
     "add": "Admin-power command. Adds new quesos to a user. `.add @user <amount>` and `.add <amount> @user` both work. Superowner can use @everyone or a role. It does not support `all`.",
     "remove": "Admin-power command. Removes quesos from a user. `.remove @user <amount>` and `.remove <amount> @user` both work. Use `all` to remove their full balance.",
     "addtick": "Superowner-only lottery admin command. Adds free entries to the current lottery. `.addtick @user <tickets>` and `.addtick <tickets> @user` both work, including roles and @everyone.",
