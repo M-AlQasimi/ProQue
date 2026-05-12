@@ -3010,11 +3010,12 @@ def flag_country_hint(country):
             parts.append(word[0] + "_" * (len(word) - 2) + word[-1])
     return "".join(parts)
 
-def build_flag_quiz_embed(country, index, total, score_text, mode, hint=None, status=None):
+def build_flag_quiz_embed(country, index, total, score_text, mode, hint=None, status=None, seconds_left=30):
     embed = discord.Embed(
         title=f"Flag Quiz {index}/{total}",
         description=(
             f"Mode: **{mode.title()}** | {score_text}\n"
+            f"Time: **{int(seconds_left)}s**\n"
             "Type the country name. Mini typos are accepted.\n"
             "Each user gets **2 tries** per flag."
         ),
@@ -3027,6 +3028,49 @@ def build_flag_quiz_embed(country, index, total, score_text, mode, hint=None, st
     embed.set_image(url=flag_image_url(country["code"]))
     embed.set_footer(text="Type skip to skip, or stop to finish early.")
     return embed
+
+class FlagQuizHintButton(Button):
+    def __init__(self):
+        super().__init__(label="Show Hint", style=discord.ButtonStyle.secondary)
+
+    async def callback(self, interaction):
+        view = self.view
+        if view.mode == "solo" and interaction.user.id != view.author_id:
+            return await interaction.response.send_message("Use your own flag quiz.", ephemeral=True)
+        if view.mode == "public" and interaction.user.id not in view.eligible_user_ids:
+            return await interaction.response.send_message("Guess once before using the hint.", ephemeral=True)
+        view.hint_requested = True
+        for item in view.children:
+            item.disabled = True
+        await interaction.response.edit_message(
+            embed=build_flag_quiz_embed(
+                view.country,
+                view.index,
+                view.total,
+                view.score_text,
+                view.mode,
+                hint=flag_country_hint(view.country),
+                status=view.status,
+                seconds_left=max(0, int(view.end_time - time.monotonic())),
+            ),
+            view=view,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+class FlagQuizHintView(View):
+    def __init__(self, author_id, mode, country, index, total, score_text, status, eligible_user_ids, end_time):
+        super().__init__(timeout=30)
+        self.author_id = author_id
+        self.mode = mode
+        self.country = country
+        self.index = index
+        self.total = total
+        self.score_text = score_text
+        self.status = status
+        self.eligible_user_ids = set(eligible_user_ids)
+        self.end_time = end_time
+        self.hint_requested = False
+        self.add_item(FlagQuizHintButton())
 
 class FlagQuizModeButton(Button):
     def __init__(self, mode):
@@ -3106,7 +3150,7 @@ async def run_flag_quiz(ctx, rounds, mode="solo"):
         await ctx.send(
             f"{economy_q_game_win} **FLAG QUIZ**\n"
             f"Mode: **{mode.title()}** | Reward: **{economy_format_balance(FLAG_QUIZ_REWARD_PER_POINT)} per point**\n"
-            "Type the country name. Everyone gets **2 tries** per flag in public mode. Type `skip` or `stop` anytime.",
+            "Type the country name. Each guess has **30s**. Everyone gets **2 tries** per flag in public mode. Type `skip` or `stop` anytime.",
             allowed_mentions=discord.AllowedMentions.none()
         )
         for index, country in enumerate(countries, 1):
@@ -3121,7 +3165,7 @@ async def run_flag_quiz(ctx, rounds, mode="solo"):
             skipped = False
             winner_id = None
             tries_by_user = {}
-            end_time = time.monotonic() + 35
+            end_time = time.monotonic() + 30
             while time.monotonic() < end_time and winner_id is None and not skipped:
                 remaining = max(1, end_time - time.monotonic())
                 def check(message):
@@ -3140,9 +3184,10 @@ async def run_flag_quiz(ctx, rounds, mode="solo"):
                             len(countries),
                             flag_quiz_score_text(scores, ctx.author.id, mode),
                             mode,
-                            hint=flag_country_hint(country),
                             status=f"{economy_q_timeout} Time. Answer: **{country['name']}**",
-                        )
+                            seconds_left=0,
+                        ),
+                        view=None,
                     )
                     break
 
@@ -3164,7 +3209,8 @@ async def run_flag_quiz(ctx, rounds, mode="solo"):
                             flag_quiz_score_text(scores, ctx.author.id, mode),
                             mode,
                             status=f"{economy_q_warning} Skipped. Answer: **{country['name']}**",
-                        )
+                        ),
+                        view=None,
                     )
                     break
                 user_id = guess_message.author.id
@@ -3175,6 +3221,7 @@ async def run_flag_quiz(ctx, rounds, mode="solo"):
                 if flag_answer_matches(guess, country):
                     scores[user_id] = scores.get(user_id, 0) + 1
                     winner_id = user_id
+                    await prompt.edit(view=None)
                     await ctx.send(
                         f"{economy_q_accept} <@{user_id}> got it: **{country['name']}**\n"
                         f"{flag_quiz_score_text(scores, ctx.author.id, mode)}",
@@ -3183,9 +3230,28 @@ async def run_flag_quiz(ctx, rounds, mode="solo"):
                     break
                 status = f"{economy_q_reject} <@{user_id}> missed. "
                 if tries_by_user[user_id] == 1:
-                    status += "**1 try left.**"
+                    status += "**1 try left.** Want help? Press **Show Hint**."
                 else:
                     status += "**No tries left for this flag.**"
+                end_time = time.monotonic() + 30
+                hint_view = None
+                eligible_hint_users = {
+                    existing_user_id
+                    for existing_user_id, tries in tries_by_user.items()
+                    if tries >= 1
+                }
+                if any(tries < 2 for tries in tries_by_user.values()) and time.monotonic() < end_time:
+                    hint_view = FlagQuizHintView(
+                        ctx.author.id,
+                        mode,
+                        country,
+                        index,
+                        len(countries),
+                        flag_quiz_score_text(scores, ctx.author.id, mode),
+                        status,
+                        eligible_hint_users,
+                        end_time,
+                    )
                 await prompt.edit(
                     embed=build_flag_quiz_embed(
                         country,
@@ -3193,9 +3259,10 @@ async def run_flag_quiz(ctx, rounds, mode="solo"):
                         len(countries),
                         flag_quiz_score_text(scores, ctx.author.id, mode),
                         mode,
-                        hint=flag_country_hint(country),
                         status=status,
+                        seconds_left=max(0, int(end_time - time.monotonic())),
                     ),
+                    view=hint_view,
                     allowed_mentions=discord.AllowedMentions.none()
                 )
             if stopped:
@@ -3241,7 +3308,7 @@ async def flagquiz(ctx, rounds: str = None):
         )
     prefix = prefix_for_guild(ctx.guild)
     await ctx.send(
-        f"{economy_q_game_win} **FLAG QUIZ**\nChoose solo or public mode, then choose quiz length.\nYou can also use `{prefix}flagquiz 10`, `{prefix}flagquiz 20`, `{prefix}flagquiz 50`, or `{prefix}flagquiz all`.\nYou get **2 tries** per flag, and small typos are accepted.\nReward: **{economy_format_balance(FLAG_QUIZ_REWARD_PER_POINT)} per correct flag**.",
+        f"{economy_q_game_win} **FLAG QUIZ**\nChoose solo or public mode, then choose quiz length.\nYou can also use `{prefix}flagquiz 10`, `{prefix}flagquiz 20`, `{prefix}flagquiz 50`, or `{prefix}flagquiz all`.\nEach guess has **30s**. You get **2 tries** per flag, and small typos are accepted.\nReward: **{economy_format_balance(FLAG_QUIZ_REWARD_PER_POINT)} per correct flag**.",
         view=FlagQuizSetupView(ctx)
     )
 

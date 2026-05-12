@@ -752,7 +752,7 @@ Run these after role tests because they need multiple users, waiting, or restart
 - Chess board uses custom number labels and file-letter labels.
 - Chess rejects illegal fallback notation.
 - Chess detects checkmate, stalemate/draw, resignation, and settles bets.
-- Flag Quiz lets the starter choose Solo/Public and 10/20/50/all 197 flags, sends a fresh large flag image prompt per flag with no country flag emoji, edits the same prompt after wrong guesses with a hint, gives each user 2 tries per flag, accepts small typos, supports starter `skip`/`stop`, tracks public scores per user, and pays 20,000 quesos per correct flag.
+- Flag Quiz lets the starter choose Solo/Public and 10/20/50/all 197 flags, sends a fresh large flag image prompt per flag with no country flag emoji, gives 30 seconds per guess, edits the same prompt after wrong guesses and offers a Hint button, gives each user 2 tries per flag, accepts small typos, supports starter `skip`/`stop`, tracks public scores per user, and pays 20,000 quesos per correct flag.
 - Dungeon is solo-only, rejects other users pressing its buttons, and records clear/fail stats.
 
 ### Timers, Polls, Giveaway
