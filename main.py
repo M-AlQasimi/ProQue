@@ -113,8 +113,6 @@ from pgdata import (
     load_sleeping_users as pg_load_sleeping_users,
     load_watchlist,
     pg_init,
-    raw_pg_conn,
-    claim_command_message,
     remove_afk_user,
     remove_active_poll,
     remove_active_timer,
@@ -365,7 +363,6 @@ user_mentions = {}
 activity_buffer = Counter()
 active_activity_status_messages = {}
 command_timing_stats = {}
-processed_command_message_ids = {}
 daily_cooldown = {}
 weekly_cooldown = {}
 monthly_cooldown = {}
@@ -374,9 +371,6 @@ chat_xp_memory = {}
 class CommandDisabledError(commands.CheckFailure):
     def __init__(self, command_name):
         self.command_name = command_name
-
-class DuplicateCommandIgnored(commands.CheckFailure):
-    pass
 
 def get_command_case_insensitive(command_name):
     if not command_name:
@@ -406,19 +400,6 @@ def looks_like_command_message(message):
     if content.startswith(prefix):
         return True
     return False
-
-def should_process_command_message(message):
-    now = time.time()
-    if len(processed_command_message_ids) > 1000:
-        stale_before = now - 300
-        for message_id, seen_at in list(processed_command_message_ids.items()):
-            if seen_at < stale_before:
-                processed_command_message_ids.pop(message_id, None)
-    if message.id in processed_command_message_ids:
-        print(f"Duplicate command dispatch skipped for message {message.id}")
-        return False
-    processed_command_message_ids[message.id] = now
-    return True
 
 def slash_runnable_commands():
     commands_ = []
@@ -2451,8 +2432,6 @@ async def on_message(message):
 
     is_command = looks_like_command_message(message)
     if is_command:
-        if not should_process_command_message(message):
-            return
         if message.guild:
             if message.channel.id in guild_shutdown_channels(message.guild) and not has_owner_power(message.author, message.guild):
                 try:
@@ -2482,8 +2461,7 @@ async def on_message(message):
         if ctx.valid:
             print(
                 f"Command received: {ctx.command} by {message.author} "
-                f"({message.author.id}) in guild {message.guild.id if message.guild else 'DM'} "
-                f"message={message.id} process={BOT_PROCESS_ID}"
+                f"({message.author.id}) in guild {message.guild.id if message.guild else 'DM'}"
             )
             started = time.perf_counter()
             await bot.invoke(ctx)
@@ -2494,7 +2472,7 @@ async def on_message(message):
             stats["total_ms"] += elapsed_ms
             stats["max_ms"] = max(stats["max_ms"], elapsed_ms)
             if elapsed_ms >= 1500:
-                print(f"Slow command: {name} took {elapsed_ms}ms in guild {message.guild.id if message.guild else 'DM'} message={message.id} process={BOT_PROCESS_ID}")
+                print(f"Slow command: {name} took {elapsed_ms}ms in guild {message.guild.id if message.guild else 'DM'}")
         return
 
     # AI mention/reply handling
@@ -2727,9 +2705,6 @@ async def on_command_error(ctx, error):
     elif isinstance(error, CommandDisabledError):
         print(f"Command disabled: {error.command_name} for {ctx.author} ({ctx.author.id})")
         await ctx.send(f"**{error.command_name}** is disabled.")
-
-    elif isinstance(error, DuplicateCommandIgnored):
-        return
 
     elif isinstance(error, commands.CheckFailure):
         print(f"Command check failed: {ctx.command} for {ctx.author} ({ctx.author.id}) - {type(error).__name__}: {error}")
@@ -5071,21 +5046,6 @@ async def on_voice_state_update(member, before, after):
             print(f"Failed to send log: {e}")
 
 @bot.check
-async def prevent_duplicate_command_dispatch(ctx):
-    if getattr(ctx, "interaction", None) is not None:
-        return True
-    message = getattr(ctx, "message", None)
-    message_id = getattr(message, "id", None)
-    if message_id is None:
-        return True
-    claimed = await asyncio.to_thread(claim_command_message, message_id)
-    if not claimed:
-        command_name = ctx.command.qualified_name if ctx.command else "unknown"
-        print(f"Duplicate command callback skipped: {command_name} message={message_id}")
-        raise DuplicateCommandIgnored()
-    return True
-
-@bot.check
 async def globally_block_disabled(ctx):
     disabled = guild_disabled_commands(ctx.guild)
     if ctx.command and ctx.command.name in disabled and not has_super_owner_power(ctx.author, ctx.guild):
@@ -5412,7 +5372,7 @@ async def deleterole(ctx, *roles: discord.Role):
 @bot.command()
 @is_admin_power()
 async def test(ctx):
-    await ctx.send(f"I'm alive heh\n`message={ctx.message.id} process={BOT_PROCESS_ID}`")
+    await ctx.send("I'm alive heh")
 
 @bot.command()
 async def testlog(ctx):
@@ -8853,146 +8813,38 @@ def run_flask():
 
 Thread(target=run_flask).start()
 
-BOT_BUILD_MARKER = "command-dedupe-db-2026-05-13"
-BOT_PROCESS_ID = f"{os.getpid()}-{int(time.time())}"
-bot_instance_lock_owner = BOT_PROCESS_ID
-bot_instance_lock_stop = False
-bot_instance_lock_thread = None
-
-def acquire_bot_instance_lock():
-    global bot_instance_lock_thread, bot_instance_lock_stop
-    conn = None
-    try:
-        conn = raw_pg_conn()
-        if conn is None:
-            print("Bot instance lock unavailable; DATABASE_URL not set.")
-            return True
-        cur = conn.cursor()
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS bot_runtime_locks (
-                lock_name TEXT PRIMARY KEY,
-                owner TEXT NOT NULL,
-                expires_at TIMESTAMP NOT NULL
-            )
-        """)
-        cur.execute("""
-            INSERT INTO bot_runtime_locks (lock_name, owner, expires_at)
-            VALUES ('discord_login', %s, NOW() + INTERVAL '90 seconds')
-            ON CONFLICT (lock_name) DO UPDATE SET
-                owner = EXCLUDED.owner,
-                expires_at = EXCLUDED.expires_at
-            WHERE bot_runtime_locks.expires_at < NOW()
-               OR bot_runtime_locks.owner = EXCLUDED.owner
-            RETURNING owner
-        """, (bot_instance_lock_owner,))
-        row = cur.fetchone()
-        conn.commit()
-        cur.close()
-        if not row:
-            print("Another Pro𝚀𝚞𝚎 bot instance has an active runtime lock. Skipping Discord login.")
-            return False
-        bot_instance_lock_stop = False
-        bot_instance_lock_thread = Thread(target=refresh_bot_instance_lock, daemon=True)
-        bot_instance_lock_thread.start()
-        print(f"Pro𝚀𝚞𝚎 runtime lock acquired by {bot_instance_lock_owner}.")
-        return True
-    except Exception as e:
-        print(f"Bot instance lock failed ({type(e).__name__}: {e}); refusing Discord login to avoid duplicate replies.")
-        return False
-    finally:
-        if conn is not None:
-            try:
-                conn.close()
-            except Exception:
-                pass
-
-def refresh_bot_instance_lock():
-    while not bot_instance_lock_stop:
-        time.sleep(30)
-        conn = None
-        try:
-            conn = raw_pg_conn()
-            if conn is None:
-                continue
-            cur = conn.cursor()
-            cur.execute("""
-                UPDATE bot_runtime_locks
-                SET expires_at = NOW() + INTERVAL '90 seconds'
-                WHERE lock_name = 'discord_login' AND owner = %s
-            """, (bot_instance_lock_owner,))
-            conn.commit()
-            cur.close()
-        except Exception as e:
-            print(f"Bot runtime lock refresh failed: {type(e).__name__} - {e}")
-        finally:
-            if conn is not None:
-                try:
-                    conn.close()
-                except Exception:
-                    pass
-
-def release_bot_instance_lock():
-    global bot_instance_lock_stop
-    bot_instance_lock_stop = True
-    conn = None
-    try:
-        conn = raw_pg_conn()
-        if conn is None:
-            return
-        cur = conn.cursor()
-        cur.execute(
-            "DELETE FROM bot_runtime_locks WHERE lock_name = 'discord_login' AND owner = %s",
-            (bot_instance_lock_owner,)
-        )
-        conn.commit()
-        cur.close()
-    except Exception:
-        pass
-    finally:
-        if conn is not None:
-            try:
-                conn.close()
-            except Exception:
-                pass
-
 def run_bot_with_retry():
     token = os.getenv("DISCORD_TOKEN")
     if not token:
         print("ERROR: DISCORD_TOKEN not set!")
         return
-    print(f"Pro𝚀𝚞𝚎 startup marker: {BOT_BUILD_MARKER} pid={os.getpid()}")
-    if not acquire_bot_instance_lock():
-        return
     
     max_retries = 5
     base_delay = 5
     
-    try:
-        for attempt in range(max_retries):
-            try:
-                print(f"Attempting to login (attempt {attempt + 1}/{max_retries})...")
-                bot.run(token, reconnect=True)
-                return
-            except discord.errors.HTTPException as e:
-                if e.status == 429:
-                    delay = base_delay * (2 ** attempt)
-                    print(f"Rate limited! Waiting {delay} seconds before retry...")
-                    time.sleep(delay)
-                else:
-                    print(f"HTTP error: {e}")
-                    raise
-            except RuntimeError as e:
-                if "Session is closed" in str(e):
-                    delay = base_delay * (2 ** attempt)
-                    print(f"Session closed! Waiting {delay} seconds before retry...")
-                    time.sleep(delay)
-                else:
-                    raise
-            except Exception as e:
-                print(f"Unexpected error: {e}")
+    for attempt in range(max_retries):
+        try:
+            print(f"Attempting to login (attempt {attempt + 1}/{max_retries})...")
+            bot.run(token, reconnect=True)
+            return
+        except discord.errors.HTTPException as e:
+            if e.status == 429:
+                delay = base_delay * (2 ** attempt)
+                print(f"Rate limited! Waiting {delay} seconds before retry...")
+                time.sleep(delay)
+            else:
+                print(f"HTTP error: {e}")
                 raise
-    finally:
-        release_bot_instance_lock()
+        except RuntimeError as e:
+            if "Session is closed" in str(e):
+                delay = base_delay * (2 ** attempt)
+                print(f"Session closed! Waiting {delay} seconds before retry...")
+                time.sleep(delay)
+            else:
+                raise
+        except Exception as e:
+            print(f"Unexpected error: {e}")
+            raise
     
     print("Max retries reached. Exiting.")
 

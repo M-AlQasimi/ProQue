@@ -16,12 +16,6 @@ def pg_conn():
     except Exception:
         return None
 
-def raw_pg_conn():
-    url = os.getenv("DATABASE_URL")
-    if not url:
-        return None
-    return psycopg2.connect(url, connect_timeout=5)
-
 def pg_init():
     """Initialize DB tables with retry loop. Call from on_ready."""
     global pg_ready
@@ -123,13 +117,6 @@ def _create_tables(cur):
         CREATE TABLE IF NOT EXISTS sleeping_users (
             user_id BIGINT PRIMARY KEY,
             since TIMESTAMP NOT NULL
-        )
-    """)
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS processed_command_messages (
-            message_id BIGINT PRIMARY KEY,
-            claimed_at TIMESTAMP NOT NULL DEFAULT NOW()
         )
     """)
 
@@ -298,40 +285,6 @@ def _create_tables(cur):
             PRIMARY KEY (guild_id, user_id)
         )
     """)
-
-def claim_command_message(message_id):
-    """Return True only for the first process that claims a Discord command message."""
-    conn = None
-    try:
-        conn = raw_pg_conn()
-        if conn is None:
-            print("Command message DB claim unavailable: DATABASE_URL not set")
-            return True
-        cur = conn.cursor()
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS processed_command_messages (
-                message_id BIGINT PRIMARY KEY,
-                claimed_at TIMESTAMP NOT NULL DEFAULT NOW()
-            )
-        """)
-        cur.execute("DELETE FROM processed_command_messages WHERE claimed_at < NOW() - INTERVAL '1 day'")
-        cur.execute(
-            "INSERT INTO processed_command_messages (message_id) VALUES (%s) ON CONFLICT DO NOTHING",
-            (int(message_id),)
-        )
-        claimed = cur.rowcount == 1
-        conn.commit()
-        cur.close()
-        return claimed
-    except Exception as e:
-        print(f"Command message DB claim unavailable: {type(e).__name__} - {e}")
-        return False
-    finally:
-        if conn is not None:
-            try:
-                conn.close()
-            except Exception:
-                pass
 
 def _migrate_bot_config(cur):
     cur.execute("SELECT to_regclass('public.bot_config')")
