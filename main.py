@@ -2482,7 +2482,8 @@ async def on_message(message):
         if ctx.valid:
             print(
                 f"Command received: {ctx.command} by {message.author} "
-                f"({message.author.id}) in guild {message.guild.id if message.guild else 'DM'}"
+                f"({message.author.id}) in guild {message.guild.id if message.guild else 'DM'} "
+                f"message={message.id} process={BOT_PROCESS_ID}"
             )
             started = time.perf_counter()
             await bot.invoke(ctx)
@@ -2493,7 +2494,7 @@ async def on_message(message):
             stats["total_ms"] += elapsed_ms
             stats["max_ms"] = max(stats["max_ms"], elapsed_ms)
             if elapsed_ms >= 1500:
-                print(f"Slow command: {name} took {elapsed_ms}ms in guild {message.guild.id if message.guild else 'DM'}")
+                print(f"Slow command: {name} took {elapsed_ms}ms in guild {message.guild.id if message.guild else 'DM'} message={message.id} process={BOT_PROCESS_ID}")
         return
 
     # AI mention/reply handling
@@ -5411,7 +5412,7 @@ async def deleterole(ctx, *roles: discord.Role):
 @bot.command()
 @is_admin_power()
 async def test(ctx):
-    await ctx.send("I'm alive heh")
+    await ctx.send(f"I'm alive heh\n`message={ctx.message.id} process={BOT_PROCESS_ID}`")
 
 @bot.command()
 async def testlog(ctx):
@@ -8855,6 +8856,7 @@ Thread(target=run_flask).start()
 BOT_INSTANCE_LOCK_KEY_1 = 885548126
 BOT_INSTANCE_LOCK_KEY_2 = 365171824
 BOT_BUILD_MARKER = "command-dedupe-db-2026-05-13"
+BOT_PROCESS_ID = f"{os.getpid()}-{int(time.time())}"
 bot_instance_lock_conn = None
 
 def acquire_bot_instance_lock():
