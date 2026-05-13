@@ -3560,31 +3560,17 @@ async def ensure_db_ready(ctx, force=False):
     if db_ready and not force:
         return True
 
-    msg = await ctx.send("Loading database")
-    frames = ["Loading database.", "Loading database..", "Loading database..."]
-    frame_index = 0
-
     if force or db_init_task is None or db_init_task.done():
         db_initializing = True
         db_init_task = asyncio.create_task(asyncio.to_thread(init_db))
 
     while not db_init_task.done():
         await asyncio.sleep(1)
-        try:
-            await msg.edit(content=frames[frame_index % len(frames)])
-        except:
-            pass
-        frame_index += 1
 
     await db_init_task
     db_initializing = False
 
-    if db_ready:
-        await msg.edit(content="Database loaded")
-        return True
-
-    await msg.edit(content="Database still loading. Try again shortly.")
-    return False
+    return bool(db_ready)
 
 # =====================
 # BALANCE + STREAKS

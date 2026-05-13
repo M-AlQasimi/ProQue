@@ -113,6 +113,7 @@ from pgdata import (
     load_sleeping_users as pg_load_sleeping_users,
     load_watchlist,
     pg_init,
+    pg_conn,
     remove_afk_user,
     remove_active_poll,
     remove_active_timer,
@@ -363,6 +364,7 @@ user_mentions = {}
 activity_buffer = Counter()
 active_activity_status_messages = {}
 command_timing_stats = {}
+processed_command_message_ids = {}
 daily_cooldown = {}
 weekly_cooldown = {}
 monthly_cooldown = {}
@@ -400,6 +402,19 @@ def looks_like_command_message(message):
     if content.startswith(prefix):
         return True
     return False
+
+def should_process_command_message(message):
+    now = time.time()
+    if len(processed_command_message_ids) > 1000:
+        stale_before = now - 300
+        for message_id, seen_at in list(processed_command_message_ids.items()):
+            if seen_at < stale_before:
+                processed_command_message_ids.pop(message_id, None)
+    if message.id in processed_command_message_ids:
+        print(f"Duplicate command dispatch skipped for message {message.id}")
+        return False
+    processed_command_message_ids[message.id] = now
+    return True
 
 def slash_runnable_commands():
     commands_ = []
@@ -2432,6 +2447,8 @@ async def on_message(message):
 
     is_command = looks_like_command_message(message)
     if is_command:
+        if not should_process_command_message(message):
+            return
         if message.guild:
             if message.channel.id in guild_shutdown_channels(message.guild) and not has_owner_power(message.author, message.guild):
                 try:
@@ -8813,38 +8830,90 @@ def run_flask():
 
 Thread(target=run_flask).start()
 
+BOT_INSTANCE_LOCK_KEY_1 = 885548126
+BOT_INSTANCE_LOCK_KEY_2 = 365171824
+bot_instance_lock_conn = None
+
+def acquire_bot_instance_lock():
+    global bot_instance_lock_conn
+    conn = pg_conn()
+    if conn is None:
+        print("Bot instance lock unavailable; continuing without cross-container lock.")
+        return True
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT pg_try_advisory_lock(%s, %s)", (BOT_INSTANCE_LOCK_KEY_1, BOT_INSTANCE_LOCK_KEY_2))
+        locked = bool(cur.fetchone()[0])
+        cur.close()
+        if not locked:
+            conn.close()
+            print("Another Pro𝚀𝚞𝚎 bot instance already holds the startup lock. Skipping Discord login.")
+            return False
+        bot_instance_lock_conn = conn
+        print("Pro𝚀𝚞𝚎 bot instance lock acquired.")
+        return True
+    except Exception as e:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        print(f"Bot instance lock failed ({type(e).__name__}: {e}); continuing without cross-container lock.")
+        return True
+
+def release_bot_instance_lock():
+    global bot_instance_lock_conn
+    if bot_instance_lock_conn is None:
+        return
+    try:
+        cur = bot_instance_lock_conn.cursor()
+        cur.execute("SELECT pg_advisory_unlock(%s, %s)", (BOT_INSTANCE_LOCK_KEY_1, BOT_INSTANCE_LOCK_KEY_2))
+        bot_instance_lock_conn.commit()
+        cur.close()
+    except Exception:
+        pass
+    try:
+        bot_instance_lock_conn.close()
+    except Exception:
+        pass
+    bot_instance_lock_conn = None
+
 def run_bot_with_retry():
     token = os.getenv("DISCORD_TOKEN")
     if not token:
         print("ERROR: DISCORD_TOKEN not set!")
         return
+    if not acquire_bot_instance_lock():
+        return
     
     max_retries = 5
     base_delay = 5
     
-    for attempt in range(max_retries):
-        try:
-            print(f"Attempting to login (attempt {attempt + 1}/{max_retries})...")
-            bot.run(token, reconnect=True)
-            return
-        except discord.errors.HTTPException as e:
-            if e.status == 429:
-                delay = base_delay * (2 ** attempt)
-                print(f"Rate limited! Waiting {delay} seconds before retry...")
-                time.sleep(delay)
-            else:
-                print(f"HTTP error: {e}")
+    try:
+        for attempt in range(max_retries):
+            try:
+                print(f"Attempting to login (attempt {attempt + 1}/{max_retries})...")
+                bot.run(token, reconnect=True)
+                return
+            except discord.errors.HTTPException as e:
+                if e.status == 429:
+                    delay = base_delay * (2 ** attempt)
+                    print(f"Rate limited! Waiting {delay} seconds before retry...")
+                    time.sleep(delay)
+                else:
+                    print(f"HTTP error: {e}")
+                    raise
+            except RuntimeError as e:
+                if "Session is closed" in str(e):
+                    delay = base_delay * (2 ** attempt)
+                    print(f"Session closed! Waiting {delay} seconds before retry...")
+                    time.sleep(delay)
+                else:
+                    raise
+            except Exception as e:
+                print(f"Unexpected error: {e}")
                 raise
-        except RuntimeError as e:
-            if "Session is closed" in str(e):
-                delay = base_delay * (2 ** attempt)
-                print(f"Session closed! Waiting {delay} seconds before retry...")
-                time.sleep(delay)
-            else:
-                raise
-        except Exception as e:
-            print(f"Unexpected error: {e}")
-            raise
+    finally:
+        release_bot_instance_lock()
     
     print("Max retries reached. Exiting.")
 
