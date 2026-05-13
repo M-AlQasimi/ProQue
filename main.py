@@ -2180,28 +2180,61 @@ async def on_message(message):
                 print(f"Slow command: {name} took {elapsed_ms}ms in guild {message.guild.id if message.guild else 'DM'}")
         return
 
-    # AI mention handling
+    # AI mention/reply handling
     content = message.content.strip()
     is_mention = message.mentions and any(u.id == bot.user.id for u in message.mentions)
-    
     mention_patterns = [f"<@{bot.user.id}>", f"<@!{bot.user.id}>", f"<@{bot.user.id}"]
     is_mention_start = any(content.startswith(p) for p in mention_patterns)
-    
-    if is_mention and is_mention_start and GROQ_API_KEY:
-        # Extract question after mention
+
+    referenced_message = None
+    if message.reference:
+        resolved = getattr(message.reference, "resolved", None)
+        if isinstance(resolved, discord.Message):
+            referenced_message = resolved
+        else:
+            try:
+                referenced_message = await message.channel.fetch_message(message.reference.message_id)
+            except Exception:
+                referenced_message = None
+    is_reply_to_bot = bool(referenced_message and referenced_message.author.id == bot.user.id)
+
+    if (is_reply_to_bot or (is_mention and is_mention_start)) and GROQ_API_KEY:
+        question = content
         for p in mention_patterns:
             if content.startswith(p):
                 question = content[len(p):].strip()
                 break
-        
+
         if question:
-            await message.channel.typing()
-            
+            context_text = ""
+            if referenced_message:
+                ref_content = referenced_message.content or ""
+                if referenced_message.embeds:
+                    embed_bits = []
+                    for embed in referenced_message.embeds[:2]:
+                        if embed.title:
+                            embed_bits.append(f"Title: {embed.title}")
+                        if embed.description:
+                            embed_bits.append(f"Description: {embed.description}")
+                    if embed_bits:
+                        ref_content = (ref_content + "\n" + "\n".join(embed_bits)).strip()
+                if ref_content:
+                    context_text = ref_content[:1200]
+
             messages = [
-                {"role": "system", "content": "You are a helpful assistant. Answer clearly, simply, and briefly. If you use information from the web, cite your sources."}
+                {
+                    "role": "system",
+                    "content": (
+                        "You are ProQue's chat assistant inside Discord. Answer clearly, briefly, and naturally. "
+                        "If the user replied to a message, use the reply context. Do not ping users. "
+                        "If you are missing info, ask one short follow-up question."
+                    ),
+                }
             ]
+            if context_text:
+                messages.append({"role": "system", "content": f"Reply context:\n{context_text}"})
             messages.append({"role": "user", "content": question})
-            
+
             headers = {
                 "Authorization": f"Bearer {GROQ_API_KEY}",
                 "Content-Type": "application/json"
@@ -2213,18 +2246,21 @@ async def on_message(message):
                 "max_tokens": 500
             }
             try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.post("https://api.groq.com/openai/v1/chat/completions", json=payload, headers=headers) as resp:
-                        if resp.status == 200:
-                            data = await resp.json()
-                            answer = data["choices"][0]["message"]["content"]
-                            if len(answer) > 1900:
-                                answer = answer[:1897] + "..."
-                            await message.channel.send(answer)
-                        else:
-                            await message.channel.send(f"Error: {resp.status}")
+                async with message.channel.typing():
+                    async with aiohttp.ClientSession() as session:
+                        async with session.post("https://api.groq.com/openai/v1/chat/completions", json=payload, headers=headers) as resp:
+                            if resp.status == 200:
+                                data = await resp.json()
+                                answer = data["choices"][0]["message"]["content"].strip()
+                                await message.reply(
+                                    fit_discord_content(answer or "I could not come up with an answer."),
+                                    mention_author=False,
+                                    allowed_mentions=discord.AllowedMentions.none(),
+                                )
+                            else:
+                                await message.reply(f"Error: {resp.status}", mention_author=False)
             except Exception as e:
-                await message.channel.send(f"Error: {str(e)[:100]}")
+                await message.reply(f"Error: {str(e)[:100]}", mention_author=False)
             return
 
     if message.guild and message.channel.id in guild_shutdown_channels(message.guild) and not has_owner_power(message.author, message.guild):
