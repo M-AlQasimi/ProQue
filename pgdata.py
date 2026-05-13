@@ -121,6 +121,13 @@ def _create_tables(cur):
     """)
 
     cur.execute("""
+        CREATE TABLE IF NOT EXISTS processed_command_messages (
+            message_id BIGINT PRIMARY KEY,
+            claimed_at TIMESTAMP NOT NULL DEFAULT NOW()
+        )
+    """)
+
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS bot_blacklist (
             user_id BIGINT PRIMARY KEY
         )
@@ -285,6 +292,35 @@ def _create_tables(cur):
             PRIMARY KEY (guild_id, user_id)
         )
     """)
+
+def claim_command_message(message_id):
+    """Return True only for the first process that claims a Discord command message."""
+    if not pg_ready:
+        return True
+    conn = None
+    try:
+        conn = pg_conn()
+        if conn is None:
+            return True
+        cur = conn.cursor()
+        cur.execute("DELETE FROM processed_command_messages WHERE claimed_at < NOW() - INTERVAL '1 day'")
+        cur.execute(
+            "INSERT INTO processed_command_messages (message_id) VALUES (%s) ON CONFLICT DO NOTHING",
+            (int(message_id),)
+        )
+        claimed = cur.rowcount == 1
+        conn.commit()
+        cur.close()
+        return claimed
+    except Exception as e:
+        print(f"Command message DB claim unavailable: {type(e).__name__} - {e}")
+        return True
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 def _migrate_bot_config(cur):
     cur.execute("SELECT to_regclass('public.bot_config')")

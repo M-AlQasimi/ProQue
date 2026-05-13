@@ -114,6 +114,7 @@ from pgdata import (
     load_watchlist,
     pg_init,
     pg_conn,
+    claim_command_message,
     remove_afk_user,
     remove_active_poll,
     remove_active_timer,
@@ -373,6 +374,9 @@ chat_xp_memory = {}
 class CommandDisabledError(commands.CheckFailure):
     def __init__(self, command_name):
         self.command_name = command_name
+
+class DuplicateCommandIgnored(commands.CheckFailure):
+    pass
 
 def get_command_case_insensitive(command_name):
     if not command_name:
@@ -2723,6 +2727,9 @@ async def on_command_error(ctx, error):
         print(f"Command disabled: {error.command_name} for {ctx.author} ({ctx.author.id})")
         await ctx.send(f"**{error.command_name}** is disabled.")
 
+    elif isinstance(error, DuplicateCommandIgnored):
+        return
+
     elif isinstance(error, commands.CheckFailure):
         print(f"Command check failed: {ctx.command} for {ctx.author} ({ctx.author.id}) - {type(error).__name__}: {error}")
         if getattr(ctx, "quewo_cooldown_blocked", False):
@@ -5061,6 +5068,21 @@ async def on_voice_state_update(member, before, after):
             await send_log(embed, member.guild)
         except Exception as e:
             print(f"Failed to send log: {e}")
+
+@bot.check
+async def prevent_duplicate_command_dispatch(ctx):
+    if getattr(ctx, "interaction", None) is not None:
+        return True
+    message = getattr(ctx, "message", None)
+    message_id = getattr(message, "id", None)
+    if message_id is None:
+        return True
+    claimed = await asyncio.to_thread(claim_command_message, message_id)
+    if not claimed:
+        command_name = ctx.command.qualified_name if ctx.command else "unknown"
+        print(f"Duplicate command callback skipped: {command_name} message={message_id}")
+        raise DuplicateCommandIgnored()
+    return True
 
 @bot.check
 async def globally_block_disabled(ctx):
@@ -8832,6 +8854,7 @@ Thread(target=run_flask).start()
 
 BOT_INSTANCE_LOCK_KEY_1 = 885548126
 BOT_INSTANCE_LOCK_KEY_2 = 365171824
+BOT_BUILD_MARKER = "command-dedupe-db-2026-05-13"
 bot_instance_lock_conn = None
 
 def acquire_bot_instance_lock():
@@ -8882,6 +8905,7 @@ def run_bot_with_retry():
     if not token:
         print("ERROR: DISCORD_TOKEN not set!")
         return
+    print(f"Pro𝚀𝚞𝚎 startup marker: {BOT_BUILD_MARKER} pid={os.getpid()}")
     if not acquire_bot_instance_lock():
         return
     
