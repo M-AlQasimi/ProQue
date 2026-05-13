@@ -197,6 +197,18 @@ def _create_tables(cur):
     """)
 
     cur.execute("""
+        CREATE TABLE IF NOT EXISTS ai_channel_memory (
+            id BIGSERIAL PRIMARY KEY,
+            guild_id BIGINT NOT NULL,
+            channel_id BIGINT NOT NULL,
+            role TEXT NOT NULL,
+            content TEXT NOT NULL,
+            created_at TIMESTAMP NOT NULL DEFAULT NOW()
+        )
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_ai_channel_memory_lookup ON ai_channel_memory (guild_id, channel_id, created_at DESC)")
+
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS guild_bot_blacklist (
             guild_id BIGINT NOT NULL,
             user_id BIGINT NOT NULL,
@@ -895,6 +907,23 @@ def save_guild_birthday_channel(guild_id, channel_id, set_by_user_id=None):
     except Exception:
         return False
 
+def delete_guild_birthday_channel(guild_id):
+    _ensure_ready()
+    if not pg_ready:
+        return False
+    try:
+        conn = pg_conn()
+        if conn is None:
+            return False
+        cur = conn.cursor()
+        cur.execute("DELETE FROM guild_birthday_channels WHERE guild_id = %s", (int(guild_id),))
+        conn.commit()
+        cur.close()
+        conn.close()
+        return True
+    except Exception:
+        return False
+
 def load_guild_activity_channels():
     _ensure_ready()
     if not pg_ready:
@@ -1001,6 +1030,67 @@ def delete_guild_activity_channel(guild_id):
             return False
         cur = conn.cursor()
         cur.execute("DELETE FROM guild_activity_config WHERE guild_id = %s", (int(guild_id),))
+        conn.commit()
+        cur.close()
+        conn.close()
+        return True
+    except Exception:
+        return False
+
+def load_ai_channel_memory(guild_id, channel_id, limit=30):
+    _ensure_ready()
+    if not pg_ready:
+        return []
+    try:
+        conn = pg_conn()
+        if conn is None:
+            return []
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT role, content, EXTRACT(EPOCH FROM created_at)
+            FROM ai_channel_memory
+            WHERE guild_id = %s AND channel_id = %s
+            ORDER BY created_at DESC
+            LIMIT %s
+            """,
+            (int(guild_id), int(channel_id), int(limit))
+        )
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        return [
+            {"role": str(role), "content": str(content), "ts": float(ts or 0)}
+            for role, content, ts in reversed(rows)
+        ]
+    except Exception:
+        return []
+
+def save_ai_channel_memory(guild_id, channel_id, role, content, max_rows=60):
+    _ensure_ready()
+    if not pg_ready:
+        return False
+    try:
+        conn = pg_conn()
+        if conn is None:
+            return False
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO ai_channel_memory (guild_id, channel_id, role, content) VALUES (%s, %s, %s, %s)",
+            (int(guild_id), int(channel_id), str(role), str(content)[:1000])
+        )
+        cur.execute(
+            """
+            DELETE FROM ai_channel_memory
+            WHERE id IN (
+                SELECT id FROM ai_channel_memory
+                WHERE guild_id = %s AND channel_id = %s
+                ORDER BY created_at DESC
+                OFFSET %s
+            )
+            """,
+            (int(guild_id), int(channel_id), int(max_rows))
+        )
         conn.commit()
         cur.close()
         conn.close()

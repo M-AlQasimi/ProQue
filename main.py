@@ -89,10 +89,12 @@ from pgdata import (
     add_guild_activity_counts,
     clear_guild_activity_counts,
     delete_guild_activity_channel,
+    delete_guild_birthday_channel,
     get_guild_activity_top,
     load_afk_users as pg_load_afk_users,
     load_active_polls,
     load_active_timers,
+    load_ai_channel_memory,
     load_autoban_ids,
     load_blacklisted_users,
     load_birthdays as pg_load_birthdays,
@@ -117,6 +119,7 @@ from pgdata import (
     save_active_poll,
     save_active_timer,
     save_autoban_ids,
+    save_ai_channel_memory,
     save_blacklisted_users,
     save_birthday,
     save_censored_phrases,
@@ -169,6 +172,7 @@ print(f"Bot is starting with intents: {bot.intents}")
 log_channel_id = None
 rlog_channel_id = None
 super_owner_id = 885548126365171824  
+QUE_OWNER_DISPLAY = "𝚀𝚞𝚎 (@queziee)"
 autoban_ids = load_autoban_ids()
 blacklisted_users = load_blacklisted_users()
 shutdown_channels = load_shutdown_channels()
@@ -188,6 +192,12 @@ edited_snipes = {}
 deleted_snipes = {}
 removed_reactions = {}
 slash_commands_synced = False
+stale_game_messages_cleaned = False
+
+AI_MEMORY_MAX_MESSAGES = 30
+AI_MEMORY_TTL_SECONDS = 24 * 60 * 60
+AI_MEMORY_DB_MAX_MESSAGES = 60
+ai_conversation_memory = {}
 
 TTT_EMPTY = "empty"
 TTT_X = "x"
@@ -278,6 +288,66 @@ def joined_embed_value(lines, empty="None.", limit=1024):
         return empty
     value = "\n".join(lines)
     return embed_value(value, limit)
+
+def ai_memory_key(message):
+    guild_id = message.guild.id if message.guild else 0
+    return (int(guild_id), int(message.channel.id))
+
+def prune_ai_memory(key):
+    now = time.time()
+    entries = [
+        entry for entry in ai_conversation_memory.get(key, [])
+        if now - float(entry.get("ts", 0)) <= AI_MEMORY_TTL_SECONDS
+    ]
+    if len(entries) > AI_MEMORY_MAX_MESSAGES:
+        entries = entries[-AI_MEMORY_MAX_MESSAGES:]
+    if entries:
+        ai_conversation_memory[key] = entries
+    else:
+        ai_conversation_memory.pop(key, None)
+    return entries
+
+def ai_memory_messages(key):
+    if key not in ai_conversation_memory:
+        guild_id, channel_id = key
+        stored = load_ai_channel_memory(guild_id, channel_id, AI_MEMORY_MAX_MESSAGES)
+        if stored:
+            ai_conversation_memory[key] = stored
+    entries = prune_ai_memory(key)
+    messages = []
+    for entry in entries[-20:]:
+        role = entry.get("role")
+        content = str(entry.get("content") or "").strip()
+        if role not in {"user", "assistant"} or not content:
+            continue
+        messages.append({"role": role, "content": content[:700]})
+    return messages
+
+def remember_ai_message(key, role, content):
+    content = str(content or "").strip()
+    if not content:
+        return
+    ai_conversation_memory.setdefault(key, []).append({
+        "role": role,
+        "content": content[:900],
+        "ts": time.time(),
+    })
+    prune_ai_memory(key)
+    guild_id, channel_id = key
+    asyncio.create_task(asyncio.to_thread(save_ai_channel_memory, guild_id, channel_id, role, content[:1000], AI_MEMORY_DB_MAX_MESSAGES))
+
+def denial_message(detail=None):
+    detail = str(detail or "").strip()
+    return "You can't use that heh" if not detail else f"You can't use that heh\n{detail}"
+
+def command_denial_detail(ctx, error=None):
+    command_name = ctx.command.qualified_name if getattr(ctx, "command", None) else ""
+    que_only = {"addtick", "settick", "setquesos", "fsleep", "wake"}
+    if command_name in que_only:
+        return f"Only {QUE_OWNER_DISPLAY} can use this."
+    if ctx.guild:
+        return f"Only admins, the server owner, or {QUE_OWNER_DISPLAY} can use this."
+    return "This command can only be used somewhere you have permission."
 
 active_timers = load_active_timers()
 active_polls = load_active_polls()
@@ -468,6 +538,13 @@ def get_log_channel_id(guild_id, key):
     if not config:
         return None
     return config.get(key)
+
+def get_guild_log_config(guild_id):
+    config = load_guild_log_config(guild_id)
+    if config:
+        guild_log_configs[int(guild_id)] = config
+        return config
+    return guild_log_configs.get(int(guild_id), {})
 
 def guild_log_label(guild):
     if guild is None:
@@ -975,9 +1052,49 @@ def is_super_owner():
 async def keep_alive_task():
     print("Heartbeat")
 
+STALE_GAME_MARKERS = (
+    "TIC TAC TOE",
+    "CONNECT 4",
+    "CHESS",
+    "Q TOWERS",
+    "VAULT",
+    "MEMORY",
+    "LOCKPICK",
+    "CARD LADDER",
+    "DUNGEON",
+    "LUCKY NUMBER",
+    "PLINKO",
+    "HEIST",
+    "DICE DUEL",
+    "Q CASES",
+    "JACKPOT SPIN",
+    "MINESWEEPER",
+)
+
+async def cleanup_stale_game_messages():
+    for guild in bot.guilds:
+        for channel in getattr(guild, "text_channels", []):
+            permissions = channel.permissions_for(guild.me)
+            if not permissions.read_message_history or not permissions.send_messages:
+                continue
+            try:
+                async for message in channel.history(limit=20):
+                    if not bot.user or message.author.id != bot.user.id or not message.components:
+                        continue
+                    text = " ".join(filter(None, [message.content, *(embed.title or "" for embed in message.embeds)]))
+                    if not any(marker in text.upper() for marker in STALE_GAME_MARKERS):
+                        continue
+                    expired = f"\n\n{economy_q_game_timeout} Game expired after bot restart. Start a new game."
+                    new_content = fit_discord_content((message.content or "") + expired) if message.content else expired.strip()
+                    await message.edit(content=new_content, view=None, allowed_mentions=discord.AllowedMentions.none())
+            except (discord.Forbidden, discord.NotFound):
+                continue
+            except Exception as e:
+                print(f"Stale game cleanup skipped channel {channel.id}: {type(e).__name__} - {e}")
+
 @bot.event
 async def on_ready():
-    global birthday_task, activity_task, runtime_state_restored
+    global birthday_task, activity_task, runtime_state_restored, stale_game_messages_cleaned
     print(f'ProQue is online as {bot.user}')
     if not keep_alive_task.is_running():
         keep_alive_task.start()
@@ -989,7 +1106,7 @@ async def on_ready():
     try:
         await economy_setup(bot, send_log)
         economy_command_names = [
-            "bal", "profile", "inventory", "quests", "dailychallenge", "streaks", "guide", "shop", "cooldowns", "transactions", "limits", "lottery", "editlottery", "stoplottery", "lotterystats", "buytick",
+            "bal", "profile", "inventory", "settheme", "quests", "dailychallenge", "streaks", "guide", "shop", "cooldowns", "transactions", "limits", "lottery", "editlottery", "stoplottery", "lotterystats", "buytick",
             "daily", "weekly", "monthly", "cf", "roulette", "slots",
             "blackjack", "scratch", "tower", "vault", "memory", "cardladder", "lockpick", "heist", "diceduel", "cases", "plinko", "luckynumber", "jackpotspin", "dungeon", "ms", "wheel", "give", "lb", "gamestats", "achievements", "setbadge", "gamebalance", "gamehistory",
             "qstats", "economyaudit", "add", "remove", "addtick", "settick", "setquesos", "econhelp", "explain"
@@ -1001,6 +1118,9 @@ async def on_ready():
     if not runtime_state_restored:
         await restore_persistent_runtime_state()
         runtime_state_restored = True
+    if not stale_game_messages_cleaned:
+        stale_game_messages_cleaned = True
+        asyncio.create_task(cleanup_stale_game_messages())
     await sync_slash_commands_once()
 
 
@@ -1490,7 +1610,7 @@ async def set_birthday_channel(ctx, *, channel_arg: str = None):
     if ctx.guild is None:
         return await ctx.send("Birthday channels only work in servers.")
     if not await can_manage_birthday_channel(ctx.author, ctx.guild):
-        return await ctx.send("Only the person who added me, an admin, the server owner, or the superowner can set the birthday channel.")
+        return await ctx.send(f"Only the person who added me, an admin, the server owner, or {QUE_OWNER_DISPLAY} can set the birthday channel.")
 
     if channel_arg:
         channel = await resolve_server_channel(ctx.guild, channel_arg, ctx.message.channel_mentions)
@@ -1533,7 +1653,7 @@ async def activity(ctx, action: str = None):
         return
 
     if not await can_manage_activity_channel(ctx.author, ctx.guild):
-        return await ctx.send("Only the person who added me, an admin, the server owner, or the superowner can set the activity channel.")
+        return await ctx.send(f"Only the person who added me, an admin, the server owner, or {QUE_OWNER_DISPLAY} can set the activity channel.")
 
     async def save_activity_channel(selected_channel, user_id):
         return await save_activity_report_config(ctx.guild, selected_channel, user_id)
@@ -1665,7 +1785,7 @@ async def editactivity(ctx, setting: str = None, *, value: str = None):
     if ctx.guild is None:
         return await ctx.send("Activity report editing only works in servers.")
     if not await can_manage_activity_channel(ctx.author, ctx.guild):
-        return await ctx.send("Only the person who added me, an admin, the server owner, or the superowner can edit activity reports.")
+        return await ctx.send(f"Only the person who added me, an admin, the server owner, or {QUE_OWNER_DISPLAY} can edit activity reports.")
 
     config = guild_activity_channels.get(ctx.guild.id)
     if config is None:
@@ -1725,7 +1845,7 @@ async def stopactivity(ctx):
     if ctx.guild is None:
         return await ctx.send("Activity report stopping only works in servers.")
     if not await can_manage_activity_channel(ctx.author, ctx.guild):
-        return await ctx.send("Only the person who added me, an admin, the server owner, or the superowner can stop activity reports.")
+        return await ctx.send(f"Only the person who added me, an admin, the server owner, or {QUE_OWNER_DISPLAY} can stop activity reports.")
 
     saved_configs = await asyncio.to_thread(load_guild_activity_channels)
     if saved_configs:
@@ -1762,7 +1882,7 @@ async def endactivity(ctx):
     if ctx.guild is None:
         return await ctx.send("Activity report ending only works in servers.")
     if not await can_manage_activity_channel(ctx.author, ctx.guild):
-        return await ctx.send("Only the person who added me, an admin, the server owner, or the superowner can end the current activity report.")
+        return await ctx.send(f"Only the person who added me, an admin, the server owner, or {QUE_OWNER_DISPLAY} can end the current activity report.")
 
     saved_configs = await asyncio.to_thread(load_guild_activity_channels)
     if saved_configs:
@@ -2233,6 +2353,8 @@ async def on_message(message):
             ]
             if context_text:
                 messages.append({"role": "system", "content": f"Reply context:\n{context_text}"})
+            memory_key = ai_memory_key(message)
+            messages.extend(ai_memory_messages(memory_key))
             messages.append({"role": "user", "content": question})
 
             headers = {
@@ -2252,11 +2374,13 @@ async def on_message(message):
                             if resp.status == 200:
                                 data = await resp.json()
                                 answer = data["choices"][0]["message"]["content"].strip()
-                                await message.reply(
+                                sent = await message.reply(
                                     fit_discord_content(answer or "I could not come up with an answer."),
                                     mention_author=False,
                                     allowed_mentions=discord.AllowedMentions.none(),
                                 )
+                                remember_ai_message(memory_key, "user", question)
+                                remember_ai_message(memory_key, "assistant", sent.content or answer)
                             else:
                                 await message.reply(f"Error: {resp.status}", mention_author=False)
             except Exception as e:
@@ -2410,7 +2534,7 @@ async def on_command_error(ctx, error):
         if ctx.author.id in guild_blacklisted_users(ctx.guild):
             await ctx.send(f"LMAO you're blocked you can't use ts {economy_q_reject}")
         else:
-            await ctx.send("You can't use that heh")
+            await ctx.send(denial_message(command_denial_detail(ctx, error)))
 
     elif isinstance(error, commands.MissingPermissions):
         print(f"Command missing permissions: {ctx.command} for {ctx.author} ({ctx.author.id}) - {error}")
@@ -2441,11 +2565,11 @@ async def on_command_error(ctx, error):
         if has_owner_power(ctx.author, ctx.guild):
             await ctx.send(fit_discord_content(f"Error: `{error}`"))
         else:
-            await ctx.send("You can't use that heh")
+            await ctx.send(denial_message("Something went wrong while running this command. Try the help command for the right usage."))
 
 HELP_CATEGORIES = {
     "Quewo": [
-        "guide", "bal", "profile", "inventory", "quests", "dailychallenge", "streaks", "shop", "cooldowns", "transactions", "lottery", "lotterystats", "buytick",
+        "guide", "bal", "profile", "inventory", "settheme", "quests", "dailychallenge", "streaks", "shop", "cooldowns", "transactions", "lottery", "lotterystats", "buytick",
         "daily", "weekly", "monthly", "cf", "roulette", "slots", "blackjack", "scratch", "tower", "vault", "memory", "cardladder", "lockpick",
         "heist", "diceduel", "cases", "plinko", "luckynumber", "jackpotspin", "dungeon", "ms", "wheel",
         "give", "lb", "gamestats", "achievements", "setbadge", "gamebalance", "gamehistory", "limits", "qstats", "economyaudit", "econhelp", "explain",
@@ -2553,12 +2677,50 @@ class HelpView(View):
         for category in HELP_CATEGORIES:
             self.add_item(HelpCategoryButton(category))
 
+def command_search_results(query):
+    query = (query or "").strip().casefold()
+    if not query:
+        return []
+    results = []
+    for command in slash_runnable_commands():
+        names = [command.name, *command.aliases]
+        description = command_short_description(command)
+        explanation = economy_explanations.get(command.name, "")
+        haystack = " ".join([*names, description, explanation]).casefold()
+        if query not in haystack:
+            continue
+        results.append((command, description))
+        if len(results) >= 15:
+            break
+    return results
+
 @bot.command(name="help")
-async def help_command(ctx, command_name: str = None):
+async def help_command(ctx, *, command_name: str = None):
     if command_name:
+        parts = command_name.strip().split(maxsplit=1)
+        if parts and parts[0].casefold() == "search":
+            query = parts[1] if len(parts) > 1 else ""
+            current_prefix = prefix_for_guild(ctx.guild)
+            matches = command_search_results(query)
+            embed = discord.Embed(
+                title=f"{economy_q_thinking} Help Search",
+                description=f"Search: `{query or 'nothing'}`",
+                color=discord.Color.blurple(),
+            )
+            if not matches:
+                embed.description += f"\nNo matches. Try `{current_prefix}help` for categories."
+            else:
+                lines = [
+                    f"**{current_prefix}{command.name}** — {description}"
+                    for command, description in matches
+                ]
+                embed.add_field(name="Matches", value=joined_embed_value(lines), inline=False)
+            return await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
         command = get_command_case_insensitive(command_name)
         if not command:
-            return await ctx.send("Command not found.", delete_after=30)
+            current_prefix = prefix_for_guild(ctx.guild)
+            return await ctx.send(f"Command not found. Try `{current_prefix}help search {command_name}`.", delete_after=30)
 
         current_prefix = prefix_for_guild(ctx.guild)
         usage = command_usage_text(command, current_prefix)
@@ -2662,9 +2824,28 @@ class SettingsView(View):
     @discord.ui.button(label="Logs", style=discord.ButtonStyle.secondary)
     async def logs_button(self, interaction, button):
         if not has_owner_power(interaction.user, interaction.guild):
-            return await interaction.response.send_message("Admin power only.", ephemeral=True)
-        await interaction.response.send_message("Starting log setup in this server.", ephemeral=True)
-        await prompt_log_setup(interaction.guild)
+            return await interaction.response.send_message(denial_message(f"Only admins, the server owner, or {QUE_OWNER_DISPLAY} can use this."), ephemeral=True)
+        current = get_guild_log_config(interaction.guild.id) or {}
+        reaction_id = current.get("reaction_log_channel_id") or interaction.channel.id
+        await asyncio.to_thread(save_guild_log_config, interaction.guild.id, interaction.channel.id, reaction_id)
+        guild_log_configs[interaction.guild.id] = {
+            "log_channel_id": interaction.channel.id,
+            "reaction_log_channel_id": reaction_id,
+        }
+        await interaction.response.edit_message(embed=await build_settings_embed(interaction.guild), view=self)
+
+    @discord.ui.button(label="Reaction Logs Here", style=discord.ButtonStyle.secondary)
+    async def reaction_logs_button(self, interaction, button):
+        if not has_owner_power(interaction.user, interaction.guild):
+            return await interaction.response.send_message(denial_message(f"Only admins, the server owner, or {QUE_OWNER_DISPLAY} can use this."), ephemeral=True)
+        current = get_guild_log_config(interaction.guild.id) or {}
+        log_id = current.get("log_channel_id") or interaction.channel.id
+        await asyncio.to_thread(save_guild_log_config, interaction.guild.id, log_id, interaction.channel.id)
+        guild_log_configs[interaction.guild.id] = {
+            "log_channel_id": log_id,
+            "reaction_log_channel_id": interaction.channel.id,
+        }
+        await interaction.response.edit_message(embed=await build_settings_embed(interaction.guild), view=self)
 
     @discord.ui.button(label="Birthdays Here", style=discord.ButtonStyle.secondary)
     async def birthday_button(self, interaction, button):
@@ -2676,6 +2857,16 @@ class SettingsView(View):
         guild_birthday_channels[interaction.guild.id] = {"channel_id": interaction.channel.id, "set_by_user_id": interaction.user.id}
         await interaction.response.edit_message(embed=await build_settings_embed(interaction.guild), view=self)
 
+    @discord.ui.button(label="Clear Birthdays", style=discord.ButtonStyle.secondary)
+    async def birthday_clear_button(self, interaction, button):
+        if not await can_manage_birthday_channel(interaction.user, interaction.guild):
+            return await interaction.response.send_message("You can't change the birthday channel here.", ephemeral=True)
+        ok = await asyncio.to_thread(delete_guild_birthday_channel, interaction.guild.id)
+        if not ok:
+            return await interaction.response.send_message("Birthday channel clear failed.", ephemeral=True)
+        guild_birthday_channels.pop(interaction.guild.id, None)
+        await interaction.response.edit_message(embed=await build_settings_embed(interaction.guild), view=self)
+
     @discord.ui.button(label="Activity Here", style=discord.ButtonStyle.secondary)
     async def activity_button(self, interaction, button):
         if not await can_manage_activity_channel(interaction.user, interaction.guild):
@@ -2685,6 +2876,28 @@ class SettingsView(View):
             return await interaction.response.send_message(message, ephemeral=True)
         schedule_activity_live_refresh(interaction.guild.id, guild_activity_channels[interaction.guild.id])
         await interaction.response.edit_message(embed=await build_settings_embed(interaction.guild), view=self)
+
+    @discord.ui.button(label="Stop Activity", style=discord.ButtonStyle.secondary)
+    async def activity_stop_button(self, interaction, button):
+        if not await can_manage_activity_channel(interaction.user, interaction.guild):
+            return await interaction.response.send_message("You can't change activity reports here.", ephemeral=True)
+        ok = await asyncio.to_thread(delete_guild_activity_channel, interaction.guild.id)
+        if not ok:
+            return await interaction.response.send_message("Activity report stop failed.", ephemeral=True)
+        guild_activity_channels.pop(interaction.guild.id, None)
+        active_activity_status_messages.pop(interaction.guild.id, None)
+        await asyncio.to_thread(clear_guild_activity_counts, interaction.guild.id)
+        await interaction.response.edit_message(embed=await build_settings_embed(interaction.guild), view=self)
+
+    @discord.ui.button(label="Lottery Panel", style=discord.ButtonStyle.secondary)
+    async def lottery_button(self, interaction, button):
+        prefix = prefix_for_guild(interaction.guild)
+        await interaction.response.send_message(
+            f"Use `{prefix}lottery` to open or create the lottery panel.\n"
+            f"Use `{prefix}editlottery channel #{interaction.channel.name}` to move the current lottery here.",
+            ephemeral=True,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
 
     @discord.ui.button(label="Admin Commands", style=discord.ButtonStyle.secondary)
     async def admin_commands_button(self, interaction, button):
@@ -6682,7 +6895,7 @@ class ConfirmEndPollView(View):
     async def interaction_check(self, interaction):
         if interaction.user.id == self.ctx.author.id or interaction.user.id == super_owner_id:
             return True
-        await interaction.response.send_message("Only the poll owner or superowner can use this.", ephemeral=True)
+        await interaction.response.send_message(f"Only the poll owner or {QUE_OWNER_DISPLAY} can use this.", ephemeral=True)
         return False
 
     @discord.ui.button(label="Yes", style=discord.ButtonStyle.danger)
@@ -7245,7 +7458,7 @@ class CancelConfirmView(View):
     async def interaction_check(self, interaction):
         if interaction.user.id == self.ctx.author.id or interaction.user.id == super_owner_id:
             return True
-        await interaction.response.send_message("Only the timer owner or superowner can use this.", ephemeral=True)
+        await interaction.response.send_message(f"Only the timer owner or {QUE_OWNER_DISPLAY} can use this.", ephemeral=True)
         return False
 
     @discord.ui.button(label="Yes", style=discord.ButtonStyle.danger)

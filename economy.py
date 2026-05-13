@@ -28,6 +28,7 @@ COINFLIP_WIN_CHANCE = 0.49
 ROULETTE_WIN_CHANCE = 0.32
 SLOTS_WIN_CHANCE = 0.25
 SUPER_OWNER_ID = 885548126365171824
+QUE_OWNER_DISPLAY = "𝚀𝚞𝚎 (@queziee)"
 SUPEROWNER_LUCK_BONUS = 0.05
 CURRENCY_EMOJI = "<:Qoins:1500255107428782100>"
 QASH_EMOJI = "<:Qash:1500235432011497703>"
@@ -386,6 +387,7 @@ def init_db():
                     inventory TEXT[] DEFAULT '{}',
                     achievements TEXT[] DEFAULT '{}',
                     equipped_badges TEXT[] DEFAULT '{}',
+                    profile_theme TEXT DEFAULT 'default',
                     quest_claims TEXT[] DEFAULT '{}',
                     steal_blacklist BIGINT[] DEFAULT '{}',
                     luck_boost_until TIMESTAMP
@@ -500,6 +502,7 @@ def init_db():
             cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS inventory TEXT[] DEFAULT '{}'")
             cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS achievements TEXT[] DEFAULT '{}'")
             cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS equipped_badges TEXT[] DEFAULT '{}'")
+            cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS profile_theme TEXT DEFAULT 'default'")
             cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS quest_claims TEXT[] DEFAULT '{}'")
             cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS steal_blacklist BIGINT[] DEFAULT '{}'")
             cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS luck_boost_until TIMESTAMP")
@@ -753,7 +756,7 @@ def transfer_user_balance(sender_id, receiver_id, amount, tax=0, allow_overdraft
                     (tax, SUPER_OWNER_ID)
                 )
                 if cur.fetchone() is None:
-                    raise RuntimeError("Superowner tax credit affected no rows")
+                    raise RuntimeError("Que owner tax credit affected no rows")
                 if sender_id == SUPER_OWNER_ID:
                     new_sender_balance += tax
                 if receiver_id == SUPER_OWNER_ID:
@@ -1816,6 +1819,8 @@ def buy_lottery_tickets_sync(guild_id, user_id, tickets):
             (guild_id, user_id, total_entries, total_cost, pot_add)
         )
         user_total_entries = int(cur.fetchone()["tickets"])
+        cur.execute("SELECT COALESCE(SUM(tickets), 0) AS total FROM lottery_tickets WHERE guild_id = %s", (guild_id,))
+        round_total_entries = int(cur.fetchone()["total"] or 0)
         cur.execute("UPDATE lottery_config SET pot = %s WHERE guild_id = %s", (new_pot, guild_id))
         if burned > 0:
             cur.execute(
@@ -1840,6 +1845,7 @@ def buy_lottery_tickets_sync(guild_id, user_id, tickets):
             "bonus_tickets": bonus_tickets,
             "total_entries": total_entries,
             "user_total_entries": user_total_entries,
+            "round_total_entries": round_total_entries,
             "total_cost": total_cost,
             "pot_add": pot_add,
             "burned": burned,
@@ -1852,9 +1858,12 @@ def buy_lottery_tickets_sync(guild_id, user_id, tickets):
 
 def lottery_purchase_message(result):
     user_total_entries = result.get("user_total_entries", result["total_entries"])
+    round_total_entries = max(1, int(result.get("round_total_entries") or user_total_entries))
+    odds = (user_total_entries / round_total_entries) * 100
     return (
         f"{Q_TICKET} Bought **{result['tickets']:,}** lottery tickets for **{format_balance(result['total_cost'])}**.\n"
         f"Bonus Tickets: **+{result['bonus_tickets']:,}** | Your Total Entries: **{user_total_entries:,}**\n"
+        f"{Q_TARGET} Odds Now: **{odds:.2f}%** ({user_total_entries:,}/{round_total_entries:,} entries)\n"
         f"Prize Pot +**{format_balance(result['pot_add'])}** | Burned **{format_balance(result['burned'])}**\n"
         f"Current Prize: **{format_balance(result['new_pot'])}**\n"
         f"New Balance: **{format_balance(result['new_balance'])}**"
@@ -2432,10 +2441,32 @@ def achievement_reward_text(achievements):
     if not achievements:
         return ""
     lines = [
-        f"{Q_BADGE} Achievement: **{achievement['name']}** +**{format_balance(achievement['reward'])}**"
+        f"{Q_ACHIEVEMENT_UNLOCKED} Achievement: **{achievement['name']}** +**{format_balance(achievement['reward'])}**"
         for achievement in achievements
     ]
     return "\n" + "\n".join(lines)
+
+def build_achievement_embed(user_id, achievements):
+    embed = discord.Embed(
+        title=f"{Q_ACHIEVEMENT_UNLOCKED} Achievement Unlocked",
+        description=user_mention(user_id),
+        color=discord.Color.gold(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    lines = [
+        f"**{achievement['name']}**\nReward: **{format_balance(achievement['reward'])}**"
+        for achievement in achievements
+    ]
+    embed.add_field(name="Unlocked", value="\n\n".join(lines)[:1024], inline=False)
+    return embed
+
+async def send_achievement_notifications(ctx, achievements):
+    if not achievements:
+        return
+    try:
+        await ctx.send(embed=build_achievement_embed(ctx.author.id, achievements), allowed_mentions=discord.AllowedMentions.none())
+    except Exception as e:
+        print(f"Achievement notification failed: {type(e).__name__} - {e}")
 
 def settle_gambling_result(user_id, game_key, amount, base_multiplier=0, won=False, neutral=False, data=None):
     latest = get_user(user_id) if data is None else data
@@ -2715,26 +2746,45 @@ def build_inventory_embed(user, data, page="overview"):
 def user_mention(user_id):
     return f"<@{user_id}>"
 
+PROFILE_THEMES = {
+    "default": {"label": "Default", "item": None, "color": discord.Color.gold(), "prefix": ""},
+    "gold": {"label": "Gold Badge", "item": "gold_badge", "color": discord.Color.gold(), "prefix": f"{Q_GOLD_BADGE} "},
+    "velvet": {"label": "Velvet Frame", "item": "velvet_frame", "color": discord.Color.purple(), "prefix": f"{Q_VELVET_FRAME} "},
+    "royal": {"label": "Royal Crown", "item": "royal_crown", "color": discord.Color.blue(), "prefix": f"{Q_ROYAL_CROWN} "},
+    "highroller": {"label": "High Roller", "item": "high_roller", "color": discord.Color.dark_gold(), "prefix": f"{Q_HIGH_ROLLER} "},
+}
+
+def equipped_profile_theme(data):
+    theme_id = str(data.get("profile_theme") or "default").casefold()
+    theme = PROFILE_THEMES.get(theme_id, PROFILE_THEMES["default"])
+    item_id = theme.get("item")
+    if item_id and not has_item(data, item_id):
+        return "default", PROFILE_THEMES["default"]
+    return theme_id, theme
+
 def build_profile_embed(user, data):
     level = data.get("level") or 1
     xp = data.get("xp") or 0
     needed = xp_needed_for_level(level)
     items = owned_item_lines(data)
+    theme_id, theme = equipped_profile_theme(data)
     title = "Royal High Roller" if has_item(data, "royal_crown") else ("High Roller" if has_item(data, "high_roller") else "Queso Collector")
     if has_item(data, "velvet_frame"):
         title = f"Velvet {title}"
+    title = f"{theme['prefix']}{title}"
     net = (data.get("total_won") or 0) - (data.get("total_lost") or 0)
 
     embed = discord.Embed(
         title=f"{Q_XP} Profile",
         description=f"{user_mention(user.id)}\n**{title}**",
-        color=discord.Color.gold()
+        color=theme["color"]
     )
     embed.set_thumbnail(url=user.display_avatar.url)
     embed.add_field(name=f"{QASH_EMOJI} Balance", value=format_balance(data["balance"]), inline=True)
     embed.add_field(name=f"{Q_LEVEL_UP} Level", value=f"{level}", inline=True)
     embed.add_field(name=f"{Q_XP} XP", value=f"{xp:,}/{needed:,}", inline=True)
     embed.add_field(name="Net Gambling", value=format_balance(net), inline=True)
+    embed.add_field(name="Theme", value=theme["label"], inline=True)
     boost_text = luck_boost_text(data)
     if boost_text:
         embed.add_field(name="Luck Boost", value=boost_text, inline=False)
@@ -3148,6 +3198,30 @@ async def profile(ctx, member: discord.Member = None):
         return
 
     await ctx.send(embed=build_profile_embed(user, data), allowed_mentions=discord.AllowedMentions.none())
+
+@commands.command(name="settheme", aliases=["theme", "profiletheme"])
+async def settheme(ctx, theme: str = None):
+    """Equips a profile theme from owned decorative shop items."""
+    if not await ensure_db_ready(ctx):
+        return
+    data = get_user(ctx.author.id)
+    if theme is None:
+        lines = []
+        for theme_id, info in PROFILE_THEMES.items():
+            item_id = info.get("item")
+            owned = item_id is None or has_item(data, item_id)
+            status = "owned" if owned else f"requires {item_display_name(SHOP_ITEMS[item_id])}"
+            lines.append(f"`{theme_id}` - {info['label']} ({status})")
+        return await ctx.send(f"{Q_VELVET_FRAME} Profile themes:\n" + "\n".join(lines))
+
+    theme_id = theme.strip().casefold()
+    if theme_id not in PROFILE_THEMES:
+        return await ctx.send(f"{Q_DENIED} Use one of: `{', '.join(PROFILE_THEMES)}`")
+    item_id = PROFILE_THEMES[theme_id].get("item")
+    if item_id and not has_item(data, item_id):
+        return await ctx.send(f"{Q_DENIED} You need **{item_display_name(SHOP_ITEMS[item_id])}** to use that theme.")
+    update_user(ctx.author.id, profile_theme=theme_id)
+    await ctx.send(f"{Q_SUCCESS} Profile theme equipped: **{PROFILE_THEMES[theme_id]['label']}**")
 
 @commands.command(name="inventory", aliases=["inv", "items"])
 async def inventory(ctx, member: discord.Member = None):
@@ -5314,7 +5388,7 @@ async def add(ctx, *, args: str = None):
 
     if ctx.guild and is_everyone:
         if ctx.author.id != 885548126365171824:
-            await ctx.send(f"{Q_DENIED} Bulk `.add @everyone` is superowner only.")
+            await ctx.send(f"{Q_DENIED} Bulk `.add @everyone` is only for {QUE_OWNER_DISPLAY}.")
             return
         members = list(ctx.guild.members)
         try:
@@ -5344,7 +5418,7 @@ async def add(ctx, *, args: str = None):
 
     if role is not None:
         if ctx.author.id != 885548126365171824:
-            await ctx.send(f"{Q_DENIED} Bulk `.add @role` is superowner only.")
+            await ctx.send(f"{Q_DENIED} Bulk `.add @role` is only for {QUE_OWNER_DISPLAY}.")
             return
         members = list(role.members)
         if not members:
@@ -5455,14 +5529,14 @@ async def remove(ctx, *, args: str = None):
 
 @commands.command()
 async def addtick(ctx, *, args: str = None):
-    """Superowner only. Adds free lottery tickets to a user, role, or everyone."""
+    """Que owner only. Adds free lottery tickets to a user, role, or everyone."""
     if ctx.guild is None:
         await ctx.send(f"{Q_DENIED} `.addtick` only works in servers.")
         return
     if not await ensure_db_ready(ctx):
         return
     if not is_superowner_id(ctx.author.id):
-        await ctx.send(f"{Q_DENIED} Superowner only.")
+        await ctx.send(f"{Q_DENIED} Only {QUE_OWNER_DISPLAY} can use this.")
         return
     target, amount = parse_target_amount_args(args)
     if not target:
@@ -5516,14 +5590,14 @@ async def addtick(ctx, *, args: str = None):
 
 @commands.command()
 async def settick(ctx, *, args: str = None):
-    """Superowner only. Sets lottery tickets for a user, role, or everyone."""
+    """Que owner only. Sets lottery tickets for a user, role, or everyone."""
     if ctx.guild is None:
         await ctx.send(f"{Q_DENIED} `.settick` only works in servers.")
         return
     if not await ensure_db_ready(ctx):
         return
     if not is_superowner_id(ctx.author.id):
-        await ctx.send(f"{Q_DENIED} Superowner only.")
+        await ctx.send(f"{Q_DENIED} Only {QUE_OWNER_DISPLAY} can use this.")
         return
     target, amount = parse_target_amount_args(args)
     if not target:
@@ -5574,14 +5648,14 @@ async def settick(ctx, *, args: str = None):
 
 @commands.command()
 async def setquesos(ctx, *, args: str = None):
-    """Superowner only. Sets balances for a user, role, or everyone."""
+    """Que owner only. Sets balances for a user, role, or everyone."""
     if ctx.guild is None:
         await ctx.send(f"{Q_DENIED} `.setquesos` only works in servers.")
         return
     if not await ensure_db_ready(ctx):
         return
     if not is_superowner_id(ctx.author.id):
-        await ctx.send(f"{Q_DENIED} Superowner only.")
+        await ctx.send(f"{Q_DENIED} Only {QUE_OWNER_DISPLAY} can use this.")
         return
     target, amount = parse_target_amount_args(args)
     if not target:
@@ -6697,6 +6771,7 @@ async def send_new_game_result(ctx, game_key, title, amount, result, details="",
     )
     view = double_or_nothing_view(ctx.author.id, game_key, result)
     await ctx.send(content, view=view, allowed_mentions=discord.AllowedMentions.none())
+    await send_achievement_notifications(ctx, result.get("achievements", []))
 
 HEIST_ROUTES = {
     "silent": {"label": "Silent", "chance": 0.45, "mult": 2.0, "risk": "Medium"},
@@ -9249,7 +9324,7 @@ async def replay_double_or_nothing_game(interaction, game_key, stake):
 # EXPLAIN
 # =====================
 EXPLANATIONS = {
-    "admin": "Admin power means superowner, actual server owner, or Discord Administrator. Server owner outranks admins, and superowner is highest.",
+    "admin": f"Admin power means {QUE_OWNER_DISPLAY}, actual server owner, or Discord Administrator. Server owner outranks admins, and {QUE_OWNER_DISPLAY} is highest.",
     "settings": "Admin-power command. Opens a server setup dashboard for prefix, logs, birthdays, activity reports, lottery status, and disabled commands.",
     "setup": "Alias for `.settings`. Opens the server setup dashboard.",
     "config": "Alias for `.settings`. Opens the server setup dashboard.",
@@ -9268,6 +9343,9 @@ EXPLANATIONS = {
     "level": "Alias for `.profile`. Shows level, XP, balance, stats, and owned items.",
     "lvl": "Alias for `.profile`. Shows level, XP, balance, stats, and owned items.",
     "inventory": "Opens a paged inventory UI for owned items, active effects, passive bonuses, and item categories.",
+    "settheme": "Equips a profile theme from owned decorative shop items.",
+    "theme": "Alias for `.settheme`. Equips a profile theme.",
+    "profiletheme": "Alias for `.settheme`. Equips a profile theme.",
     "inv": "Alias for `.inventory`. Opens the paged Quewo inventory UI.",
     "items": "Alias for `.inventory`. Opens the paged Quewo inventory UI.",
     "streaks": "Shows daily, weekly, monthly, and gambling streaks with next claim times.",
@@ -9374,10 +9452,10 @@ EXPLANATIONS = {
     "econaudit": "Alias for `.economyaudit`. Shows economy audit signals.",
     "add": "Admin-power command. Adds quesos. Target and amount can be in either order.",
     "remove": "Admin-power command. Removes quesos. Target and amount can be in either order.",
-    "addtick": "Superowner command. Adds free lottery tickets. Target and tickets can be in either order.",
-    "settick": "Superowner command. Sets lottery tickets. Target and tickets can be in either order.",
-    "setquesos": "Superowner command. Sets balances. Target and amount can be in either order.",
-    "disable": "Admin-power command. Disables one bot command. Superowner can still bypass disabled commands.",
+    "addtick": f"{QUE_OWNER_DISPLAY} command. Adds free lottery tickets. Target and tickets can be in either order.",
+    "settick": f"{QUE_OWNER_DISPLAY} command. Sets lottery tickets. Target and tickets can be in either order.",
+    "setquesos": f"{QUE_OWNER_DISPLAY} command. Sets balances. Target and amount can be in either order.",
+    "disable": f"Admin-power command. Disables one bot command. {QUE_OWNER_DISPLAY} can still bypass disabled commands.",
     "enable": "Admin-power command. Enables one disabled command.",
     "disableall": "Admin-power command. Disables all commands except enableall.",
     "enableall": "Admin-power command. Enables all commands again.",
@@ -9401,8 +9479,8 @@ EXPLANATIONS = {
     "removerole": "Admin-power command. Removes a role from a member. Member and role can be in either order.",
     "reactcount": "Admin-power command. Counts reactions on a message.",
     "sleep": "Marks you as sleeping until you send a message.",
-    "fsleep": "Superowner command. Marks members as sleeping.",
-    "wake": "Superowner command. Removes sleep mode from members.",
+    "fsleep": f"{QUE_OWNER_DISPLAY} command. Marks members as sleeping.",
+    "wake": f"{QUE_OWNER_DISPLAY} command. Removes sleep mode from members.",
     "afk": "Marks you AFK until you send a message.",
     "setbday": "Saves your birthday. Use `.setbday 25/12`, or run `.setbday` to open a setup UI.",
     "removebday": "Removes your birthday.",
@@ -9459,6 +9537,7 @@ DETAILED_EXPLANATIONS = {
     "level": f"Alias for `.profile`. Shows level, current XP toward the next level, balance, net gambling result, and shop items. Level rewards start at {format_balance(LEVEL_REWARD_BASE)}.",
     "lvl": f"Alias for `.profile`. Shows level, current XP toward the next level, balance, net gambling result, and shop items. Level rewards start at {format_balance(LEVEL_REWARD_BASE)}.",
     "inventory": "Opens a paged inventory UI. Overview shows balance, item count, active temporary effects, passive bonuses, and owned categories. Other pages show Active Effects, Owned Items, or a full category list with descriptions and owned counts.",
+    "settheme": "Equips a profile theme from owned decorative shop items. Use `.settheme` to list themes, then `.settheme velvet`, `.settheme gold`, `.settheme royal`, or `.settheme highroller` if you own the needed item.",
     "streaks": "Shows claim streaks and live next-claim timestamps for daily, weekly, and monthly. Also shows the active universal gambling win streak and current payout multiplier.",
     "guide": "New-user guide for earning, playing, spending, and safety commands. Use it when someone joins and does not know where to start.",
     "inv": "Alias for `.inventory`. Opens the paged Quewo inventory UI.",
@@ -9517,12 +9596,12 @@ DETAILED_EXPLANATIONS = {
     "leaderboard": "Alias for `.lb`. Shows local/global paginated rankings with selectable ranking types and your rank.",
     "qstats": "Admin-power command for checking the global Quewo economy. It shows total money supply, total earned, gambling won/lost/net, active lotteries, lottery pots, ticket count, tracked taxes/payments, richest user, and tracked messages. If you pass a member, it redirects to that user's economy audit.",
     "economyaudit": "Admin-power economy audit page. Without a member, it adds balancing signals on top of qstats: daily losses, recent transaction volume, tracked sink/payment totals, and per-game play/win/profit signals sorted by biggest impact. With a member, it shows that user's balance, level, net gambling, daily loss usage, game signals, recent games, recent transactions, and warnings.",
-    "add": "Admin-power command. Adds new quesos to a user. `.add @user <amount>` and `.add <amount> @user` both work. Superowner can use @everyone or a role. It does not support `all`.",
+    "add": f"Admin-power command. Adds new quesos to a user. `.add @user <amount>` and `.add <amount> @user` both work. {QUE_OWNER_DISPLAY} can use @everyone or a role. It does not support `all`.",
     "remove": "Admin-power command. Removes quesos from a user. `.remove @user <amount>` and `.remove <amount> @user` both work. Use `all` to remove their full balance.",
-    "addtick": "Superowner-only lottery admin command. Adds free entries to the current lottery. `.addtick @user <tickets>` and `.addtick <tickets> @user` both work, including roles and @everyone.",
-    "settick": "Superowner-only lottery admin command. Sets current lottery entries to an exact number. `.settick @user <tickets>` and `.settick <tickets> @user` both work, including roles and @everyone.",
-    "setquesos": f"Superowner-only Quewo admin command. Sets balances directly. `.setquesos @user <amount>` and `.setquesos <amount> @user` both work, including roles and @everyone.",
-    "prefix": "Changes the command prefix for this server. Use `.prefix !` or `.preifx !`. If the superowner is in the server, only the superowner can change it. If not, the server owner or admins can change it.",
+    "addtick": f"{QUE_OWNER_DISPLAY}-only lottery admin command. Adds free entries to the current lottery. `.addtick @user <tickets>` and `.addtick <tickets> @user` both work, including roles and @everyone.",
+    "settick": f"{QUE_OWNER_DISPLAY}-only lottery admin command. Sets current lottery entries to an exact number. `.settick @user <tickets>` and `.settick <tickets> @user` both work, including roles and @everyone.",
+    "setquesos": f"{QUE_OWNER_DISPLAY}-only Quewo admin command. Sets balances directly. `.setquesos @user <amount>` and `.setquesos <amount> @user` both work, including roles and @everyone.",
+    "prefix": f"Changes the command prefix for this server. Use `.prefix !` or `.preifx !`. If {QUE_OWNER_DISPLAY} is in the server, only {QUE_OWNER_DISPLAY} can change it. If not, the server owner or admins can change it.",
     "preifx": "Typo alias for `.prefix`. Changes the command prefix for this server.",
     "setbdaychannel": "Sets the birthday announcement channel for this server. Use `.setbdaychannel #birthdays` or `.setbdaychannel <channel id>`. Users keep one birthday date globally, and the bot announces it in every server where they are still a member and a birthday channel is configured.",
     "activity": "Shows the daily activity report status for this server, including report channel, next report time, and current top 5. Use `.activity setup` to set or change the report channel. Every 24 hours, the bot posts the top 5 members by tracked messages since the last report, then resets that server's activity window.",
@@ -9531,7 +9610,7 @@ DETAILED_EXPLANATIONS = {
     "endactivity": "Admin command. Use `.endactivity` to finish the current report immediately. It clears the report channel, posts the previous activity winners, starts a fresh 24-hour activity window, and keeps activity reports enabled.",
     "stopactivity": "Admin command. Use `.stopactivity` to disable daily activity reports for this server and clear the current tracked activity window.",
     "timer": "Starts a live countdown and pings you when it ends. The time can come before or after the title: `.timer 10m study`, `.timer study 10m`, `.timer 1h 20m`, or `.timer 30s`. Use `.ctimer` to cancel one of your active timers.",
-    "ctimer": "Opens a menu of your active timers so you can cancel one. Superowner can cancel any active timer.",
+    "ctimer": f"Opens a menu of your active timers so you can cancel one. {QUE_OWNER_DISPLAY} can cancel any active timer.",
     "alarm": "Sets a one-off alarm and pings you when it is due. Relative times work, like `.alarm 1h feed cat`; dates work too, like `.alarm 25/12`, `.alarm 25/12 18:00`, or `.alarm 25/12/2026 18:30 travel`.",
     "poll": "Creates a reaction poll. For a yes/no poll, use `.poll Is this good?`. For custom choices, use `.poll Best color? blue red`, `.poll Best color? \"light blue\" red`, or `.poll Best color? | Blue | Red | 10m`. A final time like `10m`, `2h`, or `1d` makes the poll end automatically.",
     "epoll": "Opens a menu to end one of your active polls. Admin-power users can end any active poll in the server.",
@@ -9555,7 +9634,7 @@ DETAILED_EXPLANATIONS = {
 }
 
 ECONHELP_COMMANDS = [
-    ("Core", ["guide", "bal", "profile", "inventory", "quests", "dailychallenge", "streaks", "shop", "cooldowns", "transactions", "limits", "lb"]),
+    ("Core", ["guide", "bal", "profile", "inventory", "settheme", "quests", "dailychallenge", "streaks", "shop", "cooldowns", "transactions", "limits", "lb"]),
     ("Stats", ["gamestats", "achievements", "setbadge", "gamebalance", "gamehistory", "qstats", "economyaudit"]),
     ("Claims", ["daily", "weekly", "monthly"]),
     ("Lottery", ["lottery", "buytick", "lotterystats", "editlottery", "stoplottery"]),
@@ -9726,7 +9805,7 @@ async def setup(bot_ref, log_callback=None):
     print(f"Quewo db_ready = {db_ready}")
 
     economy_commands = [
-        bal, profile, inventory, quests, dailychallenge, streaks, guide, shop, cooldowns, transactions, limits, lottery, editlottery, stoplottery, lotterystats, buytick,
+        bal, profile, inventory, settheme, quests, dailychallenge, streaks, guide, shop, cooldowns, transactions, limits, lottery, editlottery, stoplottery, lotterystats, buytick,
         daily, weekly, monthly, gamble, roulette, slots, blackjack,
         scratch, tower, vault, memory_game, card_ladder, lockpick, heist, dice_duel, cases, plinko, lucky_number, jackpot_spin, dungeon, minesweeper, wheel, give, lb, gamestats, achievements, setbadge, gamebalance, gamehistory, qstats, economyaudit, add, remove, addtick, settick, setquesos, econhelp, explain
     ]
