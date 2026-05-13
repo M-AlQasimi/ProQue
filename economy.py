@@ -9,6 +9,10 @@ from psycopg2.extras import RealDictCursor
 from datetime import datetime, timezone, timedelta
 import discord
 from discord.ext import commands
+try:
+    from discord.ext.commands.view import StringView
+except Exception:
+    StringView = None
 
 db_ready = False
 db_initializing = False
@@ -215,6 +219,7 @@ QUEST_POOLS = {
 SHOP_ITEMS = {
     "lucky_charm": {
         "category": "Gambling",
+        "rarity": "Rare",
         "name": "Lucky Charm",
         "emoji": Q_LUCKY_CHARM,
         "cost": 750_000,
@@ -223,6 +228,7 @@ SHOP_ITEMS = {
     },
     "xp_tonic": {
         "category": "Leveling",
+        "rarity": "Common",
         "name": "XP Tonic",
         "emoji": Q_XP_TONIC,
         "cost": 300_000,
@@ -231,6 +237,7 @@ SHOP_ITEMS = {
     },
     "queso_magnet": {
         "category": "Leveling",
+        "rarity": "Epic",
         "name": "Queso Magnet",
         "emoji": Q_QUESO_MAGNET,
         "cost": 1_250_000,
@@ -239,6 +246,7 @@ SHOP_ITEMS = {
     },
     "daily_spice": {
         "category": "Claims",
+        "rarity": "Common",
         "name": "Daily Spice",
         "emoji": Q_DAILY_SPICE,
         "cost": 325_000,
@@ -247,6 +255,7 @@ SHOP_ITEMS = {
     },
     "streak_polish": {
         "category": "Gambling",
+        "rarity": "Common",
         "name": "Streak Polish",
         "emoji": Q_STREAK_POLISH,
         "cost": 375_000,
@@ -255,6 +264,7 @@ SHOP_ITEMS = {
     },
     "gold_badge": {
         "category": "Cosmetics",
+        "rarity": "Rare",
         "name": "Gold Badge",
         "emoji": Q_GOLD_BADGE,
         "cost": 500_000,
@@ -263,6 +273,7 @@ SHOP_ITEMS = {
     },
     "high_roller": {
         "category": "Cosmetics",
+        "rarity": "Epic",
         "name": "High Roller Title",
         "emoji": Q_HIGH_ROLLER,
         "cost": 1_000_000,
@@ -271,6 +282,7 @@ SHOP_ITEMS = {
     },
     "velvet_frame": {
         "category": "Cosmetics",
+        "rarity": "Rare",
         "name": "Velvet Profile Frame",
         "emoji": Q_VELVET_FRAME,
         "cost": 750_000,
@@ -279,6 +291,7 @@ SHOP_ITEMS = {
     },
     "ticket_charm": {
         "category": "Lottery",
+        "rarity": "Epic",
         "name": "Ticket Charm",
         "emoji": Q_TICKET_CHARM,
         "cost": 1_500_000,
@@ -287,6 +300,7 @@ SHOP_ITEMS = {
     },
     "cooldown_clock": {
         "category": "Utility",
+        "rarity": "Epic",
         "name": "Cooldown Clock",
         "emoji": Q_COOLDOWN_CLOCK,
         "cost": 1_000_000,
@@ -295,6 +309,7 @@ SHOP_ITEMS = {
     },
     "fortune_vial": {
         "category": "Gambling",
+        "rarity": "Epic",
         "name": "Fortune Vial",
         "emoji": Q_FORTUNE_VIAL,
         "cost": 1_000_000,
@@ -305,6 +320,7 @@ SHOP_ITEMS = {
     },
     "royal_crown": {
         "category": "Cosmetics",
+        "rarity": "Royal",
         "name": "Royal Q Crown",
         "emoji": Q_ROYAL_CROWN,
         "cost": 2_000_000,
@@ -388,6 +404,8 @@ def init_db():
                     achievements TEXT[] DEFAULT '{}',
                     equipped_badges TEXT[] DEFAULT '{}',
                     profile_theme TEXT DEFAULT 'default',
+                    daily_challenge_streak INTEGER DEFAULT 0,
+                    last_daily_challenge_claim DATE,
                     quest_claims TEXT[] DEFAULT '{}',
                     steal_blacklist BIGINT[] DEFAULT '{}',
                     luck_boost_until TIMESTAMP
@@ -447,6 +465,26 @@ def init_db():
                 )
             """)
             cur.execute("""
+                CREATE TABLE IF NOT EXISTS economy_season_scores (
+                    season_key TEXT NOT NULL,
+                    user_id BIGINT NOT NULL,
+                    played BIGINT NOT NULL DEFAULT 0,
+                    wins BIGINT NOT NULL DEFAULT 0,
+                    profit BIGINT NOT NULL DEFAULT 0,
+                    PRIMARY KEY (season_key, user_id)
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS economy_season_rewards (
+                    season_key TEXT NOT NULL,
+                    user_id BIGINT NOT NULL,
+                    rank INTEGER NOT NULL,
+                    reward BIGINT NOT NULL,
+                    rewarded_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (season_key, user_id)
+                )
+            """)
+            cur.execute("""
                 CREATE TABLE IF NOT EXISTS lottery_config (
                     guild_id BIGINT PRIMARY KEY,
                     channel_id BIGINT NOT NULL,
@@ -503,6 +541,8 @@ def init_db():
             cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS achievements TEXT[] DEFAULT '{}'")
             cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS equipped_badges TEXT[] DEFAULT '{}'")
             cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS profile_theme TEXT DEFAULT 'default'")
+            cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS daily_challenge_streak INTEGER DEFAULT 0")
+            cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS last_daily_challenge_claim DATE")
             cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS quest_claims TEXT[] DEFAULT '{}'")
             cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS steal_blacklist BIGINT[] DEFAULT '{}'")
             cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS luck_boost_until TIMESTAMP")
@@ -982,6 +1022,17 @@ def record_game_result(user_id, game_key, won, net_amount, payout=0):
             """,
             (user_id, game_key, won, int(net_amount), int(payout))
         )
+        cur.execute(
+            """
+            INSERT INTO economy_season_scores (season_key, user_id, played, wins, profit)
+            VALUES (%s, %s, 1, %s, %s)
+            ON CONFLICT (season_key, user_id) DO UPDATE SET
+                played = economy_season_scores.played + 1,
+                wins = economy_season_scores.wins + EXCLUDED.wins,
+                profit = economy_season_scores.profit + EXCLUDED.profit
+            """,
+            (current_season_key(), user_id, 1 if won is True else 0, int(net_amount))
+        )
         conn.commit()
         if won is True:
             try:
@@ -1034,6 +1085,81 @@ def get_game_history(user_id, limit=12):
     cur.close()
     conn.close()
     return rows
+
+def current_season_key(now=None):
+    now = now or datetime.now(timezone.utc)
+    return now.strftime("%Y-%m")
+
+def season_end_timestamp(now=None):
+    now = now or datetime.now(timezone.utc)
+    year = now.year + (1 if now.month == 12 else 0)
+    month = 1 if now.month == 12 else now.month + 1
+    end = datetime(year, month, 1, tzinfo=timezone.utc)
+    return int(end.timestamp())
+
+SEASON_REWARDS = [100_000_000, 80_000_000, 50_000_000]
+
+def get_season_leaderboard(season_key=None, limit=10):
+    season_key = season_key or current_season_key()
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT * FROM economy_season_scores
+        WHERE season_key = %s
+        ORDER BY profit DESC, wins DESC, played DESC, user_id ASC
+        LIMIT %s
+        """,
+        (season_key, int(limit))
+    )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
+
+def reward_previous_season(season_key):
+    rows = get_season_leaderboard(season_key, len(SEASON_REWARDS))
+    if not rows:
+        return []
+    conn = get_db_connection()
+    cur = conn.cursor()
+    rewarded = []
+    try:
+        for index, row in enumerate(rows, 1):
+            reward = SEASON_REWARDS[index - 1]
+            user_id = int(row["user_id"])
+            cur.execute(
+                """
+                INSERT INTO economy_season_rewards (season_key, user_id, rank, reward)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (season_key, user_id) DO NOTHING
+                RETURNING user_id
+                """,
+                (season_key, user_id, index, reward)
+            )
+            if cur.fetchone() is None:
+                continue
+            cur.execute(
+                "INSERT INTO economy (user_id, balance) VALUES (%s, 0) ON CONFLICT (user_id) DO NOTHING",
+                (user_id,)
+            )
+            cur.execute(
+                "UPDATE economy SET balance = balance + %s, total_earned = total_earned + %s WHERE user_id = %s",
+                (reward, reward, user_id)
+            )
+            cur.execute(
+                "INSERT INTO economy_transactions (user_id, kind, amount, note) VALUES (%s, %s, %s, %s)",
+                (user_id, "season_reward", reward, f"{season_key} rank #{index}")
+            )
+            rewarded.append((index, user_id, reward))
+        conn.commit()
+        return rewarded
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cur.close()
+        conn.close()
 
 def get_economy_audit():
     stats = get_economy_stats()
@@ -2020,6 +2146,180 @@ class LotteryPanelView(discord.ui.View):
     async def stats(self, interaction, button):
         await send_lottery_stats(interaction)
 
+def resolve_lottery_text_channel(guild, raw, mentioned_channels=None):
+    for channel in mentioned_channels or []:
+        if getattr(channel, "guild", None) == guild and isinstance(channel, discord.TextChannel):
+            return channel
+    raw_text = str(raw or "").strip()
+    name_text = raw_text[1:] if raw_text.startswith("#") else raw_text
+    if name_text:
+        lowered = name_text.casefold()
+        for channel in getattr(guild, "text_channels", []) or []:
+            if channel.name.casefold() == lowered:
+                return channel
+    match = re.search(r"\d{15,25}", str(raw or ""))
+    if not match:
+        return None
+    channel = guild.get_channel(int(match.group(0)))
+    if isinstance(channel, discord.TextChannel):
+        return channel
+    return None
+
+async def apply_lottery_edit(guild, author, setting, value, send, channel_mentions=None):
+    config = await asyncio.to_thread(get_lottery_config, guild.id)
+    if config is None:
+        await send("Lottery is not set up yet. Run `.lottery` first.")
+        return False
+
+    setting = str(setting or "").casefold()
+    updates = {}
+    message = ""
+
+    if setting in {"price", "ticket", "ticketprice"}:
+        parsed = parse_amount(value, author.id, guild, None)
+        if parsed is None or parsed <= 0:
+            await send(f"{Q_DENIED} Ticket price must be a positive number.")
+            return False
+        updates["ticket_cost"] = parsed
+        message = f"Ticket price set to **{format_balance(parsed)}**."
+
+    elif setting in {"duration", "period", "time"}:
+        seconds = period_seconds_from_text(value)
+        if seconds is None:
+            await send(f"{Q_DENIED} Invalid duration. Use at least 5 minutes, like `30m`, `12h`, or `1d`.")
+            return False
+        updates["period_seconds"] = seconds
+        updates["next_draw"] = datetime.now(timezone.utc) + timedelta(seconds=seconds)
+        message = f"Lottery duration set to **{format_duration(seconds)}**. Next draw was reset."
+
+    elif setting in {"cut", "housecut", "tax", "burn"}:
+        try:
+            cut_percent = float(str(value).strip().replace("%", ""))
+        except ValueError:
+            await send(f"{Q_DENIED} House cut must be a number from 0 to 90.")
+            return False
+        if cut_percent < 0 or cut_percent > 90:
+            await send(f"{Q_DENIED} House cut must be from 0 to 90.")
+            return False
+        updates["house_cut"] = cut_percent / 100
+        message = f"House cut set to **{cut_percent:.1f}%**."
+
+    elif setting in {"channel", "chan"}:
+        channel = resolve_lottery_text_channel(guild, value, channel_mentions)
+        if channel is None:
+            await send(f"{Q_DENIED} Mention a normal text channel or send its channel ID.")
+            return False
+        try:
+            await prepare_lottery_channel(
+                guild,
+                channel,
+                int(config["period_seconds"]),
+                lottery_ticket_cost(config),
+                lottery_house_cut(config)
+            )
+        except Exception as e:
+            await send(f"{Q_DENIED} I couldn't prepare that channel: `{type(e).__name__}`")
+            return False
+        updates["channel_id"] = channel.id
+        updates["thread_id"] = None
+        updates["message_id"] = None
+        message = f"Lottery channel moved to {channel.mention}; a fresh ticket panel was posted."
+
+    else:
+        await send(f"{Q_DENIED} Unknown setting. Use `price`, `duration`, `cut`, or `channel`.")
+        return False
+
+    try:
+        await asyncio.to_thread(update_lottery_config, guild.id, **updates)
+    except Exception:
+        await send(f"{Q_DENIED} Database unavailable. Try again shortly.")
+        return False
+
+    updated = await asyncio.to_thread(get_lottery_config, guild.id)
+    if updated:
+        await announce_lottery_update(guild, updated, message)
+
+    await send(f"{Q_SUCCESS} {message}", allowed_mentions=discord.AllowedMentions.none())
+    return True
+
+class LotteryEditValueModal(discord.ui.Modal):
+    def __init__(self, author_id, setting, label, placeholder):
+        super().__init__(title=f"Edit lottery {label.lower()}")
+        self.author_id = author_id
+        self.setting = setting
+        self.value_input = discord.ui.TextInput(
+            label=label,
+            placeholder=placeholder,
+            min_length=1,
+            max_length=100,
+        )
+        self.add_item(self.value_input)
+
+    async def on_submit(self, interaction):
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message("Use your own setup UI.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        async def send(content=None, **kwargs):
+            kwargs.setdefault("ephemeral", True)
+            return await interaction.followup.send(content, **kwargs)
+
+        await apply_lottery_edit(
+            interaction.guild,
+            interaction.user,
+            self.setting,
+            str(self.value_input.value).strip(),
+            send,
+        )
+
+class LotteryEditSettingSelect(discord.ui.Select):
+    def __init__(self):
+        super().__init__(
+            placeholder="Choose what to edit",
+            min_values=1,
+            max_values=1,
+            options=[
+                discord.SelectOption(label="Ticket price", value="price", description="Example: 250000"),
+                discord.SelectOption(label="Duration", value="duration", description="Example: 12h"),
+                discord.SelectOption(label="House cut", value="cut", description="Example: 5"),
+                discord.SelectOption(label="Channel", value="channel", description="Paste #channel or its ID"),
+            ],
+        )
+
+    async def callback(self, interaction):
+        if interaction.user.id != self.view.author_id:
+            await interaction.response.send_message("Use your own setup UI.", ephemeral=True)
+            return
+        setting = self.values[0]
+        modal_specs = {
+            "price": ("Ticket price", "250000"),
+            "duration": ("Duration", "12h"),
+            "cut": ("House cut percent", "5"),
+            "channel": ("Channel mention or ID", "#lottery or 123456789012345678"),
+        }
+        label, placeholder = modal_specs[setting]
+        await interaction.response.send_modal(LotteryEditValueModal(self.view.author_id, setting, label, placeholder))
+
+class LotteryEditView(discord.ui.View):
+    def __init__(self, author_id):
+        super().__init__(timeout=120)
+        self.author_id = author_id
+        self.add_item(LotteryEditSettingSelect())
+
+async def send_lottery_edit_ui(ctx, selected_setting=None):
+    embed = discord.Embed(
+        title=f"{Q_EDIT} Edit Lottery",
+        description="Choose a setting, then enter the new value.",
+        color=discord.Color.blue(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.add_field(name="Ticket Price", value="Amount per ticket, like `250000`.", inline=False)
+    embed.add_field(name="Duration", value="Time between draws, like `12h` or `1d`.", inline=False)
+    embed.add_field(name="House Cut", value="Percent taken from purchases, like `5`.", inline=False)
+    embed.add_field(name="Channel", value="Paste a channel mention or ID.", inline=False)
+    await ctx.send(embed=embed, view=LotteryEditView(ctx.author.id), allowed_mentions=discord.AllowedMentions.none())
+
 async def announce_lottery_update(guild, config, message):
     channel = guild.get_channel(config["channel_id"]) if guild else None
     if channel is None and bot:
@@ -2082,6 +2382,12 @@ def award_chat_xp(user_id):
 def format_balance(amount):
     return f"{amount:,} {CURRENCY_EMOJI}"
 
+def fit_discord_content(content, limit=2000):
+    content = str(content or "")
+    if len(content) <= limit:
+        return content
+    return content[:limit - 20].rstrip() + "\n…"
+
 def xp_needed_for_level(level):
     return 100 + max(level - 1, 0) * 75
 
@@ -2102,6 +2408,19 @@ def item_bonus(data, item_id, per_item, max_qty=None):
     if max_qty is not None:
         qty = min(qty, max_qty)
     return qty * per_item
+
+def item_rarity(item):
+    return item.get("rarity", "Common")
+
+def item_rarity_label(item):
+    rarity = item_rarity(item)
+    markers = {
+        "Common": Q_RISK_LOW,
+        "Rare": Q_RISK_MEDIUM,
+        "Epic": Q_RISK_HIGH,
+        "Royal": Q_RISK_EXTREME,
+    }
+    return f"{markers.get(rarity, Q_RISK_LOW)} {rarity}"
 
 def streak_bonus_for_wins(streak):
     streak = max(0, int(streak or 0))
@@ -2328,6 +2647,13 @@ def get_daily_challenge_status(user_id):
     claimed = bool((row or {}).get("claimed", False))
     return challenge, progress, claimed
 
+def get_daily_challenge_streak(user_id):
+    try:
+        data = get_user(user_id)
+        return int(data.get("daily_challenge_streak") or 0)
+    except Exception:
+        return 0
+
 def claim_daily_challenge(user_id):
     challenge = todays_daily_challenge()
     conn = get_db_connection()
@@ -2364,14 +2690,28 @@ def claim_daily_challenge(user_id):
             (user_id,)
         )
         cur.execute(
+            "SELECT daily_challenge_streak, last_daily_challenge_claim FROM economy WHERE user_id = %s FOR UPDATE",
+            (user_id,)
+        )
+        user_row = cur.fetchone() or {}
+        last_claim = user_row.get("last_daily_challenge_claim")
+        today = datetime.now(timezone.utc).date()
+        yesterday = today - timedelta(days=1)
+        previous_streak = int(user_row.get("daily_challenge_streak") or 0)
+        challenge_streak = previous_streak + 1 if last_claim == yesterday else 1
+        streak_bonus = (50_000 * min(challenge_streak, 10)) if challenge_streak % 3 == 0 else 0
+        total_reward = int(challenge["reward"]) + streak_bonus
+        cur.execute(
             """
             UPDATE economy
             SET balance = balance + %s,
-                total_earned = total_earned + %s
+                total_earned = total_earned + %s,
+                daily_challenge_streak = %s,
+                last_daily_challenge_claim = CURRENT_DATE
             WHERE user_id = %s
             RETURNING balance
             """,
-            (challenge["reward"], challenge["reward"], user_id)
+            (total_reward, total_reward, challenge_streak, user_id)
         )
         updated = cur.fetchone()
         cur.execute(
@@ -2386,8 +2726,13 @@ def claim_daily_challenge(user_id):
             "INSERT INTO economy_transactions (user_id, kind, amount, note) VALUES (%s, %s, %s, %s)",
             (user_id, "daily_challenge", challenge["reward"], challenge["name"])
         )
+        if streak_bonus:
+            cur.execute(
+                "INSERT INTO economy_transactions (user_id, kind, amount, note) VALUES (%s, %s, %s, %s)",
+                (user_id, "daily_challenge_streak", streak_bonus, f"{challenge_streak} challenge streak")
+            )
         conn.commit()
-        return True, "claimed_now", challenge, progress, int(updated["balance"])
+        return True, "claimed_now", challenge, progress, int(updated["balance"]), challenge_streak, streak_bonus
     except Exception:
         conn.rollback()
         raise
@@ -2691,6 +3036,7 @@ def inventory_category_lines(data, category, owned_only=False):
             continue
         lines.append(
             f"**{item_display_name(item)}** - {item_owned_text(data, item_id, item)}\n"
+            f"Rarity: **{item_rarity_label(item)}**\n"
             f"{item['description']}"
         )
     return lines
@@ -3116,6 +3462,83 @@ async def send_error(ctx, text):
     except:
         pass
 
+ECONOMY_INPUT_UI_COMMANDS = {"buytick", "give", "add", "remove", "addtick", "settick", "setquesos"}
+
+ECONOMY_INPUT_PLACEHOLDERS = {
+    "buytick": "30",
+    "give": "@user 10k",
+    "add": "@user 1m",
+    "remove": "@user 10k",
+    "addtick": "@user 10",
+    "settick": "@user 10",
+    "setquesos": "@user 1m",
+}
+
+async def invoke_economy_command_from_interaction(interaction, command_name, args):
+    if bot is None:
+        return await interaction.followup.send(f"{Q_DENIED} Bot is not ready.", ephemeral=True)
+    command = bot.get_command(command_name)
+    if command is None:
+        return await interaction.followup.send(f"{Q_DENIED} Command `{command_name}` was not found.", ephemeral=True)
+    if StringView is None or not hasattr(commands.Context, "from_interaction"):
+        return await interaction.followup.send(f"{Q_DENIED} Setup UI forwarding is not available in this Discord library version.", ephemeral=True)
+    ctx = await commands.Context.from_interaction(interaction)
+    ctx.command = command
+    ctx.invoked_with = command.name
+    ctx.prefix = "/run "
+    ctx.view = StringView(str(args or "").strip())
+    ctx.view.skip_ws()
+    try:
+        await command.invoke(ctx)
+    except commands.CommandError as e:
+        await ctx.send(f"{Q_DENIED} {str(e)[:120]}")
+    except Exception as e:
+        print(f"Economy setup UI failed for {command_name}: {type(e).__name__} - {e}")
+        await interaction.followup.send(f"{Q_DENIED} That command failed.", ephemeral=True)
+
+class EconomyCommandInputModal(discord.ui.Modal):
+    def __init__(self, author_id, command_name):
+        super().__init__(title=f"Run {command_name}")
+        self.author_id = author_id
+        self.command_name = command_name
+        self.command_input = discord.ui.TextInput(
+            label="Command input",
+            placeholder=ECONOMY_INPUT_PLACEHOLDERS.get(command_name, "Enter what comes after the command"),
+            min_length=1,
+            max_length=500,
+        )
+        self.add_item(self.command_input)
+
+    async def on_submit(self, interaction):
+        if interaction.user.id != self.author_id:
+            return await interaction.response.send_message("Use your own setup UI.", ephemeral=True)
+        await interaction.response.defer(thinking=True)
+        await invoke_economy_command_from_interaction(interaction, self.command_name, str(self.command_input.value).strip())
+
+class EconomyCommandInputView(discord.ui.View):
+    def __init__(self, author_id, command_name):
+        super().__init__(timeout=120)
+        self.author_id = author_id
+        self.command_name = command_name
+
+    @discord.ui.button(label="Enter Input", emoji=Q_EDIT, style=discord.ButtonStyle.primary)
+    async def enter_input(self, interaction, button):
+        if interaction.user.id != self.author_id:
+            return await interaction.response.send_message("Use your own setup UI.", ephemeral=True)
+        await interaction.response.send_modal(EconomyCommandInputModal(self.author_id, self.command_name))
+
+async def send_economy_command_input_ui(ctx, command_name, note=None):
+    prefix = getattr(ctx, "prefix", ".")
+    placeholder = ECONOMY_INPUT_PLACEHOLDERS.get(command_name, "")
+    example = f"{prefix}{command_name} {placeholder}".strip()
+    embed = discord.Embed(
+        title=f"{Q_EDIT} {prefix}{command_name}",
+        description=note or "This command needs input. Press the button and enter what should come after the command.",
+        color=discord.Color.blurple(),
+    )
+    embed.add_field(name="Example", value=f"`{example}`", inline=False)
+    await ctx.send(embed=embed, view=EconomyCommandInputView(ctx.author.id, command_name), allowed_mentions=discord.AllowedMentions.none())
+
 async def ensure_db_ready(ctx, force=False):
     global db_initializing, db_init_task
     if db_ready and not force:
@@ -3286,6 +3709,70 @@ async def inventory(ctx, member: discord.Member = None):
             await interaction.response.defer()
             await self.refresh(interaction)
 
+        @discord.ui.button(label="Equip Theme", style=discord.ButtonStyle.primary)
+        async def equip_theme_button(self, interaction, button):
+            try:
+                updated = await asyncio.to_thread(get_user, interaction.user.id)
+            except Exception:
+                return await interaction.response.send_message(f"{Q_DENIED} Database unavailable. Try again shortly.", ephemeral=True)
+            options = []
+            for theme_id, info in PROFILE_THEMES.items():
+                item_id = info.get("item")
+                if item_id is not None and not has_item(updated, item_id):
+                    continue
+                options.append(discord.SelectOption(label=info["label"], value=theme_id, description=f"Equip {info['label']} theme"))
+            parent = self
+
+            class ThemeEquipView(discord.ui.View):
+                def __init__(self):
+                    super().__init__(timeout=60)
+                    select = discord.ui.Select(placeholder="Choose profile theme", options=options, min_values=1, max_values=1)
+                    select.callback = self.select_theme
+                    self.add_item(select)
+
+                async def select_theme(self, select_interaction):
+                    theme_id = select_interaction.data["values"][0]
+                    await asyncio.to_thread(update_user, select_interaction.user.id, profile_theme=theme_id)
+                    await select_interaction.response.send_message(f"{Q_SUCCESS} Equipped **{PROFILE_THEMES[theme_id]['label']}**.", ephemeral=True)
+                    await parent.refresh()
+
+            await interaction.response.send_message("Pick a theme to equip.", view=ThemeEquipView(), ephemeral=True)
+
+        @discord.ui.button(label="Equip Badges", style=discord.ButtonStyle.secondary)
+        async def equip_badges_button(self, interaction, button):
+            try:
+                updated = await asyncio.to_thread(get_user, interaction.user.id)
+            except Exception:
+                return await interaction.response.send_message(f"{Q_DENIED} Database unavailable. Try again shortly.", ephemeral=True)
+            earned = [badge for badge in achievement_ids(updated) if badge in GAME_ACHIEVEMENTS]
+            if not earned:
+                return await interaction.response.send_message(f"{Q_DENIED} You have no earned badges yet.", ephemeral=True)
+            options = [
+                discord.SelectOption(label=achievement_display(badge)[:100], value=badge)
+                for badge in earned[:25]
+            ]
+            parent = self
+
+            class BadgeEquipView(discord.ui.View):
+                def __init__(self):
+                    super().__init__(timeout=60)
+                    select = discord.ui.Select(
+                        placeholder="Choose up to 3 badges",
+                        options=options,
+                        min_values=0,
+                        max_values=min(3, len(options)),
+                    )
+                    select.callback = self.select_badges
+                    self.add_item(select)
+
+                async def select_badges(self, select_interaction):
+                    selected = select_interaction.data.get("values", [])[:3]
+                    await asyncio.to_thread(update_user, select_interaction.user.id, equipped_badges=selected)
+                    await select_interaction.response.send_message(f"{Q_SUCCESS} Equipped **{len(selected)}** badge(s).", ephemeral=True)
+                    await parent.refresh()
+
+            await interaction.response.send_message("Pick up to 3 badges for your profile.", view=BadgeEquipView(), ephemeral=True)
+
         async def on_timeout(self):
             for item in self.children:
                 item.disabled = True
@@ -3387,6 +3874,7 @@ async def shop(ctx):
                 marker = "→ " if item_id == selected_item_id else ""
                 lines.append(
                     f"{marker}**{item_display_name(item)}** - {format_balance(item['cost'])}\n"
+                    f"Rarity: **{item_rarity_label(item)}**\n"
                     f"{item['description']}\n"
                     f"Owned: **{owned_text}**"
                 )
@@ -3728,84 +4216,13 @@ async def editlottery(ctx, setting: str = None, *, value: str = None):
         return
 
     if not setting or not value:
-        await ctx.send(
-            "Use `.editlottery <setting> <value>`.\n"
-            "Settings: `price`, `duration`, `cut`, `channel`.\n"
-            "Examples: `.editlottery price 250000`, `.editlottery duration 12h`, `.editlottery cut 5`, `.editlottery channel #lottery`"
-        )
+        await send_lottery_edit_ui(ctx, setting)
         return
 
-    setting = setting.casefold()
-    updates = {}
-    message = ""
+    async def send(content=None, **kwargs):
+        return await ctx.send(content, **kwargs)
 
-    if setting in {"price", "ticket", "ticketprice"}:
-        parsed = parse_amount(value, ctx.author.id, ctx.guild, None)
-        if parsed is None or parsed <= 0:
-            await ctx.send(f"{Q_DENIED} Ticket price must be a positive number.")
-            return
-        updates["ticket_cost"] = parsed
-        message = f"Ticket price set to **{format_balance(parsed)}**."
-
-    elif setting in {"duration", "period", "time"}:
-        seconds = period_seconds_from_text(value)
-        if seconds is None:
-            await ctx.send(f"{Q_DENIED} Invalid duration. Use at least 5 minutes, like `30m`, `12h`, or `1d`.")
-            return
-        updates["period_seconds"] = seconds
-        updates["next_draw"] = datetime.now(timezone.utc) + timedelta(seconds=seconds)
-        message = f"Lottery duration set to **{format_duration(seconds)}**. Next draw was reset."
-
-    elif setting in {"cut", "housecut", "tax", "burn"}:
-        try:
-            cut_percent = float(value.strip().replace("%", ""))
-        except ValueError:
-            await ctx.send(f"{Q_DENIED} House cut must be a number from 0 to 90.")
-            return
-        if cut_percent < 0 or cut_percent > 90:
-            await ctx.send(f"{Q_DENIED} House cut must be from 0 to 90.")
-            return
-        updates["house_cut"] = cut_percent / 100
-        message = f"House cut set to **{cut_percent:.1f}%**."
-
-    elif setting in {"channel", "chan"}:
-        channel = ctx.message.channel_mentions[0] if ctx.message.channel_mentions else None
-        if channel is None and value.strip().isdigit():
-            channel = ctx.guild.get_channel(int(value.strip()))
-        if channel is None or not isinstance(channel, discord.TextChannel):
-            await ctx.send(f"{Q_DENIED} Mention a normal text channel or send its channel ID.")
-            return
-        try:
-            await prepare_lottery_channel(
-                ctx.guild,
-                channel,
-                int(config["period_seconds"]),
-                lottery_ticket_cost(config),
-                lottery_house_cut(config)
-            )
-        except Exception as e:
-            await ctx.send(f"{Q_DENIED} I couldn't prepare that channel: `{type(e).__name__}`")
-            return
-        updates["channel_id"] = channel.id
-        updates["thread_id"] = None
-        updates["message_id"] = None
-        message = f"Lottery channel moved to {channel.mention}; a fresh ticket panel was posted."
-
-    else:
-        await ctx.send(f"{Q_DENIED} Unknown setting. Use `price`, `duration`, `cut`, or `channel`.")
-        return
-
-    try:
-        update_lottery_config(ctx.guild.id, **updates)
-    except Exception:
-        await send_error(ctx, "Database unavailable. Try again shortly.")
-        return
-
-    updated = get_lottery_config(ctx.guild.id)
-    if updated:
-        await announce_lottery_update(ctx.guild, updated, message)
-
-    await ctx.send(f"{Q_SUCCESS} {message}", allowed_mentions=discord.AllowedMentions.none())
+    await apply_lottery_edit(ctx.guild, ctx.author, setting, value, send, ctx.message.channel_mentions)
 
 @commands.command()
 async def stoplottery(ctx):
@@ -3979,7 +4396,7 @@ async def lotterystats(ctx):
     schedule_lottery_refresh(ctx.guild, config)
 
 @commands.command()
-async def buytick(ctx, amount: str = "1"):
+async def buytick(ctx, amount: str = None):
     if ctx.guild is None:
         await ctx.send(f"{Q_DENIED} Lottery tickets only work in servers.")
         return
@@ -3989,6 +4406,10 @@ async def buytick(ctx, amount: str = "1"):
     config = await asyncio.to_thread(get_lottery_config, ctx.guild.id)
     if config is None:
         await ctx.send("Lottery is not set up yet.")
+        return
+
+    if amount is None:
+        await send_economy_command_input_ui(ctx, "buytick", "Enter how many lottery tickets you want to buy.")
         return
 
     try:
@@ -5215,7 +5636,7 @@ async def give(ctx, *, args: str = None):
 
     target, amount = parse_target_amount_args(args, allow_all=True)
     if not target:
-        await ctx.send(f"{Q_DENIED} Use `.give @user <amount>` or `.give <amount> @user`.")
+        await send_economy_command_input_ui(ctx, "give", "Enter the user and amount. Either order works.")
         return
     try:
         member = await commands.MemberConverter().convert(ctx, target)
@@ -5371,7 +5792,7 @@ async def add(ctx, *, args: str = None):
 
     target, amount = parse_target_amount_args(args)
     if not target:
-        await ctx.send(f"{Q_DENIED} Use `.add @user <amount>` or `.add <amount> @user`.")
+        await send_economy_command_input_ui(ctx, "add", "Enter the target and amount. Users, roles, and @everyone work where allowed.")
         return
     amount = parse_whole_number(amount)
     if amount is None:
@@ -5481,7 +5902,7 @@ async def remove(ctx, *, args: str = None):
         return
     target, amount = parse_target_amount_args(args, allow_all=True)
     if not target:
-        await ctx.send(f"{Q_DENIED} Use `.remove @user <amount>` or `.remove <amount> @user`.")
+        await send_economy_command_input_ui(ctx, "remove", "Enter the target and amount. Either order works.")
         return
     try:
         member = await commands.MemberConverter().convert(ctx, target)
@@ -5540,7 +5961,7 @@ async def addtick(ctx, *, args: str = None):
         return
     target, amount = parse_target_amount_args(args)
     if not target:
-        await ctx.send(f"{Q_DENIED} Use `.addtick @user <tickets>` or `.addtick <tickets> @user`.")
+        await send_economy_command_input_ui(ctx, "addtick", "Enter the target and ticket amount. Users, roles, and @everyone work.")
         return
     amount = parse_whole_number(amount)
     if amount is None:
@@ -5601,7 +6022,7 @@ async def settick(ctx, *, args: str = None):
         return
     target, amount = parse_target_amount_args(args)
     if not target:
-        await ctx.send(f"{Q_DENIED} Use `.settick @user <tickets>` or `.settick <tickets> @user`.")
+        await send_economy_command_input_ui(ctx, "settick", "Enter the target and exact ticket amount. Users, roles, and @everyone work.")
         return
     amount = parse_whole_number(amount)
     if amount is None:
@@ -5659,7 +6080,7 @@ async def setquesos(ctx, *, args: str = None):
         return
     target, amount = parse_target_amount_args(args)
     if not target:
-        await ctx.send(f"{Q_DENIED} Use `.setquesos @user <amount>` or `.setquesos <amount> @user`.")
+        await send_economy_command_input_ui(ctx, "setquesos", "Enter the target and exact balance. Users, roles, and @everyone work.")
         return
     amount = parse_whole_number(amount)
     if amount is None:
@@ -6770,7 +7191,18 @@ async def send_new_game_result(ctx, game_key, title, amount, result, details="",
         f"{gamble_result_block(game_key, amount, result, base_multiplier)}"
     )
     view = double_or_nothing_view(ctx.author.id, game_key, result)
-    await ctx.send(content, view=view, allowed_mentions=discord.AllowedMentions.none())
+    await ctx.send(fit_discord_content(content), view=view, allowed_mentions=discord.AllowedMentions.none())
+    try:
+        await send_economy_log(ctx, f"Game Result: {game_display_name(game_key)}", [
+            ("Player", f"{user_mention(ctx.author.id)} ({ctx.author.id})", False),
+            ("Risk", risk_label(game_key), True),
+            ("Bet", format_balance(amount), True),
+            ("Result", "Win" if result.get("winnings", 0) > 0 else ("Loss" if result.get("net", 0) < 0 else "Neutral"), True),
+            ("Payout", format_balance(result.get("winnings", 0)), True),
+            ("Balance", format_balance(result.get("balance", 0)), True),
+        ], color=discord.Color.green() if result.get("winnings", 0) > 0 else discord.Color.red())
+    except Exception as e:
+        print(f"Game result log failed: {type(e).__name__} - {e}")
     await send_achievement_notifications(ctx, result.get("achievements", []))
 
 HEIST_ROUTES = {
@@ -8545,10 +8977,17 @@ async def dailychallenge(ctx, action: str = None):
         return
     try:
         if action and action.casefold() in {"claim", "collect", "reward"}:
-            ok, reason, challenge, progress, balance = await asyncio.to_thread(claim_daily_challenge, ctx.author.id)
+            result = await asyncio.to_thread(claim_daily_challenge, ctx.author.id)
+            ok, reason, challenge, progress, balance = result[:5]
             if ok:
+                challenge_streak = result[5] if len(result) > 5 else 1
+                streak_bonus = result[6] if len(result) > 6 else 0
+                bonus_line = f"\nStreak: **{challenge_streak} day(s)**"
+                if streak_bonus:
+                    bonus_line += f" | Bonus: **{format_balance(streak_bonus)}**"
                 await ctx.reply(
                     f"{Q_SUCCESS} Claimed **{challenge['name']}** for **{format_balance(challenge['reward'])}**.\n"
+                    f"{bonus_line}\n"
                     f"New Balance: **{format_balance(balance)}**",
                     mention_author=False,
                     allowed_mentions=discord.AllowedMentions.none(),
@@ -8563,6 +9002,7 @@ async def dailychallenge(ctx, action: str = None):
             )
             return
         challenge, progress, claimed = await asyncio.to_thread(get_daily_challenge_status, ctx.author.id)
+        challenge_streak = await asyncio.to_thread(get_daily_challenge_streak, ctx.author.id)
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
@@ -8575,6 +9015,7 @@ async def dailychallenge(ctx, action: str = None):
             f"**{challenge['name']}**\n"
             f"Progress: **{min(progress, target):,}/{target:,}**\n"
             f"Reward: **{format_balance(challenge['reward'])}**\n"
+            f"Challenge Streak: **{challenge_streak} day(s)**\n"
             f"Status: **{status}**\n"
             f"Resets {discord_relative_time(reset)}"
         ),
@@ -8767,6 +9208,23 @@ async def economyaudit(ctx, member: discord.Member = None):
     embed.add_field(name="Tracked Taxes / Payments", value=format_balance(tracked_sink), inline=True)
     embed.add_field(name="Lottery Pots", value=format_balance(stats["lottery_pots"]), inline=True)
     embed.add_field(name="Lottery Tickets", value=f"{stats['lottery_tickets']:,}", inline=True)
+    supply = max(1, int(stats["total_balance"] or 0))
+    sink_ratio = tracked_sink / supply
+    flow_ratio = abs(stats["transaction_amount_24h"]) / supply
+    if sink_ratio >= 0.12 and flow_ratio <= 0.20:
+        health = f"{Q_SUCCESS} Stable"
+    elif flow_ratio > 0.35 or stats["lost_today"] > supply * 0.12:
+        health = f"{Q_WARNING} Hot"
+    else:
+        health = f"{Q_THINKING} Watch"
+    tx_sources = {
+        "Shop Payments": tx.get("shop_payment", 0),
+        "Lottery House Cut": tx.get("lottery_house_cut", 0),
+        "Transfer Tax": tx.get("transfer_tax", 0),
+    }
+    biggest_flow = max(tx_sources.items(), key=lambda item: abs(item[1])) if tx_sources else ("None", 0)
+    embed.add_field(name="Health", value=f"{health}\n24h flow: **{flow_ratio * 100:.1f}%** of supply", inline=True)
+    embed.add_field(name="Biggest Tracked Flow", value=f"{biggest_flow[0]}\n{format_balance(biggest_flow[1])}", inline=True)
     game_lines = []
     for row in stats["games"]:
         played = int(row["played"] or 0)
@@ -8778,7 +9236,6 @@ async def economyaudit(ctx, member: discord.Member = None):
         )
     add_split_embed_field(embed, "Game Signals", game_lines or ["No game stats yet."], inline=False)
     warnings = []
-    supply = max(1, int(stats["total_balance"] or 0))
     if stats["lost_today"] > supply * 0.08:
         warnings.append(f"{Q_WARNING} Daily gambling losses are high versus current supply.")
     if abs(stats["transaction_amount_24h"]) > supply * 0.15:
@@ -8823,6 +9280,169 @@ async def guide(ctx):
     )
     embed.set_footer(text=f"More: {prefix}econhelp, {prefix}help, {prefix}explain <command>")
     await ctx.reply(embed=embed, mention_author=False, allowed_mentions=discord.AllowedMentions.none())
+
+class OnboardingView(discord.ui.View):
+    def __init__(self, author_id):
+        super().__init__(timeout=180)
+        self.author_id = int(author_id)
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id == self.author_id:
+            return True
+        await interaction.response.send_message("Open your own onboarding with `.onboard`.", ephemeral=True)
+        return False
+
+    @discord.ui.button(label="Claim Daily", emoji=Q_DAILY_SPICE, style=discord.ButtonStyle.success)
+    async def claim_daily_button(self, interaction, button):
+        command = bot.get_command("daily") if bot else None
+        if not command:
+            return await interaction.response.send_message("Daily command is unavailable.", ephemeral=True)
+        ctx = ReplayContext(interaction)
+        await interaction.response.defer(ephemeral=True)
+        await command.callback(ctx)
+
+    @discord.ui.button(label="Games", emoji=Q_GAME_WIN, style=discord.ButtonStyle.primary)
+    async def games_button(self, interaction, button):
+        await interaction.response.send_message("Use `.games` for the game menu, then pick How To Play for rules.", ephemeral=True)
+
+    @discord.ui.button(label="Shop", emoji=Q_SHOP, style=discord.ButtonStyle.secondary)
+    async def shop_button(self, interaction, button):
+        await interaction.response.send_message("Use `.shop` to buy boosts and cosmetics.", ephemeral=True)
+
+    @discord.ui.button(label="Profile", emoji=Q_XP, style=discord.ButtonStyle.secondary)
+    async def profile_button(self, interaction, button):
+        data = await asyncio.to_thread(get_user, interaction.user.id)
+        await interaction.response.send_message(embed=build_profile_embed(interaction.user, data), ephemeral=True)
+
+@commands.command(name="onboard", aliases=["onboarding", "newuser"])
+async def onboard(ctx):
+    embed = discord.Embed(
+        title=f"{Q_BOOK} ProQue Start",
+        description="Start here if you're new. These buttons point you to the safest first actions.",
+        color=discord.Color.blurple(),
+    )
+    embed.add_field(name="1. Earn", value="Claim daily rewards and chat to level up.", inline=False)
+    embed.add_field(name="2. Play", value="Try free games first, then small bets.", inline=False)
+    embed.add_field(name="3. Build", value="Buy shop boosts, equip badges, and customize your profile.", inline=False)
+    await ctx.reply(embed=embed, view=OnboardingView(ctx.author.id), mention_author=False, allowed_mentions=discord.AllowedMentions.none())
+
+@commands.command(name="season", aliases=["seasons", "seasonlb"])
+async def season(ctx, season_key: str = None):
+    if not await ensure_db_ready(ctx):
+        return
+    season_key = season_key or current_season_key()
+    try:
+        rows = await asyncio.to_thread(get_season_leaderboard, season_key, 10)
+    except Exception:
+        await send_error(ctx, "Database unavailable. Try again shortly.")
+        return
+    current_key = current_season_key()
+    embed = discord.Embed(
+        title=f"{Q_BADGE} Quewo Season {season_key}",
+        description=(
+            "Ranked by monthly gambling/game profit, then wins.\n"
+            f"Current season ends <t:{season_end_timestamp()}:R>."
+            if season_key == current_key else "Archived season standings."
+        ),
+        color=discord.Color.gold(),
+    )
+    reward_lines = [f"#{i + 1}: **{format_balance(reward)}**" for i, reward in enumerate(SEASON_REWARDS)]
+    embed.add_field(name="Rewards", value="\n".join(reward_lines), inline=False)
+    if not rows:
+        embed.add_field(name="Leaderboard", value="No season scores yet.", inline=False)
+    else:
+        lines = []
+        for index, row in enumerate(rows, 1):
+            lines.append(
+                f"**#{index}** {user_mention(row['user_id'])} - Profit **{format_balance(int(row['profit'] or 0))}**, "
+                f"Wins **{int(row['wins'] or 0):,}**, Played **{int(row['played'] or 0):,}**"
+            )
+        add_split_embed_field(embed, "Leaderboard", lines, inline=False)
+    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
+@commands.command(name="endseason", aliases=["rewardseason"])
+async def endseason(ctx, season_key: str = None):
+    if not await ensure_db_ready(ctx):
+        return
+    if not has_economy_owner_power(ctx.author.id, ctx.guild):
+        return await ctx.send(f"{Q_DENIED} Server owner or admin only.")
+    season_key = season_key or current_season_key()
+    try:
+        rewarded = await asyncio.to_thread(reward_previous_season, season_key)
+    except Exception:
+        await send_error(ctx, "Database unavailable. Try again shortly.")
+        return
+    if not rewarded:
+        return await ctx.send(f"{Q_DENIED} No unrewarded top players found for `{season_key}`.")
+    lines = [f"#{rank} {user_mention(user_id)} - **{format_balance(reward)}**" for rank, user_id, reward in rewarded]
+    await ctx.send(f"{Q_BADGE} Season `{season_key}` rewards paid:\n" + "\n".join(lines), allowed_mentions=discord.AllowedMentions.none())
+
+def get_abuse_audit_rows():
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT user_id, COUNT(*) AS plays, COALESCE(SUM(net_amount), 0) AS profit
+        FROM economy_game_history
+        WHERE created_at > NOW() - INTERVAL '1 hour'
+        GROUP BY user_id
+        HAVING COUNT(*) >= 15 OR COALESCE(SUM(net_amount), 0) >= 1000000
+        ORDER BY profit DESC, plays DESC
+        LIMIT 10
+        """
+    )
+    games = cur.fetchall()
+    cur.execute(
+        """
+        SELECT user_id, COUNT(*) AS tx_count, COALESCE(SUM(ABS(amount)), 0) AS volume
+        FROM economy_transactions
+        WHERE created_at > NOW() - INTERVAL '24 hours'
+          AND kind IN ('give_sent', 'give_received', 'transfer_tax_paid', 'transfer_tax', 'owner_add', 'owner_set', 'season_reward')
+        GROUP BY user_id
+        HAVING COUNT(*) >= 8 OR COALESCE(SUM(ABS(amount)), 0) >= 5000000
+        ORDER BY volume DESC
+        LIMIT 10
+        """
+    )
+    transactions = cur.fetchall()
+    cur.execute(
+        """
+        SELECT user_id, amount
+        FROM economy_daily_losses
+        WHERE loss_date = CURRENT_DATE AND amount >= 1000000
+        ORDER BY amount DESC
+        LIMIT 10
+        """
+    )
+    losses = cur.fetchall()
+    cur.close()
+    conn.close()
+    return games, transactions, losses
+
+@commands.command(name="abuseaudit", aliases=["antiexploit", "riskwatch"])
+async def abuseaudit(ctx):
+    if not await ensure_db_ready(ctx):
+        return
+    if not has_economy_owner_power(ctx.author.id, ctx.guild):
+        return await ctx.send(f"{Q_DENIED} Server owner or admin only.")
+    try:
+        games, transactions, losses = await asyncio.to_thread(get_abuse_audit_rows)
+    except Exception:
+        await send_error(ctx, "Database unavailable. Try again shortly.")
+        return
+    embed = discord.Embed(
+        title=f"{Q_AUDIT} Anti-Abuse Watch",
+        description="Signals only. Review context before acting.",
+        color=discord.Color.orange(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    game_lines = [f"{user_mention(r['user_id'])} - **{int(r['plays']):,}** plays, profit **{format_balance(int(r['profit'] or 0))}**" for r in games]
+    tx_lines = [f"{user_mention(r['user_id'])} - **{int(r['tx_count']):,}** tx, volume **{format_balance(int(r['volume'] or 0))}**" for r in transactions]
+    loss_lines = [f"{user_mention(r['user_id'])} - lost today **{format_balance(int(r['amount'] or 0))}**" for r in losses]
+    add_split_embed_field(embed, "Fast Game Profit / Volume", game_lines or ["No high-risk game signals."], inline=False)
+    add_split_embed_field(embed, "Transaction Volume", tx_lines or ["No high-risk transaction signals."], inline=False)
+    add_split_embed_field(embed, "Daily Loss Watch", loss_lines or ["No major daily loss signals."], inline=False)
+    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
 
 # MINESWEEPER
@@ -9352,6 +9972,9 @@ EXPLANATIONS = {
     "streak": "Alias for `.streaks`. Shows streaks.",
     "claimstreaks": "Alias for `.streaks`. Shows streaks.",
     "guide": "Shows a quick getting-started guide for Quewo.",
+    "onboard": "Interactive first-user onboarding with buttons for daily, games, shop, and profile.",
+    "onboarding": "Alias for `.onboard`. Opens the new-user onboarding UI.",
+    "newuser": "Alias for `.onboard`. Opens the new-user onboarding UI.",
     "start": "Alias for `.guide`. Shows the getting-started guide.",
     "begin": "Alias for `.guide`. Shows the getting-started guide.",
     "gettingstarted": "Alias for `.guide`. Shows the getting-started guide.",
@@ -9450,6 +10073,14 @@ EXPLANATIONS = {
     "audit": "Alias for `.economyaudit`. Shows economy audit signals.",
     "qaudit": "Alias for `.economyaudit`. Shows economy audit signals.",
     "econaudit": "Alias for `.economyaudit`. Shows economy audit signals.",
+    "abuseaudit": "Admin-power anti-abuse watch for fast game profit, transaction volume, and daily loss signals.",
+    "antiexploit": "Alias for `.abuseaudit`. Shows anti-abuse signals.",
+    "riskwatch": "Alias for `.abuseaudit`. Shows anti-abuse signals.",
+    "season": "Shows the current monthly Quewo season leaderboard and rewards.",
+    "seasons": "Alias for `.season`. Shows season standings.",
+    "seasonlb": "Alias for `.season`. Shows season standings.",
+    "endseason": "Admin-power command that pays season rewards for a season key.",
+    "rewardseason": "Alias for `.endseason`. Pays season rewards.",
     "add": "Admin-power command. Adds quesos. Target and amount can be in either order.",
     "remove": "Admin-power command. Removes quesos. Target and amount can be in either order.",
     "addtick": f"{QUE_OWNER_DISPLAY} command. Adds free lottery tickets. Target and tickets can be in either order.",
@@ -9490,7 +10121,7 @@ EXPLANATIONS = {
     "activity": "Shows this server's activity report status. Use `.activity setup` to set or change the report channel.",
     "activitystats": "Shows this server's activity report status, current top 5, report channel, and next report time.",
     "astats": "Alias for `.activitystats`.",
-    "editactivity": "Admin command. Edits the activity report channel or next report time.",
+    "editactivity": "Admin command. Opens a UI or edits the activity report channel/next report time.",
     "activityedit": "Alias for `.editactivity`.",
     "endactivity": "Admin command. Ends the current activity report now, posts the previous winners, and starts a fresh activity window.",
     "stopcurrentactivity": "Alias for `.endactivity`.",
@@ -9540,6 +10171,7 @@ DETAILED_EXPLANATIONS = {
     "settheme": "Equips a profile theme from owned decorative shop items. Use `.settheme` to list themes, then `.settheme velvet`, `.settheme gold`, `.settheme royal`, or `.settheme highroller` if you own the needed item.",
     "streaks": "Shows claim streaks and live next-claim timestamps for daily, weekly, and monthly. Also shows the active universal gambling win streak and current payout multiplier.",
     "guide": "New-user guide for earning, playing, spending, and safety commands. Use it when someone joins and does not know where to start.",
+    "onboard": "Interactive first-user onboarding. It shows a compact start guide with buttons for daily rewards, games, shop, and profile so new users do not need to memorize commands.",
     "inv": "Alias for `.inventory`. Opens the paged Quewo inventory UI.",
     "items": "Alias for `.inventory`. Opens the paged Quewo inventory UI.",
     "quests": "Main quests track long streak achievements: 30 daily claims, 8 weekly claims, and 5 monthly claims. Daily, weekly, and monthly random quests rotate by period and can be claimed from the `.quests` UI.",
@@ -9549,7 +10181,7 @@ DETAILED_EXPLANATIONS = {
     "transactions": "Shows recent money movement including shop purchases, quest rewards, level rewards, transfer tax, admin changes, and lottery activity.",
     "limits": f"Shows your daily gambling loss safety limit. The bot warns near {int(DAILY_LOSS_WARNING_RATIO * 100)}% and blocks bets before daily losses exceed {int(DAILY_LOSS_HARD_RATIO * 100)}% of your current daily gambling bankroll. It also shows lottery round spending where available.",
     "lottery": f"Server lottery. First run asks the server owner or an admin for a channel and draw period, locks the channel, and posts a persistent ticket panel with buy buttons. Existing active lottery data is preserved when the panel is refreshed. The prize is the full current pot. Tickets cost {format_balance(LOTTERY_TICKET_COST)} and {int(LOTTERY_HOUSE_CUT * 100)}% is burned as a money sink. Users can spend up to {int(LOTTERY_MAX_BALANCE_SPEND_RATIO * 100)}% of their lottery-adjusted balance per round.",
-    "editlottery": "Server owner/admin command. Use `.editlottery price 250000`, `.editlottery duration 12h`, `.editlottery cut 5`, or `.editlottery channel #lottery`. Duration resets the next draw timer. Channel posts a fresh lottery panel. Updates ping the lottery participant role.",
+    "editlottery": "Server owner/admin command. Run `.editlottery` to open the edit UI, or use `.editlottery price 250000`, `.editlottery duration 12h`, `.editlottery cut 5`, or `.editlottery channel #lottery`. Duration resets the next draw timer. Channel posts a fresh lottery panel. Updates ping the lottery participant role.",
     "stoplottery": "Server owner/admin command. Use `.stoplottery` to remove the lottery setup for this server, clear the current pot/tickets, and delete the participant role if the bot can. It leaves channels and panel messages alone.",
     "lotterystats": "Shows the current lottery prize pot, total ticket count, number of players, participant role, next draw time, panel link, and paginated ticket holders with approximate odds.",
     "buytick": f"Legacy text command for buying tickets for the configured server lottery. The lottery panel buttons are preferred because they send private confirmations and update the panel automatically. Each ticket costs {format_balance(LOTTERY_TICKET_COST)}. The prize is the full current lottery pot; every ticket is one entry. Ticket spending is capped at {int(LOTTERY_MAX_BALANCE_SPEND_RATIO * 100)}% of your lottery-adjusted balance for the current round, so earning or spending quesos changes how many more tickets you can buy.",
@@ -9587,6 +10219,9 @@ DETAILED_EXPLANATIONS = {
     "setbadge": "Use `.setbadge` with no arguments to list earned badge IDs. Use `.setbadge <badge_id> [badge_id] [badge_id]` to show up to 3 earned badges on `.profile`, or `.setbadge clear` to remove them.",
     "gamebalance": "Lists every Quewo game with its current risk label. Use this as the quick balance audit before changing odds, multipliers, or max-risk behavior.",
     "gamehistory": "Shows your recent tracked game results from the shared game history table. Newer and tracked games appear here with result, net amount, and timestamp.",
+    "season": "Monthly Quewo season leaderboard. Game results add to the current month automatically. Ranking is by monthly game profit, then wins, then games played. Top rewards are 100m, 80m, and 50m.",
+    "endseason": "Admin-power season payout command. Use `.endseason 2026-05` to pay the top 3 for that month once. If no season is passed, it pays the current season.",
+    "abuseaudit": "Admin-power watch page for suspicious economy activity. It flags high one-hour game volume/profit, high 24-hour transaction volume, and large daily gambling losses. It is a signal page only; review context before acting.",
     "ms": f"Choose 3x3, 4x4, or 5x5, then reveal tiles. Hidden tiles show as {Q_MS_HIDDEN}, safe gems show as {Q_XP}, bombs show as {Q_MINE}, and your cursor shows as {Q_MS_CURSOR}. 3x3 has 1 bomb, 4x4 has 3 bombs, and 5x5 has 5 bombs. Reveal every safe tile to win. The final multiplier starts at ×2.00 and each safe reveal adds +0.15, then the universal gambling streak bonus applies. Hitting a bomb or timing out loses the bet and resets the streak.",
     "minesweeper": f"Choose 3x3, 4x4, or 5x5, then reveal tiles. Hidden tiles show as {Q_MS_HIDDEN}, safe gems show as {Q_XP}, bombs show as {Q_MINE}, and your cursor shows as {Q_MS_CURSOR}. 3x3 has 1 bomb, 4x4 has 3 bombs, and 5x5 has 5 bombs. Reveal every safe tile to win. The final multiplier starts at ×2.00 and each safe reveal adds +0.15, then the universal gambling streak bonus applies. Hitting a bomb or timing out loses the bet and resets the streak.",
     "minesweepeer": f"Choose 3x3, 4x4, or 5x5, then reveal tiles. Hidden tiles show as {Q_MS_HIDDEN}, safe gems show as {Q_XP}, bombs show as {Q_MINE}, and your cursor shows as {Q_MS_CURSOR}. 3x3 has 1 bomb, 4x4 has 3 bombs, and 5x5 has 5 bombs. Reveal every safe tile to win. The final multiplier starts at ×2.00 and each safe reveal adds +0.15, then the universal gambling streak bonus applies. Hitting a bomb or timing out loses the bet and resets the streak.",
@@ -9606,7 +10241,7 @@ DETAILED_EXPLANATIONS = {
     "setbdaychannel": "Sets the birthday announcement channel for this server. Use `.setbdaychannel #birthdays` or `.setbdaychannel <channel id>`. Users keep one birthday date globally, and the bot announces it in every server where they are still a member and a birthday channel is configured.",
     "activity": "Shows the daily activity report status for this server, including report channel, next report time, and current top 5. Use `.activity setup` to set or change the report channel. Every 24 hours, the bot posts the top 5 members by tracked messages since the last report, then resets that server's activity window.",
     "activitystats": "Shows the same activity status embed as `.activity`, including report channel, next report time, and the current top 5.",
-    "editactivity": "Admin command. Use `.editactivity channel #activity` to move reports, or `.editactivity next 12h` to reset when the next 24-hour activity report posts.",
+    "editactivity": "Admin command. Run `.editactivity` to open the edit UI, use `.editactivity channel #activity` to move reports, or use `.editactivity next 12h` to reset when the next 24-hour activity report posts.",
     "endactivity": "Admin command. Use `.endactivity` to finish the current report immediately. It clears the report channel, posts the previous activity winners, starts a fresh 24-hour activity window, and keeps activity reports enabled.",
     "stopactivity": "Admin command. Use `.stopactivity` to disable daily activity reports for this server and clear the current tracked activity window.",
     "timer": "Starts a live countdown and pings you when it ends. The time can come before or after the title: `.timer 10m study`, `.timer study 10m`, `.timer 1h 20m`, or `.timer 30s`. Use `.ctimer` to cancel one of your active timers.",
@@ -9634,8 +10269,8 @@ DETAILED_EXPLANATIONS = {
 }
 
 ECONHELP_COMMANDS = [
-    ("Core", ["guide", "bal", "profile", "inventory", "settheme", "quests", "dailychallenge", "streaks", "shop", "cooldowns", "transactions", "limits", "lb"]),
-    ("Stats", ["gamestats", "achievements", "setbadge", "gamebalance", "gamehistory", "qstats", "economyaudit"]),
+    ("Core", ["guide", "onboard", "bal", "profile", "inventory", "settheme", "quests", "dailychallenge", "streaks", "shop", "cooldowns", "transactions", "limits", "lb"]),
+    ("Stats", ["gamestats", "achievements", "setbadge", "gamebalance", "gamehistory", "season", "qstats", "economyaudit", "abuseaudit"]),
     ("Claims", ["daily", "weekly", "monthly"]),
     ("Lottery", ["lottery", "buytick", "lotterystats", "editlottery", "stoplottery"]),
     ("Gambling", ["cf", "roulette", "slots", "blackjack", "scratch", "tower", "vault", "memory", "cardladder", "lockpick", "heist", "diceduel", "cases", "plinko", "luckynumber", "jackpotspin", "dungeon", "ms", "wheel"]),
@@ -9805,9 +10440,9 @@ async def setup(bot_ref, log_callback=None):
     print(f"Quewo db_ready = {db_ready}")
 
     economy_commands = [
-        bal, profile, inventory, settheme, quests, dailychallenge, streaks, guide, shop, cooldowns, transactions, limits, lottery, editlottery, stoplottery, lotterystats, buytick,
+        bal, profile, inventory, settheme, quests, dailychallenge, streaks, guide, onboard, shop, cooldowns, transactions, limits, lottery, editlottery, stoplottery, lotterystats, buytick,
         daily, weekly, monthly, gamble, roulette, slots, blackjack,
-        scratch, tower, vault, memory_game, card_ladder, lockpick, heist, dice_duel, cases, plinko, lucky_number, jackpot_spin, dungeon, minesweeper, wheel, give, lb, gamestats, achievements, setbadge, gamebalance, gamehistory, qstats, economyaudit, add, remove, addtick, settick, setquesos, econhelp, explain
+        scratch, tower, vault, memory_game, card_ladder, lockpick, heist, dice_duel, cases, plinko, lucky_number, jackpot_spin, dungeon, minesweeper, wheel, give, lb, gamestats, achievements, setbadge, gamebalance, gamehistory, season, endseason, qstats, economyaudit, abuseaudit, add, remove, addtick, settick, setquesos, econhelp, explain
     ]
     for command in economy_commands:
         if bot.get_command(command.name):

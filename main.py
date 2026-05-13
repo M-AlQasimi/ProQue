@@ -33,6 +33,7 @@ from economy import (
     add_user_balance as economy_add_user_balance,
     award_chat_xp as economy_award_chat_xp,
     build_level_up_embed as economy_build_level_up_embed,
+    DETAILED_EXPLANATIONS as economy_detailed_explanations,
     ensure_db_ready as economy_ensure_db_ready,
     EXPLANATIONS as economy_explanations,
     format_balance as economy_format_balance,
@@ -90,11 +91,13 @@ from pgdata import (
     clear_guild_activity_counts,
     delete_guild_activity_channel,
     delete_guild_birthday_channel,
+    delete_active_game_session,
     get_guild_activity_top,
     load_afk_users as pg_load_afk_users,
     load_active_polls,
     load_active_timers,
     load_ai_channel_memory,
+    load_active_game_sessions,
     load_autoban_ids,
     load_blacklisted_users,
     load_birthdays as pg_load_birthdays,
@@ -118,6 +121,7 @@ from pgdata import (
     save_afk_user,
     save_active_poll,
     save_active_timer,
+    save_active_game_session,
     save_autoban_ids,
     save_ai_channel_memory,
     save_blacklisted_users,
@@ -139,6 +143,7 @@ from pgdata import (
 last_message_time = 0
 birthday_task = None
 activity_task = None
+presence_task = None
 app = Flask('')
 
 # PostgreSQL is the single source of truth
@@ -456,10 +461,10 @@ async def invoke_prefix_command_from_interaction(interaction, command_name, args
         else:
             await interaction.followup.send("That slash command failed.", ephemeral=True)
 
-async def sync_slash_commands_once():
+async def sync_slash_commands_once(force=False):
     global slash_commands_synced
-    if slash_commands_synced:
-        return
+    if slash_commands_synced and not force:
+        return {"skipped": True, "synced_guilds": 0, "failed_guilds": 0, "runnable_count": len(slash_runnable_commands())}
     runnable_count = len(slash_runnable_commands())
     synced_guilds = 0
     failed_guilds = 0
@@ -485,6 +490,7 @@ async def sync_slash_commands_once():
         f"Slash command sync complete: {synced_guilds} guild(s) synced, "
         f"{failed_guilds} failed. Use /run for all {runnable_count} prefix commands."
     )
+    return {"skipped": False, "synced_guilds": synced_guilds, "failed_guilds": failed_guilds, "runnable_count": runnable_count}
 
 def scoped_id(guild):
     return guild.id if guild else 0
@@ -1052,6 +1058,21 @@ def is_super_owner():
 async def keep_alive_task():
     print("Heartbeat")
 
+@tasks.loop(minutes=5)
+async def presence_rotation_task():
+    statuses = [
+        lambda: discord.Game(f"{DEFAULT_PREFIX}games"),
+        lambda: discord.Game(f"{DEFAULT_PREFIX}daily"),
+        lambda: discord.Game(f"{DEFAULT_PREFIX}help search"),
+        lambda: discord.Activity(type=discord.ActivityType.watching, name="Quewo balances"),
+        lambda: discord.Activity(type=discord.ActivityType.listening, name=f"{DEFAULT_PREFIX}lottery"),
+    ]
+    index = int(time.time() // 300) % len(statuses)
+    try:
+        await bot.change_presence(activity=statuses[index]())
+    except Exception as e:
+        print(f"Presence rotation failed: {type(e).__name__} - {e}")
+
 STALE_GAME_MARKERS = (
     "TIC TAC TOE",
     "CONNECT 4",
@@ -1072,6 +1093,27 @@ STALE_GAME_MARKERS = (
 )
 
 async def cleanup_stale_game_messages():
+    saved_sessions = load_active_game_sessions()
+    for session in saved_sessions:
+        guild = bot.get_guild(session["guild_id"])
+        channel = guild.get_channel(session["channel_id"]) if guild else bot.get_channel(session["channel_id"])
+        if channel is None:
+            try:
+                channel = await bot.fetch_channel(session["channel_id"])
+            except Exception:
+                channel = None
+        if channel is None:
+            await asyncio.to_thread(delete_active_game_session, session["message_id"])
+            continue
+        try:
+            message = await channel.fetch_message(session["message_id"])
+            expired = f"\n\n{economy_q_game_timeout} **{session['game_key'].title()} expired after bot restart.** Start a new game."
+            new_content = fit_discord_content((message.content or "") + expired) if message.content else expired.strip()
+            await message.edit(content=new_content, view=None, allowed_mentions=discord.AllowedMentions.none())
+        except Exception:
+            pass
+        await asyncio.to_thread(delete_active_game_session, session["message_id"])
+
     for guild in bot.guilds:
         for channel in getattr(guild, "text_channels", []):
             permissions = channel.permissions_for(guild.me)
@@ -1094,7 +1136,7 @@ async def cleanup_stale_game_messages():
 
 @bot.event
 async def on_ready():
-    global birthday_task, activity_task, runtime_state_restored, stale_game_messages_cleaned
+    global birthday_task, activity_task, presence_task, runtime_state_restored, stale_game_messages_cleaned
     print(f'ProQue is online as {bot.user}')
     if not keep_alive_task.is_running():
         keep_alive_task.start()
@@ -1102,14 +1144,16 @@ async def on_ready():
         birthday_task = asyncio.create_task(birthday_check_loop())
     if activity_task is None or activity_task.done():
         activity_task = asyncio.create_task(activity_report_loop())
+    if not presence_rotation_task.is_running():
+        presence_rotation_task.start()
     # Load economy cog
     try:
         await economy_setup(bot, send_log)
         economy_command_names = [
-            "bal", "profile", "inventory", "settheme", "quests", "dailychallenge", "streaks", "guide", "shop", "cooldowns", "transactions", "limits", "lottery", "editlottery", "stoplottery", "lotterystats", "buytick",
+            "bal", "profile", "inventory", "settheme", "quests", "dailychallenge", "streaks", "guide", "onboard", "shop", "cooldowns", "transactions", "limits", "lottery", "editlottery", "stoplottery", "lotterystats", "buytick",
             "daily", "weekly", "monthly", "cf", "roulette", "slots",
             "blackjack", "scratch", "tower", "vault", "memory", "cardladder", "lockpick", "heist", "diceduel", "cases", "plinko", "luckynumber", "jackpotspin", "dungeon", "ms", "wheel", "give", "lb", "gamestats", "achievements", "setbadge", "gamebalance", "gamehistory",
-            "qstats", "economyaudit", "add", "remove", "addtick", "settick", "setquesos", "econhelp", "explain"
+            "qstats", "economyaudit", "abuseaudit", "season", "endseason", "add", "remove", "addtick", "settick", "setquesos", "econhelp", "explain"
         ]
         loaded_economy_commands = [name for name in economy_command_names if bot.get_command(name)]
         print(f"Quewo system loaded ({len(loaded_economy_commands)}/{len(economy_command_names)} commands)")
@@ -1259,6 +1303,13 @@ def resolve_activity_report_channel(guild, raw, mentioned_channels=None):
     for channel in mentioned_channels or []:
         if getattr(channel, "guild", None) == guild:
             return channel
+    raw_text = str(raw or "").strip()
+    name_text = raw_text[1:] if raw_text.startswith("#") else raw_text
+    if name_text:
+        lowered = name_text.casefold()
+        for channel in getattr(guild, "channels", []) or []:
+            if getattr(channel, "name", "").casefold() == lowered:
+                return channel
     match = re.search(r"\d{15,25}", str(raw or ""))
     if not match:
         return None
@@ -1779,6 +1830,130 @@ async def activitystats(ctx):
     message = await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
     register_activity_status_message(message)
 
+async def apply_activity_edit(guild, author, config, setting, value, send, channel_mentions=None):
+    setting = str(setting or "").casefold()
+    if setting in {"channel", "chan"}:
+        selected_channel = resolve_activity_report_channel(guild, value, channel_mentions)
+        if selected_channel is None:
+            await send(f"{economy_q_warning} Mention a channel or send its channel ID.")
+            return False
+        next_report = config.get("next_report") or (datetime.now(timezone.utc) + timedelta(hours=24))
+        if next_report.tzinfo is None:
+            next_report = next_report.replace(tzinfo=timezone.utc)
+        ok, message, _ = await save_activity_report_config(guild, selected_channel, author.id, next_report)
+        if not ok:
+            await send(f"{economy_q_warning} {message}")
+            return False
+        schedule_activity_live_refresh(guild.id, guild_activity_channels[guild.id])
+        embed = activity_saved_embed(guild, selected_channel, next_report, author.id)
+        embed.title = f"{economy_q_activity} Activity Channel Updated"
+        embed.description = "Daily activity reports were moved to a new channel."
+        await send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+        return True
+
+    if setting in {"next", "time", "timer", "delay", "reset"}:
+        delay = parse_poll_duration(value)
+        if delay is None or delay.total_seconds() < 300:
+            await send(f"{economy_q_warning} Invalid time. Use at least 5 minutes, like `30m`, `12h`, or `1d`.")
+            return False
+        next_report = datetime.now(timezone.utc) + delay
+        channel = resolve_activity_report_channel(guild, str(config["channel_id"]))
+        if channel is None:
+            await send(f"{economy_q_warning} Saved activity channel no longer exists. Use `.editactivity channel #channel`.")
+            return False
+        ok, message, _ = await save_activity_report_config(guild, channel, config.get("set_by_user_id") or author.id, next_report)
+        if not ok:
+            await send(f"{economy_q_warning} {message}")
+            return False
+        schedule_activity_live_refresh(guild.id, guild_activity_channels[guild.id])
+        await send(
+            f"{economy_q_activity} Next activity report set for <t:{int(next_report.timestamp())}:R>.",
+            allowed_mentions=discord.AllowedMentions.none()
+        )
+        return True
+
+    await send(f"{economy_q_warning} Unknown setting. Use `channel` or `next`.")
+    return False
+
+class ActivityEditValueModal(Modal):
+    def __init__(self, author_id, guild_id, setting, label, placeholder):
+        super().__init__(title=f"Edit activity {label.lower()}")
+        self.author_id = author_id
+        self.guild_id = guild_id
+        self.setting = setting
+        self.value_input = TextInput(label=label, placeholder=placeholder, min_length=1, max_length=100)
+        self.add_item(self.value_input)
+
+    async def on_submit(self, interaction):
+        if interaction.user.id != self.author_id:
+            return await interaction.response.send_message("Use your own setup UI.", ephemeral=True)
+        if interaction.guild is None or interaction.guild.id != self.guild_id:
+            return await interaction.response.send_message("This setup UI belongs to another server.", ephemeral=True)
+        config = guild_activity_channels.get(interaction.guild.id)
+        if config is None:
+            saved_configs = await asyncio.to_thread(load_guild_activity_channels)
+            if saved_configs:
+                guild_activity_channels.update(saved_configs)
+            config = guild_activity_channels.get(interaction.guild.id)
+        if not config:
+            return await interaction.response.send_message(f"{economy_q_warning} Activity reports are not set up. Use `.activity setup` first.", ephemeral=True)
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        async def send(content=None, **kwargs):
+            kwargs.setdefault("ephemeral", True)
+            return await interaction.followup.send(content, **kwargs)
+
+        await apply_activity_edit(
+            interaction.guild,
+            interaction.user,
+            config,
+            self.setting,
+            str(self.value_input.value).strip(),
+            send,
+        )
+
+class ActivityEditSettingSelect(Select):
+    def __init__(self):
+        super().__init__(
+            placeholder="Choose what to edit",
+            min_values=1,
+            max_values=1,
+            options=[
+                discord.SelectOption(label="Report channel", value="channel", description="Paste #channel or a channel ID"),
+                discord.SelectOption(label="Next report time", value="next", description="Example: 12h"),
+            ],
+        )
+
+    async def callback(self, interaction):
+        if interaction.user.id != self.view.author_id:
+            return await interaction.response.send_message("Use your own setup UI.", ephemeral=True)
+        if interaction.guild is None or interaction.guild.id != self.view.guild_id:
+            return await interaction.response.send_message("This setup UI belongs to another server.", ephemeral=True)
+        setting = self.values[0]
+        if setting == "channel":
+            modal = ActivityEditValueModal(self.view.author_id, self.view.guild_id, setting, "Channel mention or ID", "#activity or 123456789012345678")
+        else:
+            modal = ActivityEditValueModal(self.view.author_id, self.view.guild_id, setting, "Time until next report", "12h")
+        await interaction.response.send_modal(modal)
+
+class ActivityEditView(View):
+    def __init__(self, author_id, guild_id):
+        super().__init__(timeout=120)
+        self.author_id = author_id
+        self.guild_id = guild_id
+        self.add_item(ActivityEditSettingSelect())
+
+async def send_activity_edit_ui(ctx, selected_setting=None):
+    embed = discord.Embed(
+        title=f"{economy_q_activity} Edit Activity Report",
+        description="Choose a setting, then enter the new value.",
+        color=discord.Color.blue(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.add_field(name="Report Channel", value="Paste a channel mention or ID.", inline=False)
+    embed.add_field(name="Next Report", value="Reset the next report timer, like `12h` or `1d`.", inline=False)
+    await ctx.send(embed=embed, view=ActivityEditView(ctx.author.id, ctx.guild.id), allowed_mentions=discord.AllowedMentions.none())
+
 @bot.command(name="editactivity", aliases=["activityedit"])
 async def editactivity(ctx, setting: str = None, *, value: str = None):
     """Edits this server's activity report settings."""
@@ -1797,47 +1972,12 @@ async def editactivity(ctx, setting: str = None, *, value: str = None):
         return await ctx.send(f"{economy_q_warning} Activity reports are not set up. Use `.activity setup` first.")
 
     if not setting or not value:
-        return await ctx.send(
-            "Use `.editactivity <setting> <value>`.\n"
-            "Settings: `channel`, `next`.\n"
-            "Examples: `.editactivity channel #activity`, `.editactivity next 12h`"
-        )
+        return await send_activity_edit_ui(ctx, setting)
 
-    setting = setting.casefold()
-    if setting in {"channel", "chan"}:
-        selected_channel = resolve_activity_report_channel(ctx.guild, value, ctx.message.channel_mentions)
-        if selected_channel is None:
-            return await ctx.send(f"{economy_q_warning} Mention a channel or send its channel ID.")
-        next_report = config.get("next_report") or (datetime.now(timezone.utc) + timedelta(hours=24))
-        if next_report.tzinfo is None:
-            next_report = next_report.replace(tzinfo=timezone.utc)
-        ok, message, _ = await save_activity_report_config(ctx.guild, selected_channel, ctx.author.id, next_report)
-        if not ok:
-            return await ctx.send(f"{economy_q_warning} {message}")
-        schedule_activity_live_refresh(ctx.guild.id, guild_activity_channels[ctx.guild.id])
-        embed = activity_saved_embed(ctx.guild, selected_channel, next_report, ctx.author.id)
-        embed.title = f"{economy_q_activity} Activity Channel Updated"
-        embed.description = "Daily activity reports were moved to a new channel."
-        return await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+    async def send(content=None, **kwargs):
+        return await ctx.send(content, **kwargs)
 
-    if setting in {"next", "time", "timer", "delay", "reset"}:
-        delay = parse_poll_duration(value)
-        if delay is None or delay.total_seconds() < 300:
-            return await ctx.send(f"{economy_q_warning} Invalid time. Use at least 5 minutes, like `30m`, `12h`, or `1d`.")
-        next_report = datetime.now(timezone.utc) + delay
-        channel = resolve_activity_report_channel(ctx.guild, str(config["channel_id"]))
-        if channel is None:
-            return await ctx.send(f"{economy_q_warning} Saved activity channel no longer exists. Use `.editactivity channel #channel`.")
-        ok, message, _ = await save_activity_report_config(ctx.guild, channel, config.get("set_by_user_id") or ctx.author.id, next_report)
-        if not ok:
-            return await ctx.send(f"{economy_q_warning} {message}")
-        schedule_activity_live_refresh(ctx.guild.id, guild_activity_channels[ctx.guild.id])
-        return await ctx.send(
-            f"{economy_q_activity} Next activity report set for <t:{int(next_report.timestamp())}:R>.",
-            allowed_mentions=discord.AllowedMentions.none()
-        )
-
-    await ctx.send(f"{economy_q_warning} Unknown setting. Use `channel` or `next`.")
+    await apply_activity_edit(ctx.guild, ctx.author, config, setting, value, send, ctx.message.channel_mentions)
 
 @bot.command(name="stopactivity", aliases=["activitystop"])
 async def stopactivity(ctx):
@@ -2119,6 +2259,7 @@ COMMAND_EXAMPLE_OVERRIDES = {
     "disable": ".disable command",
     "editactivity": ".editactivity channel #activity",
     "editlottery": ".editlottery duration 12h",
+    "endseason": ".endseason 2026-05",
     "enable": ".enable command",
     "find": ".find 885548126365171824",
     "flagquiz": ".flagquiz",
@@ -2138,6 +2279,7 @@ COMMAND_EXAMPLE_OVERRIDES = {
     "dungeon": ".dungeon",
     "gamestats": ".gamestats @user",
     "memory": ".memory 1000",
+    "onboard": ".onboard",
     "move": ".move e2e4",
     "ms": ".ms 1000",
     "poll": ".poll Best color? | Blue | Red | 10m",
@@ -2152,11 +2294,13 @@ COMMAND_EXAMPLE_OVERRIDES = {
     "rpurge": ".rpurge @user 20",
     "rshut": ".rshut @user",
     "scratch": ".scratch 1000",
+    "season": ".season",
     "send": ".send #channel message",
     "setbday": ".setbday 25/12",
     "setbdaychannel": ".setbdaychannel #birthdays",
     "setnick": ".setnick @user new nickname",
     "setprefix": ".setprefix !",
+    "slashsync": ".slashsync",
     "setquesos": ".setquesos @user 1m",
     "settick": ".settick @user 10",
     "shut": ".shut @user",
@@ -2202,6 +2346,28 @@ GAMBLING_AMOUNT_COMMANDS = {
     "minesweeper", "minesweepeer", "wheel", "spin",
 }
 
+GENERIC_INPUT_UI_COMMANDS = {
+    "prefix", "preifx", "setprefix", "disable", "enable", "roleinfo", "deleterole",
+    "howtoplay", "how", "rules", "flagquiz", "flags", "fq", "ttt", "c4", "chess",
+    "move", "chessmove", "setnick", "shut", "unshut", "rshut", "unrshut", "purge",
+    "rpurge", "unmute", "ban", "unban", "kick", "addrole", "removerole", "send",
+    "reply", "aban", "raban", "summon2", "block", "unblock", "fsleep", "wake",
+    "find", "censor", "uncensor", "ask", "generate",
+}
+
+INPUT_UI_EXCLUDED_COMMANDS = {
+    *GAMBLING_AMOUNT_COMMANDS,
+    "analyse", "analyze", "analyseimage", "analyzeimage", "vision", "steal",
+}
+
+def command_supports_input_ui(command):
+    if not command:
+        return False
+    names = {command.name, *getattr(command, "aliases", [])}
+    if names & INPUT_UI_EXCLUDED_COMMANDS:
+        return False
+    return bool(names & (GENERIC_INPUT_UI_COMMANDS | SPECIALIZED_SETUP_UI_COMMANDS))
+
 def command_usage_example(ctx):
     prefix = getattr(ctx, "prefix", prefix_for_guild(ctx.guild))
     command = ctx.command
@@ -2240,6 +2406,9 @@ def command_argument_hint(error, ctx=None):
     return None
 
 async def send_command_usage_correction(ctx, error=None):
+    if command_supports_input_ui(getattr(ctx, "command", None)):
+        await send_command_input_ui(ctx, error=error)
+        return
     usage = command_usage_example(ctx)
     hint = command_argument_hint(error, ctx)
     lines = [f"Type: `{usage}`"]
@@ -2304,7 +2473,6 @@ async def on_message(message):
     content = message.content.strip()
     is_mention = message.mentions and any(u.id == bot.user.id for u in message.mentions)
     mention_patterns = [f"<@{bot.user.id}>", f"<@!{bot.user.id}>", f"<@{bot.user.id}"]
-    is_mention_start = any(content.startswith(p) for p in mention_patterns)
 
     referenced_message = None
     if message.reference:
@@ -2318,14 +2486,13 @@ async def on_message(message):
                 referenced_message = None
     is_reply_to_bot = bool(referenced_message and referenced_message.author.id == bot.user.id)
 
-    if (is_reply_to_bot or (is_mention and is_mention_start)) and GROQ_API_KEY:
+    if (is_reply_to_bot or is_mention) and GROQ_API_KEY:
         question = content
         for p in mention_patterns:
-            if content.startswith(p):
-                question = content[len(p):].strip()
-                break
+            question = question.replace(p, "")
+        question = question.strip()
 
-        if question:
+        if question or referenced_message:
             context_text = ""
             if referenced_message:
                 ref_content = referenced_message.content or ""
@@ -2338,8 +2505,14 @@ async def on_message(message):
                             embed_bits.append(f"Description: {embed.description}")
                     if embed_bits:
                         ref_content = (ref_content + "\n" + "\n".join(embed_bits)).strip()
+                if referenced_message.attachments:
+                    attachment_names = ", ".join(a.filename for a in referenced_message.attachments[:5])
+                    ref_content = (ref_content + f"\nAttachments: {attachment_names}").strip()
                 if ref_content:
-                    context_text = ref_content[:1200]
+                    author_name = getattr(referenced_message.author, "display_name", referenced_message.author.name)
+                    context_text = f"Author: {author_name}\nMessage: {ref_content}"[:1200]
+            if not question and referenced_message:
+                question = "Respond to the replied message using the reply context."
 
             messages = [
                 {
@@ -2569,12 +2742,12 @@ async def on_command_error(ctx, error):
 
 HELP_CATEGORIES = {
     "Quewo": [
-        "guide", "bal", "profile", "inventory", "settheme", "quests", "dailychallenge", "streaks", "shop", "cooldowns", "transactions", "lottery", "lotterystats", "buytick",
+        "guide", "onboard", "bal", "profile", "inventory", "settheme", "quests", "dailychallenge", "streaks", "shop", "cooldowns", "transactions", "lottery", "lotterystats", "buytick",
         "daily", "weekly", "monthly", "cf", "roulette", "slots", "blackjack", "scratch", "tower", "vault", "memory", "cardladder", "lockpick",
         "heist", "diceduel", "cases", "plinko", "luckynumber", "jackpotspin", "dungeon", "ms", "wheel",
-        "give", "lb", "gamestats", "achievements", "setbadge", "gamebalance", "gamehistory", "limits", "qstats", "economyaudit", "econhelp", "explain",
+        "give", "lb", "gamestats", "achievements", "setbadge", "gamebalance", "gamehistory", "season", "limits", "qstats", "economyaudit", "abuseaudit", "econhelp", "explain",
     ],
-    "Games": ["games", "ttt", "c4", "chess", "move", "resign", "flagquiz", "flagstats", "q", "picker"],
+    "Games": ["games", "howtoplay", "ttt", "c4", "chess", "move", "resign", "flagquiz", "flagstats", "q", "picker"],
     "Utility": ["help", "userinfo", "pfp", "calc", "define", "timer", "ctimer", "alarm", "poll", "epoll", "translate", "find"],
     "AI": ["ask", "generate", "analyse", "analyze"],
     "Server Tools": [
@@ -2583,7 +2756,7 @@ HELP_CATEGORIES = {
     ],
     "Status": ["afk", "sleep", "wake", "fsleep", "away", "setbday", "removebday", "setbdaychannel", "activity", "activitystats"],
     "Admin": [
-        "settings", "setlogs", "prefix", "disable", "enable", "disableall", "enableall", "dclist", "perf", "test", "testlog", "testrlog",
+        "settings", "slashsync", "setlogs", "prefix", "disable", "enable", "disableall", "enableall", "dclist", "perf", "test", "testlog", "testrlog",
         "endttt", "setnick", "unmute", "kick", "ban", "unban", "addrole", "removerole", "deleterole",
         "lock", "unlock", "lockdown", "reopen", "rlockdown", "runlock", "shut", "unshut", "clearwatchlist", "rshut", "unrshut",
         "send", "reply", "aban", "raban", "abanlist", "summon", "summon2", "block", "unblock",
@@ -2923,6 +3096,22 @@ async def settings_command(ctx):
         return await ctx.send("Settings only work in servers.")
     await ctx.send(embed=await build_settings_embed(ctx.guild), view=SettingsView(ctx.author.id), allowed_mentions=discord.AllowedMentions.none())
 
+@bot.command(name="slashsync", aliases=["slashstatus", "syncslash"])
+@is_admin_power()
+async def slashsync_command(ctx):
+    """Checks and resyncs slash commands."""
+    result = await sync_slash_commands_once(force=True)
+    embed = discord.Embed(
+        title="Slash Command Status",
+        description="Forced a slash command sync.",
+        color=discord.Color.blurple(),
+    )
+    embed.add_field(name="Prefix Commands Covered By /run", value=f"{result['runnable_count']}", inline=True)
+    embed.add_field(name="Guilds Synced", value=f"{result['synced_guilds']}", inline=True)
+    embed.add_field(name="Failures", value=f"{result['failed_guilds']}", inline=True)
+    embed.set_footer(text="Discord may take a little time to show slash command updates.")
+    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
 @bot.command(name="perf", aliases=["performance", "slowcommands"])
 @is_admin_power()
 async def perf_command(ctx):
@@ -3041,15 +3230,57 @@ class GamesView(View):
     )
     async def select_game(self, interaction, select):
         selected = select.values[0]
-        usage = next((usage for _, name, _, usage, _ in GAME_MENU if name == selected), None)
+        row = next((item for item in GAME_MENU if item[1] == selected), None)
+        usage = row[3] if row else None
         usage = usage.replace("`.", f"`{self.prefix}") if usage else f"`{self.prefix}help games`"
+        self.selected_game = selected
         await interaction.response.send_message(f"Start with {usage}", ephemeral=True)
+
+    @discord.ui.button(label="How To Play", style=discord.ButtonStyle.success)
+    async def how_to_play_button(self, interaction, button):
+        selected = getattr(self, "selected_game", None)
+        row = next((item for item in GAME_MENU if item[1] == selected), None) if selected else None
+        if row is None:
+            return await interaction.response.send_message("Pick a game from the menu first.", ephemeral=True)
+        _, name, game_key, usage, desc = row
+        command_key = game_key or name.casefold().replace(" ", "")
+        details = economy_detailed_explanations.get(command_key) or economy_explanations.get(command_key) or desc
+        embed = discord.Embed(
+            title=f"{economy_q_book} How To Play: {name}",
+            description=details,
+            color=discord.Color.green(),
+        )
+        embed.add_field(name="Start", value=usage.replace("`.", f"`{self.prefix}"), inline=False)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
 @bot.command(name="games", aliases=["gamelist"])
 async def games_command(ctx):
     """Shows available games and how to start them."""
     prefix = prefix_for_guild(ctx.guild)
     await ctx.send(embed=games_embed(prefix), view=GamesView(ctx.author.id, prefix))
+
+@bot.command(name="howtoplay", aliases=["how", "rules"])
+async def howtoplay_command(ctx, *, game: str = None):
+    prefix = prefix_for_guild(ctx.guild)
+    if not game:
+        return await send_command_input_ui(ctx, "howtoplay", note=f"Enter a game name, or use the How To Play button in `{prefix}games`.")
+    key = game.strip().casefold().replace(" ", "")
+    row = next(
+        (
+            item for item in GAME_MENU
+            if item[1].casefold().replace(" ", "") == key
+            or (item[2] and item[2].casefold() == key)
+        ),
+        None,
+    )
+    if row is None:
+        return await ctx.send(f"Game not found. Try `{prefix}games`.")
+    _, name, game_key, usage, desc = row
+    command_key = game_key or name.casefold().replace(" ", "")
+    details = economy_detailed_explanations.get(command_key) or economy_explanations.get(command_key) or desc
+    embed = discord.Embed(title=f"{economy_q_book} How To Play: {name}", description=details, color=discord.Color.green())
+    embed.add_field(name="Start", value=usage.replace("`.", f"`{prefix}"), inline=False)
+    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
 FLAG_COUNTRY_ROWS = """
 AF|Afghanistan|
@@ -3679,10 +3910,10 @@ async def flagstats(ctx, member: discord.Member = None):
     await ctx.reply(embed=embed, mention_author=False, allowed_mentions=discord.AllowedMentions.none())
 
 @bot.tree.command(name="run", description="Run any ProQue prefix command through slash commands.")
-@app_commands.describe(command="Command name", args="Everything after the command, like @user 1000 or 10m title")
-async def slash_run(interaction: discord.Interaction, command: str, args: str = ""):
+@app_commands.describe(command="Command name", input="What that command needs, like amount, time, user, channel, or message text")
+async def slash_run(interaction: discord.Interaction, command: str, input: str = ""):
     await interaction.response.defer(thinking=True)
-    await invoke_prefix_command_from_interaction(interaction, command, args)
+    await invoke_prefix_command_from_interaction(interaction, command, input)
 
 @slash_run.autocomplete("command")
 async def slash_run_command_autocomplete(interaction: discord.Interaction, current: str):
@@ -3699,7 +3930,7 @@ async def slash_commands_list(interaction: discord.Interaction):
     embed = discord.Embed(
         title="ProQue Slash Commands",
         description=(
-            f"Use `/run command args` to run any of the **{len(commands_)}** commands.\n"
+            f"Use `/run command input` to run any of the **{len(commands_)}** commands.\n"
             f"Prefix commands still use `{prefix}` in this server."
         ),
         color=discord.Color.blurple()
@@ -3709,8 +3940,27 @@ async def slash_commands_list(interaction: discord.Interaction):
         embed.add_field(name=f"Commands {index + 1}-{min(index + 25, len(lines))}", value=chunk, inline=True)
         if len(embed.fields) >= 6:
             break
-    embed.set_footer(text="Discord limits top-level slash commands to 100, so /run covers every command.")
+    embed.set_footer(text="Input means the stuff the command needs: amount, time, user, channel, or message.")
     await interaction.response.send_message(embed=embed, ephemeral=True)
+
+@bot.tree.command(name="slashstatus", description="Check and resync ProQue slash commands.")
+async def slash_status(interaction: discord.Interaction):
+    if interaction.guild and not has_owner_power(interaction.user, interaction.guild):
+        return await interaction.response.send_message("Admin power only.", ephemeral=True)
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    before = len(bot.tree.get_commands())
+    result = await sync_slash_commands_once(force=True)
+    embed = discord.Embed(
+        title="Slash Command Status",
+        description="Forced a slash command sync for this process.",
+        color=discord.Color.blurple(),
+    )
+    embed.add_field(name="Top-Level Slash Commands", value=f"{before}", inline=True)
+    embed.add_field(name="Prefix Commands Covered By /run", value=f"{result['runnable_count']}", inline=True)
+    embed.add_field(name="Guilds Synced", value=f"{result['synced_guilds']}", inline=True)
+    embed.add_field(name="Failures", value=f"{result['failed_guilds']}", inline=True)
+    embed.set_footer(text="Discord may take a little time to show slash command updates.")
+    await interaction.followup.send(embed=embed, ephemeral=True)
 
 @bot.tree.command(name="help", description="Show ProQue help.")
 @app_commands.describe(command="Optional command name")
@@ -3723,7 +3973,7 @@ async def slash_help(interaction: discord.Interaction, command: str = ""):
         usage = command_usage_text(command_obj, prefix)
         aliases = f"\nAliases: {', '.join(command_obj.aliases)}" if command_obj.aliases else ""
         description = command_short_description(command_obj)
-        setup_note = "\nRun it through `/run`, or use the setup UI where available." if command_obj.name in SETUP_UI_COMMANDS else "\nRun it through `/run command args`."
+        setup_note = "\nRun it through `/run`, or use the setup UI where available." if command_obj.name in SETUP_UI_COMMANDS else "\nRun it through `/run command input`."
         return await interaction.response.send_message(f"**{usage}**\n{description}{aliases}{setup_note}", ephemeral=True)
     await interaction.response.send_message(embed=render_help_embed(interaction.guild), ephemeral=True)
 
@@ -4653,7 +4903,7 @@ async def prefix_command(ctx, new_prefix: str = None):
 
     current_prefix = guild_prefixes.get(ctx.guild.id, DEFAULT_PREFIX)
     if new_prefix is None:
-        await ctx.send(f"Current prefix: `{current_prefix}`\nUse `{current_prefix}prefix <new prefix>` to change it.")
+        await send_command_input_ui(ctx, "prefix", note=f"Current prefix: `{current_prefix}`. Press the button to set a new prefix.")
         return
 
     if not can_manage_prefix(ctx.author, ctx.guild):
@@ -5048,6 +5298,7 @@ class TicTacToeButton(Button):
                 allowed_mentions=discord.AllowedMentions(users=True)
             )
             ttt_games.pop(interaction.channel.id, None)
+            await asyncio.to_thread(delete_active_game_session, game["msg"].id)
             return
 
         if all(cell != TTT_EMPTY for row in board for cell in row):
@@ -5055,6 +5306,7 @@ class TicTacToeButton(Button):
             await disable_all_buttons(game["view"])
             await game["msg"].edit(content=f"It's a draw!{payout_text}", view=game["view"], allowed_mentions=discord.AllowedMentions.none())
             ttt_games.pop(interaction.channel.id, None)
+            await asyncio.to_thread(delete_active_game_session, game["msg"].id)
             return
 
         game["turn"] = 1 - game["turn"]
@@ -5449,6 +5701,7 @@ async def start_chess_clock(game):
                 allowed_mentions=discord.AllowedMentions(users=True)
             )
             chess_games.pop(channel_id, None)
+            await asyncio.to_thread(delete_active_game_session, game["message"].id)
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -5619,6 +5872,7 @@ class ChessResignButton(Button):
         await stop_chess_live_clock(game)
         view.disable_all_items()
         chess_games.pop(game["channel_id"], None)
+        await asyncio.to_thread(delete_active_game_session, game["message"].id)
         payout_text = await settle_game_bet(game, winner)
         result_text = f"{economy_q_game_win} <@{winner.id}> wins by resignation.{payout_text}"
         await interaction.edit_original_response(
@@ -5740,6 +5994,7 @@ class ChessView(View):
             await stop_chess_live_clock(self.game)
             self.disable_all_items()
             chess_games.pop(self.game["channel_id"], None)
+            await asyncio.to_thread(delete_active_game_session, self.game["message"].id)
             payout_text = await settle_game_bet(self.game, winner)
             result_text = f"{economy_q_game_win} Checkmate. <@{winner.id}> wins!{payout_text}"
             return await interaction.edit_original_response(
@@ -5755,6 +6010,7 @@ class ChessView(View):
             await stop_chess_live_clock(self.game)
             self.disable_all_items()
             chess_games.pop(self.game["channel_id"], None)
+            await asyncio.to_thread(delete_active_game_session, self.game["message"].id)
             payout_text = await settle_game_bet(self.game, None)
             result_text = f"Game drawn.{payout_text}"
             return await interaction.edit_original_response(
@@ -5826,6 +6082,7 @@ async def chess(ctx, opponent: discord.Member):
     )
     game["message"] = msg
     chess_games[ctx.channel.id] = game
+    await asyncio.to_thread(save_active_game_session, ctx.guild.id, ctx.channel.id, msg.id, "chess", [ctx.author.id, opponent.id])
     await start_chess_clock(game)
     await start_chess_live_clock(game)
 
@@ -5862,6 +6119,7 @@ async def chess_move(ctx, *, move: str):
             allowed_mentions=discord.AllowedMentions(users=True)
         )
         chess_games.pop(ctx.channel.id, None)
+        await asyncio.to_thread(delete_active_game_session, game["message"].id)
         return
     if board.is_stalemate() or board.is_insufficient_material() or board.can_claim_draw():
         game["ended"] = True
@@ -5876,6 +6134,7 @@ async def chess_move(ctx, *, move: str):
             allowed_mentions=discord.AllowedMentions.none()
         )
         chess_games.pop(ctx.channel.id, None)
+        await asyncio.to_thread(delete_active_game_session, game["message"].id)
         return
 
     game["view"] = ChessView(game)
@@ -5904,6 +6163,7 @@ async def resign(ctx):
         allowed_mentions=discord.AllowedMentions(users=True)
     )
     chess_games.pop(ctx.channel.id, None)
+    await asyncio.to_thread(delete_active_game_session, game["message"].id)
 
 @bot.command()
 async def ttt(ctx, opponent: discord.Member):
@@ -5940,6 +6200,7 @@ async def ttt(ctx, opponent: discord.Member):
         "bet_amount": bet_amount
     }
     ttt_games[ctx.channel.id] = game
+    await asyncio.to_thread(save_active_game_session, ctx.guild.id, ctx.channel.id, msg.id, "ttt", [ctx.author.id, opponent.id])
 
     await update_turn(game, ctx.channel)
 
@@ -5968,6 +6229,7 @@ async def update_turn(game, channel):
             allowed_mentions=discord.AllowedMentions(users=True)
         )
         ttt_games.pop(channel.id, None)
+        await asyncio.to_thread(delete_active_game_session, game["msg"].id)
 
     game["timeout_task"] = asyncio.create_task(countdown())
 
@@ -6007,6 +6269,7 @@ class Connect4Button(Button):
                 )
                 await send_game_extra(interaction.channel, extra, discord.AllowedMentions(users=True))
                 c4_games.pop(interaction.channel.id, None)
+                await asyncio.to_thread(delete_active_game_session, interaction.message.id)
                 return
 
             if all(cell != " " for row in board for cell in row):
@@ -6021,6 +6284,7 @@ class Connect4Button(Button):
                 )
                 await send_game_extra(interaction.channel, extra, discord.AllowedMentions.none())
                 c4_games.pop(interaction.channel.id, None)
+                await asyncio.to_thread(delete_active_game_session, interaction.message.id)
                 return
 
             game["turn"] = 1 - game["turn"]
@@ -6104,6 +6368,7 @@ async def update_c4_turn(game, channel):
             )
             await send_game_extra(channel, extra, discord.AllowedMentions(users=True))
             c4_games.pop(channel.id, None)
+            await asyncio.to_thread(delete_active_game_session, msg.id)
         except Exception as e:
             print("Error in countdown:", e)
 
@@ -6156,13 +6421,16 @@ async def c4(ctx, opponent: discord.Member):
         "bet_amount": bet_amount
     }
     c4_games[ctx.channel.id] = game
+    await asyncio.to_thread(save_active_game_session, ctx.guild.id, ctx.channel.id, msg.id, "c4", [ctx.author.id, opponent.id])
     await update_c4_turn(game, ctx.channel)
 
 @bot.command()
 @is_admin_power()
 async def endttt(ctx):
     if ctx.channel.id in ttt_games:
-        ttt_games.pop(ctx.channel.id, None)
+        game = ttt_games.pop(ctx.channel.id, None)
+        if game and game.get("msg"):
+            await asyncio.to_thread(delete_active_game_session, game["msg"].id)
         await ctx.send("Tic-Tac-Toe game ended.")
     else:
         await ctx.send("No Tic-Tac-Toe game is currently active in this channel.")
@@ -6347,7 +6615,7 @@ async def parse_member_role_args(ctx, args):
 async def purge(ctx, *, args: str = None):
     amount, member = await parse_member_count_args(ctx, args)
     if amount is None:
-        return await ctx.send("Use `.purge 20`, `.purge @user 20`, or `.purge 20 @user`.", delete_after=10)
+        return await send_command_input_ui(ctx, "purge", note="Enter how many messages to delete. You can optionally include a member.")
     if member is False:
         return await ctx.send("I couldn't find that member. Use `.purge @user 20` or `.purge 20 @user`.", delete_after=10)
     if amount <= 0:
@@ -6389,7 +6657,7 @@ async def purge(ctx, *, args: str = None):
 async def rpurge(ctx, *, args: str = None):
     amount, member = await parse_member_count_args(ctx, args)
     if amount is None:
-        return await ctx.send("Use `.rpurge 20`, `.rpurge @user 20`, or `.rpurge 20 @user`.", delete_after=10)
+        return await send_command_input_ui(ctx, "rpurge", note="Enter how many messages to check for reactions. You can optionally include a member.")
     if member is False:
         return await ctx.send("I couldn't find that member. Use `.rpurge @user 20` or `.rpurge 20 @user`.", delete_after=10)
     if amount <= 0:
@@ -6535,7 +6803,7 @@ async def addrole(ctx, *, args: str = None):
     """Adds a role to a member. Member and role can be in either order."""
     member, role = await parse_member_role_args(ctx, args)
     if member is None or role is None:
-        return await ctx.send("Use `.addrole @user @role` or `.addrole @role @user`.")
+        return await send_command_input_ui(ctx, "addrole", note="Enter the member and role. Either order works.")
     if not can_act_on(ctx.author, member, ctx.guild):
         return await ctx.send("You can't edit that member's roles.")
     await member.add_roles(role)
@@ -6547,7 +6815,7 @@ async def removerole(ctx, *, args: str = None):
     """Removes a role from a member. Member and role can be in either order."""
     member, role = await parse_member_role_args(ctx, args)
     if member is None or role is None:
-        return await ctx.send("Use `.removerole @user @role` or `.removerole @role @user`.")
+        return await send_command_input_ui(ctx, "removerole", note="Enter the member and role. Either order works.")
     if not can_act_on(ctx.author, member, ctx.guild):
         return await ctx.send("You can't edit that member's roles.")
     await member.remove_roles(role)
@@ -6787,7 +7055,7 @@ async def send(ctx, target=None, *, msg=None):
             msg = f"{target} {msg}".strip() if msg else target
 
     if not msg and not attachments:
-        return await ctx.send("Provide a message or attachment to send.", delete_after=5)
+        return await send_command_input_ui(ctx, "send", note="Enter a message, or enter a channel plus message.")
 
     try:
         files = [await a.to_file() for a in attachments] if attachments else None
@@ -6834,7 +7102,7 @@ async def reply(ctx, message_id: int, *, text=None):
         return await ctx.send("Message not found in any accessible channel.", delete_after=5)
 
     if not text and not attachments:
-        return await ctx.send("Provide a message or attachment to reply with.", delete_after=5)
+        return await send_command_input_ui(ctx, "reply", note="Enter the message ID or link, then the reply text.")
 
     try:
         files = [await a.to_file() for a in attachments] if attachments else None
@@ -7970,7 +8238,7 @@ async def fsleep(ctx, members: commands.Greedy[discord.Member], *, time: str = N
         return
 
     if not members:
-        return await ctx.send("No members provided.", delete_after=5)
+        return await send_command_input_ui(ctx, "fsleep", note="Enter one or more members. You can optionally add how long ago sleep started.")
 
     results = []
 
@@ -8009,6 +8277,8 @@ async def fsleep(ctx, members: commands.Greedy[discord.Member], *, time: str = N
 async def wake(ctx, members: commands.Greedy[discord.Member]):
     if not has_super_owner_power(ctx.author, ctx.guild):
         return
+    if not members:
+        return await send_command_input_ui(ctx, "wake", note="Enter one or more members to wake.")
 
     for member in members:
         sleeping_users.pop(member.id, None)
@@ -8615,7 +8885,48 @@ class OpenTranslateSetupButton(Button):
             return await interaction.response.send_message("Use your own setup UI.", ephemeral=True)
         await interaction.response.send_modal(TranslateSetupModal(self.view.author_id))
 
-SETUP_UI_COMMANDS = {"poll", "timer", "alarm", "picker", "giveaway", "calc", "define", "setbday", "translate"}
+class GenericCommandInputModal(Modal):
+    def __init__(self, author_id, command_name):
+        command = get_command_case_insensitive(command_name)
+        display_name = command.name if command else command_name
+        super().__init__(title=f"Run {display_name}")
+        self.author_id = author_id
+        self.command_name = display_name
+        example = COMMAND_EXAMPLE_OVERRIDES.get(display_name)
+        placeholder = "Enter what comes after the command"
+        if example:
+            parts = example.split(maxsplit=1)
+            if len(parts) > 1:
+                placeholder = parts[1][:100]
+        style = discord.TextStyle.paragraph if display_name in {"send", "reply", "ask", "generate", "poll", "giveaway"} else discord.TextStyle.short
+        self.command_input = TextInput(
+            label="Command input",
+            placeholder=placeholder,
+            style=style,
+            min_length=1,
+            max_length=1500,
+        )
+        self.add_item(self.command_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if interaction.user.id != self.author_id:
+            return await interaction.response.send_message("Use your own setup UI.", ephemeral=True)
+        await interaction.response.defer(thinking=True)
+        await invoke_prefix_command_from_interaction(interaction, self.command_name, str(self.command_input.value).strip())
+
+class OpenGenericCommandInputButton(Button):
+    def __init__(self, command_name):
+        command = get_command_case_insensitive(command_name)
+        self.command_name = command.name if command else command_name
+        super().__init__(label="Enter Input", style=discord.ButtonStyle.primary, emoji=reaction_emoji(economy_q_edit))
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.view.author_id:
+            return await interaction.response.send_message("Use your own setup UI.", ephemeral=True)
+        await interaction.response.send_modal(GenericCommandInputModal(self.view.author_id, self.command_name))
+
+SPECIALIZED_SETUP_UI_COMMANDS = {"poll", "timer", "alarm", "picker", "giveaway", "calc", "define", "setbday", "translate"}
+SETUP_UI_COMMANDS = SPECIALIZED_SETUP_UI_COMMANDS | GENERIC_INPUT_UI_COMMANDS
 
 def command_setup_view(author_id, command_name):
     buttons = {
@@ -8630,9 +8941,31 @@ def command_setup_view(author_id, command_name):
         "translate": OpenTranslateSetupButton,
     }
     button_cls = buttons.get(command_name)
-    if not button_cls:
-        return None
-    return SingleUserSetupView(author_id, button_cls())
+    if button_cls:
+        return SingleUserSetupView(author_id, button_cls())
+    command = get_command_case_insensitive(command_name)
+    if command_supports_input_ui(command):
+        return SingleUserSetupView(author_id, OpenGenericCommandInputButton(command.name))
+    return None
+
+async def send_command_input_ui(ctx, command_name=None, error=None, note=None):
+    command = get_command_case_insensitive(command_name) if command_name else getattr(ctx, "command", None)
+    if not command or not command_supports_input_ui(command):
+        return await send_command_usage_correction(ctx, error)
+    prefix = getattr(ctx, "prefix", prefix_for_guild(ctx.guild))
+    usage = command_usage_example(ctx)
+    hint = command_argument_hint(error, ctx)
+    description = note or "This command needs input. Press the button and enter what should come after the command."
+    embed = discord.Embed(
+        title=f"{economy_q_edit} {prefix}{command.name}",
+        description=description,
+        color=discord.Color.blurple(),
+    )
+    embed.add_field(name="Example", value=f"`{usage}`", inline=False)
+    if hint:
+        embed.add_field(name="Input Help", value=hint, inline=False)
+    embed.set_footer(text=f"You can still type it normally with {prefix}{command.name}.")
+    await ctx.send(embed=embed, view=command_setup_view(ctx.author.id, command.name), allowed_mentions=discord.AllowedMentions.none())
 
 @bot.command(name="translate")
 async def translate_command(ctx, *, args: str = None):

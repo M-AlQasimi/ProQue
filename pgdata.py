@@ -209,6 +209,18 @@ def _create_tables(cur):
     cur.execute("CREATE INDEX IF NOT EXISTS idx_ai_channel_memory_lookup ON ai_channel_memory (guild_id, channel_id, created_at DESC)")
 
     cur.execute("""
+        CREATE TABLE IF NOT EXISTS active_game_sessions (
+            message_id BIGINT PRIMARY KEY,
+            guild_id BIGINT NOT NULL,
+            channel_id BIGINT NOT NULL,
+            game_key TEXT NOT NULL,
+            players BIGINT[] NOT NULL DEFAULT '{}',
+            created_at TIMESTAMP NOT NULL DEFAULT NOW()
+        )
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_active_game_sessions_guild_channel ON active_game_sessions (guild_id, channel_id)")
+
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS guild_bot_blacklist (
             guild_id BIGINT NOT NULL,
             user_id BIGINT NOT NULL,
@@ -1097,6 +1109,84 @@ def save_ai_channel_memory(guild_id, channel_id, role, content, max_rows=60):
         return True
     except Exception:
         return False
+
+def save_active_game_session(guild_id, channel_id, message_id, game_key, players=None):
+    _ensure_ready()
+    if not pg_ready:
+        return False
+    try:
+        conn = pg_conn()
+        if conn is None:
+            return False
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO active_game_sessions (message_id, guild_id, channel_id, game_key, players)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (message_id) DO UPDATE SET
+                guild_id = EXCLUDED.guild_id,
+                channel_id = EXCLUDED.channel_id,
+                game_key = EXCLUDED.game_key,
+                players = EXCLUDED.players
+            """,
+            (
+                int(message_id),
+                int(guild_id),
+                int(channel_id),
+                str(game_key),
+                [int(player) for player in (players or [])],
+            )
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+        return True
+    except Exception:
+        return False
+
+def delete_active_game_session(message_id):
+    _ensure_ready()
+    if not pg_ready:
+        return False
+    try:
+        conn = pg_conn()
+        if conn is None:
+            return False
+        cur = conn.cursor()
+        cur.execute("DELETE FROM active_game_sessions WHERE message_id = %s", (int(message_id),))
+        conn.commit()
+        cur.close()
+        conn.close()
+        return True
+    except Exception:
+        return False
+
+def load_active_game_sessions():
+    _ensure_ready()
+    if not pg_ready:
+        return []
+    try:
+        conn = pg_conn()
+        if conn is None:
+            return []
+        cur = conn.cursor()
+        cur.execute("SELECT message_id, guild_id, channel_id, game_key, players, created_at FROM active_game_sessions")
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        return [
+            {
+                "message_id": int(message_id),
+                "guild_id": int(guild_id),
+                "channel_id": int(channel_id),
+                "game_key": str(game_key),
+                "players": [int(player) for player in (players or [])],
+                "created_at": created_at,
+            }
+            for message_id, guild_id, channel_id, game_key, players, created_at in rows
+        ]
+    except Exception:
+        return []
 
 def add_guild_activity_counts(counts):
     _ensure_ready()
