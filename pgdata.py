@@ -16,6 +16,12 @@ def pg_conn():
     except Exception:
         return None
 
+def raw_pg_conn():
+    url = os.getenv("DATABASE_URL")
+    if not url:
+        return None
+    return psycopg2.connect(url, connect_timeout=5)
+
 def pg_init():
     """Initialize DB tables with retry loop. Call from on_ready."""
     global pg_ready
@@ -295,14 +301,19 @@ def _create_tables(cur):
 
 def claim_command_message(message_id):
     """Return True only for the first process that claims a Discord command message."""
-    if not pg_ready:
-        return True
     conn = None
     try:
-        conn = pg_conn()
+        conn = raw_pg_conn()
         if conn is None:
+            print("Command message DB claim unavailable: DATABASE_URL not set")
             return True
         cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS processed_command_messages (
+                message_id BIGINT PRIMARY KEY,
+                claimed_at TIMESTAMP NOT NULL DEFAULT NOW()
+            )
+        """)
         cur.execute("DELETE FROM processed_command_messages WHERE claimed_at < NOW() - INTERVAL '1 day'")
         cur.execute(
             "INSERT INTO processed_command_messages (message_id) VALUES (%s) ON CONFLICT DO NOTHING",
@@ -314,7 +325,7 @@ def claim_command_message(message_id):
         return claimed
     except Exception as e:
         print(f"Command message DB claim unavailable: {type(e).__name__} - {e}")
-        return True
+        return False
     finally:
         if conn is not None:
             try:

@@ -113,7 +113,7 @@ from pgdata import (
     load_sleeping_users as pg_load_sleeping_users,
     load_watchlist,
     pg_init,
-    pg_conn,
+    raw_pg_conn,
     claim_command_message,
     remove_afk_user,
     remove_active_poll,
@@ -8853,54 +8853,107 @@ def run_flask():
 
 Thread(target=run_flask).start()
 
-BOT_INSTANCE_LOCK_KEY_1 = 885548126
-BOT_INSTANCE_LOCK_KEY_2 = 365171824
 BOT_BUILD_MARKER = "command-dedupe-db-2026-05-13"
 BOT_PROCESS_ID = f"{os.getpid()}-{int(time.time())}"
-bot_instance_lock_conn = None
+bot_instance_lock_owner = BOT_PROCESS_ID
+bot_instance_lock_stop = False
+bot_instance_lock_thread = None
 
 def acquire_bot_instance_lock():
-    global bot_instance_lock_conn
-    conn = pg_conn()
-    if conn is None:
-        print("Bot instance lock unavailable; continuing without cross-container lock.")
-        return True
+    global bot_instance_lock_thread, bot_instance_lock_stop
+    conn = None
     try:
+        conn = raw_pg_conn()
+        if conn is None:
+            print("Bot instance lock unavailable; DATABASE_URL not set.")
+            return True
         cur = conn.cursor()
-        cur.execute("SELECT pg_try_advisory_lock(%s, %s)", (BOT_INSTANCE_LOCK_KEY_1, BOT_INSTANCE_LOCK_KEY_2))
-        locked = bool(cur.fetchone()[0])
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS bot_runtime_locks (
+                lock_name TEXT PRIMARY KEY,
+                owner TEXT NOT NULL,
+                expires_at TIMESTAMP NOT NULL
+            )
+        """)
+        cur.execute("""
+            INSERT INTO bot_runtime_locks (lock_name, owner, expires_at)
+            VALUES ('discord_login', %s, NOW() + INTERVAL '90 seconds')
+            ON CONFLICT (lock_name) DO UPDATE SET
+                owner = EXCLUDED.owner,
+                expires_at = EXCLUDED.expires_at
+            WHERE bot_runtime_locks.expires_at < NOW()
+               OR bot_runtime_locks.owner = EXCLUDED.owner
+            RETURNING owner
+        """, (bot_instance_lock_owner,))
+        row = cur.fetchone()
+        conn.commit()
         cur.close()
-        if not locked:
-            conn.close()
-            print("Another Pro𝚀𝚞𝚎 bot instance already holds the startup lock. Skipping Discord login.")
+        if not row:
+            print("Another Pro𝚀𝚞𝚎 bot instance has an active runtime lock. Skipping Discord login.")
             return False
-        bot_instance_lock_conn = conn
-        print("Pro𝚀𝚞𝚎 bot instance lock acquired.")
+        bot_instance_lock_stop = False
+        bot_instance_lock_thread = Thread(target=refresh_bot_instance_lock, daemon=True)
+        bot_instance_lock_thread.start()
+        print(f"Pro𝚀𝚞𝚎 runtime lock acquired by {bot_instance_lock_owner}.")
         return True
     except Exception as e:
+        print(f"Bot instance lock failed ({type(e).__name__}: {e}); refusing Discord login to avoid duplicate replies.")
+        return False
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+def refresh_bot_instance_lock():
+    while not bot_instance_lock_stop:
+        time.sleep(30)
+        conn = None
         try:
-            conn.close()
-        except Exception:
-            pass
-        print(f"Bot instance lock failed ({type(e).__name__}: {e}); continuing without cross-container lock.")
-        return True
+            conn = raw_pg_conn()
+            if conn is None:
+                continue
+            cur = conn.cursor()
+            cur.execute("""
+                UPDATE bot_runtime_locks
+                SET expires_at = NOW() + INTERVAL '90 seconds'
+                WHERE lock_name = 'discord_login' AND owner = %s
+            """, (bot_instance_lock_owner,))
+            conn.commit()
+            cur.close()
+        except Exception as e:
+            print(f"Bot runtime lock refresh failed: {type(e).__name__} - {e}")
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
 
 def release_bot_instance_lock():
-    global bot_instance_lock_conn
-    if bot_instance_lock_conn is None:
-        return
+    global bot_instance_lock_stop
+    bot_instance_lock_stop = True
+    conn = None
     try:
-        cur = bot_instance_lock_conn.cursor()
-        cur.execute("SELECT pg_advisory_unlock(%s, %s)", (BOT_INSTANCE_LOCK_KEY_1, BOT_INSTANCE_LOCK_KEY_2))
-        bot_instance_lock_conn.commit()
+        conn = raw_pg_conn()
+        if conn is None:
+            return
+        cur = conn.cursor()
+        cur.execute(
+            "DELETE FROM bot_runtime_locks WHERE lock_name = 'discord_login' AND owner = %s",
+            (bot_instance_lock_owner,)
+        )
+        conn.commit()
         cur.close()
     except Exception:
         pass
-    try:
-        bot_instance_lock_conn.close()
-    except Exception:
-        pass
-    bot_instance_lock_conn = None
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 def run_bot_with_retry():
     token = os.getenv("DISCORD_TOKEN")
