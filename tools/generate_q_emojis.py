@@ -254,6 +254,16 @@ def qticket():
     return c
 
 
+def qticket_minus():
+    c = qticket()
+    c.circle(91, 91, 23, RED, outline=BLUE_DARK, width=4)
+    c.circle(91, 91, 17, (255, 95, 108, 255), outline=SILVER, width=2)
+    c.line(78, 91, 104, 91, ICE, 8)
+    c.line(78, 91, 104, 91, BLUE_DARK, 2)
+    c.sparkle(109, 72, 5)
+    return c
+
+
 def qoin_transfer():
     c = Canvas()
     coin(c, 42, 72, 24)
@@ -1660,6 +1670,7 @@ STATIC = {
     "QoinBag": qoin_bag,
     "QoinChest": qoin_chest,
     "QTicket": qticket,
+    "QTicketMinus": qticket_minus,
     "QoinTransfer": qoin_transfer,
     "QXP": qxp,
     "QLevelUp": qlevel_up,
@@ -1823,7 +1834,7 @@ STATIC_CATEGORIES = {
     },
     "quewo": {
         "QoinBag", "QoinChest", "QoinTransfer", "QXP", "QLevelUp", "QQuest", "QShop",
-        "QTicket", "QLuckyCharm", "QXPTonic", "QQuesoMagnet", "QDailySpice",
+        "QTicket", "QTicketMinus", "QLuckyCharm", "QXPTonic", "QQuesoMagnet", "QDailySpice",
         "QStreakPolish", "QGoldBadge", "QHighRoller", "QVelvetFrame", "QTicketCharm",
         "QCooldownClock", "QRoyalCrown", "QStreakFire", "QFortuneVial",
         "QAudit", "QLimits", "QPerf", "QFilter",

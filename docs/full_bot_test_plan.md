@@ -1,4 +1,4 @@
-# ProQue Full Bot Test Plan
+# Pro𝚀𝚞𝚎 Full Bot Test Plan
 
 Use a test server. Run this in order: global checks first, then Superowner, Server Owner, Admin, Normal User, then shared feature tests.
 
@@ -34,7 +34,7 @@ Test these once before role testing.
 ### Help
 
 - `.help`
-- `.help Quewo`
+- `.help 𝚀𝚞𝚎wo`
 - `.help activity`
 - `.help poll` then press the setup UI button.
 - `.econhelp`
@@ -85,7 +85,7 @@ Expected: no raw custom emoji markdown appears unless Discord cannot render that
 
 ## Superowner Tests
 
-Expected: can use everything, can bypass disabled commands, and can use all Quewo admin tools.
+Expected: can use everything, can bypass disabled commands, and can use all 𝚀𝚞𝚎wo admin tools.
 
 ### Public Commands
 
@@ -238,7 +238,7 @@ Run:
 
 Expected: setup works both ways, status is an embed, edit commands work, endactivity posts winners and starts a fresh window, stopactivity disables reports and clears current activity.
 
-### Quewo Commands
+### 𝚀𝚞𝚎wo Commands
 
 Run:
 
@@ -298,7 +298,7 @@ Run:
 
 Expected: balances update correctly and cooldown/results make sense.
 
-### Quewo Admin
+### 𝚀𝚞𝚎wo Admin
 
 Run:
 
@@ -409,7 +409,7 @@ Run only if safe:
 
 Expected: server owner can act on admins and normal users, but not superowner.
 
-### Quewo Admin
+### 𝚀𝚞𝚎wo Admin
 
 Run:
 
@@ -510,7 +510,7 @@ Run only if safe:
 
 Expected: admin can act on normal users, but not server owner or superowner.
 
-### Quewo Admin
+### 𝚀𝚞𝚎wo Admin
 
 Run:
 
@@ -542,7 +542,7 @@ Expected: works for admin.
 
 ## Normal User Tests
 
-Expected: public commands work. Admin, activity admin, lottery admin, and Quewo admin commands are denied.
+Expected: public commands work. Admin, activity admin, lottery admin, and 𝚀𝚞𝚎wo admin commands are denied.
 
 ### Public Commands
 
@@ -608,7 +608,7 @@ Run:
 
 Expected: games work, bet accept prompts appear, risk labels show where relevant, daily loss warning appears near 70%, and gambling is blocked before daily losses can exceed 85%.
 
-### Quewo
+### 𝚀𝚞𝚎wo
 
 Run:
 
@@ -666,7 +666,7 @@ Run:
 - `.quewohelp`
 - `.explain shop`
 
-Expected: public Quewo commands work, balances update correctly, cooldowns apply.
+Expected: public 𝚀𝚞𝚎wo commands work, balances update correctly, cooldowns apply.
 
 ### Denial Checks
 
@@ -699,7 +699,7 @@ Expected: denied, unless this normal user is the person who added the bot for bi
 
 Run these after role tests because they need multiple users, waiting, or restart behavior.
 
-### Quewo System
+### 𝚀𝚞𝚎wo System
 
 - New user balance row creation.
 - Balance formatting with Qoins custom emoji.
@@ -709,7 +709,7 @@ Run these after role tests because they need multiple users, waiting, or restart
 - Inventory/profile display after buying items.
 - Quest claim and refresh buttons.
 - Daily/weekly/monthly cooldowns and streaks.
-- Shared Quewo cooldown blocks rapid back-to-back Quewo commands for normal users.
+- Shared 𝚀𝚞𝚎wo cooldown blocks rapid back-to-back 𝚀𝚞𝚎wo commands for normal users.
 - Amount parsing: `4m`, `4.5m`, `4k`, `47k`, `734k`, `1b`.
 - Slots: only pays when all 3 reels match; payouts are x2, x3, x4, x5 by symbol.
 - Scratch: only pays when all 5 symbols match; QScratchMark pays x10, QSlotJackpot pays x12, and win chance is low.

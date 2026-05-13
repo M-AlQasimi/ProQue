@@ -23,6 +23,8 @@ bot = None
 # --- Config ---
 MAX_BET = 200_000
 COOLDOWN_SECS = 10
+LONG_HELP_VIEW_TIMEOUT = 24 * 60 * 60
+LONG_SETUP_VIEW_TIMEOUT = 60 * 60
 DAILY_LOSS_WARNING_RATIO = 0.70
 DAILY_LOSS_HARD_RATIO = 0.85
 STREAK_BASE_BONUS = 0.01
@@ -49,6 +51,7 @@ Q_SLOTS = "<:QSlots:1500427046365565020>"
 Q_SUCCESS = "<:QSuccess:1500427048865235104>"
 Q_TIMER = "<:QTimer:1500427051209986188>"
 Q_TICKET = "<:QTicket:1500491388985282761>"
+Q_TICKET_MINUS = "<:QTicketMinus:1504183251823235113>"
 Q_WHEEL = "<:QWheel:1500427053160468480>"
 Q_XP = "<:QXP:1500427054930333778>"
 Q_FLIP_SPIN = "<a:QFlipSpin:1500427305216901160>"
@@ -305,7 +308,7 @@ SHOP_ITEMS = {
         "emoji": Q_COOLDOWN_CLOCK,
         "cost": 1_000_000,
         "max_qty": 5,
-        "description": "Passive: -4% Quewo gambling cooldown per clock. Max 5.",
+        "description": "Passive: -4% 𝚀𝚞𝚎wo gambling cooldown per clock. Max 5.",
     },
     "fortune_vial": {
         "category": "Gambling",
@@ -370,7 +373,7 @@ def ping_db():
 def init_db():
     global db_ready
     if not os.getenv("DATABASE_URL"):
-        print("⚠️ DATABASE_URL not set - Quewo system disabled")
+        print("⚠️ DATABASE_URL not set - 𝚀𝚞𝚎wo system disabled")
         return
 
     for attempt in range(1, 11):
@@ -557,17 +560,17 @@ def init_db():
             cur.close()
             conn.close()
             db_ready = True
-            print(f"✅ Quewo DB initialized (PostgreSQL) on attempt {attempt}")
+            print(f"✅ 𝚀𝚞𝚎wo DB initialized (PostgreSQL) on attempt {attempt}")
             return
         except psycopg2.OperationalError as e:
             if attempt < 10:
-                print(f"⏳ Quewo DB attempt {attempt}/10 failed (DB starting up), retrying in 5s...")
+                print(f"⏳ 𝚀𝚞𝚎wo DB attempt {attempt}/10 failed (DB starting up), retrying in 5s...")
                 time.sleep(5)
             else:
-                print(f"❌ Quewo DB init failed after 10 attempts: {e}")
+                print(f"❌ 𝚀𝚞𝚎wo DB init failed after 10 attempts: {e}")
                 db_ready = False
         except Exception as e:
-            print(f"❌ Quewo DB init failed: {e}")
+            print(f"❌ 𝚀𝚞𝚎wo DB init failed: {e}")
             db_ready = False
             return
 
@@ -796,7 +799,7 @@ def transfer_user_balance(sender_id, receiver_id, amount, tax=0, allow_overdraft
                     (tax, SUPER_OWNER_ID)
                 )
                 if cur.fetchone() is None:
-                    raise RuntimeError("Que owner tax credit affected no rows")
+                    raise RuntimeError("𝚀𝚞𝚎 owner tax credit affected no rows")
                 if sender_id == SUPER_OWNER_ID:
                     new_sender_balance += tax
                 if receiver_id == SUPER_OWNER_ID:
@@ -1583,8 +1586,8 @@ def bulk_adjust_lottery_tickets(guild_id, user_ids, tickets, mode, actor_id):
     unique_ids = sorted(set(int(user_id) for user_id in user_ids))
     if not unique_ids:
         return 0
-    if mode not in {"add", "set"}:
-        raise ValueError("mode must be add or set")
+    if mode not in {"add", "remove", "set"}:
+        raise ValueError("mode must be add, remove, or set")
 
     conn = get_db_connection()
     cur = conn.cursor()
@@ -1600,6 +1603,18 @@ def bulk_adjust_lottery_tickets(guild_id, user_ids, tickets, mode, actor_id):
         )
         kind = "lottery_admin_add"
         note = f"Added {tickets} free tickets by {actor_id}"
+    elif mode == "remove":
+        cur.execute(
+            """
+            INSERT INTO lottery_tickets (guild_id, user_id, tickets, spent, pot_add)
+            SELECT %s, user_id, 0, 0, 0 FROM unnest(%s::bigint[]) AS user_id
+            ON CONFLICT (guild_id, user_id) DO UPDATE SET
+                tickets = GREATEST(lottery_tickets.tickets - %s, 0)
+            """,
+            (guild_id, unique_ids, tickets)
+        )
+        kind = "lottery_admin_remove"
+        note = f"Removed {tickets} tickets by {actor_id}"
     else:
         cur.execute(
             """
@@ -1617,7 +1632,7 @@ def bulk_adjust_lottery_tickets(guild_id, user_ids, tickets, mode, actor_id):
         INSERT INTO economy_transactions (user_id, kind, amount, note)
         SELECT user_id, %s, %s, %s FROM unnest(%s::bigint[]) AS user_id
         """,
-        (kind, tickets, note, unique_ids)
+        (kind, -tickets if mode == "remove" else tickets, note, unique_ids)
     )
     conn.commit()
     cur.close()
@@ -2303,7 +2318,7 @@ class LotteryEditSettingSelect(discord.ui.Select):
 
 class LotteryEditView(discord.ui.View):
     def __init__(self, author_id):
-        super().__init__(timeout=120)
+        super().__init__(timeout=LONG_SETUP_VIEW_TIMEOUT)
         self.author_id = author_id
         self.add_item(LotteryEditSettingSelect())
 
@@ -2525,13 +2540,13 @@ GAME_ACHIEVEMENTS = {
     "dungeon_50_clears": {"game": "dungeon", "field": "wins", "target": 50, "name": "Dungeon Delver", "reward": 3_000_000},
     "dungeon_150_clears": {"game": "dungeon", "field": "wins", "target": 150, "name": "Dungeon Gold", "reward": 8_000_000, "tier": "Gold"},
     "dungeon_300_clears": {"game": "dungeon", "field": "wins", "target": 300, "name": "Dungeon Royal", "reward": 20_000_000, "tier": "Royal"},
-    "all_games_1000_played": {"game": None, "field": "played", "target": 1000, "name": "Quewo Grinder", "reward": 10_000_000},
-    "all_games_2500_played": {"game": None, "field": "played", "target": 2500, "name": "Quewo Gold Grinder", "reward": 25_000_000, "tier": "Gold"},
-    "all_games_5000_played": {"game": None, "field": "played", "target": 5000, "name": "Quewo Royal Grinder", "reward": 50_000_000, "tier": "Royal"},
+    "all_games_1000_played": {"game": None, "field": "played", "target": 1000, "name": "𝚀𝚞𝚎wo Grinder", "reward": 10_000_000},
+    "all_games_2500_played": {"game": None, "field": "played", "target": 2500, "name": "𝚀𝚞𝚎wo Gold Grinder", "reward": 25_000_000, "tier": "Gold"},
+    "all_games_5000_played": {"game": None, "field": "played", "target": 5000, "name": "𝚀𝚞𝚎wo Royal Grinder", "reward": 50_000_000, "tier": "Royal"},
 }
 
 DAILY_CHALLENGES = [
-    {"id": "any_wins_3", "name": "Win 3 Quewo games", "game": None, "target": 3, "reward": 250_000},
+    {"id": "any_wins_3", "name": "Win 3 𝚀𝚞𝚎wo games", "game": None, "target": 3, "reward": 250_000},
     {"id": "memory_wins_2", "name": "Win Memory 2 times", "game": "memory", "target": 2, "reward": 300_000},
     {"id": "tower_wins_2", "name": "Win Tower 2 times", "game": "tower", "target": 2, "reward": 300_000},
     {"id": "dungeon_clear_1", "name": "Clear Dungeon once", "game": "dungeon", "target": 1, "reward": 300_000},
@@ -3256,7 +3271,7 @@ async def quewo_command_cooldown_check(ctx):
     cooldown = COOLDOWN_SECS
     if last_used and now - last_used < cooldown:
         ctx.quewo_cooldown_blocked = True
-        await ctx.send(f"{Q_TIMER_TICK} You can use another Quewo command {discord_relative_from_now(cooldown - (now - last_used))}.")
+        await ctx.send(f"{Q_TIMER_TICK} You can use another 𝚀𝚞𝚎wo command {discord_relative_from_now(cooldown - (now - last_used))}.")
         return False
     _command_cooldowns[ctx.author.id] = now
     return True
@@ -3271,7 +3286,7 @@ async def send_economy_log(ctx, title, fields, color=discord.Color.gold()):
     try:
         await economy_log_callback(embed, ctx.guild)
     except Exception as e:
-        print(f"Quewo log failed: {type(e).__name__} - {e}")
+        print(f"𝚀𝚞𝚎wo log failed: {type(e).__name__} - {e}")
 
 def is_super_owner(user_id, guild=None):
     super_owner_id = 885548126365171824
@@ -3462,7 +3477,7 @@ async def send_error(ctx, text):
     except:
         pass
 
-ECONOMY_INPUT_UI_COMMANDS = {"buytick", "give", "add", "remove", "addtick", "settick", "setquesos"}
+ECONOMY_INPUT_UI_COMMANDS = {"buytick", "give", "add", "remove", "addtick", "removetick", "settick", "setquesos"}
 
 ECONOMY_INPUT_PLACEHOLDERS = {
     "buytick": "30",
@@ -3470,6 +3485,7 @@ ECONOMY_INPUT_PLACEHOLDERS = {
     "add": "@user 1m",
     "remove": "@user 10k",
     "addtick": "@user 10",
+    "removetick": "@user 10",
     "settick": "@user 10",
     "setquesos": "@user 1m",
 }
@@ -3517,7 +3533,7 @@ class EconomyCommandInputModal(discord.ui.Modal):
 
 class EconomyCommandInputView(discord.ui.View):
     def __init__(self, author_id, command_name):
-        super().__init__(timeout=120)
+        super().__init__(timeout=LONG_SETUP_VIEW_TIMEOUT)
         self.author_id = author_id
         self.command_name = command_name
 
@@ -3660,7 +3676,7 @@ async def inventory(ctx, member: discord.Member = None):
 
     class InventoryView(discord.ui.View):
         def __init__(self):
-            super().__init__(timeout=180)
+            super().__init__(timeout=LONG_HELP_VIEW_TIMEOUT)
             self.page = "overview"
             self.message = None
             self.page_select = discord.ui.Select(
@@ -3794,7 +3810,7 @@ async def quests(ctx):
 
     class QuestView(discord.ui.View):
         def __init__(self):
-            super().__init__(timeout=120)
+            super().__init__(timeout=LONG_HELP_VIEW_TIMEOUT)
 
         async def interaction_check(self, interaction):
             if interaction.user.id != ctx.author.id:
@@ -3852,7 +3868,7 @@ async def shop(ctx):
             data = {"balance": 0, "inventory": []}
 
         embed = discord.Embed(
-            title=f"{Q_SHOP} Quewo Shop",
+            title=f"{Q_SHOP} 𝚀𝚞𝚎wo Shop",
             description=(
                 f"{user_mention(ctx.author.id)}\n"
                 f"Balance: **{format_balance(data['balance'])}**\n"
@@ -3984,7 +4000,7 @@ async def shop(ctx):
 
     class ShopView(discord.ui.View):
         def __init__(self):
-            super().__init__(timeout=300)
+            super().__init__(timeout=LONG_HELP_VIEW_TIMEOUT)
             self.selected_item_id = next(iter(SHOP_ITEMS))
             self.message = None
             self.refresh_task = None
@@ -4324,7 +4340,7 @@ def build_lottery_stats_embed(ctx, config, rows, panel_value, page=0, per_page=1
 
 class LotteryStatsView(discord.ui.View):
     def __init__(self, ctx, config, rows, panel_value):
-        super().__init__(timeout=180)
+        super().__init__(timeout=LONG_HELP_VIEW_TIMEOUT)
         self.ctx = ctx
         self.config = config
         self.rows = rows
@@ -4577,7 +4593,7 @@ LEADERBOARD_RANK_TYPES = {
     },
     "messages": {
         "label": "Messages",
-        "description": "Rank by Quewo-tracked messages.",
+        "description": "Rank by 𝚀𝚞𝚎wo-tracked messages.",
         "order": "messages_sent DESC, user_id ASC",
         "title": "Messages Leaderboard",
         "formatter": lambda row: f"**{int(row['messages_sent'] or 0):,}** messages",
@@ -4586,7 +4602,7 @@ LEADERBOARD_RANK_TYPES = {
 
 class BalanceRankView(discord.ui.View):
     def __init__(self, ctx, order, title, icon):
-        super().__init__(timeout=180)
+        super().__init__(timeout=LONG_HELP_VIEW_TIMEOUT)
         self.ctx = ctx
         self.order = order
         self.title = title
@@ -5715,7 +5731,7 @@ async def give(ctx, *, args: str = None):
         allowed_mentions=discord.AllowedMentions.none()
     )
     if has_economy_owner_power(ctx.author.id, ctx.guild):
-        await send_economy_log(ctx, "Quewo Transfer", [
+        await send_economy_log(ctx, "𝚀𝚞𝚎wo Transfer", [
             ("Recipient", f"{user_mention(member.id)} ({member.id})", False),
             ("Amount", format_balance(amount), True),
             ("Tax", format_balance(tax), True),
@@ -5753,7 +5769,7 @@ async def qstats(ctx, member: discord.Member = None):
     tx = stats["transaction_totals"]
     net_gambling = stats["total_won"] - stats["total_lost"]
     embed = discord.Embed(
-        title=f"{QOIN_CHEST} Quewo Economy Stats",
+        title=f"{QOIN_CHEST} 𝚀𝚞𝚎wo Economy Stats",
         description="Global economy health across all servers.",
         color=discord.Color.gold(),
         timestamp=datetime.now(timezone.utc)
@@ -5823,7 +5839,7 @@ async def add(ctx, *, args: str = None):
             f"{Q_SUCCESS} Added **{format_balance(amount)}** to **{count}** server members.",
             allowed_mentions=discord.AllowedMentions.none()
         )
-        await send_economy_log(ctx, "Quewo Bulk Add", [
+        await send_economy_log(ctx, "𝚀𝚞𝚎wo Bulk Add", [
             ("Target", "@everyone", False),
             ("Recipients", f"{count:,}", True),
             ("Amount Each", format_balance(amount), True),
@@ -5856,7 +5872,7 @@ async def add(ctx, *, args: str = None):
             f"{Q_SUCCESS} Added **{format_balance(amount)}** to **{count}** members with **{role.name}**.",
             allowed_mentions=discord.AllowedMentions.none()
         )
-        await send_economy_log(ctx, "Quewo Bulk Add", [
+        await send_economy_log(ctx, "𝚀𝚞𝚎wo Bulk Add", [
             ("Target", f"{role.mention} ({role.id})", False),
             ("Recipients", f"{count:,}", True),
             ("Amount Each", format_balance(amount), True),
@@ -5870,7 +5886,7 @@ async def add(ctx, *, args: str = None):
         await ctx.send(f"{Q_DENIED} Use `.add @user <amount>`, `.add @role <amount>`, or `.add @everyone <amount>`.")
         return
     if not can_economy_act_on(ctx.author.id, member.id, ctx.guild):
-        await ctx.send(f"{Q_DENIED} You can't edit that user's Quewo balance.")
+        await ctx.send(f"{Q_DENIED} You can't edit that user's 𝚀𝚞𝚎wo balance.")
         return
 
     try:
@@ -5886,7 +5902,7 @@ async def add(ctx, *, args: str = None):
         f"Balance: **{format_balance(old_balance)}** → **{format_balance(new_balance)}**",
         allowed_mentions=discord.AllowedMentions.none()
     )
-    await send_economy_log(ctx, "Quewo Add", [
+    await send_economy_log(ctx, "𝚀𝚞𝚎wo Add", [
         ("Target", f"{user_mention(member.id)} ({member.id})", False),
         ("Amount", format_balance(amount), True),
         ("Balance", f"{format_balance(old_balance)} → {format_balance(new_balance)}", False),
@@ -5910,7 +5926,7 @@ async def remove(ctx, *, args: str = None):
         await ctx.send(f"{Q_DENIED} Mention a user or paste their ID. Example: `.remove @user 10k`.")
         return
     if not can_economy_act_on(ctx.author.id, member.id, ctx.guild):
-        await ctx.send(f"{Q_DENIED} You can't edit that user's Quewo balance.")
+        await ctx.send(f"{Q_DENIED} You can't edit that user's 𝚀𝚞𝚎wo balance.")
         return
 
     try:
@@ -5942,7 +5958,7 @@ async def remove(ctx, *, args: str = None):
         f"Balance: **{format_balance(old_balance)}** → **{format_balance(new_balance)}**",
         allowed_mentions=discord.AllowedMentions.none()
     )
-    await send_economy_log(ctx, "Quewo Remove", [
+    await send_economy_log(ctx, "𝚀𝚞𝚎wo Remove", [
         ("Target", f"{user_mention(member.id)} ({member.id})", False),
         ("Amount", format_balance(amount), True),
         ("Balance", f"{format_balance(old_balance)} → {format_balance(new_balance)}", False),
@@ -5950,7 +5966,7 @@ async def remove(ctx, *, args: str = None):
 
 @commands.command()
 async def addtick(ctx, *, args: str = None):
-    """Que owner only. Adds free lottery tickets to a user, role, or everyone."""
+    """𝚀𝚞𝚎 owner only. Adds free lottery tickets to a user, role, or everyone."""
     if ctx.guild is None:
         await ctx.send(f"{Q_DENIED} `.addtick` only works in servers.")
         return
@@ -6009,9 +6025,68 @@ async def addtick(ctx, *, args: str = None):
         ("Total Tickets", f"{total_added:,}", True),
     ], color=discord.Color.green())
 
+@commands.command(aliases=["remtick", "deltick"])
+async def removetick(ctx, *, args: str = None):
+    """𝚀𝚞𝚎 owner only. Removes lottery tickets from a user, role, or everyone."""
+    if ctx.guild is None:
+        await ctx.send(f"{Q_DENIED} `.removetick` only works in servers.")
+        return
+    if not await ensure_db_ready(ctx):
+        return
+    if not is_superowner_id(ctx.author.id):
+        await ctx.send(f"{Q_DENIED} Only {QUE_OWNER_DISPLAY} can use this.")
+        return
+    target, amount = parse_target_amount_args(args)
+    if not target:
+        await send_economy_command_input_ui(ctx, "removetick", "Enter the target and ticket amount to remove. Users, roles, and @everyone work.")
+        return
+    amount = parse_whole_number(amount)
+    if amount is None:
+        await ctx.send(f"{Q_DENIED} Use `.removetick @user <tickets>`, `.removetick @role <tickets>`, or `.removetick @everyone <tickets>`.")
+        return
+    if amount <= 0:
+        await ctx.send(f"{Q_DENIED} Ticket amount must be positive.")
+        return
+
+    config = get_lottery_config(ctx.guild.id)
+    if config is None:
+        await ctx.send("Lottery is not set up yet.")
+        return
+
+    try:
+        targets = await resolve_admin_targets(ctx, target)
+    except commands.BadArgument:
+        await ctx.send(f"{Q_DENIED} Use `.removetick @user <tickets>`, `.removetick @role <tickets>`, or `.removetick @everyone <tickets>`.")
+        return
+    if not targets["user_ids"]:
+        await ctx.send(f"{Q_DENIED} No users matched that target.")
+        return
+
+    try:
+        count = bulk_adjust_lottery_tickets(ctx.guild.id, targets["user_ids"], amount, "remove", ctx.author.id)
+        updated = get_lottery_config(ctx.guild.id)
+        schedule_lottery_refresh(ctx.guild, updated)
+    except Exception:
+        await send_error(ctx, "Database unavailable. Try again shortly.")
+        return
+
+    total_removed = amount * count
+    await reply_to_command(
+        ctx,
+        f"{Q_SUCCESS} Removed up to **{amount:,}** {Q_TICKET_MINUS} tickets from **{count:,}** target(s): {targets['label']}.\n"
+        f"Max Entries Removed: **{total_removed:,}**",
+        allowed_mentions=discord.AllowedMentions.none()
+    )
+    await send_economy_log(ctx, "Lottery Tickets Removed", [
+        ("Target", targets["log_label"], False),
+        ("Recipients", f"{count:,}", True),
+        ("Tickets Each", f"{amount:,}", True),
+        ("Max Tickets Removed", f"{total_removed:,}", True),
+    ], color=discord.Color.red())
+
 @commands.command()
 async def settick(ctx, *, args: str = None):
-    """Que owner only. Sets lottery tickets for a user, role, or everyone."""
+    """𝚀𝚞𝚎 owner only. Sets lottery tickets for a user, role, or everyone."""
     if ctx.guild is None:
         await ctx.send(f"{Q_DENIED} `.settick` only works in servers.")
         return
@@ -6069,7 +6144,7 @@ async def settick(ctx, *, args: str = None):
 
 @commands.command()
 async def setquesos(ctx, *, args: str = None):
-    """Que owner only. Sets balances for a user, role, or everyone."""
+    """𝚀𝚞𝚎 owner only. Sets balances for a user, role, or everyone."""
     if ctx.guild is None:
         await ctx.send(f"{Q_DENIED} `.setquesos` only works in servers.")
         return
@@ -6110,7 +6185,7 @@ async def setquesos(ctx, *, args: str = None):
         f"{Q_SUCCESS} Set balance to **{format_balance(amount)}** for **{count:,}** target(s): {targets['label']}.",
         allowed_mentions=discord.AllowedMentions.none()
     )
-    await send_economy_log(ctx, "Quewo Balance Set", [
+    await send_economy_log(ctx, "𝚀𝚞𝚎wo Balance Set", [
         ("Target", targets["log_label"], False),
         ("Recipients", f"{count:,}", True),
         ("New Balance", format_balance(amount), True),
@@ -9031,7 +9106,7 @@ async def gamebalance(ctx):
         lines.append(f"**{game_display_name(game_key)}** - Risk: **{risk_label(game_key)}**")
     embed = discord.Embed(
         title=f"{Q_WARNING} Game Balance",
-        description="Risk labels are the quick balance audit for current Quewo games. Higher risk means harder wins or larger loss swings.",
+        description="Risk labels are the quick balance audit for current 𝚀𝚞𝚎wo games. Higher risk means harder wins or larger loss swings.",
         color=discord.Color.orange(),
     )
     add_split_embed_field(embed, "Games", lines, inline=False)
@@ -9050,6 +9125,15 @@ async def limits(ctx, member: discord.Member = None):
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
     remaining = max(0, int(loss["hard_limit"]) - int(loss["lost_today"]))
+    cooldown_multiplier = cooldown_multiplier_for_user(user.id, data)
+    effective_cooldown = max(1, int(COOLDOWN_SECS * cooldown_multiplier))
+    luck_until = data.get("luck_boost_until")
+    luck_text = "Inactive"
+    if luck_until:
+        if luck_until.tzinfo is None:
+            luck_until = luck_until.replace(tzinfo=timezone.utc)
+        if luck_until > datetime.now(timezone.utc):
+            luck_text = f"Active until {discord_relative_time(luck_until)}"
     embed = discord.Embed(
         title=f"{Q_LIMITS} Safety Limits",
         description=user_mention(user.id),
@@ -9078,10 +9162,15 @@ async def limits(ctx, member: discord.Member = None):
             ),
             inline=False,
         )
+        remaining_lottery = max(0, max_round_spend - round_spent)
+        embed.add_field(name="Lottery Remaining", value=format_balance(remaining_lottery), inline=True)
     else:
         embed.add_field(name="Lottery Round", value="No current lottery tickets in this server.", inline=False)
     embed.add_field(name="Max Normal Bet", value=format_balance(MAX_BET), inline=True)
-    embed.add_field(name="Gambling Cooldown", value=plural_unit(COOLDOWN_SECS, "second"), inline=True)
+    embed.add_field(name="Gambling Cooldown", value=f"{plural_unit(effective_cooldown, 'second')} effective\nBase: {plural_unit(COOLDOWN_SECS, 'second')}", inline=True)
+    embed.add_field(name="Lottery Spend Cap", value=f"{int(LOTTERY_MAX_BALANCE_SPEND_RATIO * 100)}% of lottery-adjusted balance", inline=True)
+    embed.add_field(name="Daily Loss Rules", value=f"Warns at {int(DAILY_LOSS_WARNING_RATIO * 100)}%; blocks before {int(DAILY_LOSS_HARD_RATIO * 100)}%.", inline=False)
+    embed.add_field(name="Luck Boost", value=luck_text, inline=True)
     await ctx.reply(embed=embed, mention_author=False, allowed_mentions=discord.AllowedMentions.none())
 
 @commands.command(name="gamehistory", aliases=["history", "ghistory", "recentgames"])
@@ -9208,6 +9297,19 @@ async def economyaudit(ctx, member: discord.Member = None):
     embed.add_field(name="Tracked Taxes / Payments", value=format_balance(tracked_sink), inline=True)
     embed.add_field(name="Lottery Pots", value=format_balance(stats["lottery_pots"]), inline=True)
     embed.add_field(name="Lottery Tickets", value=f"{stats['lottery_tickets']:,}", inline=True)
+    source_lines = [
+        f"Total earned: **{format_balance(stats['total_earned'])}**",
+        f"Gambling won: **{format_balance(stats['total_won'])}**",
+        f"Shop payments to {QUE_OWNER_DISPLAY}: **{format_balance(tx.get('shop_payment', 0))}**",
+    ]
+    sink_lines = [
+        f"Gambling lost: **{format_balance(stats['total_lost'])}**",
+        f"Shop purchases: **{format_balance(abs(tx.get('shop_purchase', 0)))}**",
+        f"Lottery cuts: **{format_balance(tx.get('lottery_house_cut', 0))}**",
+        f"Transfer taxes: **{format_balance(tx.get('transfer_tax', 0))}**",
+    ]
+    add_split_embed_field(embed, "Money Sources", source_lines, inline=False)
+    add_split_embed_field(embed, "Money Sinks / Tax Flow", sink_lines, inline=False)
     supply = max(1, int(stats["total_balance"] or 0))
     sink_ratio = tracked_sink / supply
     flow_ratio = abs(stats["transaction_amount_24h"]) / supply
@@ -9254,7 +9356,7 @@ async def economyaudit(ctx, member: discord.Member = None):
 async def guide(ctx):
     prefix = getattr(ctx, "prefix", ".")
     embed = discord.Embed(
-        title=f"{Q_BOOK} ProQue Guide",
+        title=f"{Q_BOOK} Pro𝚀𝚞𝚎 Guide",
         description="Quick path for new users.",
         color=discord.Color.blurple(),
     )
@@ -9283,7 +9385,7 @@ async def guide(ctx):
 
 class OnboardingView(discord.ui.View):
     def __init__(self, author_id):
-        super().__init__(timeout=180)
+        super().__init__(timeout=LONG_HELP_VIEW_TIMEOUT)
         self.author_id = int(author_id)
 
     async def interaction_check(self, interaction):
@@ -9317,7 +9419,7 @@ class OnboardingView(discord.ui.View):
 @commands.command(name="onboard", aliases=["onboarding", "newuser"])
 async def onboard(ctx):
     embed = discord.Embed(
-        title=f"{Q_BOOK} ProQue Start",
+        title=f"{Q_BOOK} Pro𝚀𝚞𝚎 Start",
         description="Start here if you're new. These buttons point you to the safest first actions.",
         color=discord.Color.blurple(),
     )
@@ -9338,7 +9440,7 @@ async def season(ctx, season_key: str = None):
         return
     current_key = current_season_key()
     embed = discord.Embed(
-        title=f"{Q_BADGE} Quewo Season {season_key}",
+        title=f"{Q_BADGE} 𝚀𝚞𝚎wo Season {season_key}",
         description=(
             "Ranked by monthly gambling/game profit, then wins.\n"
             f"Current season ends <t:{season_end_timestamp()}:R>."
@@ -9966,12 +10068,12 @@ EXPLANATIONS = {
     "settheme": "Equips a profile theme from owned decorative shop items.",
     "theme": "Alias for `.settheme`. Equips a profile theme.",
     "profiletheme": "Alias for `.settheme`. Equips a profile theme.",
-    "inv": "Alias for `.inventory`. Opens the paged Quewo inventory UI.",
-    "items": "Alias for `.inventory`. Opens the paged Quewo inventory UI.",
+    "inv": "Alias for `.inventory`. Opens the paged 𝚀𝚞𝚎wo inventory UI.",
+    "items": "Alias for `.inventory`. Opens the paged 𝚀𝚞𝚎wo inventory UI.",
     "streaks": "Shows daily, weekly, monthly, and gambling streaks with next claim times.",
     "streak": "Alias for `.streaks`. Shows streaks.",
     "claimstreaks": "Alias for `.streaks`. Shows streaks.",
-    "guide": "Shows a quick getting-started guide for Quewo.",
+    "guide": "Shows a quick getting-started guide for 𝚀𝚞𝚎wo.",
     "onboard": "Interactive first-user onboarding with buttons for daily, games, shop, and profile.",
     "onboarding": "Alias for `.onboard`. Opens the new-user onboarding UI.",
     "newuser": "Alias for `.onboard`. Opens the new-user onboarding UI.",
@@ -9979,17 +10081,17 @@ EXPLANATIONS = {
     "begin": "Alias for `.guide`. Shows the getting-started guide.",
     "gettingstarted": "Alias for `.guide`. Shows the getting-started guide.",
     "quests": "Opens your quests UI with main, daily, weekly, and monthly quests plus claim/refresh buttons.",
-    "dailychallenge": "Shows today's Quewo challenge and lets you claim its reward when finished.",
-    "challenge": "Alias for `.dailychallenge`. Shows today's Quewo challenge.",
-    "dc": "Alias for `.dailychallenge`. Shows today's Quewo challenge.",
-    "qchallenge": "Alias for `.dailychallenge`. Shows today's Quewo challenge.",
-    "shop": "Opens the categorized Quewo shop UI. Select an item, press Buy, then enter quantity. The shop refreshes after purchases and while the UI is open.",
+    "dailychallenge": "Shows today's 𝚀𝚞𝚎wo challenge and lets you claim its reward when finished.",
+    "challenge": "Alias for `.dailychallenge`. Shows today's 𝚀𝚞𝚎wo challenge.",
+    "dc": "Alias for `.dailychallenge`. Shows today's 𝚀𝚞𝚎wo challenge.",
+    "qchallenge": "Alias for `.dailychallenge`. Shows today's 𝚀𝚞𝚎wo challenge.",
+    "shop": "Opens the categorized 𝚀𝚞𝚎wo shop UI. Select an item, press Buy, then enter quantity. The shop refreshes after purchases and while the UI is open.",
     "limits": "Shows daily gambling loss limits, remaining risk, lottery spend, max bet, and cooldown.",
     "limit": "Alias for `.limits`. Shows safety limits.",
     "safety": "Alias for `.limits`. Shows safety limits.",
     "safetylimits": "Alias for `.limits`. Shows safety limits.",
     "cooldowns": "Shows daily, weekly, monthly, and gambling cooldowns. Use `.cooldowns` or `.cd`.",
-    "transactions": "Shows recent Quewo transactions. Use `.transactions` or `.transactions @user`.",
+    "transactions": "Shows recent 𝚀𝚞𝚎wo transactions. Use `.transactions` or `.transactions @user`.",
     "lottery": "Shows and refreshes the lottery ticket panel. First server run sets channel and draw period.",
     "editlottery": "Server owner/admin command. Edits lottery price, duration, house cut, or channel, then refreshes the panel.",
     "stoplottery": "Server owner/admin command. Stops this server's lottery and clears its tickets/config.",
@@ -10043,10 +10145,10 @@ EXPLANATIONS = {
     "gstats": "Alias for `.gamestats`. Shows tracked game stats.",
     "gamestat": "Alias for `.gamestats`. Shows tracked game stats.",
     "playstats": "Alias for `.gamestats`. Shows tracked game stats.",
-    "achievements": "Shows hard Quewo game badges, progress, and rewards.",
-    "achievement": "Alias for `.achievements`. Shows Quewo badges.",
-    "badges": "Alias for `.achievements`. Shows Quewo badges.",
-    "achs": "Alias for `.achievements`. Shows Quewo badges.",
+    "achievements": "Shows hard 𝚀𝚞𝚎wo game badges, progress, and rewards.",
+    "achievement": "Alias for `.achievements`. Shows 𝚀𝚞𝚎wo badges.",
+    "badges": "Alias for `.achievements`. Shows 𝚀𝚞𝚎wo badges.",
+    "achs": "Alias for `.achievements`. Shows 𝚀𝚞𝚎wo badges.",
     "setbadge": "Equips up to 3 earned badges on your profile.",
     "badge": "Alias for `.setbadge`. Equips profile badges.",
     "equipbadge": "Alias for `.setbadge`. Equips profile badges.",
@@ -10066,9 +10168,9 @@ EXPLANATIONS = {
     "give": "Transfers quesos to another user. Target and amount can be in either order.",
     "lb": "Shows a paginated local/global leaderboard with ranking types for quesos, level, earnings, wins, losses, net gambling, and messages.",
     "leaderboard": "Shows a paginated local/global leaderboard with ranking types for quesos, level, earnings, wins, losses, net gambling, and messages.",
-    "qstats": "Admin-power command. Shows global Quewo economy health, or use `.qstats @user` for that user's audit.",
-    "economystats": "Alias for `.qstats`. Shows global Quewo economy health.",
-    "qstatus": "Alias for `.qstats`. Shows global Quewo economy health.",
+    "qstats": "Admin-power command. Shows global 𝚀𝚞𝚎wo economy health, or use `.qstats @user` for that user's audit.",
+    "economystats": "Alias for `.qstats`. Shows global 𝚀𝚞𝚎wo economy health.",
+    "qstatus": "Alias for `.qstats`. Shows global 𝚀𝚞𝚎wo economy health.",
     "economyaudit": "Admin-power command. Shows global economy audit signals, or use `.economyaudit @user` for one user's audit.",
     "audit": "Alias for `.economyaudit`. Shows economy audit signals.",
     "qaudit": "Alias for `.economyaudit`. Shows economy audit signals.",
@@ -10076,7 +10178,7 @@ EXPLANATIONS = {
     "abuseaudit": "Admin-power anti-abuse watch for fast game profit, transaction volume, and daily loss signals.",
     "antiexploit": "Alias for `.abuseaudit`. Shows anti-abuse signals.",
     "riskwatch": "Alias for `.abuseaudit`. Shows anti-abuse signals.",
-    "season": "Shows the current monthly Quewo season leaderboard and rewards.",
+    "season": "Shows the current monthly 𝚀𝚞𝚎wo season leaderboard and rewards.",
     "seasons": "Alias for `.season`. Shows season standings.",
     "seasonlb": "Alias for `.season`. Shows season standings.",
     "endseason": "Admin-power command that pays season rewards for a season key.",
@@ -10084,6 +10186,9 @@ EXPLANATIONS = {
     "add": "Admin-power command. Adds quesos. Target and amount can be in either order.",
     "remove": "Admin-power command. Removes quesos. Target and amount can be in either order.",
     "addtick": f"{QUE_OWNER_DISPLAY} command. Adds free lottery tickets. Target and tickets can be in either order.",
+    "removetick": f"{QUE_OWNER_DISPLAY} command. Removes lottery tickets. Target and tickets can be in either order.",
+    "remtick": "Alias for `.removetick`. Removes lottery tickets.",
+    "deltick": "Alias for `.removetick`. Removes lottery tickets.",
     "settick": f"{QUE_OWNER_DISPLAY} command. Sets lottery tickets. Target and tickets can be in either order.",
     "setquesos": f"{QUE_OWNER_DISPLAY} command. Sets balances. Target and amount can be in either order.",
     "disable": f"Admin-power command. Disables one bot command. {QUE_OWNER_DISPLAY} can still bypass disabled commands.",
@@ -10147,10 +10252,10 @@ EXPLANATIONS = {
     "analyse": "Analyzes an image from a replied message.",
     "analyze": "Alias for `.analyse`. Analyzes an image from a replied message.",
     "translate": "Translates text. Use `.translate hello to Italian`, `.translate it hello`, or reply to a message with `.translate to Spanish`.",
-    "econhelp": "Shows Quewo commands, aliases, and short explanations.",
-    "economyhelp": "Alias for `.econhelp`. Shows Quewo commands, aliases, and short explanations.",
-    "quewohelp": "Alias for `.econhelp`. Shows Quewo commands, aliases, and short explanations.",
-    "ehelp": "Alias for `.econhelp`. Shows Quewo commands, aliases, and short explanations.",
+    "econhelp": "Shows 𝚀𝚞𝚎wo commands, aliases, and short explanations.",
+    "economyhelp": "Alias for `.econhelp`. Shows 𝚀𝚞𝚎wo commands, aliases, and short explanations.",
+    "quewohelp": "Alias for `.econhelp`. Shows 𝚀𝚞𝚎wo commands, aliases, and short explanations.",
+    "ehelp": "Alias for `.econhelp`. Shows 𝚀𝚞𝚎wo commands, aliases, and short explanations.",
     "explain": "Shows detailed help for one command. Use `.explain <command>`.",
     "prefix": "Shows or changes this server's command prefix.",
     "preifx": "Typo alias for `.prefix`. Shows or changes this server's command prefix.",
@@ -10172,11 +10277,11 @@ DETAILED_EXPLANATIONS = {
     "streaks": "Shows claim streaks and live next-claim timestamps for daily, weekly, and monthly. Also shows the active universal gambling win streak and current payout multiplier.",
     "guide": "New-user guide for earning, playing, spending, and safety commands. Use it when someone joins and does not know where to start.",
     "onboard": "Interactive first-user onboarding. It shows a compact start guide with buttons for daily rewards, games, shop, and profile so new users do not need to memorize commands.",
-    "inv": "Alias for `.inventory`. Opens the paged Quewo inventory UI.",
-    "items": "Alias for `.inventory`. Opens the paged Quewo inventory UI.",
+    "inv": "Alias for `.inventory`. Opens the paged 𝚀𝚞𝚎wo inventory UI.",
+    "items": "Alias for `.inventory`. Opens the paged 𝚀𝚞𝚎wo inventory UI.",
     "quests": "Main quests track long streak achievements: 30 daily claims, 8 weekly claims, and 5 monthly claims. Daily, weekly, and monthly random quests rotate by period and can be claimed from the `.quests` UI.",
     "dailychallenge": "One rotating daily challenge is active per day. Game wins update it automatically, and Flag Quiz point challenges count each correct flag. Use `.dailychallenge claim` when your progress reaches the target.",
-    "shop": "Opens an interactive categorized Quewo shop. Select an item, press Buy, then enter the quantity. The bot checks your balance, item limit, and total price before purchasing.",
+    "shop": "Opens an interactive categorized 𝚀𝚞𝚎wo shop. Select an item, press Buy, then enter the quantity. The bot checks your balance, item limit, and total price before purchasing.",
     "cooldowns": "Shows daily, weekly, monthly, and active gambling command cooldowns in one place.",
     "transactions": "Shows recent money movement including shop purchases, quest rewards, level rewards, transfer tax, admin changes, and lottery activity.",
     "limits": f"Shows your daily gambling loss safety limit. The bot warns near {int(DAILY_LOSS_WARNING_RATIO * 100)}% and blocks bets before daily losses exceed {int(DAILY_LOSS_HARD_RATIO * 100)}% of your current daily gambling bankroll. It also shows lottery round spending where available.",
@@ -10217,9 +10322,9 @@ DETAILED_EXPLANATIONS = {
     "gamestats": "Shows tracked game stats for you or a mentioned user: total played, wins, profit, per-game records, and hard game badges. Example: `.gamestats` or `.gamestats @user`.",
     "achievements": "Shows hard game badge progress and rewards. Badges are intentionally long-term, like 100 wins in a game or 1,000 total games played. Earned badge rewards are paid automatically when the tracked game result completes.",
     "setbadge": "Use `.setbadge` with no arguments to list earned badge IDs. Use `.setbadge <badge_id> [badge_id] [badge_id]` to show up to 3 earned badges on `.profile`, or `.setbadge clear` to remove them.",
-    "gamebalance": "Lists every Quewo game with its current risk label. Use this as the quick balance audit before changing odds, multipliers, or max-risk behavior.",
+    "gamebalance": "Lists every 𝚀𝚞𝚎wo game with its current risk label. Use this as the quick balance audit before changing odds, multipliers, or max-risk behavior.",
     "gamehistory": "Shows your recent tracked game results from the shared game history table. Newer and tracked games appear here with result, net amount, and timestamp.",
-    "season": "Monthly Quewo season leaderboard. Game results add to the current month automatically. Ranking is by monthly game profit, then wins, then games played. Top rewards are 100m, 80m, and 50m.",
+    "season": "Monthly 𝚀𝚞𝚎wo season leaderboard. Game results add to the current month automatically. Ranking is by monthly game profit, then wins, then games played. Top rewards are 100m, 80m, and 50m.",
     "endseason": "Admin-power season payout command. Use `.endseason 2026-05` to pay the top 3 for that month once. If no season is passed, it pays the current season.",
     "abuseaudit": "Admin-power watch page for suspicious economy activity. It flags high one-hour game volume/profit, high 24-hour transaction volume, and large daily gambling losses. It is a signal page only; review context before acting.",
     "ms": f"Choose 3x3, 4x4, or 5x5, then reveal tiles. Hidden tiles show as {Q_MS_HIDDEN}, safe gems show as {Q_XP}, bombs show as {Q_MINE}, and your cursor shows as {Q_MS_CURSOR}. 3x3 has 1 bomb, 4x4 has 3 bombs, and 5x5 has 5 bombs. Reveal every safe tile to win. The final multiplier starts at ×2.00 and each safe reveal adds +0.15, then the universal gambling streak bonus applies. Hitting a bomb or timing out loses the bet and resets the streak.",
@@ -10229,13 +10334,14 @@ DETAILED_EXPLANATIONS = {
     "give": f"Moves quesos from you to another user. Normal transfers burn {int(TRANSFER_TAX_RATE * 100)}% as tax. Use `.give @user 10k` or `.give 10k @user`. Admin-power users can use `all`. The message shows sent amount, tax, received amount, and balances.",
     "lb": "Shows a paginated leaderboard. Use the buttons to switch between local server rankings and global all-server rankings. Use the ranking type menu to sort by quesos, level, earnings, total won, total lost, net gambling, or messages. The embed also shows your rank for the selected scope and type.",
     "leaderboard": "Alias for `.lb`. Shows local/global paginated rankings with selectable ranking types and your rank.",
-    "qstats": "Admin-power command for checking the global Quewo economy. It shows total money supply, total earned, gambling won/lost/net, active lotteries, lottery pots, ticket count, tracked taxes/payments, richest user, and tracked messages. If you pass a member, it redirects to that user's economy audit.",
+    "qstats": "Admin-power command for checking the global 𝚀𝚞𝚎wo economy. It shows total money supply, total earned, gambling won/lost/net, active lotteries, lottery pots, ticket count, tracked taxes/payments, richest user, and tracked messages. If you pass a member, it redirects to that user's economy audit.",
     "economyaudit": "Admin-power economy audit page. Without a member, it adds balancing signals on top of qstats: daily losses, recent transaction volume, tracked sink/payment totals, and per-game play/win/profit signals sorted by biggest impact. With a member, it shows that user's balance, level, net gambling, daily loss usage, game signals, recent games, recent transactions, and warnings.",
     "add": f"Admin-power command. Adds new quesos to a user. `.add @user <amount>` and `.add <amount> @user` both work. {QUE_OWNER_DISPLAY} can use @everyone or a role. It does not support `all`.",
     "remove": "Admin-power command. Removes quesos from a user. `.remove @user <amount>` and `.remove <amount> @user` both work. Use `all` to remove their full balance.",
     "addtick": f"{QUE_OWNER_DISPLAY}-only lottery admin command. Adds free entries to the current lottery. `.addtick @user <tickets>` and `.addtick <tickets> @user` both work, including roles and @everyone.",
+    "removetick": f"{QUE_OWNER_DISPLAY}-only lottery admin command. Removes entries from the current lottery. `.removetick @user <tickets>` and `.removetick <tickets> @user` both work, including roles and @everyone. Tickets never go below 0.",
     "settick": f"{QUE_OWNER_DISPLAY}-only lottery admin command. Sets current lottery entries to an exact number. `.settick @user <tickets>` and `.settick <tickets> @user` both work, including roles and @everyone.",
-    "setquesos": f"{QUE_OWNER_DISPLAY}-only Quewo admin command. Sets balances directly. `.setquesos @user <amount>` and `.setquesos <amount> @user` both work, including roles and @everyone.",
+    "setquesos": f"{QUE_OWNER_DISPLAY}-only 𝚀𝚞𝚎wo admin command. Sets balances directly. `.setquesos @user <amount>` and `.setquesos <amount> @user` both work, including roles and @everyone.",
     "prefix": f"Changes the command prefix for this server. Use `.prefix !` or `.preifx !`. If {QUE_OWNER_DISPLAY} is in the server, only {QUE_OWNER_DISPLAY} can change it. If not, the server owner or admins can change it.",
     "preifx": "Typo alias for `.prefix`. Changes the command prefix for this server.",
     "setbdaychannel": "Sets the birthday announcement channel for this server. Use `.setbdaychannel #birthdays` or `.setbdaychannel <channel id>`. Users keep one birthday date globally, and the bot announces it in every server where they are still a member and a birthday channel is configured.",
@@ -10272,7 +10378,7 @@ ECONHELP_COMMANDS = [
     ("Core", ["guide", "onboard", "bal", "profile", "inventory", "settheme", "quests", "dailychallenge", "streaks", "shop", "cooldowns", "transactions", "limits", "lb"]),
     ("Stats", ["gamestats", "achievements", "setbadge", "gamebalance", "gamehistory", "season", "qstats", "economyaudit", "abuseaudit"]),
     ("Claims", ["daily", "weekly", "monthly"]),
-    ("Lottery", ["lottery", "buytick", "lotterystats", "editlottery", "stoplottery"]),
+    ("Lottery", ["lottery", "buytick", "lotterystats", "editlottery", "stoplottery", "addtick", "removetick", "settick"]),
     ("Gambling", ["cf", "roulette", "slots", "blackjack", "scratch", "tower", "vault", "memory", "cardladder", "lockpick", "heist", "diceduel", "cases", "plinko", "luckynumber", "jackpotspin", "dungeon", "ms", "wheel"]),
     ("Transfers", ["give"]),
     ("Help", ["econhelp", "explain"]),
@@ -10318,7 +10424,7 @@ def add_split_embed_field(embed, name, lines, inline=False, limit=1024):
 
 @commands.command(name="econhelp", aliases=["economyhelp", "quewohelp", "ehelp"])
 async def econhelp(ctx):
-    """Shows Quewo commands, aliases, and short explanations."""
+    """Shows 𝚀𝚞𝚎wo commands, aliases, and short explanations."""
     prefix = getattr(ctx, "prefix", ".")
 
     def build_embed(category_name="Core"):
@@ -10329,7 +10435,7 @@ async def econhelp(ctx):
         category, commands_ = selected
         category_list = " | ".join(name for name, _ in ECONHELP_COMMANDS)
         embed = discord.Embed(
-            title=f"{Q_BOOK} Quewo Help - {category}",
+            title=f"{Q_BOOK} 𝚀𝚞𝚎wo Help - {category}",
             description=(
                 f"Use `{prefix}explain <command>` for detailed help, or `{prefix}help` for the full bot command list.\n"
                 f"Categories: {category_list}"
@@ -10347,11 +10453,11 @@ async def econhelp(ctx):
                 discord.SelectOption(
                     label=category,
                     value=category,
-                    description=f"{len(commands_)} Quewo command(s)"
+                    description=f"{len(commands_)} 𝚀𝚞𝚎wo command(s)"
                 )
                 for category, commands_ in ECONHELP_COMMANDS
             ]
-            super().__init__(placeholder="Choose a Quewo help category", min_values=1, max_values=1, options=options)
+            super().__init__(placeholder="Choose a 𝚀𝚞𝚎wo help category", min_values=1, max_values=1, options=options)
 
         async def callback(self, interaction):
             if interaction.user.id != ctx.author.id:
@@ -10361,7 +10467,7 @@ async def econhelp(ctx):
 
     class EconHelpView(discord.ui.View):
         def __init__(self):
-            super().__init__(timeout=120)
+            super().__init__(timeout=LONG_HELP_VIEW_TIMEOUT)
             self.add_item(EconHelpSelect())
 
         async def on_timeout(self):
@@ -10435,14 +10541,14 @@ async def setup(bot_ref, log_callback=None):
     global bot, economy_log_callback, lottery_task, db_keepalive_task
     bot = bot_ref
     economy_log_callback = log_callback
-    print("Initializing Quewo system...")
+    print("Initializing 𝚀𝚞𝚎wo system...")
     await asyncio.to_thread(init_db)
-    print(f"Quewo db_ready = {db_ready}")
+    print(f"𝚀𝚞𝚎wo db_ready = {db_ready}")
 
     economy_commands = [
         bal, profile, inventory, settheme, quests, dailychallenge, streaks, guide, onboard, shop, cooldowns, transactions, limits, lottery, editlottery, stoplottery, lotterystats, buytick,
         daily, weekly, monthly, gamble, roulette, slots, blackjack,
-        scratch, tower, vault, memory_game, card_ladder, lockpick, heist, dice_duel, cases, plinko, lucky_number, jackpot_spin, dungeon, minesweeper, wheel, give, lb, gamestats, achievements, setbadge, gamebalance, gamehistory, season, endseason, qstats, economyaudit, abuseaudit, add, remove, addtick, settick, setquesos, econhelp, explain
+        scratch, tower, vault, memory_game, card_ladder, lockpick, heist, dice_duel, cases, plinko, lucky_number, jackpot_spin, dungeon, minesweeper, wheel, give, lb, gamestats, achievements, setbadge, gamebalance, gamehistory, season, endseason, qstats, economyaudit, abuseaudit, add, remove, addtick, removetick, settick, setquesos, econhelp, explain
     ]
     for command in economy_commands:
         if bot.get_command(command.name):

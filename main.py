@@ -145,6 +145,8 @@ birthday_task = None
 activity_task = None
 presence_task = None
 app = Flask('')
+LONG_HELP_VIEW_TIMEOUT = 24 * 60 * 60
+LONG_SETUP_VIEW_TIMEOUT = 60 * 60
 
 # PostgreSQL is the single source of truth
 pg_init()
@@ -347,7 +349,7 @@ def denial_message(detail=None):
 
 def command_denial_detail(ctx, error=None):
     command_name = ctx.command.qualified_name if getattr(ctx, "command", None) else ""
-    que_only = {"addtick", "settick", "setquesos", "fsleep", "wake"}
+    que_only = {"addtick", "removetick", "settick", "setquesos", "fsleep", "wake"}
     if command_name in que_only:
         return f"Only {QUE_OWNER_DISPLAY} can use this."
     if ctx.guild:
@@ -1064,7 +1066,7 @@ async def presence_rotation_task():
         lambda: discord.Game(f"{DEFAULT_PREFIX}games"),
         lambda: discord.Game(f"{DEFAULT_PREFIX}daily"),
         lambda: discord.Game(f"{DEFAULT_PREFIX}help search"),
-        lambda: discord.Activity(type=discord.ActivityType.watching, name="Quewo balances"),
+        lambda: discord.Activity(type=discord.ActivityType.watching, name="𝚀𝚞𝚎wo balances"),
         lambda: discord.Activity(type=discord.ActivityType.listening, name=f"{DEFAULT_PREFIX}lottery"),
     ]
     index = int(time.time() // 300) % len(statuses)
@@ -1137,7 +1139,7 @@ async def cleanup_stale_game_messages():
 @bot.event
 async def on_ready():
     global birthday_task, activity_task, presence_task, runtime_state_restored, stale_game_messages_cleaned
-    print(f'ProQue is online as {bot.user}')
+    print(f'Pro𝚀𝚞𝚎 is online as {bot.user}')
     if not keep_alive_task.is_running():
         keep_alive_task.start()
     if birthday_task is None or birthday_task.done():
@@ -1153,12 +1155,12 @@ async def on_ready():
             "bal", "profile", "inventory", "settheme", "quests", "dailychallenge", "streaks", "guide", "onboard", "shop", "cooldowns", "transactions", "limits", "lottery", "editlottery", "stoplottery", "lotterystats", "buytick",
             "daily", "weekly", "monthly", "cf", "roulette", "slots",
             "blackjack", "scratch", "tower", "vault", "memory", "cardladder", "lockpick", "heist", "diceduel", "cases", "plinko", "luckynumber", "jackpotspin", "dungeon", "ms", "wheel", "give", "lb", "gamestats", "achievements", "setbadge", "gamebalance", "gamehistory",
-            "qstats", "economyaudit", "abuseaudit", "season", "endseason", "add", "remove", "addtick", "settick", "setquesos", "econhelp", "explain"
+            "qstats", "economyaudit", "abuseaudit", "season", "endseason", "add", "remove", "addtick", "removetick", "settick", "setquesos", "econhelp", "explain"
         ]
         loaded_economy_commands = [name for name in economy_command_names if bot.get_command(name)]
-        print(f"Quewo system loaded ({len(loaded_economy_commands)}/{len(economy_command_names)} commands)")
+        print(f"𝚀𝚞𝚎wo system loaded ({len(loaded_economy_commands)}/{len(economy_command_names)} commands)")
     except Exception as e:
-        print(f"Quewo system not loaded: {e}")
+        print(f"𝚀𝚞𝚎wo system not loaded: {e}")
     if not runtime_state_restored:
         await restore_persistent_runtime_state()
         runtime_state_restored = True
@@ -1938,7 +1940,7 @@ class ActivityEditSettingSelect(Select):
 
 class ActivityEditView(View):
     def __init__(self, author_id, guild_id):
-        super().__init__(timeout=120)
+        super().__init__(timeout=LONG_SETUP_VIEW_TIMEOUT)
         self.author_id = author_id
         self.guild_id = guild_id
         self.add_item(ActivityEditSettingSelect())
@@ -2243,6 +2245,7 @@ COMMAND_EXAMPLE_OVERRIDES = {
     "add": ".add @user 1000",
     "addrole": ".addrole @user @role",
     "addtick": ".addtick @user 5",
+    "removetick": ".removetick @user 5",
     "alarm": ".alarm 1h reminder",
     "analyse": ".analyse while replying to an image",
     "analyze": ".analyze while replying to an image",
@@ -2280,6 +2283,9 @@ COMMAND_EXAMPLE_OVERRIDES = {
     "gamestats": ".gamestats @user",
     "memory": ".memory 1000",
     "onboard": ".onboard",
+    "health": ".health",
+    "perms": ".perms @user",
+    "sessions": ".sessions",
     "move": ".move e2e4",
     "ms": ".ms 1000",
     "poll": ".poll Best color? | Blue | Red | 10m",
@@ -2518,7 +2524,7 @@ async def on_message(message):
                 {
                     "role": "system",
                     "content": (
-                        "You are ProQue's chat assistant inside Discord. Answer clearly, briefly, and naturally. "
+                        "You are Pro𝚀𝚞𝚎's chat assistant inside Discord. Answer clearly, briefly, and naturally. "
                         "If the user replied to a message, use the reply context. Do not ping users. "
                         "If you are missing info, ask one short follow-up question."
                     ),
@@ -2741,7 +2747,7 @@ async def on_command_error(ctx, error):
             await ctx.send(denial_message("Something went wrong while running this command. Try the help command for the right usage."))
 
 HELP_CATEGORIES = {
-    "Quewo": [
+    "𝚀𝚞𝚎wo (Gambling)": [
         "guide", "onboard", "bal", "profile", "inventory", "settheme", "quests", "dailychallenge", "streaks", "shop", "cooldowns", "transactions", "lottery", "lotterystats", "buytick",
         "daily", "weekly", "monthly", "cf", "roulette", "slots", "blackjack", "scratch", "tower", "vault", "memory", "cardladder", "lockpick",
         "heist", "diceduel", "cases", "plinko", "luckynumber", "jackpotspin", "dungeon", "ms", "wheel",
@@ -2749,20 +2755,25 @@ HELP_CATEGORIES = {
     ],
     "Games": ["games", "howtoplay", "ttt", "c4", "chess", "move", "resign", "flagquiz", "flagstats", "q", "picker"],
     "Utility": ["help", "userinfo", "pfp", "calc", "define", "timer", "ctimer", "alarm", "poll", "epoll", "translate", "find"],
-    "AI": ["ask", "generate", "analyse", "analyze"],
+    "AI": ["ask", "generate", "analyse"],
     "Server Tools": [
         "dsnipe", "esnipe", "rsnipe", "rolesinfo", "roleinfo", "purge", "rpurge", "steal",
         "giveaway", "listbans", "listblocks", "listtargets", "listcensors", "lists",
     ],
     "Status": ["afk", "sleep", "wake", "fsleep", "away", "setbday", "removebday", "setbdaychannel", "activity", "activitystats"],
     "Admin": [
-        "settings", "slashsync", "setlogs", "prefix", "disable", "enable", "disableall", "enableall", "dclist", "perf", "test", "testlog", "testrlog",
+        "settings", "slashsync", "health", "perms", "sessions", "setlogs", "prefix", "disable", "enable", "disableall", "enableall", "dclist", "perf", "test", "testlog", "testrlog",
         "endttt", "setnick", "unmute", "kick", "ban", "unban", "addrole", "removerole", "deleterole",
         "lock", "unlock", "lockdown", "reopen", "rlockdown", "runlock", "shut", "unshut", "clearwatchlist", "rshut", "unrshut",
         "send", "reply", "aban", "raban", "abanlist", "summon", "summon2", "block", "unblock",
         "censor", "uncensor", "clearcensors", "editlottery", "stoplottery", "editactivity", "endactivity", "stopactivity",
-        "add", "remove", "addtick", "settick", "setquesos",
+        "add", "remove", "addtick", "removetick", "settick", "setquesos",
     ],
+}
+HELP_CATEGORY_ALIASES = {
+    "quewo": "𝚀𝚞𝚎wo (Gambling)",
+    "𝚀𝚞𝚎wo": "𝚀𝚞𝚎wo (Gambling)",
+    "gambling": "𝚀𝚞𝚎wo (Gambling)",
 }
 
 def prefix_for_guild(guild):
@@ -2774,28 +2785,54 @@ def render_help_embed(guild=None, category_name=None):
     if category_name:
         names = HELP_CATEGORIES.get(category_name, [])
         embed = discord.Embed(
-            title=f"ProQue Help: {category_name}",
+            title=f"Pro𝚀𝚞𝚎 Help: {category_name}",
             description=f"Use `{current_prefix}help <command>` for usage or `{current_prefix}explain <command>` for details.",
             color=discord.Color.blurple()
         )
-        commands_text = []
+        command_lines = []
+        seen_commands = set()
         for name in names:
             command = get_command_case_insensitive(name)
             if command and not command.hidden:
-                commands_text.append(f"`{current_prefix}{command.name}`")
-        embed.description += "\n\n" + (" ".join(commands_text) if commands_text else "No commands loaded for this category.")
+                if command.name in seen_commands:
+                    continue
+                seen_commands.add(command.name)
+                desc = command_short_description(command)
+                command_lines.append(f"`{current_prefix}{command.name}` - {desc}")
+        if command_lines:
+            for index in range(0, len(command_lines), 8):
+                embed.add_field(
+                    name=f"Commands {index + 1}-{min(index + 8, len(command_lines))}",
+                    value=joined_embed_value(command_lines[index:index + 8]),
+                    inline=False,
+                )
+        else:
+            embed.description += "\n\nNo commands loaded for this category."
         return embed
 
     embed = discord.Embed(
-        title="ProQue Help",
+        title="Pro𝚀𝚞𝚎 Help",
         description=f"Pick a category below, or use `{current_prefix}help <command>`.",
         color=discord.Color.blurple()
     )
     for category, names in HELP_CATEGORIES.items():
-        loaded = [name for name in names if get_command_case_insensitive(name)]
+        loaded = {
+            command.name
+            for name in names
+            if (command := get_command_case_insensitive(name)) and not command.hidden
+        }
         if loaded:
             embed.add_field(name=category, value=f"{len(loaded)} commands", inline=True)
     return embed
+
+def resolve_help_category(name):
+    if not name:
+        return None
+    normalized = name.strip().casefold()
+    for category in HELP_CATEGORIES:
+        if normalized == category.casefold():
+            return category
+    return HELP_CATEGORY_ALIASES.get(normalized)
 
 def command_short_description(command):
     if not command:
@@ -2821,6 +2858,31 @@ def command_usage_text(command, prefix):
         usage += f" {command.signature}"
     return usage
 
+def command_permission_label(command):
+    if not command:
+        return "Unknown"
+    name = command.name
+    aliases = set(getattr(command, "aliases", []) or [])
+    names = {name, *aliases}
+    admin_names = set(HELP_CATEGORIES.get("Admin", [])) | set(HELP_CATEGORIES.get("Server Tools", []))
+    que_only = {"addtick", "removetick", "settick", "setquesos", "fsleep", "wake"}
+    if names & que_only:
+        return QUE_OWNER_DISPLAY
+    if name in admin_names or names & admin_names:
+        return "Admin / server owner"
+    if name in {"editlottery", "stoplottery", "editactivity", "endactivity", "stopactivity", "qstats", "economyaudit", "abuseaudit"}:
+        return "Admin / server owner"
+    return "Everyone"
+
+def command_input_label(command):
+    if not command:
+        return "Unknown"
+    if command.name in SETUP_UI_COMMANDS:
+        return "UI available"
+    if command.signature:
+        return f"`{command.signature}`"
+    return "No input needed"
+
 class HelpCategoryButton(Button):
     def __init__(self, category_name):
         super().__init__(label=category_name, style=discord.ButtonStyle.secondary)
@@ -2844,7 +2906,7 @@ class HelpHomeButton(Button):
 
 class HelpView(View):
     def __init__(self, author_id):
-        super().__init__(timeout=120)
+        super().__init__(timeout=LONG_HELP_VIEW_TIMEOUT)
         self.author_id = author_id
         self.add_item(HelpHomeButton())
         for category in HELP_CATEGORIES:
@@ -2867,7 +2929,7 @@ def command_search_results(query):
             break
     return results
 
-@bot.command(name="help")
+@bot.command(name="help", aliases=["commands", "cmds"])
 async def help_command(ctx, *, command_name: str = None):
     if command_name:
         parts = command_name.strip().split(maxsplit=1)
@@ -2890,6 +2952,10 @@ async def help_command(ctx, *, command_name: str = None):
                 embed.add_field(name="Matches", value=joined_embed_value(lines), inline=False)
             return await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
+        category = resolve_help_category(command_name)
+        if category:
+            return await ctx.send(embed=render_help_embed(ctx.guild, category), view=HelpView(ctx.author.id))
+
         command = get_command_case_insensitive(command_name)
         if not command:
             current_prefix = prefix_for_guild(ctx.guild)
@@ -2897,13 +2963,20 @@ async def help_command(ctx, *, command_name: str = None):
 
         current_prefix = prefix_for_guild(ctx.guild)
         usage = command_usage_text(command, current_prefix)
-        aliases = f"\nAliases: {', '.join(command.aliases)}" if command.aliases else ""
         description = command_short_description(command)
-        setup_note = "\nRun it with no arguments to open the setup UI." if command.name in SETUP_UI_COMMANDS else ""
-        return await ctx.send(
-            f"**{usage}**\n{description}{aliases}{setup_note}",
-            view=command_setup_view(ctx.author.id, command.name)
+        embed = discord.Embed(
+            title=f"{economy_q_book} {current_prefix}{command.name}",
+            description=description,
+            color=discord.Color.blurple(),
         )
+        embed.add_field(name="Usage", value=f"`{usage}`", inline=False)
+        embed.add_field(name="Aliases", value=", ".join(command.aliases) if command.aliases else "None", inline=True)
+        embed.add_field(name="Permission", value=command_permission_label(command), inline=True)
+        embed.add_field(name="Input", value=command_input_label(command), inline=True)
+        if command.name in SETUP_UI_COMMANDS:
+            embed.add_field(name="UI", value="Run it with no input or press the setup button below.", inline=False)
+        embed.set_footer(text=f"More detail: {current_prefix}explain {command.name}")
+        return await ctx.send(embed=embed, view=command_setup_view(ctx.author.id, command.name), allowed_mentions=discord.AllowedMentions.none())
 
     await ctx.send(embed=render_help_embed(ctx.guild), view=HelpView(ctx.author.id))
 
@@ -2950,6 +3023,14 @@ async def build_settings_embed(guild):
     else:
         lottery_value = "Not set"
     embed.add_field(name="Lottery", value=lottery_value, inline=True)
+    checklist = [
+        f"{economy_q_accept if log_config.get('log_channel_id') else economy_q_warning} Normal logs",
+        f"{economy_q_accept if log_config.get('reaction_log_channel_id') else economy_q_warning} Reaction logs",
+        f"{economy_q_accept if birthday_config.get('channel_id') else economy_q_warning} Birthdays",
+        f"{economy_q_accept if activity_config.get('channel_id') else economy_q_warning} Activity",
+        f"{economy_q_accept if lottery_config else economy_q_warning} Lottery",
+    ]
+    embed.add_field(name="Setup Checklist", value="\n".join(checklist), inline=False)
     embed.set_footer(text="Use the buttons below for quick setup actions.")
     return embed
 
@@ -2976,7 +3057,7 @@ class PrefixSettingsModal(Modal):
 
 class SettingsView(View):
     def __init__(self, author_id):
-        super().__init__(timeout=180)
+        super().__init__(timeout=LONG_HELP_VIEW_TIMEOUT)
         self.author_id = author_id
 
     async def interaction_check(self, interaction):
@@ -3088,7 +3169,7 @@ class SettingsView(View):
             ephemeral=True,
         )
 
-@bot.command(name="settings", aliases=["setup", "config"])
+@bot.command(name="settings", aliases=["setup", "setupbot", "config"])
 @is_admin_power()
 async def settings_command(ctx):
     """Shows the server settings dashboard."""
@@ -3129,6 +3210,92 @@ async def perf_command(ctx):
         color=discord.Color.orange(),
     )
     embed.add_field(name="Slowest", value=joined_embed_value(rows), inline=False)
+    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
+@bot.command(name="perms", aliases=["permissions", "permcheck"])
+async def perms_command(ctx, member: discord.Member = None):
+    """Shows what Pro𝚀𝚞𝚎 permissions a member has."""
+    if ctx.guild is None:
+        return await ctx.send("Permissions only work in servers.")
+    target = member or ctx.author
+    is_que = has_super_owner_power(target, ctx.guild)
+    is_owner = ctx.guild.owner_id == target.id
+    is_admin = bool(getattr(target.guild_permissions, "administrator", False))
+    can_prefix = can_manage_prefix(target, ctx.guild)
+    can_logs = has_owner_power(target, ctx.guild)
+    can_bday = await can_manage_birthday_channel(target, ctx.guild)
+    can_activity = await can_manage_activity_channel(target, ctx.guild)
+    economy_admin = target.id == super_owner_id or is_owner or is_admin
+    rank = QUE_OWNER_DISPLAY if is_que else ("Server owner" if is_owner else ("Admin" if is_admin else "Normal user"))
+    embed = discord.Embed(
+        title=f"{economy_q_permissions} Permission Check",
+        description=f"{target.mention}\nRank: **{rank}**",
+        color=discord.Color.blurple(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.add_field(name="Moderation/Admin", value="Yes" if has_owner_power(target, ctx.guild) else "No", inline=True)
+    embed.add_field(name="𝚀𝚞𝚎wo Admin", value="Yes" if economy_admin else "No", inline=True)
+    embed.add_field(name="Prefix", value="Can change" if can_prefix else "Cannot change", inline=True)
+    embed.add_field(name="Logs", value="Can manage" if can_logs else "Cannot manage", inline=True)
+    embed.add_field(name="Birthdays", value="Can manage" if can_bday else "Cannot manage", inline=True)
+    embed.add_field(name="Activity", value="Can manage" if can_activity else "Cannot manage", inline=True)
+    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
+@bot.command(name="sessions", aliases=["gamesessions", "activesessions"])
+@is_admin_power()
+async def sessions_command(ctx, action: str = None, message_id: int = None):
+    """Lists or clears tracked active game sessions."""
+    sessions = await asyncio.to_thread(load_active_game_sessions)
+    if ctx.guild:
+        sessions = [session for session in sessions if session["guild_id"] == ctx.guild.id]
+    if action and action.casefold() in {"clear", "end", "delete"}:
+        if message_id is None:
+            return await ctx.send("Use `.sessions clear <message id>`.")
+        ok = await asyncio.to_thread(delete_active_game_session, message_id)
+        return await ctx.send(f"{economy_q_accept if ok else economy_q_warning} Session `{message_id}` cleared.")
+    embed = discord.Embed(
+        title=f"{economy_q_game_stats} Active Game Sessions",
+        description=f"{len(sessions):,} tracked session(s) in this server.",
+        color=discord.Color.blurple(),
+    )
+    lines = []
+    for session in sessions[:15]:
+        created = session.get("created_at")
+        created_text = f" <t:{int(created.replace(tzinfo=timezone.utc).timestamp())}:R>" if created else ""
+        players = ", ".join(f"<@{player}>" for player in session.get("players", [])[:4]) or "No players saved"
+        lines.append(
+            f"`{session['message_id']}` **{session['game_key']}** in <#{session['channel_id']}>{created_text}\n{players}"
+        )
+    add_text = joined_embed_value(lines) if lines else "No active sessions tracked."
+    embed.add_field(name="Sessions", value=add_text, inline=False)
+    embed.set_footer(text=f"Use {prefix_for_guild(ctx.guild)}sessions clear <message id> to remove a stuck session.")
+    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
+@bot.command(name="health", aliases=["bothealth", "statuscheck"])
+@is_admin_power()
+async def health_command(ctx):
+    """Shows bot process and background task health."""
+    sessions = await asyncio.to_thread(load_active_game_sessions)
+    embed = discord.Embed(
+        title=f"{economy_q_perf} Bot Health",
+        description="Runtime status for Pro𝚀𝚞𝚎.",
+        color=discord.Color.green(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.add_field(name="Latency", value=f"{round(bot.latency * 1000):,}ms", inline=True)
+    embed.add_field(name="Guilds", value=f"{len(bot.guilds):,}", inline=True)
+    embed.add_field(name="Commands", value=f"{len(list(bot.commands)):,}", inline=True)
+    embed.add_field(name="Birthday Task", value="Running" if birthday_task and not birthday_task.done() else "Stopped", inline=True)
+    embed.add_field(name="Activity Task", value="Running" if activity_task and not activity_task.done() else "Stopped", inline=True)
+    embed.add_field(name="Presence Task", value="Running" if presence_rotation_task.is_running() else "Stopped", inline=True)
+    embed.add_field(name="Slash Sync", value="Synced" if slash_commands_synced else "Not synced", inline=True)
+    embed.add_field(name="Active Sessions", value=f"{len(sessions):,}", inline=True)
+    embed.add_field(name="Activity Reports", value=f"{len(guild_activity_channels):,}", inline=True)
+    try:
+        lottery_configs = await asyncio.to_thread(lambda: len([g for g in bot.guilds if economy_get_lottery_config(g.id)]))
+    except Exception:
+        lottery_configs = "DB unavailable"
+    embed.add_field(name="Active Lotteries", value=str(lottery_configs), inline=True)
     await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
 GAME_MENU = [
@@ -3204,7 +3371,7 @@ class GamesFilterButton(Button):
 
 class GamesView(View):
     def __init__(self, author_id, prefix):
-        super().__init__(timeout=180)
+        super().__init__(timeout=LONG_HELP_VIEW_TIMEOUT)
         self.author_id = author_id
         self.prefix = prefix
         self.selected_filter = "All"
@@ -3909,7 +4076,7 @@ async def flagstats(ctx, member: discord.Member = None):
     )
     await ctx.reply(embed=embed, mention_author=False, allowed_mentions=discord.AllowedMentions.none())
 
-@bot.tree.command(name="run", description="Run any ProQue prefix command through slash commands.")
+@bot.tree.command(name="run", description="Run any Pro𝚀𝚞𝚎 prefix command through slash commands.")
 @app_commands.describe(command="Command name", input="What that command needs, like amount, time, user, channel, or message text")
 async def slash_run(interaction: discord.Interaction, command: str, input: str = ""):
     await interaction.response.defer(thinking=True)
@@ -3919,7 +4086,7 @@ async def slash_run(interaction: discord.Interaction, command: str, input: str =
 async def slash_run_command_autocomplete(interaction: discord.Interaction, current: str):
     return slash_command_search(current)
 
-@bot.tree.command(name="commands", description="List slash command access for all ProQue commands.")
+@bot.tree.command(name="commands", description="List slash command access for all Pro𝚀𝚞𝚎 commands.")
 async def slash_commands_list(interaction: discord.Interaction):
     commands_ = slash_runnable_commands()
     prefix = prefix_for_guild(interaction.guild)
@@ -3928,7 +4095,7 @@ async def slash_commands_list(interaction: discord.Interaction):
         alias_text = f" ({', '.join(command.aliases[:3])})" if command.aliases else ""
         lines.append(f"`{command.name}`{alias_text}")
     embed = discord.Embed(
-        title="ProQue Slash Commands",
+        title="Pro𝚀𝚞𝚎 Slash Commands",
         description=(
             f"Use `/run command input` to run any of the **{len(commands_)}** commands.\n"
             f"Prefix commands still use `{prefix}` in this server."
@@ -3943,7 +4110,7 @@ async def slash_commands_list(interaction: discord.Interaction):
     embed.set_footer(text="Input means the stuff the command needs: amount, time, user, channel, or message.")
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-@bot.tree.command(name="slashstatus", description="Check and resync ProQue slash commands.")
+@bot.tree.command(name="slashstatus", description="Check and resync Pro𝚀𝚞𝚎 slash commands.")
 async def slash_status(interaction: discord.Interaction):
     if interaction.guild and not has_owner_power(interaction.user, interaction.guild):
         return await interaction.response.send_message("Admin power only.", ephemeral=True)
@@ -3962,7 +4129,7 @@ async def slash_status(interaction: discord.Interaction):
     embed.set_footer(text="Discord may take a little time to show slash command updates.")
     await interaction.followup.send(embed=embed, ephemeral=True)
 
-@bot.tree.command(name="help", description="Show ProQue help.")
+@bot.tree.command(name="help", description="Show Pro𝚀𝚞𝚎 help.")
 @app_commands.describe(command="Optional command name")
 async def slash_help(interaction: discord.Interaction, command: str = ""):
     if command:
@@ -3993,7 +4160,7 @@ async def slash_settings(interaction: discord.Interaction):
         ephemeral=True
     )
 
-@bot.tree.command(name="games", description="Show ProQue games.")
+@bot.tree.command(name="games", description="Show Pro𝚀𝚞𝚎 games.")
 async def slash_games(interaction: discord.Interaction):
     prefix = prefix_for_guild(interaction.guild)
     await interaction.response.send_message(embed=games_embed(prefix), view=GamesView(interaction.user.id, prefix), ephemeral=True)
@@ -4466,7 +4633,7 @@ class OpenPollSetupButton(Button):
 
 class SingleUserSetupView(View):
     def __init__(self, author_id, button):
-        super().__init__(timeout=180)
+        super().__init__(timeout=LONG_SETUP_VIEW_TIMEOUT)
         self.author_id = author_id
         self.add_item(button)
 
@@ -5456,6 +5623,42 @@ def fit_discord_content(content, limit=2000):
     suffix = "\n\n[message shortened]"
     return content[:limit - len(suffix)] + suffix
 
+def fit_embed_value(value, limit=1024):
+    value = str(value or "")
+    if len(value) <= limit:
+        return value
+    suffix = "\n[shortened]"
+    return value[:limit - len(suffix)] + suffix
+
+def fit_discord_embed(embed):
+    if embed is None:
+        return None
+    try:
+        if embed.description:
+            embed.description = fit_embed_value(embed.description, 4096)
+        for index, field in enumerate(list(embed.fields)):
+            embed.set_field_at(
+                index,
+                name=fit_embed_value(field.name, 256),
+                value=fit_embed_value(field.value, 1024),
+                inline=field.inline,
+            )
+        while len(embed) > 5900 and embed.fields:
+            embed.remove_field(len(embed.fields) - 1)
+        if len(embed) > 5900 and embed.description:
+            embed.description = fit_embed_value(embed.description, 1000)
+    except Exception:
+        pass
+    return embed
+
+def fit_discord_embeds(embeds):
+    if embeds is None:
+        return None
+    fitted = [fit_discord_embed(embed) for embed in embeds[:10]]
+    while len(fitted) > 1 and sum(len(embed) for embed in fitted if embed is not None) > 5900:
+        fitted.pop()
+    return fitted
+
 if not getattr(commands.Context.send, "_proque_safe_content", False):
     _original_context_send = commands.Context.send
 
@@ -5464,10 +5667,61 @@ if not getattr(commands.Context.send, "_proque_safe_content", False):
             args = (fit_discord_content(args[0]),) + args[1:]
         if isinstance(kwargs.get("content"), str):
             kwargs["content"] = fit_discord_content(kwargs["content"])
+        if kwargs.get("embed") is not None:
+            kwargs["embed"] = fit_discord_embed(kwargs["embed"])
+        if kwargs.get("embeds") is not None:
+            kwargs["embeds"] = fit_discord_embeds(kwargs["embeds"])
         return await _original_context_send(self, *args, **kwargs)
 
     _safe_context_send._proque_safe_content = True
     commands.Context.send = _safe_context_send
+
+if not getattr(discord.InteractionResponse.send_message, "_proque_safe_content", False):
+    _original_interaction_send_message = discord.InteractionResponse.send_message
+    _original_interaction_edit_message = discord.InteractionResponse.edit_message
+
+    async def _safe_interaction_send_message(self, *args, **kwargs):
+        if args and isinstance(args[0], str):
+            args = (fit_discord_content(args[0]),) + args[1:]
+        if isinstance(kwargs.get("content"), str):
+            kwargs["content"] = fit_discord_content(kwargs["content"])
+        if kwargs.get("embed") is not None:
+            kwargs["embed"] = fit_discord_embed(kwargs["embed"])
+        if kwargs.get("embeds") is not None:
+            kwargs["embeds"] = fit_discord_embeds(kwargs["embeds"])
+        return await _original_interaction_send_message(self, *args, **kwargs)
+
+    async def _safe_interaction_edit_message(self, *args, **kwargs):
+        if args and isinstance(args[0], str):
+            args = (fit_discord_content(args[0]),) + args[1:]
+        if isinstance(kwargs.get("content"), str):
+            kwargs["content"] = fit_discord_content(kwargs["content"])
+        if kwargs.get("embed") is not None:
+            kwargs["embed"] = fit_discord_embed(kwargs["embed"])
+        if kwargs.get("embeds") is not None:
+            kwargs["embeds"] = fit_discord_embeds(kwargs["embeds"])
+        return await _original_interaction_edit_message(self, *args, **kwargs)
+
+    _safe_interaction_send_message._proque_safe_content = True
+    discord.InteractionResponse.send_message = _safe_interaction_send_message
+    discord.InteractionResponse.edit_message = _safe_interaction_edit_message
+
+if not getattr(discord.Webhook.send, "_proque_safe_content", False):
+    _original_webhook_send = discord.Webhook.send
+
+    async def _safe_webhook_send(self, *args, **kwargs):
+        if args and isinstance(args[0], str):
+            args = (fit_discord_content(args[0]),) + args[1:]
+        if isinstance(kwargs.get("content"), str):
+            kwargs["content"] = fit_discord_content(kwargs["content"])
+        if kwargs.get("embed") is not None:
+            kwargs["embed"] = fit_discord_embed(kwargs["embed"])
+        if kwargs.get("embeds") is not None:
+            kwargs["embeds"] = fit_discord_embeds(kwargs["embeds"])
+        return await _original_webhook_send(self, *args, **kwargs)
+
+    _safe_webhook_send._proque_safe_content = True
+    discord.Webhook.send = _safe_webhook_send
 
 def c4_result_content(board, turn, result_text, payout_text=""):
     board_text = render_board(board, turn)
