@@ -88,11 +88,14 @@ from economy import (
 )
 from pgdata import (
     add_guild_activity_counts,
+    add_message_activity_events,
     clear_guild_activity_counts,
     delete_guild_activity_channel,
     delete_guild_birthday_channel,
     delete_active_game_session,
     get_guild_activity_top,
+    get_message_activity_count,
+    get_message_activity_top,
     load_afk_users as pg_load_afk_users,
     load_active_polls,
     load_active_timers,
@@ -201,9 +204,9 @@ removed_reactions = {}
 slash_commands_synced = False
 stale_game_messages_cleaned = False
 
-AI_MEMORY_MAX_MESSAGES = 30
-AI_MEMORY_TTL_SECONDS = 24 * 60 * 60
-AI_MEMORY_DB_MAX_MESSAGES = 60
+AI_MEMORY_MAX_MESSAGES = 60
+AI_MEMORY_TTL_SECONDS = 7 * 24 * 60 * 60
+AI_MEMORY_DB_MAX_MESSAGES = 120
 ai_conversation_memory = {}
 
 TTT_EMPTY = "empty"
@@ -330,6 +333,24 @@ def ai_memory_messages(key):
         messages.append({"role": role, "content": content[:700]})
     return messages
 
+def ai_channel_context_text(key, limit=10):
+    if key not in ai_conversation_memory:
+        guild_id, channel_id = key
+        stored = load_ai_channel_memory(guild_id, channel_id, AI_MEMORY_MAX_MESSAGES)
+        if stored:
+            ai_conversation_memory[key] = stored
+    entries = prune_ai_memory(key)
+    context_lines = []
+    for entry in entries:
+        if entry.get("role") != "context":
+            continue
+        content = str(entry.get("content") or "").strip()
+        if content:
+            context_lines.append(content[:240])
+    if not context_lines:
+        return ""
+    return "\n".join(context_lines[-limit:])[:1800]
+
 def remember_ai_message(key, role, content):
     content = str(content or "").strip()
     if not content:
@@ -342,6 +363,32 @@ def remember_ai_message(key, role, content):
     prune_ai_memory(key)
     guild_id, channel_id = key
     asyncio.create_task(asyncio.to_thread(save_ai_channel_memory, guild_id, channel_id, role, content[:1000], AI_MEMORY_DB_MAX_MESSAGES))
+
+def remember_chat_context(message):
+    if not message.guild or not message.content or message.author.bot:
+        return
+    content = message.content.strip()
+    if not content:
+        return
+    author_name = getattr(message.author, "display_name", message.author.name)
+    channel_name = getattr(message.channel, "name", str(message.channel.id))
+    key = ai_memory_key(message)
+    ai_conversation_memory.setdefault(key, []).append({
+        "role": "context",
+        "content": f"[#{channel_name}] {author_name} ({message.author.id}): {content[:450]}",
+        "ts": time.time(),
+    })
+    prune_ai_memory(key)
+
+def bot_capabilities_summary(guild):
+    prefix = prefix_for_guild(guild)
+    return (
+        f"You are Pro𝚀𝚞𝚎, a Discord bot. The command prefix in this server is `{prefix}`. "
+        "You can help with moderation/admin tools, logs, birthdays, activity reports, polls, timers, reminders, "
+        "snipes, roles, profiles, utility commands, AI ask/generate/analyse/translate, server setup, and games. "
+        "Your 𝚀𝚞𝚎wo system includes balances, shop, inventory, quests, lottery, leaderboards, gambling games, game stats, achievements, seasons, limits, and audits. "
+        f"Useful help commands: `{prefix}help`, `{prefix}games`, `{prefix}econhelp`, `{prefix}explain <command>`, `{prefix}setup`, and `{prefix}messages`."
+    )
 
 def denial_message(detail=None):
     detail = str(detail or "").strip()
@@ -361,6 +408,7 @@ active_polls = load_active_polls()
 runtime_state_restored = False
 user_mentions = {}
 activity_buffer = Counter()
+message_history_buffer = []
 active_activity_status_messages = {}
 command_timing_stats = {}
 daily_cooldown = {}
@@ -1209,13 +1257,42 @@ async def birthday_check_loop():
         await asyncio.sleep(60)
 
 async def flush_activity_buffer():
-    if not activity_buffer:
+    if not activity_buffer and not message_history_buffer:
         return
     pending = dict(activity_buffer)
+    pending_events = list(message_history_buffer)
     activity_buffer.clear()
-    ok = await asyncio.to_thread(add_guild_activity_counts, pending)
-    if not ok:
+    message_history_buffer.clear()
+    ok_counts = True
+    ok_events = True
+    if pending:
+        ok_counts = await asyncio.to_thread(add_guild_activity_counts, pending)
+    if pending_events:
+        ok_events = await asyncio.to_thread(add_message_activity_events, pending_events)
+    if not ok_counts:
         activity_buffer.update(pending)
+    if not ok_events:
+        message_history_buffer.extend(pending_events)
+
+def track_message_activity(message):
+    if not message.guild or message.author.bot:
+        return
+    if message.author.id in guild_blacklisted_users(message.guild):
+        return
+    if message.guild.id in guild_activity_channels:
+        activity_buffer[(message.guild.id, message.author.id, "messages")] += 1
+    created_at = message.created_at
+    if created_at.tzinfo is not None:
+        created_at = created_at.astimezone(timezone.utc).replace(tzinfo=None)
+    message_history_buffer.append({
+        "guild_id": message.guild.id,
+        "channel_id": message.channel.id,
+        "user_id": message.author.id,
+        "message_id": message.id,
+        "created_at": created_at,
+    })
+    if len(message_history_buffer) >= 200:
+        asyncio.create_task(flush_activity_buffer())
 
 def activity_report_embed(guild, rows):
     embed = discord.Embed(
@@ -1832,6 +1909,124 @@ async def activitystats(ctx):
     message = await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
     register_activity_status_message(message)
 
+MESSAGE_TRACKER_DURATIONS = [
+    ("1 day", timedelta(days=1)),
+    ("2 days", timedelta(days=2)),
+    ("3 days", timedelta(days=3)),
+    ("4 days", timedelta(days=4)),
+    ("5 days", timedelta(days=5)),
+    ("6 days", timedelta(days=6)),
+    ("1 week", timedelta(weeks=1)),
+    ("2 weeks", timedelta(weeks=2)),
+    ("1 month", timedelta(days=30)),
+    ("3 months", timedelta(days=90)),
+    ("6 months", timedelta(days=180)),
+    ("1 year", timedelta(days=365)),
+]
+
+def message_tracker_since(duration):
+    return datetime.now(timezone.utc).replace(tzinfo=None) - duration
+
+def message_tracker_embed(guild, label, rows=None, user=None, count=None):
+    embed = discord.Embed(
+        title=f"{economy_q_book} Message Tracker",
+        description=f"Range: **{label}**",
+        color=discord.Color.blurple(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    if user is not None:
+        embed.add_field(
+            name="User",
+            value=f"<@{user.id}> — **{int(count or 0):,}** messages",
+            inline=False,
+        )
+    else:
+        if rows:
+            lines = []
+            for index, row in enumerate(rows[:10], 1):
+                rank = POLL_NUMBER_EMOJIS[index - 1] if index <= len(POLL_NUMBER_EMOJIS) else f"**{index}.**"
+                lines.append(f"{rank} <@{row['user_id']}> — **{row['messages']:,}** messages")
+            embed.add_field(name="Top 10", value="\n".join(lines), inline=False)
+        else:
+            embed.add_field(name="Top 10", value="No messages tracked in this range yet.", inline=False)
+    embed.set_footer(text=f"{guild.name} message activity")
+    return embed
+
+class MessageDurationSelect(Select):
+    def __init__(self):
+        options = [
+            discord.SelectOption(label=label, value=str(index), default=index == 0)
+            for index, (label, _) in enumerate(MESSAGE_TRACKER_DURATIONS)
+        ]
+        super().__init__(placeholder="Choose time range", min_values=1, max_values=1, options=options)
+
+    async def callback(self, interaction):
+        if interaction.user.id != self.view.author_id:
+            return await interaction.response.send_message("Use your own message tracker.", ephemeral=True)
+        self.view.duration_index = int(self.values[0])
+        await self.view.refresh(interaction)
+
+class MessageUserSelect(discord.ui.UserSelect):
+    def __init__(self):
+        super().__init__(placeholder="Choose a user", min_values=1, max_values=1)
+
+    async def callback(self, interaction):
+        if interaction.user.id != self.view.author_id:
+            return await interaction.response.send_message("Use your own message tracker.", ephemeral=True)
+        self.view.mode = "user"
+        self.view.target_user = self.values[0]
+        await self.view.refresh(interaction)
+
+class MessageTrackerView(View):
+    def __init__(self, author_id):
+        super().__init__(timeout=LONG_HELP_VIEW_TIMEOUT)
+        self.author_id = author_id
+        self.duration_index = 0
+        self.mode = "leaderboard"
+        self.target_user = None
+        self.add_item(MessageDurationSelect())
+        self.add_item(MessageUserSelect())
+
+    async def build_embed(self, guild):
+        await flush_activity_buffer()
+        label, duration = MESSAGE_TRACKER_DURATIONS[self.duration_index]
+        since = message_tracker_since(duration)
+        if self.mode == "user":
+            user = self.target_user
+            count = await asyncio.to_thread(get_message_activity_count, guild.id, user.id, since)
+            return message_tracker_embed(guild, label, user=user, count=count)
+        rows = await asyncio.to_thread(get_message_activity_top, guild.id, since, 10)
+        return message_tracker_embed(guild, label, rows=rows)
+
+    async def refresh(self, interaction):
+        embed = await self.build_embed(interaction.guild)
+        await interaction.response.edit_message(embed=embed, view=self, allowed_mentions=discord.AllowedMentions.none())
+
+    @discord.ui.button(label="Leaderboard", style=discord.ButtonStyle.primary, row=2)
+    async def leaderboard_button(self, interaction, button):
+        if interaction.user.id != self.author_id:
+            return await interaction.response.send_message("Use your own message tracker.", ephemeral=True)
+        self.mode = "leaderboard"
+        self.target_user = None
+        await self.refresh(interaction)
+
+    @discord.ui.button(label="Me", style=discord.ButtonStyle.secondary, row=2)
+    async def me_button(self, interaction, button):
+        if interaction.user.id != self.author_id:
+            return await interaction.response.send_message("Use your own message tracker.", ephemeral=True)
+        self.mode = "user"
+        self.target_user = interaction.user
+        await self.refresh(interaction)
+
+@bot.command(name="messages", aliases=["msgstats", "messagestats", "mstats"])
+async def messages_tracker(ctx):
+    """Shows message counts by range for one user or a top 10 leaderboard."""
+    if ctx.guild is None:
+        return await ctx.send("Message tracking only works in servers.")
+    view = MessageTrackerView(ctx.author.id)
+    embed = await view.build_embed(ctx.guild)
+    await ctx.send(embed=embed, view=view, allowed_mentions=discord.AllowedMentions.none())
+
 async def apply_activity_edit(guild, author, config, setting, value, send, channel_mentions=None):
     setting = str(setting or "").casefold()
     if setting in {"channel", "chan"}:
@@ -2282,6 +2477,7 @@ COMMAND_EXAMPLE_OVERRIDES = {
     "dungeon": ".dungeon",
     "gamestats": ".gamestats @user",
     "memory": ".memory 1000",
+    "messages": ".messages",
     "onboard": ".onboard",
     "health": ".health",
     "perms": ".perms @user",
@@ -2425,11 +2621,72 @@ async def send_command_usage_correction(ctx, error=None):
         lines.append(f"More help: `{prefix}help {ctx.command.qualified_name}` or `{prefix}explain {ctx.command.qualified_name}`")
     await ctx.send("\n".join(lines), allowed_mentions=discord.AllowedMentions.none())
 
+async def handle_returning_status(message):
+    if message.author.id in sleeping_users:
+        start = sleeping_users.pop(message.author.id)
+        remove_sleeping_user(message.author.id)
+        duration = datetime.now(timezone.utc) - start
+        days, remainder = divmod(int(duration.total_seconds()), 86400)
+        hours, remainder = divmod(remainder, 3600)
+        mins = remainder // 60
+        formatted = " ".join([f"{days}d" if days else "", f"{hours}h" if hours else "", f"{mins}m" if mins or not (days or hours) else ""]).strip()
+
+        embed = discord.Embed(
+            title=f"{economy_q_bell} Good morning",
+            description=f"<@{message.author.id}> was sleeping for **{formatted}**.",
+            color=0xF1C40F,
+            timestamp=datetime.now(timezone.utc)
+        )
+
+        mentions_list = user_mentions.pop(message.author.id, [])
+        if mentions_list:
+            embed.add_field(name="Mentions received", value=f"You received **{len(mentions_list)}** mentions:", inline=False)
+            for uid, link, ts in mentions_list:
+                embed.add_field(
+                    name="Mention",
+                    value=f"<@{uid}> — <t:{ts}:R> — [Click to view message]({link})",
+                    inline=True
+                )
+
+        await message.channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
+    if message.author.id in afk_users:
+        afk_data = afk_users.pop(message.author.id)
+        remove_afk_user(message.author.id)
+
+        duration = datetime.now(timezone.utc) - afk_data["since"]
+        days, remainder = divmod(int(duration.total_seconds()), 86400)
+        hours, remainder = divmod(remainder, 3600)
+        mins = remainder // 60
+        formatted = " ".join([f"{days}d" if days else "", f"{hours}h" if hours else "", f"{mins}m" if mins or not (days or hours) else ""]).strip()
+        reason = afk_data['reason']
+        reason_text = f": **{reason}**" if reason.lower() != "afk" else ""
+
+        embed = discord.Embed(
+            title="Welcome back",
+            description=f"<@{message.author.id}> was AFK for **{formatted}**{reason_text}",
+            color=0x2ECC71,
+            timestamp=datetime.now(timezone.utc)
+        )
+
+        mentions_list = user_mentions.pop(message.author.id, [])
+        if mentions_list:
+            embed.add_field(name="Mentions received", value=f"You received **{len(mentions_list)}** mentions:", inline=False)
+            for uid, link, ts in mentions_list:
+                embed.add_field(
+                    name="Mention",
+                    value=f"<@{uid}> — <t:{ts}:R> — [Click to view message]({link})",
+                    inline=True
+                )
+
+        await message.channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
 @bot.event
 async def on_message(message):
     if message.author.bot:
         return
 
+    await handle_returning_status(message)
     is_command = looks_like_command_message(message)
     if is_command:
         if message.guild:
@@ -2457,6 +2714,7 @@ async def on_message(message):
                     pass
                 return
 
+        track_message_activity(message)
         ctx = await bot.get_context(message)
         if ctx.valid:
             print(
@@ -2520,19 +2778,34 @@ async def on_message(message):
             if not question and referenced_message:
                 question = "Respond to the replied message using the reply context."
 
+            memory_key = ai_memory_key(message)
+            recent_context = ai_channel_context_text(memory_key)
             messages = [
                 {
                     "role": "system",
-                    "content": (
-                        "You are Pro𝚀𝚞𝚎's chat assistant inside Discord. Answer clearly, briefly, and naturally. "
-                        "If the user replied to a message, use the reply context. Do not ping users. "
-                        "If you are missing info, ask one short follow-up question."
-                    ),
+                    "content": bot_capabilities_summary(message.guild),
                 }
             ]
+            messages.append({
+                "role": "system",
+                "content": (
+                    "Answer clearly, briefly, and naturally. Use recent chat context when it helps. "
+                    "Do not ping users. If you are missing info, ask one short follow-up question."
+                ),
+            })
+            if message.guild:
+                messages.append({
+                    "role": "system",
+                    "content": (
+                        f"Current server: {message.guild.name} ({message.guild.id}). "
+                        f"Current channel: #{getattr(message.channel, 'name', message.channel.id)}. "
+                        f"Current user: {getattr(message.author, 'display_name', message.author.name)} ({message.author.id})."
+                    ),
+                })
+            if recent_context:
+                messages.append({"role": "system", "content": f"Recent channel context:\n{recent_context}"})
             if context_text:
                 messages.append({"role": "system", "content": f"Reply context:\n{context_text}"})
-            memory_key = ai_memory_key(message)
             messages.extend(ai_memory_messages(memory_key))
             messages.append({"role": "user", "content": question})
 
@@ -2564,6 +2837,7 @@ async def on_message(message):
                                 await message.reply(f"Error: {resp.status}", mention_author=False)
             except Exception as e:
                 await message.reply(f"Error: {str(e)[:100]}", mention_author=False)
+            track_message_activity(message)
             return
 
     if message.guild and message.channel.id in guild_shutdown_channels(message.guild) and not has_owner_power(message.author, message.guild):
@@ -2593,34 +2867,6 @@ async def on_message(message):
                 int(message.created_at.timestamp())
             ))
 
-    if message.author.id in sleeping_users:
-        start = sleeping_users.pop(message.author.id)
-        remove_sleeping_user(message.author.id)
-        duration = datetime.now(timezone.utc) - start
-        days, remainder = divmod(int(duration.total_seconds()), 86400)
-        hours, remainder = divmod(remainder, 3600)
-        mins = remainder // 60
-        formatted = " ".join([f"{days}d" if days else "", f"{hours}h" if hours else "", f"{mins}m" if mins or not (days or hours) else ""]).strip()
-
-        embed = discord.Embed(
-            title=f"{economy_q_bell} Good morning",
-            description=f"<@{message.author.id}> was sleeping for **{formatted}**.",
-            color=0xF1C40F,
-            timestamp=datetime.now(timezone.utc)
-        )
-
-        mentions_list = user_mentions.pop(message.author.id, [])
-        if mentions_list:
-            embed.add_field(name="Mentions received", value=f"You received **{len(mentions_list)}** mentions:", inline=False)
-            for uid, link, ts in mentions_list:
-                embed.add_field(
-                    name="Mention",
-                    value=f"<@{uid}> — <t:{ts}:R> — [Click to view message]({link})",
-                    inline=True
-                )
-
-        await message.channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
-
     for uid in list(sleeping_users):
         if any(user.id == uid for user in message.mentions) or (
             message.reference and message.reference.resolved and message.reference.resolved.author.id == uid
@@ -2649,37 +2895,6 @@ async def on_message(message):
             )
             break
 
-    if message.author.id in afk_users:
-        afk_data = afk_users.pop(message.author.id)
-        remove_afk_user(message.author.id)
-
-        duration = datetime.now(timezone.utc) - afk_data["since"]
-        days, remainder = divmod(int(duration.total_seconds()), 86400)
-        hours, remainder = divmod(remainder, 3600)
-        mins = remainder // 60
-        formatted = " ".join([f"{days}d" if days else "", f"{hours}h" if hours else "", f"{mins}m" if mins or not (days or hours) else ""]).strip()
-        reason = afk_data['reason']
-        reason_text = f": **{reason}**" if reason.lower() != "afk" else ""
-
-        embed = discord.Embed(
-            title="Welcome back",
-            description=f"<@{message.author.id}> was AFK for **{formatted}**{reason_text}",
-            color=0x2ECC71,
-            timestamp=datetime.now(timezone.utc)
-        )
-
-        mentions_list = user_mentions.pop(message.author.id, [])
-        if mentions_list:
-            embed.add_field(name="Mentions received", value=f"You received **{len(mentions_list)}** mentions:", inline=False)
-            for uid, link, ts in mentions_list:
-                embed.add_field(
-                    name="Mention",
-                    value=f"<@{uid}> — <t:{ts}:R> — [Click to view message]({link})",
-                    inline=True
-                )
-
-        await message.channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
-
     if message.guild and message.author.id in guild_watchlist(message.guild) and not has_owner_power(message.author, message.guild):
         try:
             await message.delete()
@@ -2688,8 +2903,8 @@ async def on_message(message):
         return
 
     if message.guild and message.author.id not in guild_blacklisted_users(message.guild):
-        if message.guild.id in guild_activity_channels:
-            activity_buffer[(message.guild.id, message.author.id, "messages")] += 1
+        remember_chat_context(message)
+        track_message_activity(message)
         now_ts = time.time()
         last_xp = chat_xp_memory.get(message.author.id, 0)
         if now_ts - last_xp >= 60:
@@ -2760,7 +2975,7 @@ HELP_CATEGORIES = {
         "dsnipe", "esnipe", "rsnipe", "rolesinfo", "roleinfo", "purge", "rpurge", "steal",
         "giveaway", "listbans", "listblocks", "listtargets", "listcensors", "lists",
     ],
-    "Status": ["afk", "sleep", "wake", "fsleep", "away", "setbday", "removebday", "setbdaychannel", "activity", "activitystats"],
+    "Status": ["afk", "sleep", "wake", "fsleep", "away", "setbday", "removebday", "setbdaychannel", "activity", "activitystats", "messages"],
     "Admin": [
         "settings", "slashsync", "health", "perms", "sessions", "setlogs", "prefix", "disable", "enable", "disableall", "enableall", "dclist", "perf", "test", "testlog", "testrlog",
         "endttt", "setnick", "unmute", "kick", "ban", "unban", "addrole", "removerole", "deleterole",
@@ -2780,10 +2995,11 @@ def prefix_for_guild(guild):
     guild_id = guild.id if guild else 0
     return guild_prefixes.get(guild_id, DEFAULT_PREFIX)
 
-def render_help_embed(guild=None, category_name=None):
+def render_help_embed(guild=None, category_name=None, page=0, per_page=10):
     current_prefix = prefix_for_guild(guild)
     if category_name:
         names = HELP_CATEGORIES.get(category_name, [])
+        page = max(0, int(page or 0))
         embed = discord.Embed(
             title=f"Pro𝚀𝚞𝚎 Help: {category_name}",
             description=f"Use `{current_prefix}help <command>` for usage or `{current_prefix}explain <command>` for details.",
@@ -2800,12 +3016,16 @@ def render_help_embed(guild=None, category_name=None):
                 desc = command_short_description(command)
                 command_lines.append(f"`{current_prefix}{command.name}` - {desc}")
         if command_lines:
-            for index in range(0, len(command_lines), 8):
-                embed.add_field(
-                    name=f"Commands {index + 1}-{min(index + 8, len(command_lines))}",
-                    value=joined_embed_value(command_lines[index:index + 8]),
-                    inline=False,
-                )
+            page_count = max(1, math.ceil(len(command_lines) / per_page))
+            page = min(page, page_count - 1)
+            start = page * per_page
+            page_lines = command_lines[start:start + per_page]
+            embed.add_field(
+                name=f"Commands {start + 1}-{min(start + per_page, len(command_lines))}",
+                value=joined_embed_value(page_lines),
+                inline=False,
+            )
+            embed.set_footer(text=f"Page {page + 1}/{page_count}")
         else:
             embed.description += "\n\nNo commands loaded for this category."
         return embed
@@ -2824,6 +3044,18 @@ def render_help_embed(guild=None, category_name=None):
         if loaded:
             embed.add_field(name=category, value=f"{len(loaded)} commands", inline=True)
     return embed
+
+def help_category_page_count(category_name, per_page=10):
+    names = HELP_CATEGORIES.get(category_name, [])
+    loaded = []
+    seen_commands = set()
+    for name in names:
+        command = get_command_case_insensitive(name)
+        if not command or command.hidden or command.name in seen_commands:
+            continue
+        seen_commands.add(command.name)
+        loaded.append(command.name)
+    return max(1, math.ceil(len(loaded) / per_page))
 
 def resolve_help_category(name):
     if not name:
@@ -2892,7 +3124,9 @@ class HelpCategoryButton(Button):
         view = self.view
         if interaction.user.id != view.author_id:
             return await interaction.response.send_message("Use your own help menu.", ephemeral=True)
-        await interaction.response.edit_message(embed=render_help_embed(interaction.guild, self.category_name), view=view)
+        view.category_name = self.category_name
+        view.page = 0
+        await interaction.response.edit_message(embed=render_help_embed(interaction.guild, self.category_name, view.page), view=view)
 
 class HelpHomeButton(Button):
     def __init__(self):
@@ -2902,13 +3136,38 @@ class HelpHomeButton(Button):
         view = self.view
         if interaction.user.id != view.author_id:
             return await interaction.response.send_message("Use your own help menu.", ephemeral=True)
+        view.category_name = None
+        view.page = 0
         await interaction.response.edit_message(embed=render_help_embed(interaction.guild), view=view)
 
+class HelpPageButton(Button):
+    def __init__(self, direction):
+        self.direction = direction
+        label = "Previous" if direction < 0 else "Next"
+        super().__init__(label=label, style=discord.ButtonStyle.secondary)
+
+    async def callback(self, interaction: discord.Interaction):
+        view = self.view
+        if interaction.user.id != view.author_id:
+            return await interaction.response.send_message("Use your own help menu.", ephemeral=True)
+        if not view.category_name:
+            return await interaction.response.send_message("Pick a category first.", ephemeral=True)
+        page_count = help_category_page_count(view.category_name)
+        view.page = min(max(0, view.page + self.direction), page_count - 1)
+        await interaction.response.edit_message(
+            embed=render_help_embed(interaction.guild, view.category_name, view.page),
+            view=view,
+        )
+
 class HelpView(View):
-    def __init__(self, author_id):
+    def __init__(self, author_id, category_name=None):
         super().__init__(timeout=LONG_HELP_VIEW_TIMEOUT)
         self.author_id = author_id
+        self.category_name = category_name
+        self.page = 0
         self.add_item(HelpHomeButton())
+        self.add_item(HelpPageButton(-1))
+        self.add_item(HelpPageButton(1))
         for category in HELP_CATEGORIES:
             self.add_item(HelpCategoryButton(category))
 
@@ -2954,7 +3213,7 @@ async def help_command(ctx, *, command_name: str = None):
 
         category = resolve_help_category(command_name)
         if category:
-            return await ctx.send(embed=render_help_embed(ctx.guild, category), view=HelpView(ctx.author.id))
+            return await ctx.send(embed=render_help_embed(ctx.guild, category), view=HelpView(ctx.author.id, category))
 
         command = get_command_case_insensitive(command_name)
         if not command:

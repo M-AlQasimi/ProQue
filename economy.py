@@ -4,6 +4,7 @@ import os
 import re
 import shlex
 import time
+import math
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from datetime import datetime, timezone, timedelta
@@ -10212,6 +10213,10 @@ EXPLANATIONS = {
     "activity": "Shows this server's activity report status. Use `.activity setup` to set or change the report channel.",
     "activitystats": "Shows this server's activity report status, current top 5, report channel, and next report time.",
     "astats": "Alias for `.activitystats`.",
+    "messages": "Shows a message-count tracker with time ranges, a top 10 leaderboard, and per-user counts.",
+    "msgstats": "Alias for `.messages`.",
+    "messagestats": "Alias for `.messages`.",
+    "mstats": "Alias for `.messages`.",
     "editactivity": "Admin command. Opens a UI or edits the activity report channel/next report time.",
     "activityedit": "Alias for `.editactivity`.",
     "endactivity": "Admin command. Ends the current activity report now, posts the previous winners, and starts a fresh activity window.",
@@ -10333,6 +10338,7 @@ DETAILED_EXPLANATIONS = {
     "setbdaychannel": "Sets the birthday announcement channel for this server. Use `.setbdaychannel #birthdays` or `.setbdaychannel <channel id>`. Users keep one birthday date globally, and the bot announces it in every server where they are still a member and a birthday channel is configured.",
     "activity": "Shows the daily activity report status for this server, including report channel, next report time, and current top 5. Use `.activity setup` to set or change the report channel. Every 24 hours, the bot posts the top 5 members by tracked messages since the last report, then resets that server's activity window.",
     "activitystats": "Shows the same activity status embed as `.activity`, including report channel, next report time, and the current top 5.",
+    "messages": "Opens a tracker UI for server message counts. Pick a range from 1 day up to 1 year, then view either the top 10 leaderboard or a specific user's count.",
     "editactivity": "Admin command. Run `.editactivity` to open the edit UI, use `.editactivity channel #activity` to move reports, or use `.editactivity next 12h` to reset when the next 24-hour activity report posts.",
     "endactivity": "Admin command. Use `.endactivity` to finish the current report immediately. It clears the report channel, posts the previous activity winners, starts a fresh 24-hour activity window, and keeps activity reports enabled.",
     "stopactivity": "Admin command. Use `.stopactivity` to disable daily activity reports for this server and clear the current tracked activity window.",
@@ -10413,12 +10419,16 @@ async def econhelp(ctx):
     """Shows 𝚀𝚞𝚎wo commands, aliases, and short explanations."""
     prefix = getattr(ctx, "prefix", ".")
 
-    def build_embed(category_name="Core"):
+    def build_embed(category_name="Core", page=0):
         selected = next(
             ((category, commands_) for category, commands_ in ECONHELP_COMMANDS if category == category_name),
             ECONHELP_COMMANDS[0],
         )
         category, commands_ = selected
+        page = max(0, int(page or 0))
+        per_page = 8
+        page_count = max(1, math.ceil(len(commands_) / per_page))
+        page = min(page, page_count - 1)
         category_list = " | ".join(name for name, _ in ECONHELP_COMMANDS)
         embed = discord.Embed(
             title=f"{Q_BOOK} 𝚀𝚞𝚎wo Help - {category}",
@@ -10428,9 +10438,15 @@ async def econhelp(ctx):
             ),
             color=discord.Color.gold()
         )
-        lines = [command_help_line(command_name, prefix) for command_name in commands_]
-        add_split_embed_field(embed, category, lines, inline=False)
-        embed.set_footer(text=f"Select a category below. Examples: {prefix}explain lottery, {prefix}explain shop, {prefix}explain cf")
+        start = page * per_page
+        page_commands = commands_[start:start + per_page]
+        lines = [command_help_line(command_name, prefix) for command_name in page_commands]
+        embed.add_field(
+            name=f"{category} {start + 1}-{min(start + per_page, len(commands_))}",
+            value="\n\n".join(lines) if lines else "None.",
+            inline=False,
+        )
+        embed.set_footer(text=f"Page {page + 1}/{page_count} • Examples: {prefix}explain lottery, {prefix}explain shop, {prefix}explain cf")
         return embed
 
     class EconHelpSelect(discord.ui.Select):
@@ -10449,12 +10465,33 @@ async def econhelp(ctx):
             if interaction.user.id != ctx.author.id:
                 await interaction.response.send_message("Use your own econhelp menu.", ephemeral=True)
                 return
-            await interaction.response.edit_message(embed=build_embed(self.values[0]), view=self.view)
+            self.view.category = self.values[0]
+            self.view.page = 0
+            await interaction.response.edit_message(embed=build_embed(self.view.category, self.view.page), view=self.view)
+
+    class EconHelpPageButton(discord.ui.Button):
+        def __init__(self, direction):
+            self.direction = direction
+            label = "Previous" if direction < 0 else "Next"
+            super().__init__(label=label, style=discord.ButtonStyle.secondary)
+
+        async def callback(self, interaction):
+            if interaction.user.id != ctx.author.id:
+                await interaction.response.send_message("Use your own econhelp menu.", ephemeral=True)
+                return
+            commands_ = next((items for category, items in ECONHELP_COMMANDS if category == self.view.category), [])
+            page_count = max(1, math.ceil(len(commands_) / 8))
+            self.view.page = min(max(0, self.view.page + self.direction), page_count - 1)
+            await interaction.response.edit_message(embed=build_embed(self.view.category, self.view.page), view=self.view)
 
     class EconHelpView(discord.ui.View):
         def __init__(self):
             super().__init__(timeout=LONG_HELP_VIEW_TIMEOUT)
+            self.category = "Core"
+            self.page = 0
             self.add_item(EconHelpSelect())
+            self.add_item(EconHelpPageButton(-1))
+            self.add_item(EconHelpPageButton(1))
 
         async def on_timeout(self):
             for item in self.children:
@@ -10466,7 +10503,7 @@ async def econhelp(ctx):
 
     view = EconHelpView()
     view.message = await ctx.send(
-        embed=build_embed("Core"),
+        embed=build_embed("Core", 0),
         view=view,
         allowed_mentions=discord.AllowedMentions.none()
     )

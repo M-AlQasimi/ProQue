@@ -99,6 +99,18 @@ def _create_tables(cur):
     cur.execute("ALTER TABLE guild_activity_counts ADD COLUMN IF NOT EXISTS voice_events BIGINT NOT NULL DEFAULT 0")
 
     cur.execute("""
+        CREATE TABLE IF NOT EXISTS message_activity_events (
+            message_id BIGINT PRIMARY KEY,
+            guild_id BIGINT NOT NULL,
+            channel_id BIGINT NOT NULL,
+            user_id BIGINT NOT NULL,
+            created_at TIMESTAMP NOT NULL
+        )
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_message_activity_events_guild_time ON message_activity_events (guild_id, created_at DESC)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_message_activity_events_user_time ON message_activity_events (guild_id, user_id, created_at DESC)")
+
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS birthdays (
             user_id BIGINT PRIMARY KEY,
             date TEXT NOT NULL
@@ -1268,6 +1280,91 @@ def clear_guild_activity_counts(guild_id):
         return True
     except Exception:
         return False
+
+def add_message_activity_events(events):
+    _ensure_ready()
+    if not pg_ready or not events:
+        return False
+    try:
+        conn = pg_conn()
+        if conn is None:
+            return False
+        cur = conn.cursor()
+        cur.executemany(
+            """
+            INSERT INTO message_activity_events (message_id, guild_id, channel_id, user_id, created_at)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (message_id) DO NOTHING
+            """,
+            [
+                (
+                    int(event["message_id"]),
+                    int(event["guild_id"]),
+                    int(event["channel_id"]),
+                    int(event["user_id"]),
+                    event["created_at"],
+                )
+                for event in events
+            ]
+        )
+        cur.execute("DELETE FROM message_activity_events WHERE created_at < NOW() - INTERVAL '370 days'")
+        conn.commit()
+        cur.close()
+        conn.close()
+        return True
+    except Exception:
+        return False
+
+def get_message_activity_top(guild_id, since, limit=10):
+    _ensure_ready()
+    if not pg_ready:
+        return []
+    try:
+        conn = pg_conn()
+        if conn is None:
+            return []
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT user_id, COUNT(*) AS messages
+            FROM message_activity_events
+            WHERE guild_id = %s AND created_at >= %s
+            GROUP BY user_id
+            ORDER BY messages DESC, user_id ASC
+            LIMIT %s
+            """,
+            (int(guild_id), since, int(limit))
+        )
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        return [{"user_id": int(user_id), "messages": int(messages)} for user_id, messages in rows]
+    except Exception:
+        return []
+
+def get_message_activity_count(guild_id, user_id, since):
+    _ensure_ready()
+    if not pg_ready:
+        return 0
+    try:
+        conn = pg_conn()
+        if conn is None:
+            return 0
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT COUNT(*)
+            FROM message_activity_events
+            WHERE guild_id = %s AND user_id = %s AND created_at >= %s
+            """,
+            (int(guild_id), int(user_id), since)
+        )
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        return int(row[0] or 0)
+    except Exception:
+        return 0
 
 # === BIRTHDAYS ===
 
