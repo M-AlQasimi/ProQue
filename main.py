@@ -511,6 +511,40 @@ async def invoke_prefix_command_from_interaction(interaction, command_name, args
         else:
             await interaction.followup.send("That slash command failed.", ephemeral=True)
 
+async def invoke_prefix_command_from_message(message, command_name, args=None):
+    command = get_command_case_insensitive(command_name)
+    if not command:
+        await message.reply(
+            f"I couldn't find `{command_name}`. Try `{prefix_for_guild(message.guild)}help search {command_name}`.",
+            mention_author=False,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+        return False
+    if StringView is None:
+        await message.reply("Command forwarding is not available in this Discord library version.", mention_author=False)
+        return False
+
+    ctx = await bot.get_context(message)
+    ctx.command = command
+    ctx.invoked_with = command.name
+    ctx.prefix = f"{bot.user.mention} "
+    raw_args = (args or "").strip()
+    ctx.view = StringView(raw_args)
+    ctx.view.skip_ws()
+    try:
+        await command.invoke(ctx)
+        return True
+    except commands.CommandError as e:
+        await on_command_error(ctx, e)
+    except Exception as e:
+        print(f"AI command bridge failed for {command.name}: {type(e).__name__} - {e}")
+        await message.reply(
+            fit_discord_content(f"I tried running `{command.name}` and tripped over a wire: `{type(e).__name__}`"),
+            mention_author=False,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+    return False
+
 async def sync_slash_commands_once(force=False):
     global slash_commands_synced
     if slash_commands_synced and not force:
@@ -2681,6 +2715,139 @@ async def handle_returning_status(message):
 
         await message.channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
+AI_SAFE_COMMANDS = {
+    "help", "commands", "cmds", "games", "howtoplay", "how", "rules",
+    "bal", "balance", "cash", "profile", "level", "lvl", "inventory", "inv",
+    "shop", "cooldowns", "cds", "quests", "transactions", "tx", "lb",
+    "leaderboard", "gamestats", "achievements", "gamebalance", "gamehistory",
+    "season", "limits", "messages", "msgstats", "messagestats", "mstats",
+    "activitystats", "astats", "away", "userinfo", "pfp", "avatar", "calc",
+    "define", "timer", "ctimer", "alarm", "find", "econhelp", "quewohelp",
+    "economyhelp", "ehelp", "explain", "lottery", "lotterystats",
+}
+
+AI_CONFIRM_COMMANDS = {
+    "poll", "epoll", "giveaway", "setbday", "removebday", "setbdaychannel",
+    "activity", "settings", "prefix", "preifx", "setprefix",
+}
+
+AI_BLOCKED_COMMANDS = {
+    "ask", "generate", "analyse", "analyze", "send", "reply",
+}
+
+def extract_ai_command_request(question, guild=None):
+    text = (question or "").strip()
+    if not text:
+        return None
+    prefix = prefix_for_guild(guild)
+    prefixes = sorted({prefix, DEFAULT_PREFIX}, key=len, reverse=True)
+    for command_prefix in prefixes:
+        if not command_prefix:
+            continue
+        pattern = rf"(?:^|\s){re.escape(command_prefix)}([A-Za-z][\w-]*)(?:\s+(.+))?$"
+        match = re.search(pattern, text, flags=re.IGNORECASE | re.DOTALL)
+        if match:
+            return match.group(1), (match.group(2) or "").strip(), True
+
+    lowered = text.casefold()
+    command_intent = any(word in lowered for word in (
+        "run ", "use ", "do ", "start ", "set ", "show ", "open ", "check ", "make "
+    ))
+    if not command_intent:
+        return None
+
+    timer_match = re.search(r"\b(?:set|start|make)\s+(?:a\s+)?timer\s+(?:for\s+)?(.+)", text, flags=re.IGNORECASE | re.DOTALL)
+    if timer_match:
+        return "timer", timer_match.group(1).strip(), False
+
+    alarm_match = re.search(r"\b(?:set|start|make)\s+(?:an?\s+)?alarm\s+(?:for\s+)?(.+)", text, flags=re.IGNORECASE | re.DOTALL)
+    if alarm_match:
+        return "alarm", alarm_match.group(1).strip(), False
+
+    help_match = re.search(r"\b(?:show|open|run|use)?\s*help(?:\s+(?:for|with|on))?\s+([A-Za-z][\w-]*)", text, flags=re.IGNORECASE)
+    if help_match:
+        return "help", help_match.group(1).strip(), False
+
+    simple_patterns = [
+        (("message stats", "messages tracker", "messages leaderboard", "message leaderboard"), "messages", ""),
+        (("games", "game list"), "games", ""),
+        (("shop", "store"), "shop", ""),
+        (("inventory", "my items"), "inventory", ""),
+        (("cooldowns", "cooldown"), "cooldowns", ""),
+        (("quests", "quest"), "quests", ""),
+        (("leaderboard", "lb"), "lb", ""),
+        (("lottery stats",), "lotterystats", ""),
+        (("lottery",), "lottery", ""),
+        (("activity stats", "activity status"), "activitystats", ""),
+        (("balance", "bal", "cash"), "bal", ""),
+        (("profile", "level", "lvl"), "profile", ""),
+    ]
+    for phrases, command_name, args in simple_patterns:
+        if any(phrase in lowered for phrase in phrases):
+            return command_name, args, False
+    return None
+
+def ai_command_needs_confirmation(command):
+    if not command:
+        return True
+    names = {command.name.casefold(), *(alias.casefold() for alias in getattr(command, "aliases", []) or [])}
+    if names & AI_BLOCKED_COMMANDS:
+        return None
+    if names & AI_SAFE_COMMANDS:
+        return False
+    if names & AI_CONFIRM_COMMANDS:
+        return True
+    return True
+
+async def maybe_run_ai_command(message, question):
+    request = extract_ai_command_request(question, message.guild)
+    if not request:
+        return False
+    command_name, args, explicit = request
+    command = get_command_case_insensitive(command_name)
+    if not command:
+        return False
+
+    confirmation = ai_command_needs_confirmation(command)
+    if confirmation is None:
+        await message.reply(
+            f"I can help explain `{command.name}`, but I won't run that one through AI.",
+            mention_author=False,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+        return True
+
+    prefix = prefix_for_guild(message.guild)
+    display = f"{prefix}{command.name}" + (f" {args}" if args else "")
+    if confirmation:
+        view = ConfirmActionView(message.author.id, f"Run {display}")
+        prompt = await message.reply(
+            f"{economy_q_warning} Run `{display}`?",
+            view=view,
+            mention_author=False,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+        await view.wait()
+        if view.value is None:
+            for item in view.children:
+                item.disabled = True
+            try:
+                await prompt.edit(content="Command confirmation timed out.", view=view)
+            except discord.HTTPException:
+                pass
+            return True
+        if not view.value:
+            return True
+    elif explicit:
+        await message.reply(
+            f"{economy_q_accept} Running `{display}`.",
+            mention_author=False,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+    await invoke_prefix_command_from_message(message, command.name, args)
+    return True
+
 @bot.event
 async def on_message(message):
     if message.author.bot:
@@ -2777,6 +2944,10 @@ async def on_message(message):
                     context_text = f"Author: {author_name}\nMessage: {ref_content}"[:1200]
             if not question and referenced_message:
                 question = "Respond to the replied message using the reply context."
+
+            if question and await maybe_run_ai_command(message, question):
+                track_message_activity(message)
+                return
 
             memory_key = ai_memory_key(message)
             recent_context = ai_channel_context_text(memory_key)
