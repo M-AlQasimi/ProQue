@@ -1,5 +1,6 @@
 import asyncio
 import ast
+import json
 import logging
 import math
 import operator
@@ -12,6 +13,7 @@ import traceback
 
 import aiohttp
 import discord
+import economy as economy_module
 import pytz
 try:
     import chess as chess_lib
@@ -33,14 +35,19 @@ from economy import (
     add_user_balance as economy_add_user_balance,
     award_chat_xp as economy_award_chat_xp,
     build_level_up_embed as economy_build_level_up_embed,
+    bulk_add_users as economy_bulk_add_users,
+    bulk_adjust_lottery_tickets as economy_bulk_adjust_lottery_tickets,
     DETAILED_EXPLANATIONS as economy_detailed_explanations,
     ensure_db_ready as economy_ensure_db_ready,
     EXPLANATIONS as economy_explanations,
     format_balance as economy_format_balance,
     get_lottery_config as economy_get_lottery_config,
+    get_leaderboard_user_ids as economy_get_leaderboard_user_ids,
     get_game_stat as economy_get_game_stat,
     get_user as economy_get_user,
+    lottery_ticket_rows as economy_lottery_ticket_rows,
     log_transaction as economy_log_transaction,
+    parse_amount as economy_parse_amount,
     Q_ACCEPT as economy_q_accept,
     Q_ACTIVITY as economy_q_activity,
     Q_ALARM as economy_q_alarm,
@@ -208,6 +215,7 @@ AI_MEMORY_MAX_MESSAGES = 60
 AI_MEMORY_TTL_SECONDS = 7 * 24 * 60 * 60
 AI_MEMORY_DB_MAX_MESSAGES = 120
 ai_conversation_memory = {}
+pending_ai_batch_actions = {}
 
 TTT_EMPTY = "empty"
 TTT_X = "x"
@@ -387,6 +395,7 @@ def bot_capabilities_summary(guild):
         "You can help with moderation/admin tools, logs, birthdays, activity reports, polls, timers, reminders, "
         "snipes, roles, profiles, utility commands, AI ask/generate/analyse/translate, server setup, and games. "
         "Your 𝚀𝚞𝚎wo system includes balances, shop, inventory, quests, lottery, leaderboards, gambling games, game stats, achievements, seasons, limits, and audits. "
+        "When 𝚀𝚞𝚎 asks clearly, you can confirm and run batch rewards for supported leaderboards such as activity, messages, lottery holders, and 𝚀𝚞𝚎wo rankings. "
         f"Useful help commands: `{prefix}help`, `{prefix}games`, `{prefix}econhelp`, `{prefix}explain <command>`, `{prefix}setup`, and `{prefix}messages`."
     )
 
@@ -2769,18 +2778,18 @@ def extract_ai_command_request(question, guild=None):
         return "help", help_match.group(1).strip(), False
 
     simple_patterns = [
-        (("message stats", "messages tracker", "messages leaderboard", "message leaderboard"), "messages", ""),
-        (("games", "game list"), "games", ""),
-        (("shop", "store"), "shop", ""),
-        (("inventory", "my items"), "inventory", ""),
-        (("cooldowns", "cooldown"), "cooldowns", ""),
-        (("quests", "quest"), "quests", ""),
-        (("leaderboard", "lb"), "lb", ""),
-        (("lottery stats",), "lotterystats", ""),
-        (("lottery",), "lottery", ""),
-        (("activity stats", "activity status"), "activitystats", ""),
-        (("balance", "bal", "cash"), "bal", ""),
-        (("profile", "level", "lvl"), "profile", ""),
+        (("message stats", "messages tracker", "messages leaderboard", "message leaderboard", "who talks the most", "chat leaderboard"), "messages", ""),
+        (("games", "game list", "what can we play", "play list"), "games", ""),
+        (("shop", "store", "what can i buy"), "shop", ""),
+        (("inventory", "my items", "stuff i own", "what do i own"), "inventory", ""),
+        (("cooldowns", "cooldown", "what can i claim", "can i claim"), "cooldowns", ""),
+        (("quests", "quest", "tasks", "missions"), "quests", ""),
+        (("leaderboard", "lb", "ranking", "rankings", "richest"), "lb", ""),
+        (("lottery stats", "lottery info"), "lotterystats", ""),
+        (("lottery", "current draw", "current pot"), "lottery", ""),
+        (("activity stats", "activity status", "active people", "activity report"), "activitystats", ""),
+        (("balance", "bal", "cash", "money", "how rich", "how broke"), "bal", ""),
+        (("profile", "level", "lvl", "my stats"), "profile", ""),
     ]
     for phrases, command_name, args in simple_patterns:
         if any(phrase in lowered for phrase in phrases):
@@ -2846,6 +2855,398 @@ async def maybe_run_ai_command(message, question):
         )
 
     await invoke_prefix_command_from_message(message, command.name, args)
+    return True
+
+def parse_ai_batch_limit(text, default=5):
+    match = re.search(r"\b(?:top|first|best|leading)\s+(\d{1,2})\b", text, flags=re.IGNORECASE)
+    if not match:
+        return default
+    return max(1, min(25, int(match.group(1))))
+
+def ai_batch_pending_key(message):
+    guild_id = message.guild.id if message.guild else 0
+    return (int(guild_id), int(message.channel.id), int(message.author.id))
+
+def current_ai_batch_draft(message):
+    key = ai_batch_pending_key(message)
+    draft = pending_ai_batch_actions.get(key)
+    if not draft:
+        return None
+    if draft.get("expires_at", 0) <= time.time():
+        pending_ai_batch_actions.pop(key, None)
+        return None
+    return draft
+
+def save_ai_batch_draft(message, draft):
+    draft["expires_at"] = time.time() + 5 * 60
+    pending_ai_batch_actions[ai_batch_pending_key(message)] = draft
+
+def clear_ai_batch_draft(message):
+    pending_ai_batch_actions.pop(ai_batch_pending_key(message), None)
+
+def parse_ai_batch_duration(text):
+    lowered = text.casefold()
+    patterns = [
+        (r"\b(\d{1,2})\s*days?\b", "days"),
+        (r"\b(\d{1,2})\s*weeks?\b", "weeks"),
+        (r"\b(\d{1,2})\s*months?\b", "months"),
+    ]
+    for pattern, unit in patterns:
+        match = re.search(pattern, lowered)
+        if not match:
+            continue
+        value = max(1, int(match.group(1)))
+        if unit == "days":
+            return timedelta(days=value)
+        if unit == "weeks":
+            return timedelta(weeks=value)
+        return timedelta(days=value * 30)
+    if "week" in lowered:
+        return timedelta(weeks=1)
+    if "month" in lowered:
+        return timedelta(days=30)
+    if "year" in lowered:
+        return timedelta(days=365)
+    return timedelta(days=1)
+
+def parse_ai_batch_reward(text, guild):
+    reward_verbs = r"(?:give|add|reward|pay|send|grant|award|bless|drop|throw|hand|tip)"
+    money_match = re.search(
+        rf"{reward_verbs}\s+(?:them\s+|everyone\s+|each\s+|the winners\s+|the users\s+|the people\s+)?(\d+(?:\.\d+)?\s*(?:k|m|b|bn)?)\s*(?:q|qoins|coins|quesos|cash|money)?\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+    ticket_match = re.search(
+        rf"{reward_verbs}\s+(?:them\s+|everyone\s+|each\s+|the winners\s+|the users\s+|the people\s+)?(\d+(?:\.\d+)?\s*(?:k|m|b|bn)?)\s*(?:free\s+)?tickets?\b|(\d+(?:\.\d+)?\s*(?:k|m|b|bn)?)\s*(?:free\s+)?tickets?",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if ticket_match:
+        raw = (ticket_match.group(1) or ticket_match.group(2) or "").replace(" ", "")
+        amount = economy_parse_amount(raw, super_owner_id, guild, None)
+        return "tickets", amount
+    if money_match:
+        raw = money_match.group(1).replace(" ", "")
+        amount = economy_parse_amount(raw, super_owner_id, guild, None)
+        return "money", amount
+    if not re.search(r"\btickets?\b", text, flags=re.IGNORECASE):
+        amount_candidates = re.findall(r"\b\d+(?:\.\d+)?\s*(?:k|m|b|bn)\b|\b\d{4,}\b", text, flags=re.IGNORECASE)
+        if amount_candidates:
+            amount = economy_parse_amount(amount_candidates[-1].replace(" ", ""), super_owner_id, guild, None)
+            return "money", amount
+    return None, None
+
+def ai_batch_source_hint(text):
+    lowered = text.casefold()
+    if any(word in lowered for word in ("activity", "active", "winners", "winner", "most active")):
+        return "activity"
+    if any(phrase in lowered for phrase in ("message", "messages", "chatters", "talkers", "talking", "chat leaderboard", "most chat", "most messages")):
+        return "messages"
+    if "lottery" in lowered and any(word in lowered for word in ("holder", "holders", "ticket", "tickets", "entries")):
+        return "lottery"
+    if any(word in lowered for word in ("leaderboard", "leaders", "ranking", "rankings", "richest", "balance", "quesos", "level", "xp", "earned", "earnings", "won", "wins", "lost", "losses", "net")):
+        return "leaderboard"
+    return None
+
+def ai_batch_missing_prompt(missing):
+    examples = {
+        "source": "which users/source, like `top 5 activity winners`, `top 10 messages this week`, `top 5 lottery holders`, or `top 5 level leaderboard`",
+        "reward": "what reward, like `10 tickets each` or `1m each`",
+    }
+    parts = [examples[name] for name in missing if name in examples]
+    if not parts:
+        return "I need a bit more detail before I touch balances or tickets."
+    return f"{economy_q_thinking} I need {', and '.join(parts)}."
+
+async def ai_batch_targets_from_source(message, text, limit):
+    lowered = text.casefold()
+    source_hint = ai_batch_source_hint(text)
+    if source_hint == "activity":
+        await flush_activity_buffer()
+        rows = await asyncio.to_thread(get_guild_activity_top, message.guild.id, limit)
+        return [int(row["user_id"]) for row in rows], f"top {limit} current activity winners"
+
+    if source_hint == "messages":
+        await flush_activity_buffer()
+        duration = parse_ai_batch_duration(text)
+        since = message_tracker_since(duration)
+        rows = await asyncio.to_thread(get_message_activity_top, message.guild.id, since, limit)
+        label = next((name for name, value in MESSAGE_TRACKER_DURATIONS if value == duration), f"{duration.days} day(s)")
+        return [int(row["user_id"]) for row in rows], f"top {limit} message leaderboard for {label}"
+
+    if source_hint == "lottery":
+        rows = await asyncio.to_thread(economy_lottery_ticket_rows, message.guild.id)
+        rows = sorted(rows, key=lambda row: int(row.get("tickets") or 0), reverse=True)[:limit]
+        return [int(row["user_id"]) for row in rows], f"top {limit} lottery ticket holders"
+
+    rank_type = "quesos"
+    if "level" in lowered or "xp" in lowered:
+        rank_type = "level"
+    elif "earned" in lowered or "earnings" in lowered:
+        rank_type = "earned"
+    elif "won" in lowered or "wins" in lowered:
+        rank_type = "won"
+    elif "lost" in lowered or "losses" in lowered:
+        rank_type = "lost"
+    elif "net" in lowered:
+        rank_type = "net"
+    elif "message" in lowered:
+        rank_type = "messages"
+
+    if source_hint == "leaderboard":
+        local_ids = [member.id for member in message.guild.members if not member.bot]
+        ids = await asyncio.to_thread(economy_get_leaderboard_user_ids, rank_type, limit, local_ids)
+        return ids, f"top {limit} local 𝚀𝚞𝚎wo {rank_type} leaderboard"
+
+    return [], ""
+
+def looks_like_ai_batch_reward_intent(text, draft=None):
+    if draft:
+        return True
+    lowered = str(text or "").casefold()
+    rewardish = any(word in lowered for word in (
+        "give", "add", "reward", "pay", "send", "grant", "award", "bless", "drop", "throw", "hand", "tip"
+    ))
+    sourceish = ai_batch_source_hint(lowered) is not None or any(word in lowered for word in ("top", "winners", "winner", "holders", "people", "users"))
+    amountish = bool(re.search(r"\b\d+(?:\.\d+)?\s*(?:k|m|b|bn|tickets?)?\b", lowered))
+    return rewardish and (sourceish or amountish)
+
+async def semantic_ai_batch_action(question, guild, draft=None):
+    if not GROQ_API_KEY or not looks_like_ai_batch_reward_intent(question, draft):
+        return None
+    combined = (question or "").strip()
+    if draft and draft.get("text"):
+        combined = f"{draft['text']} {combined}".strip()
+    prompt = {
+        "task": "Extract a Discord bot batch reward request into JSON only.",
+        "allowed_sources": ["activity", "messages", "lottery", "leaderboard"],
+        "allowed_reward_types": ["money", "tickets"],
+        "leaderboard_types": ["quesos", "level", "earned", "won", "lost", "net", "messages"],
+        "rules": [
+            "Use null for missing values.",
+            "Infer meaning from slang and casual wording.",
+            "activity means active users or activity winners.",
+            "messages means chatters, talkers, message leaderboard, most messages.",
+            "lottery means lottery ticket holders or entries.",
+            "leaderboard means economy rankings like richest, level, earnings, wins, losses, net.",
+            "Return JSON with keys: source, limit, duration, rank_type, reward_type, amount_text."
+        ],
+        "request": combined,
+    }
+    headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
+    payload = {
+        "messages": [
+            {"role": "system", "content": "You extract structured intent. Return valid JSON only. No markdown."},
+            {"role": "user", "content": json.dumps(prompt)},
+        ],
+        "model": "llama-3.1-8b-instant",
+        "temperature": 0.0,
+        "max_tokens": 220,
+    }
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post("https://api.groq.com/openai/v1/chat/completions", json=payload, headers=headers) as resp:
+                if resp.status != 200:
+                    return None
+                data = await resp.json(content_type=None)
+        raw = data["choices"][0]["message"]["content"].strip()
+        raw = raw.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+        parsed = json.loads(raw)
+    except Exception:
+        return None
+
+    source = str(parsed.get("source") or "").casefold()
+    reward_type = str(parsed.get("reward_type") or "").casefold()
+    amount_text = str(parsed.get("amount_text") or "").strip()
+    limit = parsed.get("limit") or parse_ai_batch_limit(combined, 5)
+    try:
+        limit = max(1, min(25, int(limit)))
+    except (TypeError, ValueError):
+        limit = 5
+    rank_type = str(parsed.get("rank_type") or "").casefold()
+    duration = str(parsed.get("duration") or "").strip()
+
+    text_parts = [f"top {limit}"]
+    if source in {"activity", "messages", "lottery", "leaderboard"}:
+        text_parts.append(source)
+    if duration:
+        text_parts.append(duration)
+    if rank_type and rank_type != "null":
+        text_parts.append(rank_type)
+    if amount_text and amount_text.casefold() != "null":
+        text_parts.append(amount_text)
+    if reward_type in {"money", "tickets"}:
+        text_parts.append(reward_type)
+    canonical_text = " ".join(text_parts)
+
+    missing = []
+    if source not in {"activity", "messages", "lottery", "leaderboard"}:
+        missing.append("source")
+    amount = None
+    if reward_type == "tickets":
+        amount = economy_parse_amount(amount_text, super_owner_id, guild, None)
+    elif reward_type == "money":
+        amount = economy_parse_amount(amount_text, super_owner_id, guild, None)
+    else:
+        parsed_type, amount = parse_ai_batch_reward(amount_text, guild)
+        reward_type = parsed_type or reward_type
+    if reward_type not in {"money", "tickets"} or amount is None:
+        missing.append("reward")
+    if missing:
+        return {"pending": True, "missing": list(dict.fromkeys(missing)), "text": canonical_text or combined}
+    if amount <= 0:
+        return {"error": "Reward amount has to be positive."}
+    return {
+        "reward_type": reward_type,
+        "amount": int(amount),
+        "limit": limit,
+        "text": canonical_text,
+    }
+
+def extract_ai_batch_action(question, guild, draft=None):
+    text = (question or "").strip()
+    if draft and draft.get("text"):
+        text = f"{draft['text']} {text}".strip()
+    lowered = text.casefold()
+    has_batch_shape = ai_batch_source_hint(text) is not None or any(word in lowered for word in ("top", "winners", "winner", "holders", "people", "users"))
+    if not has_batch_shape and not draft:
+        return None
+    if not any(word in lowered for word in ("give", "add", "reward", "pay")) and not draft:
+        return None
+
+    missing = []
+    if ai_batch_source_hint(text) is None:
+        missing.append("source")
+    reward_type, amount = parse_ai_batch_reward(text, guild)
+    if reward_type is None or amount is None:
+        missing.append("reward")
+    if missing:
+        return {"pending": True, "missing": missing, "text": text}
+    if amount <= 0:
+        return {"error": "Reward amount has to be positive."}
+    return {
+        "reward_type": reward_type,
+        "amount": int(amount),
+        "limit": parse_ai_batch_limit(text, 5),
+        "text": text,
+    }
+
+async def maybe_run_ai_batch_action(message, question):
+    if message.guild is None:
+        return False
+    draft = current_ai_batch_draft(message)
+    if draft and str(question or "").strip().casefold() in {"cancel", "stop", "nevermind", "never mind", "abort"}:
+        clear_ai_batch_draft(message)
+        await message.reply(
+            "Cancelled the pending batch action.",
+            mention_author=False,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+        return True
+    action = extract_ai_batch_action(question, message.guild, draft=draft)
+    if (not action or action.get("pending")) and looks_like_ai_batch_reward_intent(question, draft):
+        semantic_action = await semantic_ai_batch_action(question, message.guild, draft=draft)
+        if semantic_action:
+            action = semantic_action
+    if not action:
+        return False
+    if action.get("error"):
+        clear_ai_batch_draft(message)
+        await message.reply(action["error"], mention_author=False, allowed_mentions=discord.AllowedMentions.none())
+        return True
+    if action.get("pending"):
+        save_ai_batch_draft(message, action)
+        await message.reply(
+            ai_batch_missing_prompt(action.get("missing", [])),
+            mention_author=False,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+        return True
+    if not has_super_owner_power(message.author, message.guild):
+        clear_ai_batch_draft(message)
+        await message.reply(
+            f"Only {QUE_OWNER_DISPLAY} can make me do batch 𝚀𝚞𝚎wo edits.",
+            mention_author=False,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+        return True
+
+    target_ids, source_label = await ai_batch_targets_from_source(message, action["text"], action["limit"])
+    target_ids = [user_id for user_id in dict.fromkeys(target_ids) if user_id != bot.user.id]
+    if not target_ids:
+        clear_ai_batch_draft(message)
+        await message.reply("I couldn't find any matching users from that source.", mention_author=False)
+        return True
+
+    mentions = [f"<@{user_id}>" for user_id in target_ids]
+    amount_text = f"{action['amount']:,} tickets" if action["reward_type"] == "tickets" else economy_format_balance(action["amount"])
+    embed = discord.Embed(
+        title=f"{economy_q_warning} Confirm AI Batch Reward",
+        description=(
+            f"Source: **{source_label}**\n"
+            f"Reward: **{amount_text} each**\n"
+            f"Targets ({len(target_ids)}):\n{joined_embed_value(mentions, limit=1600)}"
+        ),
+        color=discord.Color.orange(),
+    )
+    view = ConfirmActionView(message.author.id, "AI batch reward")
+    prompt = await message.reply(embed=embed, view=view, mention_author=False, allowed_mentions=discord.AllowedMentions.none())
+    await view.wait()
+    if view.value is None:
+        clear_ai_batch_draft(message)
+        for item in view.children:
+            item.disabled = True
+        try:
+            await prompt.edit(content="Batch reward confirmation timed out.", embed=None, view=view)
+        except discord.HTTPException:
+            pass
+        return True
+    if not view.value:
+        clear_ai_batch_draft(message)
+        return True
+
+    try:
+        if action["reward_type"] == "tickets":
+            config = economy_get_lottery_config(message.guild.id)
+            if config is None:
+                clear_ai_batch_draft(message)
+                await message.reply("Lottery is not set up in this server yet.", mention_author=False)
+                return True
+            count = await asyncio.to_thread(
+                economy_bulk_adjust_lottery_tickets,
+                message.guild.id,
+                target_ids,
+                action["amount"],
+                "add",
+                message.author.id,
+            )
+            updated = economy_get_lottery_config(message.guild.id)
+            economy_module.schedule_lottery_refresh(message.guild, updated)
+            for user_id in target_ids:
+                member = message.guild.get_member(user_id)
+                if member is not None and updated:
+                    await economy_module.assign_lottery_role(message.guild, user_id, updated.get("role_id"))
+            result_text = f"Added **{action['amount']:,}** tickets each to **{count:,}** user(s)."
+        else:
+            count = await asyncio.to_thread(
+                economy_bulk_add_users,
+                target_ids,
+                action["amount"],
+                message.author.id,
+                f"AI batch reward: {source_label}",
+            )
+            result_text = f"Added **{economy_format_balance(action['amount'])}** each to **{count:,}** user(s)."
+    except Exception as e:
+        clear_ai_batch_draft(message)
+        await message.reply(f"Batch reward failed: `{type(e).__name__}`", mention_author=False)
+        return True
+
+    clear_ai_batch_draft(message)
+    await message.reply(
+        f"{economy_q_accept} {result_text}",
+        mention_author=False,
+        allowed_mentions=discord.AllowedMentions.none(),
+    )
     return True
 
 @bot.event
@@ -2944,6 +3345,10 @@ async def on_message(message):
                     context_text = f"Author: {author_name}\nMessage: {ref_content}"[:1200]
             if not question and referenced_message:
                 question = "Respond to the replied message using the reply context."
+
+            if question and await maybe_run_ai_batch_action(message, question):
+                track_message_activity(message)
+                return
 
             if question and await maybe_run_ai_command(message, question):
                 track_message_activity(message)

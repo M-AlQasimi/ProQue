@@ -4587,6 +4587,25 @@ LEADERBOARD_RANK_TYPES = {
     },
 }
 
+def get_leaderboard_user_ids(rank_type="quesos", limit=5, local_ids=None):
+    rank_config = LEADERBOARD_RANK_TYPES.get(str(rank_type or "quesos").casefold(), LEADERBOARD_RANK_TYPES["quesos"])
+    order_clause = rank_config["order"]
+    where = ""
+    params = []
+    if local_ids is not None:
+        where = "WHERE user_id = ANY(%s)"
+        params.append([int(user_id) for user_id in local_ids])
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(
+        f"SELECT user_id FROM economy {where} ORDER BY {order_clause} LIMIT %s",
+        params + [int(limit)]
+    )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return [int(row["user_id"]) for row in rows]
+
 class BalanceRankView(discord.ui.View):
     def __init__(self, ctx, order, title, icon):
         super().__init__(timeout=LONG_HELP_VIEW_TIMEOUT)
