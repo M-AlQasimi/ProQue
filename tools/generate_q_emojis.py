@@ -924,6 +924,35 @@ def qbirthday():
     return c
 
 
+def qbirthday_cake():
+    c = Canvas()
+    c.ellipse(64, 96, 45, 12, BLUE_DARK)
+    c.rect(28, 58, 72, 35, BLUE, outline=BLUE_DARK, width=4)
+    c.rect(24, 45, 80, 18, ICE, outline=BLUE_DARK, width=3)
+    c.rect(32, 71, 64, 15, CYAN, outline=BLUE_DARK, width=2)
+    for x in [42, 56, 70, 84]:
+        c.rect(x - 3, 28, 6, 18, GOLD, outline=BLUE_DARK, width=1)
+        c.poly([(x, 18), (x - 5, 30), (x + 5, 30)], RED, outline=BLUE_DARK, width=1)
+    c.text_q(64, 80, 20, ICE)
+    c.sparkle(102, 35, 7)
+    c.sparkle(24, 50, 5)
+    return c
+
+
+def qbirthday_balloons():
+    c = Canvas()
+    for x, y, color in [(43, 44, BLUE), (66, 34, CYAN), (88, 48, PURPLE)]:
+        c.ellipse(x, y, 17, 22, color, outline=BLUE_DARK, width=3)
+        c.poly([(x, y + 22), (x - 5, y + 31), (x + 5, y + 31)], color, outline=BLUE_DARK, width=1)
+        c.line(x, y + 31, 64, 102, SILVER, 2)
+        c.circle(x - 5, y - 7, 4, ICE)
+    c.circle(64, 93, 17, BLUE_DARK, outline=CYAN, width=3)
+    c.text_q(64, 95, 18, ICE)
+    c.sparkle(103, 30, 6)
+    c.sparkle(26, 74, 5)
+    return c
+
+
 def qhammer():
     c = Canvas()
     c.rect(36, 27, 48, 20, SILVER, outline=BLUE_DARK, width=3)
@@ -1697,6 +1726,8 @@ STATIC = {
     "QCooldownClock": qcooldown_clock,
     "QRoyalCrown": qroyal_crown,
     "QBirthday": qbirthday,
+    "QBirthdayCake": qbirthday_cake,
+    "QBirthdayBalloons": qbirthday_balloons,
     "QHammer": qhammer,
     "QTrash": qtrash,
     "QEdit": qedit,
@@ -1830,7 +1861,7 @@ STATIC_CATEGORIES = {
     "general": {
         "QAccept", "QDenied", "QReject", "QSuccess", "QWarning", "QTimer", "QTimeout",
         "QBell", "QBook", "QGift", "QConfetti", "QThinking", "QTarget", "QBirthday",
-        "QAlarm", "QSleep", "QImage", "QAttachment", "QActivity",
+        "QBirthdayCake", "QBirthdayBalloons", "QAlarm", "QSleep", "QImage", "QAttachment", "QActivity",
     },
     "quewo": {
         "QoinBag", "QoinChest", "QoinTransfer", "QXP", "QLevelUp", "QQuest", "QShop",

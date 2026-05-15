@@ -54,6 +54,8 @@ from economy import (
     Q_ATTACHMENT as economy_q_attachment,
     Q_BELL as economy_q_bell,
     Q_BIRTHDAY as economy_q_birthday,
+    Q_BIRTHDAY_BALLOONS as economy_q_birthday_balloons,
+    Q_BIRTHDAY_CAKE as economy_q_birthday_cake,
     Q_BOOK as economy_q_book,
     Q_BROOM as economy_q_broom,
     Q_CARDS as economy_q_cards,
@@ -1291,9 +1293,20 @@ async def birthday_check_loop():
                     channel = guild.get_channel(config["channel_id"]) or bot.get_channel(config["channel_id"])
                     if not channel:
                         continue
+                    embed = discord.Embed(
+                        title=f"{economy_q_birthday_cake} Birthday Drop {economy_q_birthday_balloons}",
+                        description=(
+                            f"{economy_q_confetti} Happy birthday, {member.mention}!\n"
+                            f"{economy_q_gift} Hope your day is stacked with wins, cake, and clean vibes."
+                        ),
+                        color=discord.Color.from_rgb(42, 143, 218),
+                        timestamp=now,
+                    )
+                    embed.set_footer(text="Pro𝚀𝚞𝚎 birthday alert")
                     await channel.send(
-                        f"@everyone {economy_q_birthday} it's {member.mention}'s birthday today!",
-                        allowed_mentions=discord.AllowedMentions(everyone=True, users=True)
+                        content=member.mention,
+                        embed=embed,
+                        allowed_mentions=discord.AllowedMentions(everyone=False, users=[member], roles=False)
                     )
                     already_sent.add(sent_key)
 
