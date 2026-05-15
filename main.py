@@ -3365,11 +3365,13 @@ async def on_message(message):
             messages.append({
                 "role": "system",
                 "content": (
-                    "Personality: unserious, witty, sweet, and easy to talk to. Crack light jokes, react to what people say, "
-                    "and sound like a fun Discord friend, but stay genuinely useful when someone asks for facts, help, commands, "
-                    "or troubleshooting. Keep replies short unless the user needs detail. Do not force jokes into serious, sad, "
-                    "or sensitive moments; be kind and grounded there. Use recent chat context when it helps. Do not ping users. "
-                    "If you are missing info, ask one short follow-up question."
+                    "Personality: casual, natural, funny when it fits, and sweet without sounding scripted. "
+                    "Talk like a normal person in Discord. Do not introduce yourself unless someone actually asks who you are. "
+                    "If someone only says your name or a tiny prompt like `proque`, respond casually and briefly, like `yeah?` or `what's up?` "
+                    "Do not say things like `You're referring to me` or `your friendly Discord bot`; that sounds robotic. "
+                    "Relate to what people say, but stay genuinely useful for facts, commands, and troubleshooting. "
+                    "Keep replies short unless the user needs detail. Do not force jokes into serious, sad, or sensitive moments; be kind and grounded there. "
+                    "Use recent chat context when it helps. Do not ping users. If you are missing info, ask one short follow-up question."
                 ),
             })
             if message.guild:
@@ -7534,39 +7536,55 @@ async def q(ctx):
 
 @bot.command()
 @is_admin_power()
-async def setnick(ctx, member: discord.Member, *, nickname: str):
-    if not can_act_on(ctx.author, member, ctx.guild):
-        return await ctx.send("You can't change that user's nickname.")
+async def setnick(ctx, members: commands.Greedy[discord.Member], *, nickname: str = None):
+    if not members or not nickname:
+        return await send_command_input_ui(ctx, "setnick", note="Mention one or more users, then enter the nickname.")
+    blocked = [member for member in members if not can_act_on(ctx.author, member, ctx.guild)]
+    if blocked:
+        return await ctx.send("You can't change one or more of those users' nicknames.")
     try:
-        await member.edit(nick=nickname)
+        changed = []
+        for member in members:
+            await member.edit(nick=nickname)
+            changed.append(f"<@{member.id}>")
         await ctx.send(
-            f"Changed <@{member.id}>'s nickname to **{nickname}**.",
+            f"Changed **{len(changed)}** nickname(s) to **{nickname}**: {', '.join(changed)}.",
             allowed_mentions=discord.AllowedMentions.none()
         )
     except discord.Forbidden:
-        await ctx.send("I don't have permission to change that user's nickname.")
+        await ctx.send("I don't have permission to change one or more of those nicknames.")
     except Exception as e:
         await ctx.send(f"Error: {e}")
 
 @bot.command()
 @is_admin_power()
-async def shut(ctx, member: discord.Member):
-    print(f"shut command used by {ctx.author} on {member}")
-    if not can_act_on(ctx.author, member, ctx.guild):
-        return await ctx.send("You can't silence that user.")
+async def shut(ctx, members: commands.Greedy[discord.Member]):
+    if not members:
+        return await send_command_input_ui(ctx, "shut", note="Mention one or more users to silence.")
     targets = guild_watchlist(ctx.guild)
-    targets[member.id] = ctx.author.id
+    changed = []
+    for member in members:
+        if not can_act_on(ctx.author, member, ctx.guild):
+            return await ctx.send("You can't silence one or more of those users.")
+        targets[member.id] = ctx.author.id
+        changed.append(f"<@{member.id}>")
     save_watchlist(scoped_id(ctx.guild), targets)
-    await ctx.send(f"<@{member.id}> has been silenced.", allowed_mentions=discord.AllowedMentions.none())
+    await ctx.send(f"Silenced **{len(changed)}** user(s): {', '.join(changed)}.", allowed_mentions=discord.AllowedMentions.none())
 
 @bot.command()
 @is_admin_power()
-async def unshut(ctx, member: discord.Member):
+async def unshut(ctx, members: commands.Greedy[discord.Member]):
+    if not members:
+        return await send_command_input_ui(ctx, "unshut", note="Mention one or more users to unsilence.")
     targets = guild_watchlist(ctx.guild)
-    if not can_act_on(ctx.author, member, ctx.guild) and targets.get(member.id) != ctx.author.id:
-        return await ctx.send("You can't unshut that user.")
-    targets.pop(member.id, None)
+    changed = []
+    for member in members:
+        if not can_act_on(ctx.author, member, ctx.guild) and targets.get(member.id) != ctx.author.id:
+            return await ctx.send("You can't unshut one or more of those users.")
+        targets.pop(member.id, None)
+        changed.append(f"<@{member.id}>")
     save_watchlist(scoped_id(ctx.guild), targets)
+    await ctx.send(f"Unsilenced **{len(changed)}** user(s): {', '.join(changed)}.", allowed_mentions=discord.AllowedMentions.none())
 
 @bot.command()
 @is_admin_power()
@@ -7579,24 +7597,35 @@ async def clearwatchlist(ctx):
 
 @bot.command()
 @is_admin_power()
-async def rshut(ctx, member: discord.Member):
+async def rshut(ctx, members: commands.Greedy[discord.Member]):
     """Silence a user's reactions."""
-    if not can_act_on(ctx.author, member, ctx.guild):
-        return await ctx.send("You can't silence that user's reactions.")
+    if not members:
+        return await send_command_input_ui(ctx, "rshut", note="Mention one or more users to reaction-silence.")
     targets = guild_reaction_watchlist(ctx.guild)
-    targets[member.id] = ctx.author.id
+    changed = []
+    for member in members:
+        if not can_act_on(ctx.author, member, ctx.guild):
+            return await ctx.send("You can't silence one or more of those users' reactions.")
+        targets[member.id] = ctx.author.id
+        changed.append(f"<@{member.id}>")
     save_reaction_watchlist(scoped_id(ctx.guild), targets)
-    await ctx.send(f"<@{member.id}>'s reactions have been silenced.", allowed_mentions=discord.AllowedMentions.none())
+    await ctx.send(f"Reaction-silenced **{len(changed)}** user(s): {', '.join(changed)}.", allowed_mentions=discord.AllowedMentions.none())
 
 @bot.command()
 @is_admin_power()
-async def unrshut(ctx, member: discord.Member):
+async def unrshut(ctx, members: commands.Greedy[discord.Member]):
     """Allow a user's reactions again (silent unless protected owner)."""
+    if not members:
+        return await send_command_input_ui(ctx, "unrshut", note="Mention one or more users to allow reactions again.")
     targets = guild_reaction_watchlist(ctx.guild)
-    if not can_act_on(ctx.author, member, ctx.guild) and targets.get(member.id) != ctx.author.id:
-        return await ctx.send("You can't unshut that user.")
-    targets.pop(member.id, None)
+    changed = []
+    for member in members:
+        if not can_act_on(ctx.author, member, ctx.guild) and targets.get(member.id) != ctx.author.id:
+            return await ctx.send("You can't unshut one or more of those users.")
+        targets.pop(member.id, None)
+        changed.append(f"<@{member.id}>")
     save_reaction_watchlist(scoped_id(ctx.guild), targets)
+    await ctx.send(f"Allowed reactions again for **{len(changed)}** user(s): {', '.join(changed)}.", allowed_mentions=discord.AllowedMentions.none())
 
 @bot.command()
 @is_admin_power()
@@ -7701,6 +7730,42 @@ async def parse_member_role_args(ctx, args):
         except commands.BadArgument:
             pass
     return member, role
+
+async def parse_members_role_args(ctx, args):
+    try:
+        tokens = shlex.split(str(args or ""))
+    except ValueError:
+        return [], None
+    if len(tokens) < 2:
+        return [], None
+
+    role = None
+    role_index = None
+    for index, token in enumerate(tokens):
+        try:
+            role = await commands.RoleConverter().convert(ctx, token)
+            role_index = index
+            break
+        except commands.BadArgument:
+            continue
+    if role is None:
+        return [], None
+
+    members = []
+    seen = set()
+    for index, token in enumerate(tokens):
+        if index == role_index:
+            continue
+        try:
+            member = await commands.MemberConverter().convert(ctx, token)
+        except commands.BadArgument:
+            continue
+        if member.id in seen:
+            continue
+        members.append(member)
+        seen.add(member.id)
+
+    return members, role
 
 @bot.command()
 @is_admin_power()
@@ -7817,37 +7882,48 @@ async def unlock_channel(ctx):
 
 @bot.command()
 @is_admin_power()
-async def unmute(ctx, member: discord.Member):
-    if not can_act_on(ctx.author, member, ctx.guild):
-        return await ctx.send("You can't unmute that member.")
-    try:
-        await member.timeout(None)
-        await ctx.send(
-            f"<@{member.id}> has been unmuted.",
-            allowed_mentions=discord.AllowedMentions.none()
-        )
-    except discord.Forbidden:
-        await ctx.send("Missing permissions to unmute this member.")
-    except Exception as e:
-        await ctx.send(f"Failed to unmute: {e}")
+async def unmute(ctx, members: commands.Greedy[discord.Member]):
+    if not members:
+        return await send_command_input_ui(ctx, "unmute", note="Mention one or more users to unmute.")
+    changed = []
+    for member in members:
+        if not can_act_on(ctx.author, member, ctx.guild):
+            return await ctx.send("You can't unmute one or more of those members.")
+        try:
+            await member.timeout(None)
+            changed.append(f"<@{member.id}>")
+        except discord.Forbidden:
+            return await ctx.send("Missing permissions to unmute one or more of those members.")
+        except Exception as e:
+            return await ctx.send(f"Failed to unmute: {e}")
+    await ctx.send(
+        f"Unmuted **{len(changed)}** user(s): {', '.join(changed)}.",
+        allowed_mentions=discord.AllowedMentions.none()
+    )
 
 @bot.command()
 @is_admin_power()
-async def ban(ctx, user: discord.User):
-    member = ctx.guild.get_member(user.id) if ctx.guild else None
-    if member is not None and not can_act_on(ctx.author, member, ctx.guild):
-        return await ctx.send("You can't ban that user.")
-    ok = await confirm_admin_action(ctx, "Ban User", f"Ban <@{user.id}> from **{ctx.guild.name}**?")
+async def ban(ctx, users: commands.Greedy[discord.User]):
+    if not users:
+        return await send_command_input_ui(ctx, "ban", note="Mention one or more users to ban.")
+    for user in users:
+        member = ctx.guild.get_member(user.id) if ctx.guild else None
+        if member is not None and not can_act_on(ctx.author, member, ctx.guild):
+            return await ctx.send("You can't ban one or more of those users.")
+    mentions = ", ".join(f"<@{user.id}>" for user in users)
+    ok = await confirm_admin_action(ctx, "Ban User(s)", f"Ban **{len(users)}** user(s) from **{ctx.guild.name}**?\n{mentions}")
     if not ok:
         return
-    try:
-        await user.send(f"LMAO you got banned from **{ctx.guild.name}** {economy_q_reject}")
-    except Exception:
-        pass
-
-    await ctx.guild.ban(user)
+    banned = []
+    for user in users:
+        try:
+            await user.send(f"LMAO you got banned from **{ctx.guild.name}** {economy_q_reject}")
+        except Exception:
+            pass
+        await ctx.guild.ban(user)
+        banned.append(f"<@{user.id}>")
     await ctx.send(
-        f"<@{user.id}> has been banned.",
+        f"Banned **{len(banned)}** user(s): {', '.join(banned)}.",
         allowed_mentions=discord.AllowedMentions.none()
     )
 
@@ -7879,39 +7955,60 @@ async def unban(ctx, *, user: str):
 
 @bot.command()
 @is_admin_power()
-async def kick(ctx, member: discord.Member, *, reason=None):
-    if not can_act_on(ctx.author, member, ctx.guild):
-        return await ctx.send("You can't kick that member.")
+async def kick(ctx, members: commands.Greedy[discord.Member], *, reason=None):
+    if not members:
+        return await send_command_input_ui(ctx, "kick", note="Mention one or more users to kick.")
+    for member in members:
+        if not can_act_on(ctx.author, member, ctx.guild):
+            return await ctx.send("You can't kick one or more of those members.")
     reason_text = f"\nReason: {reason}" if reason else ""
-    ok = await confirm_admin_action(ctx, "Kick User", f"Kick <@{member.id}> from **{ctx.guild.name}**?{reason_text}")
+    mentions = ", ".join(f"<@{member.id}>" for member in members)
+    ok = await confirm_admin_action(ctx, "Kick User(s)", f"Kick **{len(members)}** user(s) from **{ctx.guild.name}**?{reason_text}\n{mentions}")
     if not ok:
         return
-    await member.kick(reason=reason)
-    await ctx.send(f"<@{member.id}> has been kicked.", allowed_mentions=discord.AllowedMentions.none())
+    kicked = []
+    for member in members:
+        await member.kick(reason=reason)
+        kicked.append(f"<@{member.id}>")
+    await ctx.send(f"Kicked **{len(kicked)}** user(s): {', '.join(kicked)}.", allowed_mentions=discord.AllowedMentions.none())
 
 @bot.command()
 @is_admin_power()
 async def addrole(ctx, *, args: str = None):
     """Adds a role to a member. Member and role can be in either order."""
-    member, role = await parse_member_role_args(ctx, args)
-    if member is None or role is None:
-        return await send_command_input_ui(ctx, "addrole", note="Enter the member and role. Either order works.")
-    if not can_act_on(ctx.author, member, ctx.guild):
-        return await ctx.send("You can't edit that member's roles.")
-    await member.add_roles(role)
-    await ctx.send(f"Added **{role.name}** to <@{member.id}>.", allowed_mentions=discord.AllowedMentions.none())
+    members, role = await parse_members_role_args(ctx, args)
+    if not members or role is None:
+        return await send_command_input_ui(ctx, "addrole", note="Enter one or more members and a role. Any order works.")
+    blocked = [member for member in members if not can_act_on(ctx.author, member, ctx.guild)]
+    if blocked:
+        return await ctx.send("You can't edit one or more of those members' roles.")
+    changed = []
+    for member in members:
+        await member.add_roles(role)
+        changed.append(f"<@{member.id}>")
+    await ctx.send(
+        f"Added **{role.name}** to **{len(changed)}** user(s): {', '.join(changed)}.",
+        allowed_mentions=discord.AllowedMentions.none()
+    )
 
 @bot.command()
 @is_admin_power()
 async def removerole(ctx, *, args: str = None):
     """Removes a role from a member. Member and role can be in either order."""
-    member, role = await parse_member_role_args(ctx, args)
-    if member is None or role is None:
-        return await send_command_input_ui(ctx, "removerole", note="Enter the member and role. Either order works.")
-    if not can_act_on(ctx.author, member, ctx.guild):
-        return await ctx.send("You can't edit that member's roles.")
-    await member.remove_roles(role)
-    await ctx.send(f"Removed **{role.name}** from <@{member.id}>.", allowed_mentions=discord.AllowedMentions.none())
+    members, role = await parse_members_role_args(ctx, args)
+    if not members or role is None:
+        return await send_command_input_ui(ctx, "removerole", note="Enter one or more members and a role. Any order works.")
+    blocked = [member for member in members if not can_act_on(ctx.author, member, ctx.guild)]
+    if blocked:
+        return await ctx.send("You can't edit one or more of those members' roles.")
+    changed = []
+    for member in members:
+        await member.remove_roles(role)
+        changed.append(f"<@{member.id}>")
+    await ctx.send(
+        f"Removed **{role.name}** from **{len(changed)}** user(s): {', '.join(changed)}.",
+        allowed_mentions=discord.AllowedMentions.none()
+    )
 
 class NameModal(Modal):
     def __init__(self, type_: str, asset: BytesIO, emoji_char=None, default_name: str = None):
@@ -9294,27 +9391,37 @@ async def summon2(ctx, *, message: str):
 
 @bot.command()
 @is_admin_power()
-async def block(ctx, member: discord.Member):
-    if not can_act_on(ctx.author, member, ctx.guild):
-        return await ctx.send("You can't block that member.")
+async def block(ctx, members: commands.Greedy[discord.Member]):
+    if not members:
+        return await send_command_input_ui(ctx, "block", note="Mention one or more users to block.")
     blocked = guild_blacklisted_users(ctx.guild)
-    blocked.add(member.id)
+    changed = []
+    for member in members:
+        if not can_act_on(ctx.author, member, ctx.guild):
+            return await ctx.send("You can't block one or more of those members.")
+        blocked.add(member.id)
+        changed.append(f"<@{member.id}>")
     save_blacklisted_users(scoped_id(ctx.guild), blocked)
     await ctx.send(
-        f"<@{member.id}> is now blocked from using commands.",
+        f"Blocked **{len(changed)}** user(s) from using commands: {', '.join(changed)}.",
         allowed_mentions=discord.AllowedMentions.none()
     )
 
 @bot.command()
 @is_admin_power()
-async def unblock(ctx, member: discord.Member):
-    if not can_act_on(ctx.author, member, ctx.guild) and member.id not in guild_blacklisted_users(ctx.guild):
-        return await ctx.send("You can't unblock that member.")
+async def unblock(ctx, members: commands.Greedy[discord.Member]):
+    if not members:
+        return await send_command_input_ui(ctx, "unblock", note="Mention one or more users to unblock.")
     blocked = guild_blacklisted_users(ctx.guild)
-    blocked.discard(member.id)
+    changed = []
+    for member in members:
+        if not can_act_on(ctx.author, member, ctx.guild) and member.id not in blocked:
+            return await ctx.send("You can't unblock one or more of those members.")
+        blocked.discard(member.id)
+        changed.append(f"<@{member.id}>")
     save_blacklisted_users(scoped_id(ctx.guild), blocked)
     await ctx.send(
-        f"<@{member.id}> is now unblocked.",
+        f"Unblocked **{len(changed)}** user(s): {', '.join(changed)}.",
         allowed_mentions=discord.AllowedMentions.none()
     )
 

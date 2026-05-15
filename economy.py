@@ -3328,6 +3328,27 @@ async def resolve_admin_targets(ctx, target):
         raise commands.BadArgument("Bulk economy targets only work in servers.")
 
     target_key = target.strip()
+    mentioned_members = []
+    seen_member_ids = set()
+    for member in getattr(ctx.message, "mentions", []) or []:
+        if getattr(member, "bot", False):
+            continue
+        if member.id in seen_member_ids:
+            continue
+        if str(member.id) in target_key or member.mention in target_key:
+            mentioned_members.append(member)
+            seen_member_ids.add(member.id)
+    if len(mentioned_members) > 1:
+        labels = [user_mention(member.id) for member in mentioned_members]
+        return {
+            "kind": "members",
+            "label": ", ".join(labels),
+            "log_label": ", ".join(f"{user_mention(member.id)} ({member.id})" for member in mentioned_members),
+            "user_ids": [member.id for member in mentioned_members],
+            "member": mentioned_members[0] if len(mentioned_members) == 1 else None,
+            "role": None,
+        }
+
     is_everyone = target_key in {"@everyone", "@here", str(ctx.guild.default_role.id)}
     if is_everyone:
         members = [member for member in ctx.guild.members if not member.bot]
@@ -5660,8 +5681,17 @@ async def give(ctx, *, args: str = None):
     if not target:
         await send_economy_command_input_ui(ctx, "give", "Enter the user and amount. Either order works.")
         return
+    multi_targets = None
+    if len(getattr(ctx.message, "mentions", []) or []) > 1:
+        try:
+            resolved = await resolve_admin_targets(ctx, target)
+        except commands.BadArgument:
+            resolved = None
+        if resolved and resolved["kind"] == "members":
+            multi_targets = resolved
+
     try:
-        member = await commands.MemberConverter().convert(ctx, target)
+        member = None if multi_targets else await commands.MemberConverter().convert(ctx, target)
     except commands.BadArgument:
         await ctx.send(f"{Q_DENIED} Mention a user or paste their ID. Example: `.give @user 10k`.")
         return
@@ -5672,6 +5702,10 @@ async def give(ctx, *, args: str = None):
         data = get_user(user_id)
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
+        return
+
+    if str(amount).lower() == "all" and multi_targets:
+        await ctx.send(f"{Q_DENIED} Use a number when sending to multiple users, like `.give @user1 @user2 10k`.")
         return
 
     if str(amount).lower() == "all":
@@ -5687,6 +5721,66 @@ async def give(ctx, *, args: str = None):
 
     if amount <= 0:
         await send_nonpositive_amount_error(ctx, raw_amount)
+        return
+
+    if multi_targets:
+        recipient_ids = [target_id for target_id in multi_targets["user_ids"] if target_id != ctx.author.id]
+        if not recipient_ids:
+            await ctx.send(f"{Q_DENIED} Can't transfer to yourself.")
+            return
+        total_amount = amount * len(recipient_ids)
+        if total_amount > data['balance'] and not has_economy_owner_power(ctx.author.id, ctx.guild):
+            await ctx.send(f"{Q_DENIED} You need {format_balance(total_amount)} to send {format_balance(amount)} to **{len(recipient_ids)}** users.")
+            return
+        if not await check_daily_loss_limit(ctx, data, total_amount):
+            return
+
+        old_sender_balance = data["balance"]
+        new_sender_balance = old_sender_balance
+        total_tax = 0
+        total_received = 0
+        try:
+            for recipient_id in recipient_ids:
+                tax = int(amount * TRANSFER_TAX_RATE)
+                transfer = transfer_user_balance(
+                    user_id,
+                    recipient_id,
+                    amount,
+                    tax=tax,
+                    allow_overdraft=has_economy_owner_power(ctx.author.id, ctx.guild),
+                )
+                new_sender_balance = transfer["new_sender_balance"]
+                receiver_credited_amount = transfer["receiver_credited_amount"]
+                total_tax += tax
+                total_received += receiver_credited_amount
+                log_transaction(user_id, "give_sent", -amount, f"Sent to {recipient_id}; tax {tax}")
+                log_transaction(recipient_id, "give_received", transfer["received_amount"], f"Received from {ctx.author.id}")
+                if tax:
+                    log_transaction(user_id, "transfer_tax_paid", -tax, "3% transfer tax burned")
+                    log_transaction(SUPER_OWNER_ID, "transfer_tax", tax, f"Transfer tax from {user_id} to {recipient_id}")
+        except ValueError:
+            await ctx.send(f"{Q_DENIED} You only have {format_balance(get_user(user_id)['balance'])}")
+            return
+        except Exception:
+            await send_error(ctx, "Database unavailable. Try again shortly.")
+            return
+
+        await reply_to_command(
+            ctx,
+            f"{QOIN_TRANSFER} You sent **{format_balance(amount)}** each to **{len(recipient_ids)}** users: {multi_targets['label']}\n"
+            f"Tax Burned: **{format_balance(total_tax)}**\n"
+            f"Total Received: **{format_balance(total_received)}**\n"
+            f"Your Balance: **{format_balance(old_sender_balance)}** → **{format_balance(new_sender_balance)}**",
+            allowed_mentions=discord.AllowedMentions.none()
+        )
+        if has_economy_owner_power(ctx.author.id, ctx.guild):
+            await send_economy_log(ctx, "𝚀𝚞𝚎wo Multi Transfer", [
+                ("Recipients", multi_targets["log_label"], False),
+                ("Amount Each", format_balance(amount), True),
+                ("Recipients Count", f"{len(recipient_ids):,}", True),
+                ("Tax", format_balance(total_tax), True),
+                ("Sender Balance", f"{format_balance(old_sender_balance)} → {format_balance(new_sender_balance)}", False),
+            ])
         return
 
     if member.id == ctx.author.id:
@@ -5886,6 +5980,34 @@ async def add(ctx, *, args: str = None):
         ], color=discord.Color.green())
         return
 
+    if len(getattr(ctx.message, "mentions", []) or []) > 1:
+        try:
+            targets = await resolve_admin_targets(ctx, target_key)
+        except commands.BadArgument:
+            targets = None
+        if targets and targets["kind"] == "members":
+            blocked = [user_id for user_id in targets["user_ids"] if not can_economy_act_on(ctx.author.id, user_id, ctx.guild)]
+            if blocked:
+                await ctx.send(f"{Q_DENIED} You can't edit one or more of those users' 𝚀𝚞𝚎wo balances.")
+                return
+            try:
+                count = bulk_add_users(targets["user_ids"], amount, ctx.author.id, "multiple users")
+            except Exception:
+                await send_error(ctx, "Database unavailable. Try again shortly.")
+                return
+            await reply_to_command(
+                ctx,
+                f"{Q_SUCCESS} Added **{format_balance(amount)}** each to **{count:,}** users: {targets['label']}.",
+                allowed_mentions=discord.AllowedMentions.none()
+            )
+            await send_economy_log(ctx, "𝚀𝚞𝚎wo Multi Add", [
+                ("Targets", targets["log_label"], False),
+                ("Recipients", f"{count:,}", True),
+                ("Amount Each", format_balance(amount), True),
+                ("Total Created", format_balance(amount * count), True),
+            ], color=discord.Color.green())
+            return
+
     try:
         member = await commands.MemberConverter().convert(ctx, target_key)
     except commands.BadArgument:
@@ -5926,6 +6048,57 @@ async def remove(ctx, *, args: str = None):
     if not target:
         await send_economy_command_input_ui(ctx, "remove", "Enter the target and amount. Either order works.")
         return
+    if len(getattr(ctx.message, "mentions", []) or []) > 1:
+        try:
+            targets = await resolve_admin_targets(ctx, target)
+        except commands.BadArgument:
+            targets = None
+        if targets and targets["kind"] == "members":
+            blocked = [user_id for user_id in targets["user_ids"] if not can_economy_act_on(ctx.author.id, user_id, ctx.guild)]
+            if blocked:
+                await ctx.send(f"{Q_DENIED} You can't edit one or more of those users' 𝚀𝚞𝚎wo balances.")
+                return
+            raw_amount = amount
+            total_removed = 0
+            changed = 0
+            try:
+                for user_id in targets["user_ids"]:
+                    data = get_user(user_id)
+                    old_balance = int(data["balance"])
+                    if str(raw_amount).lower() == "all":
+                        remove_amount = old_balance
+                    else:
+                        remove_amount = parse_whole_number(raw_amount)
+                        if remove_amount is None:
+                            raise ValueError
+                    if remove_amount <= 0:
+                        continue
+                    remove_amount = min(remove_amount, old_balance)
+                    update_user(user_id, balance=max(0, old_balance - remove_amount))
+                    log_transaction(user_id, "owner_remove", -remove_amount, f"By {ctx.author.id}")
+                    total_removed += remove_amount
+                    changed += 1
+            except ValueError:
+                await ctx.send(f"{Q_DENIED} Use `.remove @user @user 10k` or `.remove @user @user all`.")
+                return
+            except Exception:
+                await send_error(ctx, "Database unavailable. Try again shortly.")
+                return
+            if changed <= 0:
+                await send_nonpositive_amount_error(ctx, raw_amount)
+                return
+            await reply_to_command(
+                ctx,
+                f"{Q_SUCCESS} Removed from **{changed:,}** users: {targets['label']}.\n"
+                f"Total Removed: **{format_balance(total_removed)}**",
+                allowed_mentions=discord.AllowedMentions.none()
+            )
+            await send_economy_log(ctx, "𝚀𝚞𝚎wo Multi Remove", [
+                ("Targets", targets["log_label"], False),
+                ("Recipients", f"{changed:,}", True),
+                ("Total Removed", format_balance(total_removed), True),
+            ], color=discord.Color.red())
+            return
     try:
         member = await commands.MemberConverter().convert(ctx, target)
     except commands.BadArgument:
