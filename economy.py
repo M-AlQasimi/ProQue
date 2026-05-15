@@ -3386,6 +3386,60 @@ async def resolve_admin_targets(ctx, target):
         "role": None,
     }
 
+def get_balances_for_users(user_ids):
+    unique_ids = sorted(set(int(user_id) for user_id in user_ids))
+    if not unique_ids:
+        return {}
+    balances = {user_id: 0 for user_id in unique_ids}
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT user_id, balance FROM economy WHERE user_id = ANY(%s::bigint[])",
+        (unique_ids,)
+    )
+    for row in cur.fetchall():
+        balances[int(row["user_id"])] = int(row["balance"])
+    cur.close()
+    conn.close()
+    return balances
+
+def get_lottery_ticket_counts(guild_id, user_ids):
+    unique_ids = sorted(set(int(user_id) for user_id in user_ids))
+    if not unique_ids:
+        return {}
+    tickets = {user_id: 0 for user_id in unique_ids}
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT user_id, tickets
+        FROM lottery_tickets
+        WHERE guild_id = %s AND user_id = ANY(%s::bigint[])
+        """,
+        (guild_id, unique_ids)
+    )
+    for row in cur.fetchall():
+        tickets[int(row["user_id"])] = int(row["tickets"])
+    cur.close()
+    conn.close()
+    return tickets
+
+def format_bulk_before_after(user_ids, before, after, formatter, label, limit=8):
+    unique_ids = list(dict.fromkeys(int(user_id) for user_id in user_ids))
+    shown = unique_ids[:limit]
+    lines = [
+        f"{user_mention(user_id)}: **{formatter(before.get(user_id, 0))}** → **{formatter(after.get(user_id, 0))}**"
+        for user_id in shown
+    ]
+    if len(unique_ids) > limit:
+        lines.append(f"...and **{len(unique_ids) - limit:,}** more.")
+    before_total = sum(int(before.get(user_id, 0)) for user_id in unique_ids)
+    after_total = sum(int(after.get(user_id, 0)) for user_id in unique_ids)
+    return (
+        f"{label} Total: **{formatter(before_total)}** → **{formatter(after_total)}**\n"
+        + "\n".join(lines)
+    )
+
 def cooldown_multiplier_for_user(user_id, data=None):
     user_id = int(user_id)
     now = time.time()
@@ -5740,6 +5794,7 @@ async def give(ctx, *, args: str = None):
         total_tax = 0
         total_received = 0
         try:
+            before_recipient_balances = get_balances_for_users(recipient_ids)
             for recipient_id in recipient_ids:
                 tax = int(amount * TRANSFER_TAX_RATE)
                 transfer = transfer_user_balance(
@@ -5758,6 +5813,7 @@ async def give(ctx, *, args: str = None):
                 if tax:
                     log_transaction(user_id, "transfer_tax_paid", -tax, "3% transfer tax burned")
                     log_transaction(SUPER_OWNER_ID, "transfer_tax", tax, f"Transfer tax from {user_id} to {recipient_id}")
+            after_recipient_balances = get_balances_for_users(recipient_ids)
         except ValueError:
             await ctx.send(f"{Q_DENIED} You only have {format_balance(get_user(user_id)['balance'])}")
             return
@@ -5770,7 +5826,8 @@ async def give(ctx, *, args: str = None):
             f"{QOIN_TRANSFER} You sent **{format_balance(amount)}** each to **{len(recipient_ids)}** users: {multi_targets['label']}\n"
             f"Tax Burned: **{format_balance(total_tax)}**\n"
             f"Total Received: **{format_balance(total_received)}**\n"
-            f"Your Balance: **{format_balance(old_sender_balance)}** → **{format_balance(new_sender_balance)}**",
+            f"Your Balance: **{format_balance(old_sender_balance)}** → **{format_balance(new_sender_balance)}**\n"
+            f"{format_bulk_before_after(recipient_ids, before_recipient_balances, after_recipient_balances, format_balance, 'Recipient Balance')}",
             allowed_mentions=discord.AllowedMentions.none()
         )
         if has_economy_owner_power(ctx.author.id, ctx.guild):
@@ -5928,15 +5985,19 @@ async def add(ctx, *, args: str = None):
             await ctx.send(f"{Q_DENIED} Bulk `.add @everyone` is only for {QUE_OWNER_DISPLAY}.")
             return
         members = list(ctx.guild.members)
+        user_ids = [m.id for m in members]
         try:
-            count = bulk_add_users([m.id for m in members], amount, ctx.author.id, "@everyone")
+            before_balances = get_balances_for_users(user_ids)
+            count = bulk_add_users(user_ids, amount, ctx.author.id, "@everyone")
+            after_balances = get_balances_for_users(user_ids)
         except Exception:
             await send_error(ctx, "Database unavailable. Try again shortly.")
             return
 
         await reply_to_command(
             ctx,
-            f"{Q_SUCCESS} Added **{format_balance(amount)}** to **{count}** server members.",
+            f"{Q_SUCCESS} Added **{format_balance(amount)}** to **{count}** server members.\n"
+            f"{format_bulk_before_after(user_ids, before_balances, after_balances, format_balance, 'Balance')}",
             allowed_mentions=discord.AllowedMentions.none()
         )
         await send_economy_log(ctx, "𝚀𝚞𝚎wo Bulk Add", [
@@ -5961,15 +6022,19 @@ async def add(ctx, *, args: str = None):
         if not members:
             await ctx.send(f"{Q_DENIED} That role has no members.")
             return
+        user_ids = [m.id for m in members]
         try:
-            count = bulk_add_users([m.id for m in members], amount, ctx.author.id, f"role {role.id}")
+            before_balances = get_balances_for_users(user_ids)
+            count = bulk_add_users(user_ids, amount, ctx.author.id, f"role {role.id}")
+            after_balances = get_balances_for_users(user_ids)
         except Exception:
             await send_error(ctx, "Database unavailable. Try again shortly.")
             return
 
         await reply_to_command(
             ctx,
-            f"{Q_SUCCESS} Added **{format_balance(amount)}** to **{count}** members with **{role.name}**.",
+            f"{Q_SUCCESS} Added **{format_balance(amount)}** to **{count}** members with **{role.name}**.\n"
+            f"{format_bulk_before_after(user_ids, before_balances, after_balances, format_balance, 'Balance')}",
             allowed_mentions=discord.AllowedMentions.none()
         )
         await send_economy_log(ctx, "𝚀𝚞𝚎wo Bulk Add", [
@@ -5991,13 +6056,16 @@ async def add(ctx, *, args: str = None):
                 await ctx.send(f"{Q_DENIED} You can't edit one or more of those users' 𝚀𝚞𝚎wo balances.")
                 return
             try:
+                before_balances = get_balances_for_users(targets["user_ids"])
                 count = bulk_add_users(targets["user_ids"], amount, ctx.author.id, "multiple users")
+                after_balances = get_balances_for_users(targets["user_ids"])
             except Exception:
                 await send_error(ctx, "Database unavailable. Try again shortly.")
                 return
             await reply_to_command(
                 ctx,
-                f"{Q_SUCCESS} Added **{format_balance(amount)}** each to **{count:,}** users: {targets['label']}.",
+                f"{Q_SUCCESS} Added **{format_balance(amount)}** each to **{count:,}** users: {targets['label']}.\n"
+                f"{format_bulk_before_after(targets['user_ids'], before_balances, after_balances, format_balance, 'Balance')}",
                 allowed_mentions=discord.AllowedMentions.none()
             )
             await send_economy_log(ctx, "𝚀𝚞𝚎wo Multi Add", [
@@ -6061,10 +6129,13 @@ async def remove(ctx, *, args: str = None):
             raw_amount = amount
             total_removed = 0
             changed = 0
+            before_balances = {}
+            after_balances = {}
             try:
                 for user_id in targets["user_ids"]:
                     data = get_user(user_id)
                     old_balance = int(data["balance"])
+                    before_balances[user_id] = old_balance
                     if str(raw_amount).lower() == "all":
                         remove_amount = old_balance
                     else:
@@ -6072,10 +6143,13 @@ async def remove(ctx, *, args: str = None):
                         if remove_amount is None:
                             raise ValueError
                     if remove_amount <= 0:
+                        after_balances[user_id] = old_balance
                         continue
                     remove_amount = min(remove_amount, old_balance)
-                    update_user(user_id, balance=max(0, old_balance - remove_amount))
+                    new_balance = max(0, old_balance - remove_amount)
+                    update_user(user_id, balance=new_balance)
                     log_transaction(user_id, "owner_remove", -remove_amount, f"By {ctx.author.id}")
+                    after_balances[user_id] = new_balance
                     total_removed += remove_amount
                     changed += 1
             except ValueError:
@@ -6090,7 +6164,8 @@ async def remove(ctx, *, args: str = None):
             await reply_to_command(
                 ctx,
                 f"{Q_SUCCESS} Removed from **{changed:,}** users: {targets['label']}.\n"
-                f"Total Removed: **{format_balance(total_removed)}**",
+                f"Total Removed: **{format_balance(total_removed)}**\n"
+                f"{format_bulk_before_after(targets['user_ids'], before_balances, after_balances, format_balance, 'Balance')}",
                 allowed_mentions=discord.AllowedMentions.none()
             )
             await send_economy_log(ctx, "𝚀𝚞𝚎wo Multi Remove", [
@@ -6181,7 +6256,9 @@ async def addtick(ctx, *, args: str = None):
         return
 
     try:
+        before_tickets = get_lottery_ticket_counts(ctx.guild.id, targets["user_ids"])
         count = bulk_adjust_lottery_tickets(ctx.guild.id, targets["user_ids"], amount, "add", ctx.author.id)
+        after_tickets = get_lottery_ticket_counts(ctx.guild.id, targets["user_ids"])
         updated = get_lottery_config(ctx.guild.id)
         schedule_lottery_refresh(ctx.guild, updated)
         if count == 1 and targets["member"] is not None:
@@ -6194,7 +6271,8 @@ async def addtick(ctx, *, args: str = None):
     await reply_to_command(
         ctx,
         f"{Q_SUCCESS} Added **{amount:,}** free {Q_TICKET} tickets to **{count:,}** target(s): {targets['label']}.\n"
-        f"Total Entries Added: **{total_added:,}**",
+        f"Total Entries Added: **{total_added:,}**\n"
+        f"{format_bulk_before_after(targets['user_ids'], before_tickets, after_tickets, lambda value: f'{int(value):,}', 'Entries')}",
         allowed_mentions=discord.AllowedMentions.none()
     )
     await send_economy_log(ctx, "Lottery Tickets Added", [
@@ -6242,25 +6320,28 @@ async def removetick(ctx, *, args: str = None):
         return
 
     try:
+        before_tickets = get_lottery_ticket_counts(ctx.guild.id, targets["user_ids"])
         count = bulk_adjust_lottery_tickets(ctx.guild.id, targets["user_ids"], amount, "remove", ctx.author.id)
+        after_tickets = get_lottery_ticket_counts(ctx.guild.id, targets["user_ids"])
         updated = get_lottery_config(ctx.guild.id)
         schedule_lottery_refresh(ctx.guild, updated)
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
 
-    total_removed = amount * count
+    total_removed = sum(max(0, before_tickets.get(user_id, 0) - after_tickets.get(user_id, 0)) for user_id in targets["user_ids"])
     await reply_to_command(
         ctx,
         f"{Q_SUCCESS} Removed up to **{amount:,}** {Q_TICKET_MINUS} tickets from **{count:,}** target(s): {targets['label']}.\n"
-        f"Max Entries Removed: **{total_removed:,}**",
+        f"Entries Removed: **{total_removed:,}**\n"
+        f"{format_bulk_before_after(targets['user_ids'], before_tickets, after_tickets, lambda value: f'{int(value):,}', 'Entries')}",
         allowed_mentions=discord.AllowedMentions.none()
     )
     await send_economy_log(ctx, "Lottery Tickets Removed", [
         ("Target", targets["log_label"], False),
         ("Recipients", f"{count:,}", True),
         ("Tickets Each", f"{amount:,}", True),
-        ("Max Tickets Removed", f"{total_removed:,}", True),
+        ("Tickets Removed", f"{total_removed:,}", True),
     ], color=discord.Color.red())
 
 @commands.command()
@@ -6301,7 +6382,9 @@ async def settick(ctx, *, args: str = None):
         return
 
     try:
+        before_tickets = get_lottery_ticket_counts(ctx.guild.id, targets["user_ids"])
         count = bulk_adjust_lottery_tickets(ctx.guild.id, targets["user_ids"], amount, "set", ctx.author.id)
+        after_tickets = get_lottery_ticket_counts(ctx.guild.id, targets["user_ids"])
         updated = get_lottery_config(ctx.guild.id)
         schedule_lottery_refresh(ctx.guild, updated)
         if count == 1 and amount > 0 and targets["member"] is not None:
@@ -6312,7 +6395,8 @@ async def settick(ctx, *, args: str = None):
 
     await reply_to_command(
         ctx,
-        f"{Q_SUCCESS} Set {Q_TICKET} tickets to **{amount:,}** for **{count:,}** target(s): {targets['label']}.",
+        f"{Q_SUCCESS} Set {Q_TICKET} tickets to **{amount:,}** for **{count:,}** target(s): {targets['label']}.\n"
+        f"{format_bulk_before_after(targets['user_ids'], before_tickets, after_tickets, lambda value: f'{int(value):,}', 'Entries')}",
         allowed_mentions=discord.AllowedMentions.none()
     )
     await send_economy_log(ctx, "Lottery Tickets Set", [
@@ -6354,14 +6438,17 @@ async def setquesos(ctx, *, args: str = None):
         return
 
     try:
+        before_balances = get_balances_for_users(targets["user_ids"])
         count = bulk_set_balances(targets["user_ids"], amount, ctx.author.id, targets["log_label"])
+        after_balances = get_balances_for_users(targets["user_ids"])
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
 
     await reply_to_command(
         ctx,
-        f"{Q_SUCCESS} Set balance to **{format_balance(amount)}** for **{count:,}** target(s): {targets['label']}.",
+        f"{Q_SUCCESS} Set balance to **{format_balance(amount)}** for **{count:,}** target(s): {targets['label']}.\n"
+        f"{format_bulk_before_after(targets['user_ids'], before_balances, after_balances, format_balance, 'Balance')}",
         allowed_mentions=discord.AllowedMentions.none()
     )
     await send_economy_log(ctx, "𝚀𝚞𝚎wo Balance Set", [
