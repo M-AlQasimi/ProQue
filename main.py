@@ -99,6 +99,7 @@ from pgdata import (
     add_guild_activity_counts,
     add_message_activity_events,
     clear_guild_activity_counts,
+    delete_ai_user_memory,
     delete_guild_activity_channel,
     delete_guild_birthday_channel,
     delete_active_game_session,
@@ -109,6 +110,7 @@ from pgdata import (
     load_active_polls,
     load_active_timers,
     load_ai_channel_memory,
+    load_ai_user_memory,
     load_active_game_sessions,
     load_autoban_ids,
     load_blacklisted_users,
@@ -136,6 +138,7 @@ from pgdata import (
     save_active_game_session,
     save_autoban_ids,
     save_ai_channel_memory,
+    save_ai_user_memory,
     save_blacklisted_users,
     save_birthday,
     save_censored_phrases,
@@ -216,6 +219,7 @@ stale_game_messages_cleaned = False
 AI_MEMORY_MAX_MESSAGES = 60
 AI_MEMORY_TTL_SECONDS = 7 * 24 * 60 * 60
 AI_MEMORY_DB_MAX_MESSAGES = 120
+AI_USER_MEMORY_MAX_FACTS = 24
 ai_conversation_memory = {}
 pending_ai_batch_actions = {}
 
@@ -389,6 +393,283 @@ def remember_chat_context(message):
         "ts": time.time(),
     })
     prune_ai_memory(key)
+    remember_user_facts_from_message(message)
+
+AI_MEMORY_SKIP_PATTERNS = re.compile(
+    r"\b(password|passcode|token|api\s*key|secret|private\s*key|2fa|otp|phone|email|address)\b",
+    re.IGNORECASE,
+)
+
+def clean_memory_fact(text, limit=220):
+    text = re.sub(r"\s+", " ", str(text or "")).strip(" .")
+    if not text or AI_MEMORY_SKIP_PATTERNS.search(text):
+        return ""
+    if len(text) > limit:
+        text = text[:limit].rstrip()
+    return text
+
+def extract_user_memory_facts(content):
+    text = str(content or "").strip()
+    if not text:
+        return []
+    lowered = text.casefold()
+    facts = []
+
+    explicit = re.search(r"\bremember(?:\s+that)?\s+(.+)", text, flags=re.IGNORECASE | re.DOTALL)
+    if explicit:
+        fact = clean_memory_fact(explicit.group(1))
+        if fact:
+            facts.append(f"They asked me to remember: {fact}.")
+
+    patterns = [
+        (r"\b(?:my name is|call me)\s+(.+)", "They prefer to be called {value}."),
+        (r"\bmy birthday is\s+(.+)", "Their birthday is {value}."),
+        (r"\bmy timezone is\s+(.+)", "Their timezone is {value}."),
+        (r"\b(?:i am|i'm|im) from\s+(.+)", "They are from {value}."),
+        (r"\bi live in\s+(.+)", "They live in {value}."),
+        (r"\bi(?: really)? (?:like|love|enjoy)\s+(.+)", "They like {value}."),
+        (r"\bi(?: really)? (?:hate|dislike)\s+(.+)", "They dislike {value}."),
+        (r"\bi prefer\s+(.+)", "They prefer {value}."),
+        (r"\b(?:be|keep it)\s+(brief|short|simple|serious|funny|casual)\s+(?:with me|for me)?\b", "They prefer AI replies to be {value}."),
+        (r"\b(?:don't|do not)\s+(joke|make jokes|be funny)\s+(?:with me|for me)?\b", "They prefer fewer jokes in AI replies."),
+        (r"\bexplain(?: things)?\s+(simply|in detail|step by step)\s+(?:to me|for me)?\b", "They prefer explanations {value}."),
+    ]
+    for pattern, template in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE | re.DOTALL)
+        if not match:
+            continue
+        value = clean_memory_fact(match.group(1))
+        if value:
+            facts.append(template.format(value=value) + ".")
+
+    if "forget" in lowered and "remember" in lowered:
+        facts = []
+
+    unique = []
+    seen = set()
+    for fact in facts:
+        key = fact.casefold()
+        if key not in seen:
+            unique.append(fact)
+            seen.add(key)
+    return unique[:3]
+
+def remember_user_facts_from_message(message):
+    if not message.guild or message.author.bot:
+        return
+    facts = extract_user_memory_facts(message.content)
+    if not facts:
+        return
+    guild_id = message.guild.id
+    user_id = message.author.id
+    try:
+        existing = load_ai_user_memory(guild_id, user_id, AI_USER_MEMORY_MAX_FACTS)
+        existing_keys = {str(item.get("fact", "")).casefold() for item in existing}
+    except Exception:
+        existing_keys = set()
+    for fact in facts:
+        if fact.casefold() in existing_keys:
+            continue
+        asyncio.create_task(asyncio.to_thread(
+            save_ai_user_memory,
+            guild_id,
+            user_id,
+            fact,
+            f"#{getattr(message.channel, 'name', message.channel.id)}",
+            AI_USER_MEMORY_MAX_FACTS,
+        ))
+
+def is_ai_forget_memory_request(text):
+    lowered = str(text or "").casefold()
+    return any(phrase in lowered for phrase in (
+        "forget me",
+        "forget what you know about me",
+        "forget everything about me",
+        "delete my memory",
+        "clear my memory",
+        "remove my memory",
+    ))
+
+def is_ai_memory_query(text):
+    lowered = str(text or "").casefold()
+    return any(phrase in lowered for phrase in (
+        "what do you know about me",
+        "what do you remember about me",
+        "show my memory",
+        "what's in my memory",
+        "whats in my memory",
+        "what have you saved about me",
+    ))
+
+def ai_user_memory_text(message, referenced_message=None, limit_users=6, limit_facts=8):
+    if not message.guild:
+        return ""
+    user_ids = []
+    for user in [message.author, *(getattr(message, "mentions", []) or [])]:
+        if user and not getattr(user, "bot", False) and user.id not in user_ids:
+            user_ids.append(user.id)
+    if referenced_message and not getattr(referenced_message.author, "bot", False):
+        if referenced_message.author.id not in user_ids:
+            user_ids.append(referenced_message.author.id)
+
+    lines = []
+    for user_id in user_ids[:limit_users]:
+        facts = load_ai_user_memory(message.guild.id, user_id, limit_facts)
+        bot_facts = bot_saved_user_facts(message.guild, user_id)
+        if not facts:
+            facts = []
+        member = message.guild.get_member(user_id)
+        display = getattr(member, "display_name", str(user_id))
+        fact_values = [str(item.get("fact", "")).strip() for item in facts if item.get("fact")]
+        fact_values.extend(bot_facts)
+        fact_text = "; ".join(fact_values)
+        if fact_text:
+            lines.append(f"{display} ({user_id}): {fact_text}")
+    return "\n".join(lines)[:1800]
+
+def bot_saved_user_facts(guild, user_id):
+    facts = []
+    user_key = str(int(user_id))
+    birthday = birthdays.get(user_key, {}).get("date")
+    if birthday:
+        facts.append(f"Saved birthday: {birthday}.")
+    if int(user_id) in afk_users:
+        reason = str(afk_users[int(user_id)].get("reason") or "AFK")
+        facts.append(f"Current bot status: AFK ({reason}).")
+    if int(user_id) in sleeping_users:
+        facts.append("Current bot status: sleeping.")
+    try:
+        data = economy_get_user(int(user_id))
+        if data:
+            level = int(data.get("level", 1))
+            balance = economy_format_balance(int(data.get("balance", 0)))
+            facts.append(f"𝚀𝚞𝚎wo profile: level {level}, balance {balance}.")
+    except Exception:
+        pass
+    if guild:
+        member = guild.get_member(int(user_id))
+        if member:
+            facts.append(f"Server display name: {member.display_name}.")
+    return facts[:6]
+
+async def send_ai_memory_summary(destination, guild, user, *, ephemeral=False):
+    facts = await asyncio.to_thread(load_ai_user_memory, guild.id if guild else 0, user.id, AI_USER_MEMORY_MAX_FACTS)
+    bot_facts = bot_saved_user_facts(guild, user.id)
+    lines = [str(item.get("fact", "")).strip() for item in facts if item.get("fact")]
+    lines.extend(bot_facts)
+    embed = discord.Embed(
+        title=f"{economy_q_book} AI Memory",
+        description=f"What I know about {user.mention}:",
+        color=discord.Color.blurple(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.add_field(
+        name="Saved Facts",
+        value=joined_embed_value([f"- {line}" for line in lines], empty="Nothing saved yet.", limit=3500),
+        inline=False,
+    )
+    embed.set_footer(text="Say 'forget what you know about me' or use .aimemory clear to erase saved AI memory.")
+    kwargs = {"embed": embed, "allowed_mentions": discord.AllowedMentions.none()}
+    if isinstance(destination, discord.Interaction):
+        return await destination.response.send_message(**kwargs, ephemeral=ephemeral)
+    return await destination.reply(**kwargs, mention_author=False)
+
+async def notify_superowner_error(ctx, error):
+    try:
+        user = bot.get_user(super_owner_id) or await bot.fetch_user(super_owner_id)
+    except Exception:
+        return
+    command_name = ctx.command.qualified_name if getattr(ctx, "command", None) else "unknown"
+    guild_name = ctx.guild.name if ctx.guild else "DM"
+    channel_name = getattr(ctx.channel, "name", str(getattr(ctx.channel, "id", "unknown")))
+    content = getattr(getattr(ctx, "message", None), "content", "") or ""
+    jump = getattr(getattr(ctx, "message", None), "jump_url", "")
+    embed = discord.Embed(
+        title=f"{economy_q_warning} Pro𝚀𝚞𝚎 Command Error",
+        description=(
+            f"Command: `{command_name}`\n"
+            f"Error: `{type(error).__name__}: {str(error)[:700]}`\n"
+            f"User: <@{ctx.author.id}> ({ctx.author.id})\n"
+            f"Server: **{guild_name}**\n"
+            f"Channel: `#{channel_name}`"
+        ),
+        color=discord.Color.red(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    if content:
+        embed.add_field(name="Message", value=embed_value(f"`{content[:900]}`", 1000), inline=False)
+    if jump:
+        embed.add_field(name="Jump", value=f"[Open message]({jump})", inline=False)
+    embed.set_footer(text="AI doctor context can help diagnose this.")
+    try:
+        await user.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+    except Exception:
+        pass
+
+def command_permission_note(command):
+    name = command.name.casefold()
+    aliases = {alias.casefold() for alias in getattr(command, "aliases", []) or []}
+    names = {name, *aliases}
+    if names & {"addtick", "removetick", "settick", "setquesos", "fsleep", "wake"}:
+        return f"{QUE_OWNER_DISPLAY} only."
+    if name in set(HELP_CATEGORIES.get("Admin", [])) or name in set(HELP_CATEGORIES.get("Server Tools", [])):
+        return "Requires admin/server-owner power unless the command itself says otherwise."
+    if name in {"editlottery", "stoplottery", "editactivity", "endactivity", "stopactivity"}:
+        return "Server owner/admin command."
+    return "Usually available to normal users."
+
+def command_risk_note(command):
+    names = {command.name.casefold(), *(alias.casefold() for alias in getattr(command, "aliases", []) or [])}
+    if names & {"ban", "kick", "purge", "rpurge", "lock", "unlock", "lockdown", "reopen", "block", "unblock", "send", "reply"}:
+        return "High impact moderation/server action."
+    if names & {"add", "remove", "give", "addtick", "removetick", "settick", "setquesos"}:
+        return "Changes 𝚀𝚞𝚎wo money or lottery entries."
+    if names & GAMBLING_AMOUNT_COMMANDS:
+        return "Gambling/game action; may spend 𝚀𝚞𝚎wo balance."
+    if names & {"settings", "prefix", "setprefix", "setlogs", "setbdaychannel", "activity"}:
+        return "Changes or opens server setup."
+    return "Low impact."
+
+def command_plan_embed(message, command, args, display):
+    prefix = prefix_for_guild(message.guild)
+    embed = discord.Embed(
+        title=f"{economy_q_thinking} AI Command Plan",
+        description=f"I think you want me to run:\n`{display}`",
+        color=discord.Color.orange(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    aliases = ", ".join(getattr(command, "aliases", []) or []) or "None"
+    detail = economy_detailed_explanations.get(command.name) or economy_explanations.get(command.name) or getattr(command, "help", "") or "Runs this bot command."
+    embed.add_field(name="Command", value=f"`{prefix}{command.qualified_name}`", inline=True)
+    embed.add_field(name="Aliases", value=embed_value(aliases, 500), inline=True)
+    embed.add_field(name="Input", value=f"`{args}`" if args else "No extra input.", inline=False)
+    embed.add_field(name="Permission", value=command_permission_note(command), inline=True)
+    embed.add_field(name="Impact", value=command_risk_note(command), inline=True)
+    embed.add_field(name="What It Does", value=embed_value(detail, 900), inline=False)
+    embed.set_footer(text="Confirm only if this is exactly what you wanted.")
+    return embed
+
+def bot_doctor_context(guild):
+    guild_id = guild.id if guild else 0
+    slow = []
+    for name, stats in sorted(command_timing_stats.items(), key=lambda item: item[1]["max_ms"], reverse=True)[:6]:
+        count = max(1, int(stats.get("count", 1)))
+        avg = int(stats.get("total_ms", 0) / count)
+        slow.append(f"{name}: avg {avg}ms, max {int(stats.get('max_ms', 0))}ms, runs {count}")
+    active_sessions = 0
+    try:
+        active_sessions = len([session for session in load_active_game_sessions() if not guild or session.get("guild_id") == guild.id])
+    except Exception:
+        active_sessions = -1
+    return (
+        f"Bot doctor snapshot: config DB ready=yes; 𝚀𝚞𝚎wo DB ready={getattr(economy_module, 'db_ready', False)}; "
+        f"birthday task={'running' if birthday_task and not birthday_task.done() else 'stopped'}; "
+        f"activity task={'running' if activity_task and not activity_task.done() else 'stopped'}; "
+        f"presence task={'running' if presence_rotation_task.is_running() else 'stopped'}; "
+        f"slash synced={slash_commands_synced}; active game sessions={active_sessions}; "
+        f"guild disabled commands={len(guild_disabled_commands(guild)) if guild else 0}; "
+        f"slow commands={'; '.join(slow) if slow else 'none tracked yet'}."
+    )
 
 def compact_ai_text(text, limit=220):
     text = re.sub(r"\s+", " ", str(text or "")).strip()
@@ -463,8 +744,12 @@ def bot_capabilities_summary(guild):
     return (
         f"You are Pro𝚀𝚞𝚎, a Discord bot. The command prefix in this server is `{prefix}`. "
         "You are mainly a normal helpful AI: answer general questions naturally, but you also know the bot deeply and should help users use it. "
+        "You have global user memory for useful facts people explicitly share, saved bot profile data like birthdays/statuses, plus recent channel context. Use memory naturally when it helps and avoid being creepy about it. "
         "Use the live command/capability index below as your source of truth for bot features, commands, aliases, usage, permissions, games, 𝚀𝚞𝚎wo mechanics, and setup flows. "
         "If the user asks about the bot, explain the relevant command clearly and suggest the exact command to run. "
+        "Be permission-aware: if a command is admin/server-owner/𝚀𝚞𝚎-only, say that plainly before telling someone how to use it. "
+        "For economy/game advice, compare risk, max bet, payout, cooldown, and fun factor when useful. "
+        "For errors/logs, act like the bot doctor: use reply context and the doctor snapshot to identify the likely broken command or subsystem and suggest the next test/fix. "
         "If you are not certain about an exact mechanic, say what you know and suggest `.explain <command>` or the matching help page. "
         "When 𝚀𝚞𝚎 asks clearly, you can confirm and run batch rewards for supported leaderboards such as activity, messages, lottery holders, and 𝚀𝚞𝚎wo rankings. "
         f"Useful help commands: `{prefix}help`, `{prefix}games`, `{prefix}econhelp`, `{prefix}explain <command>`, `{prefix}setup`, and `{prefix}messages`.\n\n"
@@ -2585,6 +2870,9 @@ COMMAND_EXAMPLE_OVERRIDES = {
     "editlottery": ".editlottery duration 12h",
     "endseason": ".endseason 2026-05",
     "enable": ".enable command",
+    "aiknow": ".aiknow slots",
+    "aidoctor": ".aidoctor",
+    "aimemory": ".aimemory",
     "find": ".find 885548126365171824",
     "flagquiz": ".flagquiz",
     "fsleep": ".fsleep @user 1h",
@@ -2816,6 +3104,8 @@ AI_SAFE_COMMANDS = {
     "activitystats", "astats", "away", "userinfo", "pfp", "avatar", "calc",
     "define", "timer", "ctimer", "alarm", "find", "econhelp", "quewohelp",
     "economyhelp", "ehelp", "explain", "lottery", "lotterystats",
+    "aimemory", "aime", "memoryai", "whatyouknow", "aiknow", "aiknowledge", "knowcmd", "aicmd",
+    "aidoctor", "botdoctor", "doctorai", "diagnosebot",
 }
 
 AI_CONFIRM_COMMANDS = {
@@ -2891,10 +3181,104 @@ def ai_command_needs_confirmation(command):
         return True
     return True
 
+def command_search_blob(command):
+    parts = [command.name, command.qualified_name, " ".join(getattr(command, "aliases", []) or [])]
+    parts.append(economy_explanations.get(command.name, ""))
+    parts.append(economy_detailed_explanations.get(command.name, ""))
+    parts.append(getattr(command, "help", "") or "")
+    return " ".join(parts).casefold()
+
+def fuzzy_command_guess(text):
+    lowered = str(text or "").casefold()
+    candidates = []
+    for command in bot.commands:
+        if getattr(command, "hidden", False):
+            continue
+        names = {command.name.casefold(), *(alias.casefold() for alias in getattr(command, "aliases", []) or [])}
+        score = 0
+        for name in names:
+            if re.search(rf"\b{re.escape(name)}\b", lowered):
+                score += 10
+        blob = command_search_blob(command)
+        for token in set(re.findall(r"[a-z0-9]{3,}", lowered)):
+            if token in blob:
+                score += 1
+        if score:
+            candidates.append((score, command))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return candidates[0][1].name
+
+async def semantic_ai_command_request(question, guild):
+    if not GROQ_API_KEY:
+        guessed = fuzzy_command_guess(question)
+        return (guessed, "", False) if guessed else None
+    prefix = prefix_for_guild(guild)
+    command_lines = []
+    for command in sorted(bot.commands, key=lambda cmd: cmd.qualified_name.casefold()):
+        if getattr(command, "hidden", False):
+            continue
+        command_lines.append(command_ai_summary(command, prefix))
+    prompt = {
+        "task": "Map a casual Discord user request to exactly one ProQue command if appropriate.",
+        "rules": [
+            "Infer meaning from casual wording. Do not require exact command words.",
+            "Return null if the user is asking a normal non-bot question.",
+            "If the request is ambiguous between multiple commands, set needs_clarification true and ask a short question.",
+            "For missing optional arguments, leave args empty; the bot can open its UI.",
+            "Never choose ask/generate/analyse/send/reply for AI self-recursion.",
+            "Return JSON only with keys: command, args, needs_clarification, question."
+        ],
+        "available_commands": "\n".join(command_lines)[:15000],
+        "request": question,
+    }
+    headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
+    payload = {
+        "messages": [
+            {"role": "system", "content": "You are a command intent parser. Return valid JSON only."},
+            {"role": "user", "content": json.dumps(prompt)},
+        ],
+        "model": "llama-3.1-8b-instant",
+        "temperature": 0.0,
+        "max_tokens": 220,
+    }
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post("https://api.groq.com/openai/v1/chat/completions", json=payload, headers=headers) as resp:
+                if resp.status != 200:
+                    guessed = fuzzy_command_guess(question)
+                    return (guessed, "", False) if guessed else None
+                data = await resp.json(content_type=None)
+        raw = data["choices"][0]["message"]["content"].strip()
+        raw = raw.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+        parsed = json.loads(raw)
+    except Exception:
+        guessed = fuzzy_command_guess(question)
+        return (guessed, "", False) if guessed else None
+    if parsed.get("needs_clarification"):
+        return {"clarify": str(parsed.get("question") or "Which command do you want me to use?")}
+    command_name = str(parsed.get("command") or "").strip()
+    if not command_name or command_name.casefold() in {"null", "none"}:
+        return None
+    command = get_command_case_insensitive(command_name)
+    if not command:
+        return None
+    return command.name, str(parsed.get("args") or "").strip(), False
+
 async def maybe_run_ai_command(message, question):
     request = extract_ai_command_request(question, message.guild)
     if not request:
+        request = await semantic_ai_command_request(question, message.guild)
+    if not request:
         return False
+    if isinstance(request, dict) and request.get("clarify"):
+        await message.reply(
+            f"{economy_q_thinking} {request['clarify']}",
+            mention_author=False,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+        return True
     command_name, args, explicit = request
     command = get_command_case_insensitive(command_name)
     if not command:
@@ -2908,13 +3292,14 @@ async def maybe_run_ai_command(message, question):
             allowed_mentions=discord.AllowedMentions.none(),
         )
         return True
+    confirmation = True
 
     prefix = prefix_for_guild(message.guild)
     display = f"{prefix}{command.name}" + (f" {args}" if args else "")
     if confirmation:
         view = ConfirmActionView(message.author.id, f"Run {display}")
         prompt = await message.reply(
-            f"{economy_q_warning} Run `{display}`?",
+            embed=command_plan_embed(message, command, args, display),
             view=view,
             mention_author=False,
             allowed_mentions=discord.AllowedMentions.none(),
@@ -2924,18 +3309,12 @@ async def maybe_run_ai_command(message, question):
             for item in view.children:
                 item.disabled = True
             try:
-                await prompt.edit(content="Command confirmation timed out.", view=view)
+                await prompt.edit(content="Command confirmation timed out.", embed=None, view=view)
             except discord.HTTPException:
                 pass
             return True
         if not view.value:
             return True
-    elif explicit:
-        await message.reply(
-            f"{economy_q_accept} Running `{display}`.",
-            mention_author=False,
-            allowed_mentions=discord.AllowedMentions.none(),
-        )
 
     await invoke_prefix_command_from_message(message, command.name, args)
     return True
@@ -3429,6 +3808,21 @@ async def on_message(message):
             if not question and referenced_message:
                 question = "Respond to the replied message using the reply context."
 
+            if question and message.guild and is_ai_forget_memory_request(question):
+                ok = await asyncio.to_thread(delete_ai_user_memory, message.guild.id, message.author.id)
+                await message.reply(
+                    "done, I cleared what I remembered about you." if ok else "I tried, but memory clearing is unavailable right now.",
+                    mention_author=False,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+                track_message_activity(message)
+                return
+
+            if question and message.guild and is_ai_memory_query(question):
+                await send_ai_memory_summary(message, message.guild, message.author)
+                track_message_activity(message)
+                return
+
             if question and await maybe_run_ai_batch_action(message, question):
                 track_message_activity(message)
                 return
@@ -3437,8 +3831,10 @@ async def on_message(message):
                 track_message_activity(message)
                 return
 
+            remember_user_facts_from_message(message)
             memory_key = ai_memory_key(message)
             recent_context = ai_channel_context_text(memory_key)
+            user_memory = ai_user_memory_text(message, referenced_message)
             messages = [
                 {
                     "role": "system",
@@ -3466,8 +3862,18 @@ async def on_message(message):
                         f"Current user: {getattr(message.author, 'display_name', message.author.name)} ({message.author.id})."
                     ),
                 })
+                messages.append({"role": "system", "content": bot_doctor_context(message.guild)})
             if recent_context:
                 messages.append({"role": "system", "content": f"Recent channel context:\n{recent_context}"})
+            if user_memory:
+                messages.append({
+                    "role": "system",
+                    "content": (
+                        "Known user memory and saved bot profile data. Use it naturally when relevant, do not recite it randomly, "
+                        "and do not mention private facts unless the user brings them up:\n"
+                        f"{user_memory}"
+                    ),
+                })
             if context_text:
                 messages.append({"role": "system", "content": f"Reply context:\n{context_text}"})
             messages.extend(ai_memory_messages(memory_key))
@@ -3620,6 +4026,7 @@ async def on_command_error(ctx, error):
 
     else:
         print(f"Unexpected error in {ctx.command}: {type(error).__name__} - {error}")
+        await notify_superowner_error(ctx, error)
         if has_owner_power(ctx.author, ctx.guild):
             await ctx.send(fit_discord_content(f"Error: `{error}`"))
         else:
@@ -3634,7 +4041,7 @@ HELP_CATEGORIES = {
     ],
     "Games": ["games", "howtoplay", "ttt", "c4", "chess", "move", "resign", "flagquiz", "flagstats", "q", "picker"],
     "Utility": ["help", "userinfo", "pfp", "calc", "define", "timer", "ctimer", "alarm", "poll", "epoll", "translate", "find"],
-    "AI": ["ask", "generate", "analyse"],
+    "AI": ["ask", "generate", "analyse", "aimemory", "aiknow", "aidoctor"],
     "Server Tools": [
         "dsnipe", "esnipe", "rsnipe", "rolesinfo", "roleinfo", "purge", "rpurge", "steal",
         "giveaway", "listbans", "listblocks", "listtargets", "listcensors", "lists",
@@ -4099,6 +4506,60 @@ async def settings_command(ctx):
     if ctx.guild is None:
         return await ctx.send("Settings only work in servers.")
     await ctx.send(embed=await build_settings_embed(ctx.guild), view=SettingsView(ctx.author.id), allowed_mentions=discord.AllowedMentions.none())
+
+@bot.command(name="aimemory", aliases=["aime", "memoryai", "whatyouknow"])
+async def aimemory_command(ctx, action: str = None, member: discord.Member = None):
+    """Shows or clears AI memory for yourself."""
+    if ctx.guild is None:
+        return await ctx.send("AI memory works in servers.")
+    target = member or ctx.author
+    if target.id != ctx.author.id and not has_super_owner_power(ctx.author, ctx.guild):
+        return await ctx.send(denial_message(f"Only {QUE_OWNER_DISPLAY} can inspect someone else's AI memory."))
+    action_key = str(action or "show").casefold()
+    if action_key in {"clear", "delete", "forget", "remove", "reset"}:
+        if target.id != ctx.author.id and not has_super_owner_power(ctx.author, ctx.guild):
+            return await ctx.send(denial_message(f"Only {QUE_OWNER_DISPLAY} can clear someone else's AI memory."))
+        ok = await asyncio.to_thread(delete_ai_user_memory, ctx.guild.id, target.id)
+        return await ctx.send(
+            f"{economy_q_accept if ok else economy_q_warning} {'Cleared' if ok else 'Could not clear'} AI memory for {target.mention}.",
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+    await send_ai_memory_summary(ctx, ctx.guild, target)
+
+@bot.command(name="aiknow", aliases=["aiknowledge", "knowcmd", "aicmd"])
+async def aiknow_command(ctx, *, command_name: str = None):
+    """Shows what the AI knows about a command."""
+    if not command_name:
+        return await ctx.send("Use `.aiknow <command>`.")
+    command = get_command_case_insensitive(command_name.strip())
+    if not command:
+        return await ctx.send(f"I don't know a command named `{command_name}`.")
+    prefix = prefix_for_guild(ctx.guild)
+    summary = command_ai_summary(command, prefix)
+    detail = economy_detailed_explanations.get(command.name) or economy_explanations.get(command.name) or getattr(command, "help", "") or "No extra detail saved."
+    embed = discord.Embed(
+        title=f"{economy_q_book} AI Knowledge: {prefix}{command.qualified_name}",
+        description=embed_value(summary, 1800),
+        color=discord.Color.blurple(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.add_field(name="Permission", value=command_permission_note(command), inline=True)
+    embed.add_field(name="Impact", value=command_risk_note(command), inline=True)
+    embed.add_field(name="Details", value=embed_value(detail, 1800), inline=False)
+    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
+@bot.command(name="aidoctor", aliases=["botdoctor", "doctorai", "diagnosebot"])
+@is_admin_power()
+async def aidoctor_command(ctx):
+    """Shows AI doctor status for bot health and debugging."""
+    embed = discord.Embed(
+        title=f"{economy_q_activity} Pro𝚀𝚞𝚎 Doctor",
+        description=bot_doctor_context(ctx.guild),
+        color=discord.Color.teal(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.add_field(name="Use With AI", value="Reply to an error/log and mention Pro𝚀𝚞𝚎; the AI gets this doctor snapshot plus reply context.", inline=False)
+    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
 @bot.command(name="slashsync", aliases=["slashstatus", "syncslash"])
 @is_admin_power()

@@ -221,6 +221,19 @@ def _create_tables(cur):
     cur.execute("CREATE INDEX IF NOT EXISTS idx_ai_channel_memory_lookup ON ai_channel_memory (guild_id, channel_id, created_at DESC)")
 
     cur.execute("""
+        CREATE TABLE IF NOT EXISTS ai_user_memory (
+            id BIGSERIAL PRIMARY KEY,
+            guild_id BIGINT NOT NULL,
+            user_id BIGINT NOT NULL,
+            fact TEXT NOT NULL,
+            source TEXT,
+            updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+        )
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_ai_user_memory_lookup ON ai_user_memory (guild_id, user_id, updated_at DESC)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_ai_user_memory_user_lookup ON ai_user_memory (user_id, updated_at DESC)")
+
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS active_game_sessions (
             message_id BIGINT PRIMARY KEY,
             guild_id BIGINT NOT NULL,
@@ -1114,6 +1127,88 @@ def save_ai_channel_memory(guild_id, channel_id, role, content, max_rows=60):
             )
             """,
             (int(guild_id), int(channel_id), int(max_rows))
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+        return True
+    except Exception:
+        return False
+
+def load_ai_user_memory(guild_id, user_id, limit=20):
+    _ensure_ready()
+    if not pg_ready:
+        return []
+    try:
+        conn = pg_conn()
+        if conn is None:
+            return []
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT fact, source, EXTRACT(EPOCH FROM updated_at)
+            FROM ai_user_memory
+            WHERE user_id = %s
+            ORDER BY updated_at DESC
+            LIMIT %s
+            """,
+            (int(user_id), int(limit))
+        )
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        return [
+            {"fact": str(fact), "source": str(source or ""), "ts": float(ts or 0)}
+            for fact, source, ts in rows
+        ]
+    except Exception:
+        return []
+
+def save_ai_user_memory(guild_id, user_id, fact, source=None, max_rows=30):
+    _ensure_ready()
+    fact = str(fact or "").strip()
+    if not pg_ready or not fact:
+        return False
+    try:
+        conn = pg_conn()
+        if conn is None:
+            return False
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO ai_user_memory (guild_id, user_id, fact, source) VALUES (%s, %s, %s, %s)",
+            (0, int(user_id), fact[:500], str(source or "")[:120])
+        )
+        cur.execute(
+            """
+            DELETE FROM ai_user_memory
+            WHERE id IN (
+                SELECT id FROM ai_user_memory
+                WHERE user_id = %s
+                ORDER BY updated_at DESC
+                OFFSET %s
+            )
+            """,
+            (int(user_id), int(max_rows))
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+        return True
+    except Exception:
+        return False
+
+def delete_ai_user_memory(guild_id, user_id):
+    _ensure_ready()
+    if not pg_ready:
+        return False
+    try:
+        conn = pg_conn()
+        if conn is None:
+            return False
+        cur = conn.cursor()
+        cur.execute(
+            "DELETE FROM ai_user_memory WHERE user_id = %s",
+            (int(user_id),)
         )
         conn.commit()
         cur.close()
