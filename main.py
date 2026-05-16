@@ -390,15 +390,85 @@ def remember_chat_context(message):
     })
     prune_ai_memory(key)
 
+def compact_ai_text(text, limit=220):
+    text = re.sub(r"\s+", " ", str(text or "")).strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit - 1].rstrip() + "…"
+
+def command_ai_summary(command, prefix):
+    aliases = ", ".join(getattr(command, "aliases", []) or [])
+    signature = getattr(command, "signature", "") or ""
+    usage = f"{prefix}{command.qualified_name}" + (f" {signature}" if signature else "")
+    key = command.name.casefold()
+    explanation = economy_explanations.get(key) or economy_explanations.get(command.qualified_name.casefold())
+    if not explanation:
+        for alias in getattr(command, "aliases", []) or []:
+            explanation = economy_explanations.get(alias.casefold())
+            if explanation:
+                break
+    if not explanation:
+        explanation = getattr(command, "help", None) or getattr(command, "brief", None) or "Runs this bot command."
+    bits = [f"`{usage}`"]
+    if aliases:
+        bits.append(f"aliases: {aliases}")
+    bits.append(compact_ai_text(explanation, 260))
+    return " - ".join(bits)
+
+def bot_command_knowledge_index(guild, max_chars=18000):
+    prefix = prefix_for_guild(guild)
+    seen = set()
+    sections = []
+
+    for category, names in HELP_CATEGORIES.items():
+        lines = []
+        for name in names:
+            command = get_command_case_insensitive(name)
+            if not command or getattr(command, "hidden", False):
+                continue
+            command_key = command.qualified_name.casefold()
+            if command_key in seen:
+                continue
+            seen.add(command_key)
+            lines.append(command_ai_summary(command, prefix))
+        if lines:
+            sections.append(f"{category}:\n" + "\n".join(lines))
+
+    other_lines = []
+    for command in sorted(bot.commands, key=lambda cmd: cmd.qualified_name.casefold()):
+        if getattr(command, "hidden", False):
+            continue
+        command_key = command.qualified_name.casefold()
+        if command_key in seen:
+            continue
+        seen.add(command_key)
+        other_lines.append(command_ai_summary(command, prefix))
+    if other_lines:
+        sections.append("Other registered commands:\n" + "\n".join(other_lines))
+
+    details = []
+    for key in sorted(economy_detailed_explanations):
+        if key in economy_explanations or get_command_case_insensitive(key):
+            details.append(f"{key}: {compact_ai_text(economy_detailed_explanations[key], 320)}")
+    if details:
+        sections.append("Detailed mechanics snippets:\n" + "\n".join(details))
+
+    index = "\n\n".join(sections)
+    if len(index) > max_chars:
+        index = index[:max_chars].rstrip() + "\n...truncated. For exact details, tell users to run the matching help command or `.explain <command>`."
+    return index
+
 def bot_capabilities_summary(guild):
     prefix = prefix_for_guild(guild)
     return (
         f"You are Pro𝚀𝚞𝚎, a Discord bot. The command prefix in this server is `{prefix}`. "
-        "You can help with moderation/admin tools, logs, birthdays, activity reports, polls, timers, reminders, "
-        "snipes, roles, profiles, utility commands, AI ask/generate/analyse/translate, server setup, and games. "
-        "Your 𝚀𝚞𝚎wo system includes balances, shop, inventory, quests, lottery, leaderboards, gambling games, game stats, achievements, seasons, limits, and audits. "
+        "You are mainly a normal helpful AI: answer general questions naturally, but you also know the bot deeply and should help users use it. "
+        "Use the live command/capability index below as your source of truth for bot features, commands, aliases, usage, permissions, games, 𝚀𝚞𝚎wo mechanics, and setup flows. "
+        "If the user asks about the bot, explain the relevant command clearly and suggest the exact command to run. "
+        "If you are not certain about an exact mechanic, say what you know and suggest `.explain <command>` or the matching help page. "
         "When 𝚀𝚞𝚎 asks clearly, you can confirm and run batch rewards for supported leaderboards such as activity, messages, lottery holders, and 𝚀𝚞𝚎wo rankings. "
-        f"Useful help commands: `{prefix}help`, `{prefix}games`, `{prefix}econhelp`, `{prefix}explain <command>`, `{prefix}setup`, and `{prefix}messages`."
+        f"Useful help commands: `{prefix}help`, `{prefix}games`, `{prefix}econhelp`, `{prefix}explain <command>`, `{prefix}setup`, and `{prefix}messages`.\n\n"
+        f"Live bot command/capability index:\n{bot_command_knowledge_index(guild)}"
     )
 
 def denial_message(detail=None):
