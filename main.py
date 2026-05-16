@@ -163,12 +163,9 @@ app = Flask('')
 LONG_HELP_VIEW_TIMEOUT = 24 * 60 * 60
 LONG_SETUP_VIEW_TIMEOUT = 60 * 60
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
 CLOUDFLARE_API_KEY = os.getenv("CLOUDFLARE_API_KEY", "")
 CLOUDFLARE_ACCOUNT_ID = os.getenv("CLOUDFLARE_ACCOUNT_ID", "")
 AI_MODEL_TIMEOUT_SECONDS = 10
-AI_SEARCH_TIMEOUT_SECONDS = 4
-AI_SEARCH_MAX_RESULTS = 2
 
 # PostgreSQL is the single source of truth
 pg_init()
@@ -684,24 +681,6 @@ def compact_ai_text(text, limit=220):
         return text
     return text[:limit - 1].rstrip() + "…"
 
-LIVE_WEB_SEARCH_RE = re.compile(
-    r"\b("
-    r"search|look\s*up|google|web|internet|source|sources|cite|citation|"
-    r"current|currently|latest|recent|today|yesterday|tomorrow|now|right\s*now|this\s*week|this\s*month|"
-    r"news|price|prices|cost|weather|forecast|score|scores|schedule|standings|"
-    r"stock|stocks|crypto|bitcoin|exchange\s*rate|rate|rates|inflation|"
-    r"law|laws|rule|rules|policy|policies|update|updates|version|release|released|"
-    r"president|prime\s*minister|ceo|owner|founder|election|war|conflict"
-    r")\b",
-    re.IGNORECASE,
-)
-
-def should_use_live_web_search(text):
-    text = str(text or "").strip()
-    if not text or len(text) < 4:
-        return False
-    return bool(LIVE_WEB_SEARCH_RE.search(text))
-
 def ai_http_error_message(status, body=""):
     status = int(status or 0)
     if status == 429:
@@ -734,49 +713,28 @@ async def safe_ai_reply(message, content):
             allowed_mentions=discord.AllowedMentions.none(),
         )
 
-async def tavily_search_context(query, max_results=AI_SEARCH_MAX_RESULTS):
-    if not TAVILY_API_KEY or not should_use_live_web_search(query):
-        return ""
-    payload = {
-        "query": str(query or "")[:450],
-        "search_depth": "basic",
-        "topic": "general",
-        "max_results": max(1, min(int(max_results or AI_SEARCH_MAX_RESULTS), AI_SEARCH_MAX_RESULTS)),
-        "include_answer": True,
-        "include_raw_content": False,
-        "auto_parameters": True,
-    }
-    headers = {
-        "Authorization": f"Bearer {TAVILY_API_KEY}",
-        "Content-Type": "application/json",
-    }
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post("https://api.tavily.com/search", json=payload, headers=headers, timeout=AI_SEARCH_TIMEOUT_SECONDS) as resp:
-                if resp.status != 200:
-                    body = await resp.text()
-                    return f"Live web search was attempted but failed with Tavily HTTP {resp.status}: {compact_ai_text(body, 300)}"
-                data = await resp.json(content_type=None)
-    except Exception as exc:
-        return f"Live web search was attempted but failed: {type(exc).__name__}: {compact_ai_text(exc, 160)}"
+CASUAL_AI_RE = re.compile(
+    r"^\s*(hi|hello|hey|yo|sup|what'?s up|whats up|proque|thanks|thank you|ty|ok|okay|lol|lmao|wyd)[!.?\s]*$",
+    re.IGNORECASE,
+)
+BOT_KNOWLEDGE_RE = re.compile(
+    r"\b(proque|bot|command|help|how\s+do\s+i|how\s+to|use|run|alias|aliases|"
+    r"quewo|quesos|economy|gambl|game|games|lottery|shop|inventory|profile|balance|"
+    r"level|xp|activity|messages|settings|setup|prefix|logs?|admin|permission|doctor|error)\b",
+    re.IGNORECASE,
+)
 
-    lines = [
-        "Live web search context from Tavily. Use this only when relevant, answer from the sources below, and cite source URLs when giving current/live facts."
-    ]
-    answer = str(data.get("answer") or "").strip()
-    if answer:
-        lines.append(f"Tavily answer summary: {compact_ai_text(answer, 700)}")
-    results = data.get("results") or []
-    for idx, result in enumerate(results[:AI_SEARCH_MAX_RESULTS], start=1):
-        title = compact_ai_text(result.get("title") or "Untitled", 140)
-        url = str(result.get("url") or "").strip()
-        snippet = compact_ai_text(result.get("content") or result.get("snippet") or "", 500)
-        if not url and not snippet:
-            continue
-        lines.append(f"[{idx}] {title}\nURL: {url}\nSnippet: {snippet}")
-    if len(lines) == 1:
-        return ""
-    return "\n\n".join(lines)[:5000]
+def should_try_ai_command_planner(text):
+    text = str(text or "").strip()
+    if not text or CASUAL_AI_RE.match(text):
+        return False
+    return bool(BOT_KNOWLEDGE_RE.search(text))
+
+def should_use_full_bot_context(text):
+    text = str(text or "").strip()
+    if not text or CASUAL_AI_RE.match(text):
+        return False
+    return bool(BOT_KNOWLEDGE_RE.search(text))
 
 def command_ai_summary(command, prefix):
     aliases = ", ".join(getattr(command, "aliases", []) or [])
@@ -842,16 +800,10 @@ def bot_command_knowledge_index(guild, max_chars=18000):
 
 def bot_capabilities_summary(guild):
     prefix = prefix_for_guild(guild)
-    live_web_line = (
-        "Live web search is available through Tavily. Use it for current/live-world questions, recent facts, prices, news, weather, versions, schedules, laws, or when the user asks you to search, and cite source URLs. "
-        if TAVILY_API_KEY else
-        "Live web search is not configured; for current world facts, ask the user for the latest source/context. "
-    )
     return (
         f"You are Pro𝚀𝚞𝚎, a Discord bot. The command prefix in this server is `{prefix}`. "
         "AI/chatbot is one of your main bot features. You are mainly a normal helpful AI: answer general questions naturally, but you also know the bot deeply and should help users use it. "
         "You have global user memory for useful facts people explicitly share, saved bot profile data like birthdays/statuses, plus recent channel context. Use memory naturally when it helps and avoid being creepy about it. "
-        f"{live_web_line}"
         "Use the live command/capability index below as your source of truth for bot features, commands, aliases, usage, permissions, games, 𝚀𝚞𝚎wo mechanics, and setup flows. "
         "If the user asks about the bot, explain the relevant command clearly and suggest the exact command to run. "
         "Be permission-aware: if a command is admin/server-owner/𝚀𝚞𝚎-only, say that plainly before telling someone how to use it. "
@@ -3930,8 +3882,7 @@ async def on_message(message):
                 track_message_activity(message)
                 return
 
-            is_live_web_question = should_use_live_web_search(question)
-            if question and not is_live_web_question:
+            if question and should_try_ai_command_planner(question):
                 if await maybe_run_ai_batch_action(message, question):
                     track_message_activity(message)
                     return
@@ -3942,25 +3893,25 @@ async def on_message(message):
 
             remember_user_facts_from_message(message)
             memory_key = ai_memory_key(message)
-            live_web_context = await tavily_search_context(question)
-            if is_live_web_question:
-                messages = [{
-                    "role": "system",
-                    "content": (
-                        "You are Pro𝚀𝚞𝚎's AI. Answer current/live questions briefly and naturally. "
-                        "Use the live web search context when provided and cite source URLs. "
-                        "If search failed or did not provide enough info, say that plainly."
-                    ),
-                }]
-            else:
-                recent_context = ai_channel_context_text(memory_key)
-                user_memory = ai_user_memory_text(message, referenced_message)
+            recent_context = ai_channel_context_text(memory_key)
+            user_memory = ai_user_memory_text(message, referenced_message)
+            use_full_bot_context = should_use_full_bot_context(question)
+            if use_full_bot_context:
                 messages = [
                     {
                         "role": "system",
                         "content": bot_capabilities_summary(message.guild),
                     }
                 ]
+            else:
+                messages = [{
+                    "role": "system",
+                    "content": (
+                        "You are Pro𝚀𝚞𝚎's AI. Chat naturally, casually, and briefly. "
+                        "You can answer normal questions, but you do not have live web search connected. "
+                        "If a user asks for current/live info, say you may be outdated and ask for a source or suggest checking live info."
+                    ),
+                }]
             messages.append({
                 "role": "system",
                 "content": (
@@ -3973,7 +3924,7 @@ async def on_message(message):
                     "Use recent chat context when it helps. Do not ping users. If you are missing info, ask one short follow-up question."
                 ),
             })
-            if message.guild and not is_live_web_question:
+            if message.guild:
                 messages.append({
                     "role": "system",
                     "content": (
@@ -3982,10 +3933,11 @@ async def on_message(message):
                         f"Current user: {getattr(message.author, 'display_name', message.author.name)} ({message.author.id})."
                     ),
                 })
-                messages.append({"role": "system", "content": bot_doctor_context(message.guild)})
-            if not is_live_web_question and recent_context:
+                if use_full_bot_context:
+                    messages.append({"role": "system", "content": bot_doctor_context(message.guild)})
+            if recent_context:
                 messages.append({"role": "system", "content": f"Recent channel context:\n{recent_context}"})
-            if not is_live_web_question and user_memory:
+            if user_memory:
                 messages.append({
                     "role": "system",
                     "content": (
@@ -3994,11 +3946,12 @@ async def on_message(message):
                         f"{user_memory}"
                     ),
                 })
-            if live_web_context:
-                messages.append({"role": "system", "content": live_web_context})
             if context_text:
                 messages.append({"role": "system", "content": f"Reply context:\n{context_text}"})
-            messages.extend(ai_memory_messages(memory_key))
+            memory_messages = ai_memory_messages(memory_key)
+            if not use_full_bot_context:
+                memory_messages = memory_messages[-4:]
+            messages.extend(memory_messages)
             messages.append({"role": "user", "content": question})
 
             headers = {
@@ -4232,7 +4185,6 @@ def render_help_embed(guild=None, category_name=None, page=0, per_page=10):
         name="AI Chatbot",
         value=(
             f"Mention or reply to Pro𝚀𝚞𝚎 for natural chat, bot help, command planning, memory, and troubleshooting. "
-            f"{'Uses live web search for current questions. ' if TAVILY_API_KEY else ''}"
             f"Try `{current_prefix}ask`, `{current_prefix}aimemory`, `{current_prefix}aiknow <command>`, or `{current_prefix}aidoctor`."
         ),
         inline=False,
@@ -10483,19 +10435,15 @@ async def ask_command(ctx, *, question: str):
         "Content-Type": "application/json"
     }
 
-    live_web_context = await tavily_search_context(question)
     messages = [
         {
             "role": "system",
             "content": (
                 "You are Pro𝚀𝚞𝚎's helpful AI. Answer clearly, simply, and briefly. "
-                "If live web search context is provided, use it for current facts and cite source URLs. "
-                "If no live web context is provided, do not claim current live-world facts unless the user provided the source/context."
+                "You do not have live web search connected, so do not claim current live-world facts unless the user provided the source/context."
             ),
         }
     ]
-    if live_web_context:
-        messages.append({"role": "system", "content": live_web_context})
     messages.append({"role": "user", "content": question})
 
     payload = {
