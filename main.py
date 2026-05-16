@@ -699,6 +699,33 @@ def should_use_live_web_search(text):
         return False
     return bool(LIVE_WEB_SEARCH_RE.search(text))
 
+def ai_http_error_message(status, body=""):
+    status = int(status or 0)
+    if status == 429:
+        return "AI is rate-limited right now. Give it a minute and try again."
+    if status in {401, 403}:
+        return "AI API key/config is being rejected. Check the AI provider key in Railway."
+    if status >= 500:
+        return "AI provider is having trouble right now. Try again in a bit."
+    extra = compact_ai_text(body, 180)
+    return f"AI request failed with HTTP {status}." + (f" `{extra}`" if extra else "")
+
+async def safe_ai_reply(message, content):
+    content = fit_discord_content(content or "I couldn't come up with an answer.")
+    try:
+        return await message.reply(
+            content,
+            mention_author=False,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+    except discord.HTTPException as exc:
+        if "Unknown message" not in str(exc):
+            raise
+        return await message.channel.send(
+            content,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
 async def tavily_search_context(query, max_results=5):
     if not TAVILY_API_KEY or not should_use_live_web_search(query):
         return ""
@@ -3971,17 +3998,17 @@ async def on_message(message):
                             if resp.status == 200:
                                 data = await resp.json()
                                 answer = data["choices"][0]["message"]["content"].strip()
-                                sent = await message.reply(
-                                    fit_discord_content(answer or "I could not come up with an answer."),
-                                    mention_author=False,
-                                    allowed_mentions=discord.AllowedMentions.none(),
-                                )
+                                sent = await safe_ai_reply(message, answer or "I could not come up with an answer.")
                                 remember_ai_message(memory_key, "user", question)
                                 remember_ai_message(memory_key, "assistant", sent.content or answer)
                             else:
-                                await message.reply(f"Error: {resp.status}", mention_author=False)
+                                body = await resp.text()
+                                await safe_ai_reply(message, ai_http_error_message(resp.status, body))
             except Exception as e:
-                await message.reply(f"Error: {str(e)[:100]}", mention_author=False)
+                try:
+                    await safe_ai_reply(message, f"AI error: {str(e)[:100]}")
+                except Exception:
+                    pass
             track_message_activity(message)
             return
 
@@ -10462,8 +10489,9 @@ async def ask_command(ctx, *, question: str):
         async with aiohttp.ClientSession() as session:
             async with session.post("https://api.groq.com/openai/v1/chat/completions", json=payload, headers=headers) as resp:
                 if resp.status != 200:
+                    body = await resp.text()
                     await safe_remove_reaction(ctx.message, economy_q_timer_tick, bot.user)
-                    return await ctx.send(f"Error: {resp.status}")
+                    return await ctx.send(ai_http_error_message(resp.status, body))
 
                 data = await resp.json(content_type=None)
                 answer = data["choices"][0]["message"]["content"]
@@ -10501,8 +10529,9 @@ async def generate_command(ctx, *, prompt: str):
         async with aiohttp.ClientSession() as session:
             async with session.post(url, json=payload, headers=headers) as resp:
                 if resp.status != 200:
+                    body = await resp.text()
                     await safe_remove_reaction(ctx.message, economy_q_timer_tick, bot.user)
-                    return await ctx.send(f"Error: {resp.status}")
+                    return await ctx.send(ai_http_error_message(resp.status, body))
 
                 data = await resp.json()
                 image_data = data["result"]["image"]
@@ -10598,7 +10627,7 @@ async def analyse_command(ctx):
                     await safe_remove_reaction(ctx.message, economy_q_timer_tick, bot.user)
                     if resp.status == 400 and "agree" in error_text.lower():
                         return await ctx.send("Error: Cloudflare needs the Meta vision model license accepted first.")
-                    return await ctx.send(f"Error: {resp.status} — {error_text[:180]}")
+                    return await ctx.send(ai_http_error_message(resp.status, error_text))
                 
                 data = await resp.json(content_type=None)
                 result = data["result"]["response"]
