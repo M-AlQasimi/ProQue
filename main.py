@@ -166,9 +166,9 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
 CLOUDFLARE_API_KEY = os.getenv("CLOUDFLARE_API_KEY", "")
 CLOUDFLARE_ACCOUNT_ID = os.getenv("CLOUDFLARE_ACCOUNT_ID", "")
-AI_MODEL_TIMEOUT_SECONDS = 18
-AI_SEARCH_TIMEOUT_SECONDS = 6
-AI_SEARCH_MAX_RESULTS = 3
+AI_MODEL_TIMEOUT_SECONDS = 10
+AI_SEARCH_TIMEOUT_SECONDS = 4
+AI_SEARCH_MAX_RESULTS = 2
 
 # PostgreSQL is the single source of truth
 pg_init()
@@ -3930,13 +3930,15 @@ async def on_message(message):
                 track_message_activity(message)
                 return
 
-            if question and await maybe_run_ai_batch_action(message, question):
-                track_message_activity(message)
-                return
+            is_live_web_question = should_use_live_web_search(question)
+            if question and not is_live_web_question:
+                if await maybe_run_ai_batch_action(message, question):
+                    track_message_activity(message)
+                    return
 
-            if question and await maybe_run_ai_command(message, question):
-                track_message_activity(message)
-                return
+                if await maybe_run_ai_command(message, question):
+                    track_message_activity(message)
+                    return
 
             remember_user_facts_from_message(message)
             memory_key = ai_memory_key(message)
