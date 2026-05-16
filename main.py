@@ -3942,15 +3942,25 @@ async def on_message(message):
 
             remember_user_facts_from_message(message)
             memory_key = ai_memory_key(message)
-            recent_context = ai_channel_context_text(memory_key)
-            user_memory = ai_user_memory_text(message, referenced_message)
             live_web_context = await tavily_search_context(question)
-            messages = [
-                {
+            if is_live_web_question:
+                messages = [{
                     "role": "system",
-                    "content": bot_capabilities_summary(message.guild),
-                }
-            ]
+                    "content": (
+                        "You are Pro𝚀𝚞𝚎's AI. Answer current/live questions briefly and naturally. "
+                        "Use the live web search context when provided and cite source URLs. "
+                        "If search failed or did not provide enough info, say that plainly."
+                    ),
+                }]
+            else:
+                recent_context = ai_channel_context_text(memory_key)
+                user_memory = ai_user_memory_text(message, referenced_message)
+                messages = [
+                    {
+                        "role": "system",
+                        "content": bot_capabilities_summary(message.guild),
+                    }
+                ]
             messages.append({
                 "role": "system",
                 "content": (
@@ -3963,7 +3973,7 @@ async def on_message(message):
                     "Use recent chat context when it helps. Do not ping users. If you are missing info, ask one short follow-up question."
                 ),
             })
-            if message.guild:
+            if message.guild and not is_live_web_question:
                 messages.append({
                     "role": "system",
                     "content": (
@@ -3973,9 +3983,9 @@ async def on_message(message):
                     ),
                 })
                 messages.append({"role": "system", "content": bot_doctor_context(message.guild)})
-            if recent_context:
+            if not is_live_web_question and recent_context:
                 messages.append({"role": "system", "content": f"Recent channel context:\n{recent_context}"})
-            if user_memory:
+            if not is_live_web_question and user_memory:
                 messages.append({
                     "role": "system",
                     "content": (
