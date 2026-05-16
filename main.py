@@ -166,6 +166,9 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
 CLOUDFLARE_API_KEY = os.getenv("CLOUDFLARE_API_KEY", "")
 CLOUDFLARE_ACCOUNT_ID = os.getenv("CLOUDFLARE_ACCOUNT_ID", "")
+AI_MODEL_TIMEOUT_SECONDS = 18
+AI_SEARCH_TIMEOUT_SECONDS = 6
+AI_SEARCH_MAX_RESULTS = 3
 
 # PostgreSQL is the single source of truth
 pg_init()
@@ -710,6 +713,11 @@ def ai_http_error_message(status, body=""):
     extra = compact_ai_text(body, 180)
     return f"AI request failed with HTTP {status}." + (f" `{extra}`" if extra else "")
 
+def ai_exception_message(exc):
+    if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
+        return "AI took too long to answer, so I stopped waiting. Try again in a bit."
+    return f"AI error: {str(exc)[:100]}"
+
 async def safe_ai_reply(message, content):
     content = fit_discord_content(content or "I couldn't come up with an answer.")
     try:
@@ -726,14 +734,14 @@ async def safe_ai_reply(message, content):
             allowed_mentions=discord.AllowedMentions.none(),
         )
 
-async def tavily_search_context(query, max_results=5):
+async def tavily_search_context(query, max_results=AI_SEARCH_MAX_RESULTS):
     if not TAVILY_API_KEY or not should_use_live_web_search(query):
         return ""
     payload = {
         "query": str(query or "")[:450],
         "search_depth": "basic",
         "topic": "general",
-        "max_results": max(1, min(int(max_results or 5), 8)),
+        "max_results": max(1, min(int(max_results or AI_SEARCH_MAX_RESULTS), AI_SEARCH_MAX_RESULTS)),
         "include_answer": True,
         "include_raw_content": False,
         "auto_parameters": True,
@@ -744,7 +752,7 @@ async def tavily_search_context(query, max_results=5):
     }
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.post("https://api.tavily.com/search", json=payload, headers=headers, timeout=12) as resp:
+            async with session.post("https://api.tavily.com/search", json=payload, headers=headers, timeout=AI_SEARCH_TIMEOUT_SECONDS) as resp:
                 if resp.status != 200:
                     body = await resp.text()
                     return f"Live web search was attempted but failed with Tavily HTTP {resp.status}: {compact_ai_text(body, 300)}"
@@ -759,7 +767,7 @@ async def tavily_search_context(query, max_results=5):
     if answer:
         lines.append(f"Tavily answer summary: {compact_ai_text(answer, 700)}")
     results = data.get("results") or []
-    for idx, result in enumerate(results[:max_results], start=1):
+    for idx, result in enumerate(results[:AI_SEARCH_MAX_RESULTS], start=1):
         title = compact_ai_text(result.get("title") or "Untitled", 140)
         url = str(result.get("url") or "").strip()
         snippet = compact_ai_text(result.get("content") or result.get("snippet") or "", 500)
@@ -3344,7 +3352,7 @@ async def semantic_ai_command_request(question, guild):
     }
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.post("https://api.groq.com/openai/v1/chat/completions", json=payload, headers=headers) as resp:
+            async with session.post("https://api.groq.com/openai/v1/chat/completions", json=payload, headers=headers, timeout=AI_MODEL_TIMEOUT_SECONDS) as resp:
                 if resp.status != 200:
                     guessed = fuzzy_command_guess(question)
                     return (guessed, "", False) if guessed else None
@@ -3606,7 +3614,7 @@ async def semantic_ai_batch_action(question, guild, draft=None):
     }
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.post("https://api.groq.com/openai/v1/chat/completions", json=payload, headers=headers) as resp:
+            async with session.post("https://api.groq.com/openai/v1/chat/completions", json=payload, headers=headers, timeout=AI_MODEL_TIMEOUT_SECONDS) as resp:
                 if resp.status != 200:
                     return None
                 data = await resp.json(content_type=None)
@@ -3994,7 +4002,7 @@ async def on_message(message):
             try:
                 async with message.channel.typing():
                     async with aiohttp.ClientSession() as session:
-                        async with session.post("https://api.groq.com/openai/v1/chat/completions", json=payload, headers=headers) as resp:
+                        async with session.post("https://api.groq.com/openai/v1/chat/completions", json=payload, headers=headers, timeout=AI_MODEL_TIMEOUT_SECONDS) as resp:
                             if resp.status == 200:
                                 data = await resp.json()
                                 answer = data["choices"][0]["message"]["content"].strip()
@@ -4006,7 +4014,7 @@ async def on_message(message):
                                 await safe_ai_reply(message, ai_http_error_message(resp.status, body))
             except Exception as e:
                 try:
-                    await safe_ai_reply(message, f"AI error: {str(e)[:100]}")
+                    await safe_ai_reply(message, ai_exception_message(e))
                 except Exception:
                     pass
             track_message_activity(message)
@@ -10487,7 +10495,7 @@ async def ask_command(ctx, *, question: str):
 
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.post("https://api.groq.com/openai/v1/chat/completions", json=payload, headers=headers) as resp:
+            async with session.post("https://api.groq.com/openai/v1/chat/completions", json=payload, headers=headers, timeout=AI_MODEL_TIMEOUT_SECONDS) as resp:
                 if resp.status != 200:
                     body = await resp.text()
                     await safe_remove_reaction(ctx.message, economy_q_timer_tick, bot.user)
@@ -10504,7 +10512,7 @@ async def ask_command(ctx, *, question: str):
 
     except Exception as e:
         await safe_remove_reaction(ctx.message, economy_q_timer_tick, bot.user)
-        await ctx.send(f"Error: {str(e)[:100]}")
+        await ctx.send(ai_exception_message(e))
 
 @bot.command(name="generate")
 async def generate_command(ctx, *, prompt: str):
