@@ -512,6 +512,19 @@ def init_db():
                 )
             """)
             cur.execute("""
+                CREATE TABLE IF NOT EXISTS bot_receipts (
+                    receipt_id TEXT PRIMARY KEY,
+                    guild_id BIGINT NOT NULL,
+                    channel_id BIGINT,
+                    actor_id BIGINT NOT NULL,
+                    target_ids BIGINT[] NOT NULL DEFAULT '{}',
+                    action TEXT NOT NULL,
+                    amount BIGINT,
+                    details TEXT,
+                    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+                )
+            """)
+            cur.execute("""
                 CREATE TABLE IF NOT EXISTS lottery_config (
                     guild_id BIGINT PRIMARY KEY,
                     channel_id BIGINT NOT NULL,
@@ -1195,6 +1208,18 @@ def get_economy_event(guild_id):
     conn.close()
     return row
 
+def active_event_key(guild_id):
+    if not guild_id:
+        return None
+    row = get_economy_event(guild_id)
+    return str(row["event_key"]).casefold() if row else None
+
+def event_shop_discount_rate(guild_id):
+    return 0.15 if active_event_key(guild_id) == "shopdiscount" else 0.0
+
+def event_transfer_tax_rate(guild_id):
+    return 0.0 if active_event_key(guild_id) == "taxfree" else TRANSFER_TAX_RATE
+
 def stop_economy_event(guild_id):
     conn = get_db_connection()
     cur = conn.cursor()
@@ -1239,6 +1264,47 @@ def donate_to_economy_event(guild_id, user_id, amount):
     cur.close()
     conn.close()
     return balance, new_balance, event
+
+def create_receipt(guild_id, channel_id, actor_id, target_ids, action, amount=None, details=None):
+    receipt_id = f"QTX-{int(time.time())}-{random.randint(1000, 9999)}"
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO bot_receipts (receipt_id, guild_id, channel_id, actor_id, target_ids, action, amount, details)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (receipt_id) DO NOTHING
+        """,
+        (
+            receipt_id,
+            int(guild_id or 0),
+            int(channel_id) if channel_id else None,
+            int(actor_id),
+            [int(x) for x in (target_ids or [])],
+            str(action or "")[:120],
+            int(amount) if amount is not None else None,
+            str(details or "")[:1500],
+        )
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+    return receipt_id
+
+def receipt_line(receipt_id):
+    return f"\nReceipt: `{receipt_id}`" if receipt_id else ""
+
+def get_receipt(receipt_id):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT receipt_id, guild_id, channel_id, actor_id, target_ids, action, amount, details, created_at FROM bot_receipts WHERE receipt_id = %s",
+        (str(receipt_id),)
+    )
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    return row
 
 def current_season_key(now=None):
     now = now or datetime.now(timezone.utc)
@@ -2502,7 +2568,7 @@ async def announce_lottery_update(guild, config, message):
         allowed_mentions=discord.AllowedMentions(roles=True)
     )
 
-def award_chat_xp(user_id):
+def award_chat_xp(user_id, event_multiplier=1):
     data = get_user(user_id)
     now = datetime.now(timezone.utc)
     last_xp = data.get("last_xp")
@@ -2511,7 +2577,7 @@ def award_chat_xp(user_id):
         if (now - last_xp).total_seconds() < CHAT_XP_COOLDOWN_SECS:
             return None
 
-    gained_xp = max(1, int(random.randint(15, 25) * xp_multiplier(data)))
+    gained_xp = max(1, int(random.randint(15, 25) * xp_multiplier(data) * max(1, event_multiplier or 1)))
     level = data.get("level") or 1
     xp = (data.get("xp") or 0) + gained_xp
     messages_sent = (data.get("messages_sent") or 0) + 1
@@ -4134,8 +4200,13 @@ async def shop(ctx):
                     max_qty = item.get("max_qty", 1)
                     owned_text = f"{owned}/{max_qty}" if max_qty > 1 else ("owned" if owned else "not owned")
                 marker = "→ " if item_id == selected_item_id else ""
+                discount = event_shop_discount_rate(ctx.guild.id if ctx.guild else None)
+                display_cost = int(item["cost"] * (1 - discount))
+                price_text = format_balance(display_cost)
+                if discount:
+                    price_text += f" ~~{format_balance(item['cost'])}~~"
                 lines.append(
-                    f"{marker}**{item_display_name(item)}** - {format_balance(item['cost'])}\n"
+                    f"{marker}**{item_display_name(item)}** - {price_text}\n"
                     f"Rarity: **{item_rarity_label(item)}**\n"
                     f"{item['description']}\n"
                     f"Owned: **{owned_text}**"
@@ -4196,9 +4267,11 @@ async def shop(ctx):
                         )
                         return
 
-                total_cost = item["cost"] * quantity
+                discount = event_shop_discount_rate(interaction.guild.id if interaction.guild else None)
+                unit_cost = int(item["cost"] * (1 - discount))
+                total_cost = unit_cost * quantity
                 if data["balance"] < total_cost:
-                    affordable = data["balance"] // item["cost"]
+                    affordable = data["balance"] // max(1, unit_cost)
                     await interaction.followup.send(
                         f"{Q_DENIED} That costs **{format_balance(total_cost)}**. You can afford **{affordable}**.",
                         ephemeral=True
@@ -4237,9 +4310,10 @@ async def shop(ctx):
                 await interaction.followup.send(f"{Q_DENIED} Database unavailable. Try again shortly.", ephemeral=True)
                 return
 
+            discount_text = f"\n{Q_EVENT} Shop Discount: **-{int(discount * 100)}%**" if discount else ""
             await interaction.followup.send(
                 f"{Q_SUCCESS} Bought **{quantity}x {item_name}** for **{format_balance(total_cost)}**.\n"
-                f"New Balance: **{format_balance(new_balance)}**{effect_text}",
+                f"New Balance: **{format_balance(new_balance)}**{discount_text}{effect_text}",
                 ephemeral=True
             )
             await self.shop_view.refresh_message()
@@ -4323,19 +4397,49 @@ async def cooldowns(ctx):
     if not await ensure_db_ready(ctx):
         return
 
+    def build_embed(data):
+        embed = discord.Embed(title=f"{Q_TIMER} Cooldowns", color=discord.Color.blurple())
+        embed.add_field(name="Daily", value=claim_cooldown_text(data.get("last_daily"), 86400), inline=True)
+        embed.add_field(name="Weekly", value=claim_cooldown_text(data.get("last_weekly"), 604800), inline=True)
+        embed.add_field(name="Monthly", value=claim_cooldown_text(data.get("last_monthly"), 2592000), inline=True)
+        for command in ["cf", "roulette", "slots", "blackjack", "scratch", "tower", "vault", "memory", "cardladder", "lockpick", "heist", "diceduel", "cases", "plinko", "luckynumber", "jackpotspin", "ms", "wheel"]:
+            embed.add_field(name=command, value=command_cooldown_text(ctx.author.id, command), inline=True)
+        embed.set_footer(text="Refresh updates live timestamps. Gambling uses one shared 𝚀𝚞𝚎wo cooldown.")
+        return embed
+
+    class CooldownsView(discord.ui.View):
+        def __init__(self):
+            super().__init__(timeout=LONG_HELP_VIEW_TIMEOUT)
+
+        async def interaction_check(self, interaction):
+            if interaction.user.id == ctx.author.id:
+                return True
+            await interaction.response.send_message("Open your own cooldowns with `.cooldowns`.", ephemeral=True)
+            return False
+
+        @discord.ui.button(label="Refresh", style=discord.ButtonStyle.primary)
+        async def refresh_button(self, interaction, button):
+            await interaction.response.defer()
+            try:
+                updated = await asyncio.to_thread(get_user, interaction.user.id)
+            except Exception:
+                return await interaction.followup.send(f"{Q_DENIED} Database unavailable. Try again shortly.", ephemeral=True)
+            await interaction.edit_original_response(embed=build_embed(updated), view=self, allowed_mentions=discord.AllowedMentions.none())
+
+        @discord.ui.button(label="Guide", style=discord.ButtonStyle.secondary)
+        async def guide_button(self, interaction, button):
+            await interaction.response.send_message(
+                f"{Q_BOOK} Daily, weekly, and monthly have separate claim timers. Gambling commands share one universal cooldown, so any gambling game starts the same timer.",
+                ephemeral=True,
+            )
+
     try:
         data = get_user(ctx.author.id)
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
 
-    embed = discord.Embed(title=f"{Q_TIMER} Cooldowns", color=discord.Color.blurple())
-    embed.add_field(name="Daily", value=claim_cooldown_text(data.get("last_daily"), 86400), inline=True)
-    embed.add_field(name="Weekly", value=claim_cooldown_text(data.get("last_weekly"), 604800), inline=True)
-    embed.add_field(name="Monthly", value=claim_cooldown_text(data.get("last_monthly"), 2592000), inline=True)
-    for command in ["cf", "roulette", "slots", "blackjack", "scratch", "tower", "vault", "memory", "cardladder", "lockpick", "heist", "diceduel", "cases", "plinko", "luckynumber", "jackpotspin", "ms", "wheel"]:
-        embed.add_field(name=command, value=command_cooldown_text(ctx.author.id, command), inline=True)
-    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+    await ctx.send(embed=build_embed(data), view=CooldownsView(), allowed_mentions=discord.AllowedMentions.none())
 
 @commands.command(aliases=["tx"])
 async def transactions(ctx, member: discord.Member = None):
@@ -5980,7 +6084,8 @@ async def give(ctx, *, args: str = None):
         try:
             before_recipient_balances = get_balances_for_users(recipient_ids)
             for recipient_id in recipient_ids:
-                tax = int(amount * TRANSFER_TAX_RATE)
+                tax_rate = event_transfer_tax_rate(ctx.guild.id if ctx.guild else None)
+                tax = int(amount * tax_rate)
                 transfer = transfer_user_balance(
                     user_id,
                     recipient_id,
@@ -5998,6 +6103,15 @@ async def give(ctx, *, args: str = None):
                     log_transaction(user_id, "transfer_tax_paid", -tax, "3% transfer tax burned")
                     log_transaction(SUPER_OWNER_ID, "transfer_tax", tax, f"Transfer tax from {user_id} to {recipient_id}")
             after_recipient_balances = get_balances_for_users(recipient_ids)
+            receipt_id = create_receipt(
+                ctx.guild.id if ctx.guild else 0,
+                ctx.channel.id,
+                ctx.author.id,
+                recipient_ids,
+                "give_multi",
+                amount,
+                f"amount_each={amount}; total_tax={total_tax}; recipients={len(recipient_ids)}",
+            )
         except ValueError:
             await ctx.send(f"{Q_DENIED} You only have {format_balance(get_user(user_id)['balance'])}")
             return
@@ -6008,10 +6122,11 @@ async def give(ctx, *, args: str = None):
         await reply_to_command(
             ctx,
             f"{QOIN_TRANSFER} You sent **{format_balance(amount)}** each to **{len(recipient_ids)}** users: {multi_targets['label']}\n"
-            f"Tax Burned: **{format_balance(total_tax)}**\n"
+            f"Tax Burned: **{format_balance(total_tax)}**{' (tax-free event)' if event_transfer_tax_rate(ctx.guild.id if ctx.guild else None) == 0 else ''}\n"
             f"Total Received: **{format_balance(total_received)}**\n"
             f"Your Balance: **{format_balance(old_sender_balance)}** → **{format_balance(new_sender_balance)}**\n"
-            f"{format_bulk_before_after(recipient_ids, before_recipient_balances, after_recipient_balances, format_balance, 'Recipient Balance')}",
+            f"{format_bulk_before_after(recipient_ids, before_recipient_balances, after_recipient_balances, format_balance, 'Recipient Balance')}"
+            f"{receipt_line(receipt_id)}",
             allowed_mentions=discord.AllowedMentions.none()
         )
         if has_economy_owner_power(ctx.author.id, ctx.guild):
@@ -6036,7 +6151,8 @@ async def give(ctx, *, args: str = None):
         return
 
     try:
-        tax = int(amount * TRANSFER_TAX_RATE)
+        tax_rate = event_transfer_tax_rate(ctx.guild.id if ctx.guild else None)
+        tax = int(amount * tax_rate)
         transfer = transfer_user_balance(
             user_id,
             member.id,
@@ -6055,6 +6171,15 @@ async def give(ctx, *, args: str = None):
         if tax:
             log_transaction(user_id, "transfer_tax_paid", -tax, "3% transfer tax burned")
             log_transaction(SUPER_OWNER_ID, "transfer_tax", tax, f"Transfer tax from {user_id} to {member.id}")
+        receipt_id = create_receipt(
+            ctx.guild.id if ctx.guild else 0,
+            ctx.channel.id,
+            ctx.author.id,
+            [member.id],
+            "give",
+            amount,
+            f"tax={tax}; received={receiver_credited_amount}",
+        )
     except ValueError:
         await ctx.send(f"{Q_DENIED} You only have {format_balance(data['balance'])}")
         return
@@ -6065,10 +6190,11 @@ async def give(ctx, *, args: str = None):
     await reply_to_command(
         ctx,
         f"{QOIN_TRANSFER} You sent **{format_balance(amount)}** to **{user_mention(member.id)}**\n"
-        f"Tax Burned: **{format_balance(tax)}**\n"
+        f"Tax Burned: **{format_balance(tax)}**{' (tax-free event)' if tax_rate == 0 else ''}\n"
         f"Received: **{format_balance(receiver_credited_amount)}**\n"
         f"Your Balance: **{format_balance(old_sender_balance)}** → **{format_balance(new_sender_balance)}**\n"
-        f"{user_mention(member.id)}'s Balance: **{format_balance(old_receiver_balance)}** → **{format_balance(new_receiver_balance)}**",
+        f"{user_mention(member.id)}'s Balance: **{format_balance(old_receiver_balance)}** → **{format_balance(new_receiver_balance)}**"
+        f"{receipt_line(receipt_id)}",
         allowed_mentions=discord.AllowedMentions.none()
     )
     if has_economy_owner_power(ctx.author.id, ctx.guild):
@@ -6135,6 +6261,10 @@ async def qstats(ctx, member: discord.Member = None):
     embed.add_field(name="Messages Tracked", value=f"{stats['messages_sent']:,}", inline=True)
     await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
+@commands.command(name="economyhealth", aliases=["ecohealth", "moneyhealth", "supply"])
+async def economyhealth(ctx):
+    await qstats.callback(ctx)
+
 # =====================
 # ADD / REMOVE (OWNER)
 # =====================
@@ -6174,6 +6304,7 @@ async def add(ctx, *, args: str = None):
             before_balances = get_balances_for_users(user_ids)
             count = bulk_add_users(user_ids, amount, ctx.author.id, "@everyone")
             after_balances = get_balances_for_users(user_ids)
+            receipt_id = create_receipt(ctx.guild.id if ctx.guild else 0, ctx.channel.id, ctx.author.id, user_ids, "add_everyone", amount, f"count={count}")
         except Exception:
             await send_error(ctx, "Database unavailable. Try again shortly.")
             return
@@ -6181,7 +6312,8 @@ async def add(ctx, *, args: str = None):
         await reply_to_command(
             ctx,
             f"{Q_SUCCESS} Added **{format_balance(amount)}** to **{count}** server members.\n"
-            f"{format_bulk_before_after(user_ids, before_balances, after_balances, format_balance, 'Balance')}",
+            f"{format_bulk_before_after(user_ids, before_balances, after_balances, format_balance, 'Balance')}"
+            f"{receipt_line(receipt_id)}",
             allowed_mentions=discord.AllowedMentions.none()
         )
         await send_economy_log(ctx, "𝚀𝚞𝚎wo Bulk Add", [
@@ -6211,6 +6343,7 @@ async def add(ctx, *, args: str = None):
             before_balances = get_balances_for_users(user_ids)
             count = bulk_add_users(user_ids, amount, ctx.author.id, f"role {role.id}")
             after_balances = get_balances_for_users(user_ids)
+            receipt_id = create_receipt(ctx.guild.id if ctx.guild else 0, ctx.channel.id, ctx.author.id, user_ids, "add_role", amount, f"role={role.id}; count={count}")
         except Exception:
             await send_error(ctx, "Database unavailable. Try again shortly.")
             return
@@ -6218,7 +6351,8 @@ async def add(ctx, *, args: str = None):
         await reply_to_command(
             ctx,
             f"{Q_SUCCESS} Added **{format_balance(amount)}** to **{count}** members with **{role.name}**.\n"
-            f"{format_bulk_before_after(user_ids, before_balances, after_balances, format_balance, 'Balance')}",
+            f"{format_bulk_before_after(user_ids, before_balances, after_balances, format_balance, 'Balance')}"
+            f"{receipt_line(receipt_id)}",
             allowed_mentions=discord.AllowedMentions.none()
         )
         await send_economy_log(ctx, "𝚀𝚞𝚎wo Bulk Add", [
@@ -6243,13 +6377,15 @@ async def add(ctx, *, args: str = None):
                 before_balances = get_balances_for_users(targets["user_ids"])
                 count = bulk_add_users(targets["user_ids"], amount, ctx.author.id, "multiple users")
                 after_balances = get_balances_for_users(targets["user_ids"])
+                receipt_id = create_receipt(ctx.guild.id if ctx.guild else 0, ctx.channel.id, ctx.author.id, targets["user_ids"], "add_multi", amount, f"count={count}")
             except Exception:
                 await send_error(ctx, "Database unavailable. Try again shortly.")
                 return
             await reply_to_command(
                 ctx,
                 f"{Q_SUCCESS} Added **{format_balance(amount)}** each to **{count:,}** users: {targets['label']}.\n"
-                f"{format_bulk_before_after(targets['user_ids'], before_balances, after_balances, format_balance, 'Balance')}",
+                f"{format_bulk_before_after(targets['user_ids'], before_balances, after_balances, format_balance, 'Balance')}"
+                f"{receipt_line(receipt_id)}",
                 allowed_mentions=discord.AllowedMentions.none()
             )
             await send_economy_log(ctx, "𝚀𝚞𝚎wo Multi Add", [
@@ -6272,6 +6408,7 @@ async def add(ctx, *, args: str = None):
     try:
         old_balance, new_balance = add_user_balance(member.id, amount, earned_delta=amount)
         log_transaction(member.id, "owner_add", amount, f"By {ctx.author.id}")
+        receipt_id = create_receipt(ctx.guild.id if ctx.guild else 0, ctx.channel.id, ctx.author.id, [member.id], "add", amount, f"{old_balance}->{new_balance}")
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
@@ -6279,7 +6416,8 @@ async def add(ctx, *, args: str = None):
     await reply_to_command(
         ctx,
         f"{Q_SUCCESS} Added **{format_balance(amount)}** to **{user_mention(member.id)}**\n"
-        f"Balance: **{format_balance(old_balance)}** → **{format_balance(new_balance)}**",
+        f"Balance: **{format_balance(old_balance)}** → **{format_balance(new_balance)}**"
+        f"{receipt_line(receipt_id)}",
         allowed_mentions=discord.AllowedMentions.none()
     )
     await send_economy_log(ctx, "𝚀𝚞𝚎wo Add", [
@@ -6336,6 +6474,7 @@ async def remove(ctx, *, args: str = None):
                     after_balances[user_id] = new_balance
                     total_removed += remove_amount
                     changed += 1
+                receipt_id = create_receipt(ctx.guild.id if ctx.guild else 0, ctx.channel.id, ctx.author.id, targets["user_ids"], "remove_multi", total_removed, f"changed={changed}; raw={raw_amount}")
             except ValueError:
                 await ctx.send(f"{Q_DENIED} Use `.remove @user @user 10k` or `.remove @user @user all`.")
                 return
@@ -6349,7 +6488,8 @@ async def remove(ctx, *, args: str = None):
                 ctx,
                 f"{Q_SUCCESS} Removed from **{changed:,}** users: {targets['label']}.\n"
                 f"Total Removed: **{format_balance(total_removed)}**\n"
-                f"{format_bulk_before_after(targets['user_ids'], before_balances, after_balances, format_balance, 'Balance')}",
+                f"{format_bulk_before_after(targets['user_ids'], before_balances, after_balances, format_balance, 'Balance')}"
+                f"{receipt_line(receipt_id)}",
                 allowed_mentions=discord.AllowedMentions.none()
             )
             await send_economy_log(ctx, "𝚀𝚞𝚎wo Multi Remove", [
@@ -6383,6 +6523,7 @@ async def remove(ctx, *, args: str = None):
         new_balance = max(0, old_balance - amount)
         update_user(member.id, balance=new_balance)
         log_transaction(member.id, "owner_remove", -amount, f"By {ctx.author.id}")
+        receipt_id = create_receipt(ctx.guild.id if ctx.guild else 0, ctx.channel.id, ctx.author.id, [member.id], "remove", amount, f"{old_balance}->{new_balance}")
     except ValueError:
         await ctx.send(f"{Q_DENIED} Use `.remove @user all`, `.remove all @user`, or a number like `10k`.")
         return
@@ -6393,7 +6534,8 @@ async def remove(ctx, *, args: str = None):
     await reply_to_command(
         ctx,
         f"{Q_SUCCESS} Removed **{format_balance(amount)}** from **{user_mention(member.id)}**\n"
-        f"Balance: **{format_balance(old_balance)}** → **{format_balance(new_balance)}**",
+        f"Balance: **{format_balance(old_balance)}** → **{format_balance(new_balance)}**"
+        f"{receipt_line(receipt_id)}",
         allowed_mentions=discord.AllowedMentions.none()
     )
     await send_economy_log(ctx, "𝚀𝚞𝚎wo Remove", [
@@ -6447,6 +6589,7 @@ async def addtick(ctx, *, args: str = None):
         schedule_lottery_refresh(ctx.guild, updated)
         if count == 1 and targets["member"] is not None:
             await assign_lottery_role(ctx.guild, targets["member"].id, updated.get("role_id") if updated else None)
+        receipt_id = create_receipt(ctx.guild.id, ctx.channel.id, ctx.author.id, targets["user_ids"], "addtick", amount, f"count={count}; total_added={amount * count}")
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
@@ -6456,7 +6599,8 @@ async def addtick(ctx, *, args: str = None):
         ctx,
         f"{Q_SUCCESS} Added **{amount:,}** free {Q_TICKET} tickets to **{count:,}** target(s): {targets['label']}.\n"
         f"Total Entries Added: **{total_added:,}**\n"
-        f"{format_bulk_before_after(targets['user_ids'], before_tickets, after_tickets, lambda value: f'{int(value):,}', 'Entries')}",
+        f"{format_bulk_before_after(targets['user_ids'], before_tickets, after_tickets, lambda value: f'{int(value):,}', 'Entries')}"
+        f"{receipt_line(receipt_id)}",
         allowed_mentions=discord.AllowedMentions.none()
     )
     await send_economy_log(ctx, "Lottery Tickets Added", [
@@ -6509,16 +6653,18 @@ async def removetick(ctx, *, args: str = None):
         after_tickets = get_lottery_ticket_counts(ctx.guild.id, targets["user_ids"])
         updated = get_lottery_config(ctx.guild.id)
         schedule_lottery_refresh(ctx.guild, updated)
+        total_removed = sum(max(0, before_tickets.get(user_id, 0) - after_tickets.get(user_id, 0)) for user_id in targets["user_ids"])
+        receipt_id = create_receipt(ctx.guild.id, ctx.channel.id, ctx.author.id, targets["user_ids"], "removetick", total_removed, f"limit_each={amount}; count={count}")
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
 
-    total_removed = sum(max(0, before_tickets.get(user_id, 0) - after_tickets.get(user_id, 0)) for user_id in targets["user_ids"])
     await reply_to_command(
         ctx,
         f"{Q_SUCCESS} Removed up to **{amount:,}** {Q_TICKET_MINUS} tickets from **{count:,}** target(s): {targets['label']}.\n"
         f"Entries Removed: **{total_removed:,}**\n"
-        f"{format_bulk_before_after(targets['user_ids'], before_tickets, after_tickets, lambda value: f'{int(value):,}', 'Entries')}",
+        f"{format_bulk_before_after(targets['user_ids'], before_tickets, after_tickets, lambda value: f'{int(value):,}', 'Entries')}"
+        f"{receipt_line(receipt_id)}",
         allowed_mentions=discord.AllowedMentions.none()
     )
     await send_economy_log(ctx, "Lottery Tickets Removed", [
@@ -6573,6 +6719,7 @@ async def settick(ctx, *, args: str = None):
         schedule_lottery_refresh(ctx.guild, updated)
         if count == 1 and amount > 0 and targets["member"] is not None:
             await assign_lottery_role(ctx.guild, targets["member"].id, updated.get("role_id") if updated else None)
+        receipt_id = create_receipt(ctx.guild.id, ctx.channel.id, ctx.author.id, targets["user_ids"], "settick", amount, f"count={count}")
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
@@ -6580,7 +6727,8 @@ async def settick(ctx, *, args: str = None):
     await reply_to_command(
         ctx,
         f"{Q_SUCCESS} Set {Q_TICKET} tickets to **{amount:,}** for **{count:,}** target(s): {targets['label']}.\n"
-        f"{format_bulk_before_after(targets['user_ids'], before_tickets, after_tickets, lambda value: f'{int(value):,}', 'Entries')}",
+        f"{format_bulk_before_after(targets['user_ids'], before_tickets, after_tickets, lambda value: f'{int(value):,}', 'Entries')}"
+        f"{receipt_line(receipt_id)}",
         allowed_mentions=discord.AllowedMentions.none()
     )
     await send_economy_log(ctx, "Lottery Tickets Set", [
@@ -6625,6 +6773,7 @@ async def setquesos(ctx, *, args: str = None):
         before_balances = get_balances_for_users(targets["user_ids"])
         count = bulk_set_balances(targets["user_ids"], amount, ctx.author.id, targets["log_label"])
         after_balances = get_balances_for_users(targets["user_ids"])
+        receipt_id = create_receipt(ctx.guild.id, ctx.channel.id, ctx.author.id, targets["user_ids"], "setquesos", amount, f"count={count}; target={targets['log_label']}")
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
@@ -6632,7 +6781,8 @@ async def setquesos(ctx, *, args: str = None):
     await reply_to_command(
         ctx,
         f"{Q_SUCCESS} Set balance to **{format_balance(amount)}** for **{count:,}** target(s): {targets['label']}.\n"
-        f"{format_bulk_before_after(targets['user_ids'], before_balances, after_balances, format_balance, 'Balance')}",
+        f"{format_bulk_before_after(targets['user_ids'], before_balances, after_balances, format_balance, 'Balance')}"
+        f"{receipt_line(receipt_id)}",
         allowed_mentions=discord.AllowedMentions.none()
     )
     await send_economy_log(ctx, "𝚀𝚞𝚎wo Balance Set", [
@@ -9425,7 +9575,29 @@ async def achievements(ctx, member: discord.Member = None):
             for _, name, progress, target, reward in closest[:3]
         ]
         embed.add_field(name="Closest", value="\n".join(close_lines), inline=False)
-    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
+    class AchievementView(discord.ui.View):
+        def __init__(self):
+            super().__init__(timeout=LONG_HELP_VIEW_TIMEOUT)
+
+        async def interaction_check(self, interaction):
+            if interaction.user.id == ctx.author.id:
+                return True
+            await interaction.response.send_message("Open your own achievements with `.achievements`.", ephemeral=True)
+            return False
+
+        @discord.ui.button(label="Guide", style=discord.ButtonStyle.secondary)
+        async def guide_button(self, interaction, button):
+            await interaction.response.send_message(
+                f"{Q_BADGE} Achievements are long-term badges. Win games, build play counts, and rewards pay automatically when a game result unlocks one. Use `.setbadge` to show up to 3 earned badges on your profile.",
+                ephemeral=True,
+            )
+
+        @discord.ui.button(label="Profile Badges", style=discord.ButtonStyle.primary)
+        async def badge_button(self, interaction, button):
+            await interaction.response.send_message("Use `.setbadge` to choose which earned badges show on your profile.", ephemeral=True)
+
+    await ctx.send(embed=embed, view=AchievementView(), allowed_mentions=discord.AllowedMentions.none())
 
 @commands.command(name="setbadge", aliases=["badge", "equipbadge", "profilebadge"])
 async def setbadge(ctx, *, badge_ids: str = None):
@@ -10111,6 +10283,63 @@ async def abuseaudit(ctx):
     add_split_embed_field(embed, "Daily Loss Watch", loss_lines or ["No major daily loss signals."], inline=False)
     await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
+@commands.command(name="riskprofile", aliases=["risk", "userrisk", "riskcheck"])
+async def riskprofile(ctx, member: discord.Member = None):
+    if not await ensure_db_ready(ctx):
+        return
+    user = member or ctx.author
+    try:
+        data = await asyncio.to_thread(get_user, user.id)
+        rows = await asyncio.to_thread(get_game_stats, user.id)
+        tx_rows = await asyncio.to_thread(get_recent_transactions, user.id, 8)
+        lottery_spend = await asyncio.to_thread(get_lottery_user_spend, ctx.guild.id if ctx.guild else None, user.id)
+    except Exception:
+        await send_error(ctx, "Database unavailable. Try again shortly.")
+        return
+    played = sum(int(row["played"] or 0) for row in rows)
+    wins = sum(int(row["wins"] or 0) for row in rows)
+    profit = sum(int(row["profit"] or 0) for row in rows)
+    losses = daily_loss_status(user.id, int(data.get("balance") or 0), 0)
+    win_rate = (wins / played * 100) if played else 0
+    loss_ratio = float(losses.get("ratio", 0) or 0)
+    if loss_ratio >= DAILY_LOSS_WARNING_RATIO or profit < -1_000_000:
+        risk_word = "High"
+        color = discord.Color.red()
+    elif played >= 25 or abs(profit) >= 500_000:
+        risk_word = "Medium"
+        color = discord.Color.orange()
+    else:
+        risk_word = "Low"
+        color = discord.Color.green()
+    risk_icon = {"Low": Q_RISK_LOW, "Medium": Q_RISK_MEDIUM, "High": Q_RISK_HIGH}.get(risk_word, Q_RISK_MEDIUM)
+    embed = discord.Embed(
+        title=f"{risk_icon} User Risk Profile",
+        description=user_mention(user.id),
+        color=color,
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.add_field(name="Risk", value=f"**{risk_word}**", inline=True)
+    embed.add_field(name="Balance", value=format_balance(int(data.get("balance") or 0)), inline=True)
+    embed.add_field(name="Daily Loss", value=f"{format_balance(int(losses.get('used') or 0))} / {format_balance(int(losses.get('limit') or 0))}", inline=True)
+    embed.add_field(name="Games", value=f"Played: **{played:,}**\nWins: **{wins:,}** ({win_rate:.1f}%)\nProfit: **{format_balance(profit)}**", inline=False)
+    if lottery_spend:
+        embed.add_field(
+            name="Current Lottery Spend",
+            value=f"Spent: **{format_balance(int(lottery_spend['spent'] or 0))}**\nTickets: **{int(lottery_spend['tickets'] or 0):,}**",
+            inline=True,
+        )
+    recent_volume = sum(abs(int(row["amount"] or 0)) for row in tx_rows)
+    embed.add_field(name="Recent Transaction Volume", value=format_balance(recent_volume), inline=True)
+    notes = []
+    if loss_ratio >= DAILY_LOSS_WARNING_RATIO:
+        notes.append("Daily loss warning threshold reached.")
+    if profit < -1_000_000:
+        notes.append("Large recent tracked game losses.")
+    if played == 0:
+        notes.append("No tracked game history yet.")
+    embed.add_field(name="Notes", value="\n".join(notes) if notes else "No major warning signs.", inline=False)
+    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
 
 # MINESWEEPER
 # =====================
@@ -10725,6 +10954,10 @@ EXPLANATIONS = {
     "gameaudit": "Admin-power command. Audits recent game win rates, house profit, and balance warnings.",
     "gaudit": "Alias for `.gameaudit`. Audits game balance.",
     "auditgames": "Alias for `.gameaudit`. Audits game balance.",
+    "riskprofile": "Shows a user's 𝚀𝚞𝚎wo risk profile: daily loss usage, game volume, profit, lottery spend, and recent transaction volume.",
+    "risk": "Alias for `.riskprofile`. Shows a user's risk profile.",
+    "userrisk": "Alias for `.riskprofile`. Shows a user's risk profile.",
+    "riskcheck": "Alias for `.riskprofile`. Shows a user's risk profile.",
     "gamehistory": "Shows recent tracked game results.",
     "history": "Alias for `.gamehistory`. Shows recent game results.",
     "ghistory": "Alias for `.gamehistory`. Shows recent game results.",
@@ -10737,6 +10970,10 @@ EXPLANATIONS = {
     "lb": "Shows a paginated local/global leaderboard with ranking types for quesos, level, earnings, wins, losses, net gambling, and messages.",
     "leaderboard": "Shows a paginated local/global leaderboard with ranking types for quesos, level, earnings, wins, losses, net gambling, and messages.",
     "qstats": "Admin-power command. Shows global 𝚀𝚞𝚎wo economy health, or use `.qstats @user` for that user's audit.",
+    "economyhealth": "Alias for `.qstats`. Shows global 𝚀𝚞𝚎wo economy health.",
+    "ecohealth": "Alias for `.qstats`. Shows global 𝚀𝚞𝚎wo economy health.",
+    "moneyhealth": "Alias for `.qstats`. Shows global 𝚀𝚞𝚎wo economy health.",
+    "supply": "Alias for `.qstats`. Shows global 𝚀𝚞𝚎wo economy health.",
     "economystats": "Alias for `.qstats`. Shows global 𝚀𝚞𝚎wo economy health.",
     "qstatus": "Alias for `.qstats`. Shows global 𝚀𝚞𝚎wo economy health.",
     "economyaudit": "Admin-power command. Shows global economy audit signals, or use `.economyaudit @user` for one user's audit.",
@@ -10754,8 +10991,8 @@ EXPLANATIONS = {
     "event": "Server owner/admin command for server 𝚀𝚞𝚎wo events. Use `.event`, `.event start jackpot 1h`, `.event donate 50k`, or `.event stop`.",
     "qevent": "Alias for `.event`. Shows or manages server 𝚀𝚞𝚎wo events.",
     "events": "Alias for `.event`. Shows or manages server 𝚀𝚞𝚎wo events.",
-    "add": "Admin-power command. Adds quesos. Target and amount can be in either order.",
-    "remove": "Admin-power command. Removes quesos. Target and amount can be in either order.",
+    "add": f"{QUE_OWNER_DISPLAY} command. Adds quesos. Target and amount can be in either order.",
+    "remove": f"{QUE_OWNER_DISPLAY} command. Removes quesos. Target and amount can be in either order.",
     "addtick": f"{QUE_OWNER_DISPLAY} command. Adds free lottery tickets. Target and tickets can be in either order.",
     "removetick": f"{QUE_OWNER_DISPLAY} command. Removes lottery tickets. Target and tickets can be in either order.",
     "remtick": "Alias for `.removetick`. Removes lottery tickets.",
@@ -10924,6 +11161,7 @@ DETAILED_EXPLANATIONS = {
     "achievements": "Shows hard game badge progress and rewards. Badges are intentionally long-term, like 100 wins in a game or 1,000 total games played. Earned badge rewards are paid automatically when the tracked game result completes.",
     "setbadge": "Use `.setbadge` with no arguments to list earned badge IDs. Use `.setbadge <badge_id> [badge_id] [badge_id]` to show up to 3 earned badges on `.profile`, or `.setbadge clear` to remove them.",
     "gamebalance": "Lists every 𝚀𝚞𝚎wo game with its current risk label. Use this as the quick balance audit before changing odds, multipliers, or max-risk behavior.",
+    "riskprofile": "Shows user-specific safety signals rather than game-wide risk. It combines balance, current daily loss usage, tracked game play/win/profit totals, current lottery spend in this server, recent transaction volume, and plain warning notes.",
     "gameaudit": "Admin-power balancing dashboard. It reads recent tracked game history, then shows plays, win rate, house profit, and signals for games that look too generous or too harsh. Use `.gameaudit` for 7 days or `.gameaudit 30` for up to 30 days.",
     "gamehistory": "Shows your recent tracked game results from the shared game history table. Newer and tracked games appear here with result, net amount, and timestamp.",
     "season": "Monthly 𝚀𝚞𝚎wo season leaderboard. Game results add to the current month automatically. Ranking is by monthly game profit, then wins, then games played. Top rewards are 100m, 80m, and 50m.",
@@ -10945,9 +11183,10 @@ DETAILED_EXPLANATIONS = {
     "lb": "Shows a paginated leaderboard. Use the buttons to switch between local server rankings and global all-server rankings. Use the ranking type menu to sort by quesos, level, earnings, total won, total lost, net gambling, or messages. The embed also shows your rank for the selected scope and type.",
     "leaderboard": "Alias for `.lb`. Shows local/global paginated rankings with selectable ranking types and your rank.",
     "qstats": "Admin-power command for checking the global 𝚀𝚞𝚎wo economy. It shows total money supply, total earned, gambling won/lost/net, active lotteries, lottery pots, ticket count, tracked taxes/payments, richest user, and tracked messages. If you pass a member, it redirects to that user's economy audit.",
+    "economyhealth": "Alias for `.qstats`. Use it when you want the global money-supply health view instead of a specific user's audit.",
     "economyaudit": "Admin-power economy audit page. Without a member, it adds balancing signals on top of qstats: daily losses, recent transaction volume, tracked sink/payment totals, and per-game play/win/profit signals sorted by biggest impact. With a member, it shows that user's balance, level, net gambling, daily loss usage, game signals, recent games, recent transactions, and warnings.",
-    "add": f"Admin-power command. Adds new quesos to a user. `.add @user <amount>` and `.add <amount> @user` both work. {QUE_OWNER_DISPLAY} can use @everyone or a role. It does not support `all`.",
-    "remove": "Admin-power command. Removes quesos from a user. `.remove @user <amount>` and `.remove <amount> @user` both work. Use `all` to remove their full balance.",
+    "add": f"{QUE_OWNER_DISPLAY}-only command. Adds new quesos to a user. `.add @user <amount>` and `.add <amount> @user` both work. {QUE_OWNER_DISPLAY} can use @everyone or a role. It does not support `all`. Sensitive changes generate a receipt ID.",
+    "remove": f"{QUE_OWNER_DISPLAY}-only command. Removes quesos from a user. `.remove @user <amount>` and `.remove <amount> @user` both work. Use `all` to remove their full balance. Sensitive changes generate a receipt ID.",
     "addtick": f"{QUE_OWNER_DISPLAY}-only lottery admin command. Adds free entries to the current lottery. `.addtick @user <tickets>` and `.addtick <tickets> @user` both work, including roles and @everyone.",
     "removetick": f"{QUE_OWNER_DISPLAY}-only lottery admin command. Removes entries from the current lottery. `.removetick @user <tickets>` and `.removetick <tickets> @user` both work, including roles and @everyone. Tickets never go below 0.",
     "settick": f"{QUE_OWNER_DISPLAY}-only lottery admin command. Sets current lottery entries to an exact number. `.settick @user <tickets>` and `.settick <tickets> @user` both work, including roles and @everyone.",
@@ -10991,7 +11230,7 @@ DETAILED_EXPLANATIONS = {
 
 ECONHELP_COMMANDS = [
     ("Core", ["guide", "onboard", "bal", "profile", "inventory", "settheme", "quests", "dailychallenge", "streaks", "shop", "cooldowns", "transactions", "limits", "lb"]),
-    ("Stats", ["gamestats", "achievements", "setbadge", "gamebalance", "gamehistory", "season", "qstats", "economyaudit", "abuseaudit"]),
+    ("Stats", ["gamestats", "achievements", "setbadge", "gamebalance", "gamehistory", "season", "qstats", "economyhealth", "economyaudit", "abuseaudit", "riskprofile"]),
     ("Claims", ["daily", "weekly", "monthly"]),
     ("Lottery", ["lottery", "buytick", "lotterystats", "editlottery", "stoplottery", "addtick", "removetick", "settick"]),
     ("Gambling", ["cf", "roulette", "slots", "blackjack", "scratch", "tower", "vault", "memory", "cardladder", "lockpick", "heist", "diceduel", "cases", "plinko", "luckynumber", "jackpotspin", "dungeon", "ms", "wheel"]),
@@ -11194,7 +11433,7 @@ async def setup(bot_ref, log_callback=None):
     economy_commands = [
         bal, profile, inventory, settheme, quests, dailychallenge, streaks, guide, onboard, shop, cooldowns, transactions, limits, lottery, editlottery, stoplottery, lotterystats, buytick,
         daily, weekly, monthly, gamble, roulette, slots, blackjack,
-        scratch, tower, vault, memory_game, card_ladder, lockpick, heist, dice_duel, cases, plinko, lucky_number, jackpot_spin, dungeon, minesweeper, wheel, give, lb, gamestats, achievements, setbadge, gamebalance, gameaudit, event, gamehistory, season, endseason, qstats, economyaudit, abuseaudit, add, remove, addtick, removetick, settick, setquesos, econhelp, explain
+        scratch, tower, vault, memory_game, card_ladder, lockpick, heist, dice_duel, cases, plinko, lucky_number, jackpot_spin, dungeon, minesweeper, wheel, give, lb, gamestats, achievements, setbadge, gamebalance, gameaudit, event, gamehistory, season, endseason, qstats, economyhealth, economyaudit, abuseaudit, riskprofile, add, remove, addtick, removetick, settick, setquesos, econhelp, explain
     ]
     for command in economy_commands:
         if bot.get_command(command.name):

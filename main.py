@@ -95,6 +95,7 @@ from economy import (
     Q_USER_EDIT as economy_q_user_edit,
     Q_VOICE as economy_q_voice,
     Q_WARNING as economy_q_warning,
+    get_receipt as economy_get_receipt,
     risk_label as economy_risk_label,
     record_game_result as economy_record_game_result,
     setup as economy_setup,
@@ -111,6 +112,9 @@ from pgdata import (
     delete_guild_birthday_channel,
     delete_active_game_session,
     get_guild_activity_top,
+    get_ai_control_settings,
+    get_bot_receipt,
+    get_command_usage_stats,
     get_message_activity_count,
     get_message_activity_top,
     load_afk_users as pg_load_afk_users,
@@ -134,6 +138,7 @@ from pgdata import (
     load_sleeping_users as pg_load_sleeping_users,
     load_watchlist,
     pg_init,
+    record_command_usage,
     remove_afk_user,
     remove_active_poll,
     remove_active_timer,
@@ -154,6 +159,9 @@ from pgdata import (
     save_guild_birthday_channel,
     save_guild_prefix,
     save_guild_log_config,
+    save_bot_receipt,
+    set_ai_control_setting,
+    delete_ai_control_setting,
     save_reaction_shutdown_channels,
     save_reaction_watchlist,
     save_shutdown_channels,
@@ -928,7 +936,11 @@ def denial_message(detail=None):
 
 def command_denial_detail(ctx, error=None):
     command_name = ctx.command.qualified_name if getattr(ctx, "command", None) else ""
-    que_only = {"addtick", "removetick", "settick", "setquesos", "fsleep", "wake"}
+    que_only = {
+        "addtick", "removetick", "settick", "setquesos", "fsleep", "wake",
+        "aisettings", "aiignore", "aiunignore", "aichannel", "aistyle",
+        "add", "remove",
+    }
     if command_name in que_only:
         return f"Only {QUE_OWNER_DISPLAY} can use this."
     if ctx.guild:
@@ -2997,7 +3009,13 @@ async def on_guild_update(before, after):
 
 async def award_chat_xp_background(message):
     try:
-        xp_result = await asyncio.to_thread(economy_award_chat_xp, message.author.id)
+        event_multiplier = 1
+        try:
+            if message.guild and economy_module.active_event_key(message.guild.id) == "doublexp":
+                event_multiplier = 2
+        except Exception:
+            event_multiplier = 1
+        xp_result = await asyncio.to_thread(economy_award_chat_xp, message.author.id, event_multiplier)
     except Exception as e:
         print(f"Chat XP skipped for {message.author.id}: {type(e).__name__} - {e}")
         return
@@ -3023,6 +3041,11 @@ COMMAND_EXAMPLE_OVERRIDES = {
     "analyze": ".analyze while replying to an image",
     "archive": ".archive 50",
     "auditcommands": ".auditcommands",
+    "aisettings": ".aisettings",
+    "aiignore": ".aiignore @user",
+    "aiunignore": ".aiunignore @user",
+    "aichannel": ".aichannel on",
+    "aistyle": ".aistyle casual and short",
     "ban": ".ban @user reason",
     "blackjack": ".blackjack 1000",
     "block": ".block @user",
@@ -3039,6 +3062,7 @@ COMMAND_EXAMPLE_OVERRIDES = {
     "endseason": ".endseason 2026-05",
     "enable": ".enable command",
     "event": ".event start jackpot 1h",
+    "economyhealth": ".economyhealth",
     "aiknow": ".aiknow slots",
     "aidoctor": ".aidoctor",
     "aimemory": ".aimemory @user",
@@ -3063,6 +3087,7 @@ COMMAND_EXAMPLE_OVERRIDES = {
     "dungeon": ".dungeon",
     "gameaudit": ".gameaudit",
     "gamestats": ".gamestats @user",
+    "commandstats": ".commandstats",
     "memory": ".memory 1000",
     "messages": ".messages",
     "onboard": ".onboard",
@@ -3076,11 +3101,13 @@ COMMAND_EXAMPLE_OVERRIDES = {
     "preifx": ".preifx !",
     "purge": ".purge @user 20",
     "quote": ".quote <message link>",
+    "receipt": ".receipt QTX-...",
     "reopen": ".reopen",
     "remove": ".remove @user 1000",
     "removerole": ".removerole @user @role",
     "reply": ".reply <message id/link> message",
     "roulette": ".roulette 1000 red",
+    "riskprofile": ".riskprofile @user",
     "rpurge": ".rpurge @user 20",
     "rshut": ".rshut @user",
     "scratch": ".scratch 1000",
@@ -3099,6 +3126,7 @@ COMMAND_EXAMPLE_OVERRIDES = {
     "summon": ".summon @user",
     "summon2": ".summon2 @user",
     "timer": ".timer 10m study",
+    "usersettings": ".usersettings compact on",
     "tower": ".tower 1000",
     "translate": ".translate hello to Italian",
     "ttt": ".ttt @user 1000",
@@ -3274,13 +3302,16 @@ AI_SAFE_COMMANDS = {
     "bal", "balance", "cash", "profile", "level", "lvl", "inventory", "inv",
     "shop", "cooldowns", "cds", "quests", "transactions", "tx", "lb",
     "leaderboard", "gamestats", "achievements", "gamebalance", "gamehistory",
-    "season", "limits", "messages", "msgstats", "messagestats", "mstats",
+    "season", "limits", "riskprofile", "risk", "userrisk", "riskcheck", "economyhealth", "ecohealth", "moneyhealth", "supply",
+    "messages", "msgstats", "messagestats", "mstats",
     "activitystats", "astats", "away", "userinfo", "pfp", "avatar", "calc",
     "define", "timer", "ctimer", "alarm", "find", "econhelp", "quewohelp",
     "economyhelp", "ehelp", "explain", "lottery", "lotterystats",
     "aimemory", "aime", "memoryai", "whatyouknow", "aiknow", "aiknowledge", "knowcmd", "aicmd",
     "aidoctor", "botdoctor", "doctorai", "diagnosebot",
-    "aihistory", "aiactions", "actionhistory", "auditcommands", "cmdaudit", "commandaudit",
+    "aihistory", "aiactions", "actionhistory", "aisettings", "aiconfig", "aicontrols", "usersettings", "mysettings", "preferences", "prefs",
+    "commandstats", "cmdstats", "usage", "receipt", "txreceipt", "qreceipt",
+    "auditcommands", "cmdaudit", "commandaudit",
     "gameaudit", "gaudit", "auditgames", "event", "qevent", "events", "quote", "archive", "transcript",
     "generate", "analyse", "analyze", "analyseimage", "analyzeimage", "vision",
 }
@@ -3294,6 +3325,7 @@ AI_SUPEROWNER_ONLY_COMMANDS = {
     "add", "remove", "addtick", "removetick", "remtick", "deltick", "settick", "setquesos",
     "disable", "enable", "disableall", "enableall", "prefix", "preifx", "setprefix",
     "settings", "setup", "config", "setlogs", "slashsync", "auditcommands", "cmdaudit", "commandaudit", "aihistory", "aiactions", "actionhistory",
+    "aisettings", "aiconfig", "aicontrols", "aiignore", "ignoreai", "aiunignore", "unignoreai", "aichannel", "aitoggle", "aistyle", "aipersonality",
     "block", "unblock", "shut", "unshut", "rshut", "unrshut", "lockdown", "reopen",
     "rlockdown", "runlock", "lock", "unlock", "ban", "unban", "kick", "addrole",
     "removerole", "deleterole", "send", "reply", "fwd", "forward", "fw", "quote", "archive", "censor", "uncensor", "clearcensors",
@@ -3572,6 +3604,97 @@ def record_ai_action(message, action, detail="", success=True):
         "detail": str(detail or "")[:500],
         "success": bool(success),
     })
+
+async def ai_settings_for(scope, scope_id):
+    rows = await asyncio.to_thread(get_ai_control_settings, scope, scope_id)
+    return {str(row[2]): str(row[3]) for row in rows}
+
+async def ai_is_ignored(message):
+    global_settings = await ai_settings_for("global", 0)
+    guild_settings = await ai_settings_for("guild", message.guild.id if message.guild else 0)
+    user_settings = await ai_settings_for("user", message.author.id)
+    ignored_users = {part.strip() for part in global_settings.get("ignored_users", "").split(",") if part.strip()}
+    if str(message.author.id) in ignored_users or user_settings.get("ignore", "off") == "on":
+        return True
+    if guild_settings.get("enabled", "on") == "off":
+        return True
+    return False
+
+async def ai_style_note():
+    settings = await ai_settings_for("global", 0)
+    style = settings.get("style", "").strip()
+    if not style:
+        return ""
+    return f"Current style instruction from {QUE_OWNER_DISPLAY}: {style[:250]}"
+
+async def maybe_run_ai_control_action(message, question):
+    if not has_super_owner_power(message.author, message.guild):
+        return False
+    lowered = (question or "").casefold()
+    mentioned_users = [user for user in (message.mentions or []) if not getattr(user, "bot", False)]
+    if mentioned_users and any(phrase in lowered for phrase in ("ignore", "stop responding to", "don't respond to", "dont respond to", "mute ai for")):
+        settings = await ai_settings_for("global", 0)
+        ignored = {part.strip() for part in settings.get("ignored_users", "").split(",") if part.strip()}
+        for user in mentioned_users:
+            ignored.add(str(user.id))
+        ok = await asyncio.to_thread(set_ai_control_setting, "global", 0, "ignored_users", ",".join(sorted(ignored)), message.author.id)
+        record_ai_action(message, "ai ignore", ", ".join(str(user.id) for user in mentioned_users), bool(ok))
+        await message.reply(
+            f"{economy_q_accept if ok else economy_q_warning} I'll ignore {', '.join(f'<@{user.id}>' for user in mentioned_users)}.",
+            mention_author=False,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+        return True
+    if mentioned_users and any(phrase in lowered for phrase in ("unignore", "respond to", "listen to", "talk to")):
+        settings = await ai_settings_for("global", 0)
+        ignored = {part.strip() for part in settings.get("ignored_users", "").split(",") if part.strip()}
+        for user in mentioned_users:
+            ignored.discard(str(user.id))
+        ok = await asyncio.to_thread(set_ai_control_setting, "global", 0, "ignored_users", ",".join(sorted(ignored)), message.author.id)
+        record_ai_action(message, "ai unignore", ", ".join(str(user.id) for user in mentioned_users), bool(ok))
+        await message.reply(
+            f"{economy_q_accept if ok else economy_q_warning} I can respond to {', '.join(f'<@{user.id}>' for user in mentioned_users)} again.",
+            mention_author=False,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+        return True
+    if message.guild and any(phrase in lowered for phrase in ("stop responding in this server", "disable ai here", "turn ai off here", "turn off ai here")):
+        ok = await asyncio.to_thread(set_ai_control_setting, "guild", message.guild.id, "enabled", "off", message.author.id)
+        record_ai_action(message, "ai server off", str(message.guild.id), bool(ok))
+        await message.reply(f"{economy_q_accept if ok else economy_q_warning} AI replies are off in this server now.", mention_author=False)
+        return True
+    if message.guild and any(phrase in lowered for phrase in ("respond in this server", "enable ai here", "turn ai on here", "turn on ai here")):
+        ok = await asyncio.to_thread(set_ai_control_setting, "guild", message.guild.id, "enabled", "on", message.author.id)
+        record_ai_action(message, "ai server on", str(message.guild.id), bool(ok))
+        await message.reply(f"{economy_q_accept if ok else economy_q_warning} AI replies are on in this server now.", mention_author=False)
+        return True
+    style_match = re.search(r"\b(?:make|set|change)\s+(?:your\s+)?(?:ai\s+)?(?:style|personality|tone)\s+(?:to\s+)?(.+)", question or "", flags=re.IGNORECASE | re.DOTALL)
+    if style_match:
+        style = style_match.group(1).strip()[:200]
+        if style:
+            ok = await asyncio.to_thread(set_ai_control_setting, "global", 0, "style", style, message.author.id)
+            record_ai_action(message, "ai style", style, bool(ok))
+            await message.reply(f"{economy_q_accept if ok else economy_q_warning} Style updated: **{style}**", mention_author=False)
+            return True
+    return False
+
+def new_receipt_id():
+    return f"QTX-{int(time.time())}-{random.randint(1000, 9999)}"
+
+async def save_sensitive_receipt(ctx, action, target_ids=None, amount=None, details=None):
+    receipt_id = new_receipt_id()
+    ok = await asyncio.to_thread(
+        save_bot_receipt,
+        receipt_id,
+        ctx.guild.id if ctx.guild else 0,
+        ctx.channel.id if ctx.channel else None,
+        ctx.author.id,
+        target_ids or [],
+        action,
+        amount,
+        details,
+    )
+    return receipt_id if ok else None
 
 def parse_ai_batch_duration(text):
     lowered = text.casefold()
@@ -4019,6 +4142,9 @@ async def on_message(message):
         question = question.strip()
 
         if question or referenced_message:
+            if await ai_is_ignored(message):
+                track_message_activity(message)
+                return
             context_text = ""
             if referenced_message:
                 ref_content = referenced_message.content or ""
@@ -4069,6 +4195,10 @@ async def on_message(message):
                 return
 
             if question and should_try_ai_command_planner(question):
+                if await maybe_run_ai_control_action(message, question):
+                    track_message_activity(message)
+                    return
+
                 if await maybe_run_ai_batch_action(message, question):
                     track_message_activity(message)
                     return
@@ -4098,6 +4228,9 @@ async def on_message(message):
                         "If a user asks for current/live info, say you may be outdated and ask for a source or suggest checking live info."
                     ),
                 }]
+            style_note = await ai_style_note()
+            if style_note:
+                messages.append({"role": "system", "content": style_note})
             messages.append({
                 "role": "system",
                 "content": (
@@ -4298,18 +4431,18 @@ HELP_CATEGORIES = {
         "guide", "onboard", "bal", "profile", "inventory", "settheme", "quests", "dailychallenge", "streaks", "shop", "cooldowns", "transactions", "lottery", "lotterystats", "buytick",
         "daily", "weekly", "monthly", "cf", "roulette", "slots", "blackjack", "scratch", "tower", "vault", "memory", "cardladder", "lockpick",
         "heist", "diceduel", "cases", "plinko", "luckynumber", "jackpotspin", "dungeon", "ms", "wheel",
-        "give", "lb", "gamestats", "achievements", "setbadge", "gamebalance", "gameaudit", "gamehistory", "season", "event", "limits", "qstats", "economyaudit", "abuseaudit", "econhelp", "explain",
+        "give", "lb", "gamestats", "achievements", "setbadge", "gamebalance", "gameaudit", "gamehistory", "season", "event", "limits", "qstats", "economyhealth", "economyaudit", "abuseaudit", "riskprofile", "econhelp", "explain",
     ],
     "Games": ["games", "howtoplay", "ttt", "c4", "chess", "move", "resign", "flagquiz", "flagstats", "q", "picker"],
     "Utility": ["help", "userinfo", "pfp", "calc", "define", "timer", "ctimer", "alarm", "poll", "epoll", "translate", "find"],
-    "AI": ["ask", "generate", "analyse", "aimemory", "aiknow", "aihistory", "aidoctor"],
+    "AI": ["ask", "generate", "analyse", "aimemory", "aiknow", "aihistory", "aisettings", "aiignore", "aiunignore", "aichannel", "aistyle", "usersettings", "aidoctor"],
     "Server Tools": [
         "dsnipe", "esnipe", "rsnipe", "rolesinfo", "roleinfo", "purge", "rpurge", "steal", "fwd", "quote", "archive",
         "giveaway", "listbans", "listblocks", "listtargets", "listcensors", "lists",
     ],
     "Status": ["afk", "sleep", "wake", "fsleep", "away", "setbday", "removebday", "setbdaychannel", "activity", "activitystats", "messages"],
     "Admin": [
-        "settings", "slashsync", "health", "perms", "sessions", "auditcommands", "setlogs", "prefix", "disable", "enable", "disableall", "enableall", "dclist", "perf", "test", "testlog", "testrlog",
+        "settings", "slashsync", "health", "perms", "sessions", "auditcommands", "commandstats", "receipt", "setlogs", "prefix", "disable", "enable", "disableall", "enableall", "dclist", "perf", "test", "testlog", "testrlog",
         "endttt", "setnick", "unmute", "kick", "ban", "unban", "addrole", "removerole", "deleterole",
         "lock", "unlock", "lockdown", "reopen", "rlockdown", "runlock", "shut", "unshut", "clearwatchlist", "rshut", "unrshut",
         "send", "reply", "fwd", "aban", "raban", "abanlist", "summon", "summon2", "block", "unblock",
@@ -4756,7 +4889,7 @@ class SettingsView(View):
     async def admin_commands_button(self, interaction, button):
         prefix = prefix_for_guild(interaction.guild)
         await interaction.response.send_message(
-            "Quick setup commands:\n"
+            "Quick setup guide:\n"
             f"`{prefix}prefix <new>` - change prefix\n"
             f"`{prefix}setlogs` - setup logs\n"
             f"`{prefix}setbdaychannel #channel` - birthdays\n"
@@ -4764,7 +4897,10 @@ class SettingsView(View):
             f"`{prefix}lottery` - lottery panel\n"
             f"`{prefix}editlottery <setting> <value>` - lottery settings\n"
             f"`{prefix}disable <command>` / `{prefix}enable <command>` - command access\n"
-            f"`{prefix}economyaudit` - economy audit",
+            f"`{prefix}commandstats` - command usage\n"
+            f"`{prefix}receipt <id>` - review sensitive action receipts\n"
+            f"`{prefix}economyaudit` - economy audit\n"
+            f"`{prefix}aisettings` - AI controls for {QUE_OWNER_DISPLAY}",
             ephemeral=True,
         )
 
@@ -4878,6 +5014,99 @@ async def aihistory_command(ctx, member: discord.User = None):
         embed.add_field(name="Actions", value=embed_value("\n".join(lines), 3800), inline=False)
     await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
+@bot.command(name="aisettings", aliases=["aiconfig", "aicontrols"])
+async def aisettings_command(ctx):
+    """Shows AI control settings."""
+    if not has_super_owner_power(ctx.author, ctx.guild):
+        return await ctx.send(denial_message(f"Only {QUE_OWNER_DISPLAY} can change AI controls."))
+    global_settings = await ai_settings_for("global", 0)
+    guild_settings = await ai_settings_for("guild", ctx.guild.id if ctx.guild else 0)
+    embed = discord.Embed(
+        title=f"{economy_q_ai_history} AI Settings",
+        description="AI behavior controls. You can also tell the AI naturally, like `ignore @user` or `stop responding in this server`.",
+        color=discord.Color.blurple(),
+    )
+    embed.add_field(name="Global", value=joined_embed_value([f"`{k}` = `{v}`" for k, v in global_settings.items()], empty="None"), inline=False)
+    embed.add_field(name="This Server", value=joined_embed_value([f"`{k}` = `{v}`" for k, v in guild_settings.items()], empty="None"), inline=False)
+    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
+@bot.command(name="aiignore", aliases=["ignoreai"])
+async def aiignore_command(ctx, member: discord.User = None):
+    """Makes the AI ignore a user globally."""
+    if not has_super_owner_power(ctx.author, ctx.guild):
+        return await ctx.send(denial_message(f"Only {QUE_OWNER_DISPLAY} can change AI controls."))
+    if not member:
+        return await ctx.send("Use `.aiignore @user`.")
+    settings = await ai_settings_for("global", 0)
+    ignored = {part.strip() for part in settings.get("ignored_users", "").split(",") if part.strip()}
+    ignored.add(str(member.id))
+    ok = await asyncio.to_thread(set_ai_control_setting, "global", 0, "ignored_users", ",".join(sorted(ignored)), ctx.author.id)
+    await ctx.send(f"{economy_q_accept if ok else economy_q_warning} AI will ignore <@{member.id}>.", allowed_mentions=discord.AllowedMentions.none())
+
+@bot.command(name="aiunignore", aliases=["unignoreai"])
+async def aiunignore_command(ctx, member: discord.User = None):
+    """Allows the AI to respond to an ignored user again."""
+    if not has_super_owner_power(ctx.author, ctx.guild):
+        return await ctx.send(denial_message(f"Only {QUE_OWNER_DISPLAY} can change AI controls."))
+    if not member:
+        return await ctx.send("Use `.aiunignore @user`.")
+    settings = await ai_settings_for("global", 0)
+    ignored = {part.strip() for part in settings.get("ignored_users", "").split(",") if part.strip()}
+    ignored.discard(str(member.id))
+    ok = await asyncio.to_thread(set_ai_control_setting, "global", 0, "ignored_users", ",".join(sorted(ignored)), ctx.author.id)
+    await ctx.send(f"{economy_q_accept if ok else economy_q_warning} AI can respond to <@{member.id}> again.", allowed_mentions=discord.AllowedMentions.none())
+
+@bot.command(name="aichannel", aliases=["aitoggle"])
+async def aichannel_command(ctx, mode: str = None):
+    """Turns AI replies on or off in this server."""
+    if not has_super_owner_power(ctx.author, ctx.guild):
+        return await ctx.send(denial_message(f"Only {QUE_OWNER_DISPLAY} can change AI controls."))
+    if ctx.guild is None:
+        return await ctx.send("Use this in a server.")
+    key = str(mode or "").casefold()
+    if key not in {"on", "off"}:
+        return await ctx.send("Use `.aichannel on` or `.aichannel off`.")
+    ok = await asyncio.to_thread(set_ai_control_setting, "guild", ctx.guild.id, "enabled", key, ctx.author.id)
+    await ctx.send(f"{economy_q_accept if ok else economy_q_warning} AI responses are now **{key}** in this server.")
+
+@bot.command(name="aistyle", aliases=["aipersonality"])
+async def aistyle_command(ctx, *, style: str = None):
+    """Changes the AI's global style note."""
+    if not has_super_owner_power(ctx.author, ctx.guild):
+        return await ctx.send(denial_message(f"Only {QUE_OWNER_DISPLAY} can change AI controls."))
+    if not style:
+        return await ctx.send("Use `.aistyle casual`, `.aistyle serious`, `.aistyle short`, or any short style note.")
+    ok = await asyncio.to_thread(set_ai_control_setting, "global", 0, "style", style[:200], ctx.author.id)
+    await ctx.send(f"{economy_q_accept if ok else economy_q_warning} AI style set to: **{style[:200]}**")
+
+@bot.command(name="usersettings", aliases=["mysettings", "preferences", "prefs"])
+async def usersettings_command(ctx, key: str = None, *, value: str = None):
+    """Shows or changes your personal bot preferences."""
+    allowed = {
+        "compact": "Compact command results where supported",
+        "aifriendly": "Let the AI use your saved bot profile naturally",
+        "quiet": "Reduce optional reminder-style text where supported",
+    }
+    if not key:
+        settings = await ai_settings_for("user", ctx.author.id)
+        embed = discord.Embed(
+            title=f"{economy_q_user_edit} User Settings",
+            description=f"Use `.usersettings <setting> on/off`.\nSettings: {', '.join(f'`{name}`' for name in allowed)}",
+            color=discord.Color.blurple(),
+        )
+        for setting, description in allowed.items():
+            embed.add_field(name=setting, value=f"{description}\nCurrent: **{settings.get(setting, 'off')}**", inline=False)
+        return await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+    setting = key.casefold()
+    if setting not in allowed:
+        return await ctx.send(f"Unknown setting. Use `.usersettings` to see the list.")
+    normalized = str(value or "").casefold().strip()
+    if normalized not in {"on", "off", "true", "false", "yes", "no"}:
+        return await ctx.send(f"Use `.usersettings {setting} on` or `.usersettings {setting} off`.")
+    stored = "on" if normalized in {"on", "true", "yes"} else "off"
+    ok = await asyncio.to_thread(set_ai_control_setting, "user", ctx.author.id, setting, stored, ctx.author.id)
+    await ctx.send(f"{economy_q_accept if ok else economy_q_warning} `{setting}` is now **{stored}**.")
+
 @bot.command(name="auditcommands", aliases=["cmdaudit", "commandaudit"])
 async def auditcommands_command(ctx):
     """Checks command registry coverage for help, explanations, aliases, and UI fallbacks."""
@@ -4925,6 +5154,65 @@ async def auditcommands_command(ctx):
     embed.add_field(name="Missing Examples", value=embed_value(", ".join(missing_example[:40]) or "None", 1000), inline=False)
     embed.add_field(name="Input Commands Without UI/Example", value=embed_value(", ".join(input_without_ui[:40]) or "None", 1000), inline=False)
     embed.add_field(name="Duplicate Aliases", value=embed_value("\n".join(duplicate_alias_lines) or "None", 1000), inline=False)
+    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
+@bot.command(name="commandstats", aliases=["cmdstats", "usage"])
+@is_admin_power()
+async def commandstats_command(ctx, scope: str = "local"):
+    """Shows command usage stats for this server or globally."""
+    guild_id = None if str(scope or "").casefold() in {"global", "all"} else (ctx.guild.id if ctx.guild else 0)
+    rows = await asyncio.to_thread(get_command_usage_stats, guild_id, 25)
+    embed = discord.Embed(
+        title=f"{economy_q_command_check} Command Usage",
+        description="Global usage." if guild_id is None else "This server's usage.",
+        color=discord.Color.blurple(),
+    )
+    if not rows:
+        embed.add_field(name="Commands", value="No command usage tracked yet.", inline=False)
+    else:
+        lines = []
+        for index, row in enumerate(rows, 1):
+            command_name, uses, users, last_used = row[:4]
+            ts = discord.utils.format_dt(last_used.replace(tzinfo=timezone.utc), "R") if last_used else "unknown"
+            lines.append(f"**#{index}** `.{command_name}` - **{int(uses):,}** uses, **{int(users):,}** user(s), last {ts}")
+        embed.add_field(name="Commands", value=embed_value("\n".join(lines), 3800), inline=False)
+    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
+@bot.command(name="receipt", aliases=["txreceipt", "qreceipt"])
+@is_admin_power()
+async def receipt_command(ctx, receipt_id: str = None):
+    """Shows a stored receipt for sensitive bot actions."""
+    if not receipt_id:
+        return await ctx.send("Use `.receipt QTX-...`.")
+    row = await asyncio.to_thread(economy_get_receipt, receipt_id.strip())
+    if not row:
+        row = await asyncio.to_thread(get_bot_receipt, receipt_id.strip())
+    if not row:
+        return await ctx.send("Receipt not found.")
+    if isinstance(row, dict):
+        rid = row.get("receipt_id")
+        guild_id = row.get("guild_id")
+        channel_id = row.get("channel_id")
+        actor_id = row.get("actor_id")
+        target_ids = row.get("target_ids")
+        action = row.get("action")
+        amount = row.get("amount")
+        details = row.get("details")
+        created_at = row.get("created_at")
+    else:
+        rid, guild_id, channel_id, actor_id, target_ids, action, amount, details, created_at = row
+    embed = discord.Embed(
+        title=f"{economy_q_archive} Receipt {rid}",
+        color=discord.Color.gold(),
+        timestamp=created_at.replace(tzinfo=timezone.utc) if created_at else datetime.now(timezone.utc),
+    )
+    embed.add_field(name="Action", value=str(action), inline=True)
+    embed.add_field(name="Actor", value=f"<@{actor_id}>", inline=True)
+    embed.add_field(name="Amount", value=economy_format_balance(amount) if amount is not None else "None", inline=True)
+    targets = [f"<@{user_id}>" for user_id in (target_ids or [])]
+    embed.add_field(name="Targets", value=joined_embed_value(targets, empty="None", limit=1000), inline=False)
+    if details:
+        embed.add_field(name="Details", value=embed_value(str(details), 1800), inline=False)
     await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
 @bot.command(name="aidoctor", aliases=["botdoctor", "doctorai", "diagnosebot"])
@@ -6823,6 +7111,13 @@ async def block_blacklisted(ctx):
         print(f"Blacklisted user blocked: {ctx.author} ({ctx.author.id}) in guild {ctx.guild.id if ctx.guild else 'DM'}")
         return False
     return True
+
+@bot.after_invoke
+async def track_command_usage_after(ctx):
+    if not getattr(ctx, "command", None) or getattr(ctx.author, "bot", False):
+        return
+    guild_id = ctx.guild.id if ctx.guild else 0
+    asyncio.create_task(asyncio.to_thread(record_command_usage, guild_id, ctx.command.name, ctx.author.id))
 
 @bot.command(name="prefix", aliases=["preifx", "setprefix"])
 async def prefix_command(ctx, new_prefix: str = None):

@@ -311,6 +311,45 @@ def _create_tables(cur):
         )
     """)
 
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS command_usage_stats (
+            guild_id BIGINT NOT NULL,
+            command_name TEXT NOT NULL,
+            user_id BIGINT NOT NULL,
+            uses BIGINT NOT NULL DEFAULT 0,
+            last_used TIMESTAMP NOT NULL DEFAULT NOW(),
+            PRIMARY KEY (guild_id, command_name, user_id)
+        )
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_command_usage_stats_command ON command_usage_stats (command_name, uses DESC)")
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS bot_receipts (
+            receipt_id TEXT PRIMARY KEY,
+            guild_id BIGINT NOT NULL,
+            channel_id BIGINT,
+            actor_id BIGINT NOT NULL,
+            target_ids BIGINT[] NOT NULL DEFAULT '{}',
+            action TEXT NOT NULL,
+            amount BIGINT,
+            details TEXT,
+            created_at TIMESTAMP NOT NULL DEFAULT NOW()
+        )
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_bot_receipts_actor_time ON bot_receipts (actor_id, created_at DESC)")
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS ai_control_settings (
+            scope TEXT NOT NULL,
+            scope_id BIGINT NOT NULL,
+            key TEXT NOT NULL,
+            value TEXT NOT NULL,
+            updated_by BIGINT,
+            updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+            PRIMARY KEY (scope, scope_id, key)
+        )
+    """)
+
 def _migrate_bot_config(cur):
     cur.execute("SELECT to_regclass('public.bot_config')")
     if cur.fetchone()[0] is None:
@@ -334,6 +373,191 @@ def _migrate_bot_config(cur):
     """)
 
     cur.execute("DROP TABLE bot_config")
+
+def record_command_usage(guild_id, command_name, user_id):
+    _ensure_ready()
+    if not pg_ready:
+        return False
+    try:
+        conn = pg_conn()
+        if conn is None:
+            return False
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO command_usage_stats (guild_id, command_name, user_id, uses, last_used)
+            VALUES (%s, %s, %s, 1, NOW())
+            ON CONFLICT (guild_id, command_name, user_id) DO UPDATE SET
+                uses = command_usage_stats.uses + 1,
+                last_used = NOW()
+            """,
+            (int(guild_id or 0), str(command_name or "").casefold()[:80], int(user_id))
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+        return True
+    except Exception:
+        return False
+
+def get_command_usage_stats(guild_id=None, limit=20):
+    _ensure_ready()
+    if not pg_ready:
+        return []
+    try:
+        conn = pg_conn()
+        if conn is None:
+            return []
+        cur = conn.cursor()
+        if guild_id is None:
+            cur.execute(
+                """
+                SELECT command_name, SUM(uses) AS uses, COUNT(DISTINCT user_id) AS users, MAX(last_used) AS last_used
+                FROM command_usage_stats
+                GROUP BY command_name
+                ORDER BY uses DESC, command_name ASC
+                LIMIT %s
+                """,
+                (int(limit),)
+            )
+        else:
+            cur.execute(
+                """
+                SELECT command_name, SUM(uses) AS uses, COUNT(DISTINCT user_id) AS users, MAX(last_used) AS last_used
+                FROM command_usage_stats
+                WHERE guild_id = %s
+                GROUP BY command_name
+                ORDER BY uses DESC, command_name ASC
+                LIMIT %s
+                """,
+                (int(guild_id), int(limit))
+            )
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        return rows
+    except Exception:
+        return []
+
+def save_bot_receipt(receipt_id, guild_id, channel_id, actor_id, target_ids, action, amount=None, details=None):
+    _ensure_ready()
+    if not pg_ready:
+        return False
+    try:
+        conn = pg_conn()
+        if conn is None:
+            return False
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO bot_receipts (receipt_id, guild_id, channel_id, actor_id, target_ids, action, amount, details)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (receipt_id) DO NOTHING
+            """,
+            (
+                str(receipt_id),
+                int(guild_id or 0),
+                int(channel_id) if channel_id else None,
+                int(actor_id),
+                [int(x) for x in (target_ids or [])],
+                str(action or "")[:120],
+                int(amount) if amount is not None else None,
+                str(details or "")[:1500],
+            )
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+        return True
+    except Exception:
+        return False
+
+def get_bot_receipt(receipt_id):
+    _ensure_ready()
+    if not pg_ready:
+        return None
+    try:
+        conn = pg_conn()
+        if conn is None:
+            return None
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT receipt_id, guild_id, channel_id, actor_id, target_ids, action, amount, details, created_at FROM bot_receipts WHERE receipt_id = %s",
+            (str(receipt_id),)
+        )
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        return row
+    except Exception:
+        return None
+
+def set_ai_control_setting(scope, scope_id, key, value, updated_by=None):
+    _ensure_ready()
+    if not pg_ready:
+        return False
+    try:
+        conn = pg_conn()
+        if conn is None:
+            return False
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO ai_control_settings (scope, scope_id, key, value, updated_by, updated_at)
+            VALUES (%s, %s, %s, %s, %s, NOW())
+            ON CONFLICT (scope, scope_id, key) DO UPDATE SET
+                value = EXCLUDED.value,
+                updated_by = EXCLUDED.updated_by,
+                updated_at = NOW()
+            """,
+            (str(scope), int(scope_id or 0), str(key), str(value), int(updated_by) if updated_by else None)
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+        return True
+    except Exception:
+        return False
+
+def delete_ai_control_setting(scope, scope_id, key):
+    _ensure_ready()
+    if not pg_ready:
+        return False
+    try:
+        conn = pg_conn()
+        if conn is None:
+            return False
+        cur = conn.cursor()
+        cur.execute("DELETE FROM ai_control_settings WHERE scope = %s AND scope_id = %s AND key = %s", (str(scope), int(scope_id or 0), str(key)))
+        conn.commit()
+        cur.close()
+        conn.close()
+        return True
+    except Exception:
+        return False
+
+def get_ai_control_settings(scope=None, scope_id=None):
+    _ensure_ready()
+    if not pg_ready:
+        return []
+    try:
+        conn = pg_conn()
+        if conn is None:
+            return []
+        cur = conn.cursor()
+        if scope is None:
+            cur.execute("SELECT scope, scope_id, key, value, updated_by, updated_at FROM ai_control_settings ORDER BY updated_at DESC")
+        else:
+            cur.execute(
+                "SELECT scope, scope_id, key, value, updated_by, updated_at FROM ai_control_settings WHERE scope = %s AND scope_id = %s ORDER BY key ASC",
+                (str(scope), int(scope_id or 0))
+            )
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        return rows
+    except Exception:
+        return []
 
 def _fetch_id_set(table, column="user_id"):
     _ensure_ready()
