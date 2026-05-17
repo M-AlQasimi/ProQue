@@ -689,13 +689,92 @@ def ai_http_error_message(status, body=""):
         return "AI API key/config is being rejected. Check the AI provider key in Railway."
     if status >= 500:
         return "AI provider is having trouble right now. Try again in a bit."
-    extra = compact_ai_text(body, 180)
-    return f"AI request failed with HTTP {status}." + (f" `{extra}`" if extra else "")
+    detail = clean_provider_error(body)
+    return detail or f"AI request failed with HTTP {status}."
+
+def clean_provider_error(body):
+    text = str(body or "").strip()
+    if not text:
+        return ""
+    candidates = []
+    try:
+        data = json.loads(text)
+        if isinstance(data, dict):
+            for key in ("error", "errors", "messages"):
+                value = data.get(key)
+                if isinstance(value, dict):
+                    msg = value.get("message") or value.get("error") or value.get("detail")
+                    if msg:
+                        candidates.append(str(msg))
+                elif isinstance(value, list):
+                    for item in value:
+                        if isinstance(item, dict):
+                            msg = item.get("message") or item.get("error") or item.get("detail")
+                            if msg:
+                                candidates.append(str(msg))
+                        elif item:
+                            candidates.append(str(item))
+            if data.get("message"):
+                candidates.append(str(data["message"]))
+        elif isinstance(data, list):
+            for item in data:
+                if isinstance(item, dict) and item.get("message"):
+                    candidates.append(str(item["message"]))
+    except Exception:
+        candidates.append(text)
+
+    message = next((item for item in candidates if item.strip()), text)
+    message = re.sub(r"^(AiError:\s*)+", "", message, flags=re.IGNORECASE).strip()
+    message = re.sub(r"\s*\([0-9a-f]{8}-[0-9a-f-]{27,}\)\s*$", "", message, flags=re.IGNORECASE).strip()
+    message = re.sub(r"\s+", " ", message).strip()
+    if not message:
+        return ""
+    if "nsfw" in message.casefold():
+        return "Input prompt contains NSFW content."
+    if "rate limit" in message.casefold() or "too many requests" in message.casefold():
+        return "AI is rate-limited right now. Give it a minute and try again."
+    return compact_ai_text(message, 220)
+
+def clean_user_error(error, fallback="Something went wrong."):
+    if isinstance(error, discord.Forbidden):
+        return "I do not have permission to do that."
+    if isinstance(error, discord.NotFound):
+        return "I could not find that message, channel, user, or role anymore."
+    if isinstance(error, discord.HTTPException):
+        text = str(error)
+        lowered = text.casefold()
+        if "unknown message" in lowered:
+            return "That message no longer exists."
+        if "missing permissions" in lowered or "forbidden" in lowered:
+            return "I do not have permission to do that."
+        if "must be 2000 or fewer" in lowered or "maximum size" in lowered:
+            return "That response was too long for Discord."
+        if getattr(error, "status", None) == 429:
+            return "Discord is rate-limiting that action. Try again in a bit."
+        return "Discord rejected that action."
+    if isinstance(error, commands.MissingPermissions):
+        return "You do not have permission to do that."
+    if isinstance(error, commands.CheckFailure):
+        return "You cannot use that command here."
+    text = str(error or "").strip()
+    if not text:
+        return fallback
+    cleaned = clean_provider_error(text) if text[:1] in "{[" else text
+    cleaned = re.sub(r"^Error:\s*", "", cleaned, flags=re.IGNORECASE).strip()
+    cleaned = re.sub(r"^\d{3}\s+[A-Za-z ]+:\s*", "", cleaned).strip()
+    cleaned = re.sub(r"^[A-Za-z_][\w.]*Error:\s*", "", cleaned).strip()
+    cleaned = re.sub(r"\s*\([0-9a-f]{8}-[0-9a-f-]{27,}\)\s*$", "", cleaned, flags=re.IGNORECASE).strip()
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if not cleaned:
+        return fallback
+    if len(cleaned) > 220:
+        return compact_ai_text(cleaned, 220)
+    return cleaned
 
 def ai_exception_message(exc):
     if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
         return "AI took too long to answer, so I stopped waiting. Try again in a bit."
-    return f"AI error: {str(exc)[:100]}"
+    return clean_user_error(exc, "AI failed to answer.")
 
 async def safe_ai_reply(message, content):
     content = fit_discord_content(content or "I couldn't come up with an answer.")
@@ -984,7 +1063,7 @@ async def invoke_prefix_command_from_message(message, command_name, args=None):
     except Exception as e:
         print(f"AI command bridge failed for {command.name}: {type(e).__name__} - {e}")
         await message.reply(
-            fit_discord_content(f"I tried running `{command.name}` and tripped over a wire: `{type(e).__name__}`"),
+            fit_discord_content(f"I tried running `{command.name}` but it failed: {clean_user_error(e)}"),
             mention_author=False,
             allowed_mentions=discord.AllowedMentions.none(),
         )
@@ -2737,7 +2816,7 @@ async def endactivity(ctx):
         await refresh_activity_live_message(ctx.guild.id, config, rows=[])
     except Exception as e:
         print(f"Manual activity report end failed for guild {ctx.guild.id}: {type(e).__name__} - {e}")
-        return await ctx.send(f"{economy_q_warning} I couldn't end the current activity report: `{type(e).__name__}`")
+        return await ctx.send(f"{economy_q_warning} I couldn't end the current activity report: {clean_user_error(e)}")
 
     if ctx.channel.id != channel.id:
         await ctx.send(
@@ -2954,6 +3033,9 @@ COMMAND_EXAMPLE_OVERRIDES = {
     "aimemory": ".aimemory",
     "find": ".find 885548126365171824",
     "flagquiz": ".flagquiz",
+    "fwd": ".fwd 5",
+    "forward": ".forward #channel 5 @user",
+    "fw": ".fw <message link>",
     "fsleep": ".fsleep @user 1h",
     "give": ".give @user 1000",
     "giveaway": ".giveaway 10m prize",
@@ -3046,7 +3128,7 @@ GENERIC_INPUT_UI_COMMANDS = {
     "howtoplay", "how", "rules", "flagquiz", "flags", "fq", "ttt", "c4", "chess",
     "move", "chessmove", "setnick", "shut", "unshut", "rshut", "unrshut", "purge",
     "rpurge", "unmute", "ban", "unban", "kick", "addrole", "removerole", "send",
-    "reply", "aban", "raban", "summon2", "block", "unblock", "fsleep", "wake",
+    "reply", "fwd", "forward", "fw", "aban", "raban", "summon2", "block", "unblock", "fsleep", "wake",
     "find", "censor", "uncensor", "ask", "generate",
 }
 
@@ -3199,7 +3281,7 @@ AI_SUPEROWNER_ONLY_COMMANDS = {
     "settings", "setup", "config", "setlogs", "slashsync",
     "block", "unblock", "shut", "unshut", "rshut", "unrshut", "lockdown", "reopen",
     "rlockdown", "runlock", "lock", "unlock", "ban", "unban", "kick", "addrole",
-    "removerole", "deleterole", "send", "reply", "censor", "uncensor", "clearcensors",
+    "removerole", "deleterole", "send", "reply", "fwd", "forward", "fw", "censor", "uncensor", "clearcensors",
     "editlottery", "stoplottery", "editactivity", "endactivity", "stopactivity",
 }
 
@@ -3816,7 +3898,7 @@ async def maybe_run_ai_batch_action(message, question):
             result_text = f"Added **{economy_format_balance(action['amount'])}** each to **{count:,}** user(s)."
     except Exception as e:
         clear_ai_batch_draft(message)
-        await message.reply(f"Batch reward failed: `{type(e).__name__}`", mention_author=False)
+        await message.reply(f"Batch reward failed: {clean_user_error(e)}", mention_author=False)
         return True
 
     clear_ai_batch_draft(message)
@@ -4160,7 +4242,7 @@ async def on_command_error(ctx, error):
         print(f"Unexpected error in {ctx.command}: {type(error).__name__} - {error}")
         await notify_superowner_error(ctx, error)
         if has_owner_power(ctx.author, ctx.guild):
-            await ctx.send(fit_discord_content(f"Error: `{error}`"))
+            await ctx.send(fit_discord_content(clean_user_error(error)))
         else:
             await ctx.send(denial_message("Something went wrong while running this command. Try the help command for the right usage."))
 
@@ -4183,7 +4265,7 @@ HELP_CATEGORIES = {
         "settings", "slashsync", "health", "perms", "sessions", "setlogs", "prefix", "disable", "enable", "disableall", "enableall", "dclist", "perf", "test", "testlog", "testrlog",
         "endttt", "setnick", "unmute", "kick", "ban", "unban", "addrole", "removerole", "deleterole",
         "lock", "unlock", "lockdown", "reopen", "rlockdown", "runlock", "shut", "unshut", "clearwatchlist", "rshut", "unrshut",
-        "send", "reply", "aban", "raban", "abanlist", "summon", "summon2", "block", "unblock",
+        "send", "reply", "fwd", "aban", "raban", "abanlist", "summon", "summon2", "block", "unblock",
         "censor", "uncensor", "clearcensors", "editlottery", "stoplottery", "editactivity", "endactivity", "stopactivity",
         "add", "remove", "addtick", "removetick", "settick", "setquesos",
     ],
@@ -6143,7 +6225,7 @@ class PollSetupModal(Modal):
         try:
             msg = await send_poll_message(interaction.channel, interaction.guild, interaction.user, str(self.question.value).strip(), options, delta)
         except ValueError as e:
-            return await interaction.followup.send(str(e), ephemeral=True)
+            return await interaction.followup.send(clean_user_error(e), ephemeral=True)
         await interaction.followup.send(f"Poll created: {msg.jump_url}", ephemeral=True)
 
 class OpenPollSetupButton(Button):
@@ -6849,7 +6931,7 @@ async def rolesinfo(ctx):
             await ctx.send(chunk)
 
     except Exception as e:
-        await ctx.send(f"Error: `{type(e).__name__} - {e}`")
+        await ctx.send(clean_user_error(e))
 
 @bot.command()
 @is_admin_power()
@@ -8080,9 +8162,9 @@ class Connect4Button(Button):
             print(f"[ERROR in Connect4 callback]\n{traceback_str}")
             try:
                 if interaction.response.is_done():
-                    await interaction.followup.send(fit_discord_content(f"Error:\n```{e}```"), ephemeral=True)
+                    await interaction.followup.send(clean_user_error(e), ephemeral=True)
                 else:
-                    await interaction.response.send_message(fit_discord_content(f"Error:\n```{e}```"), ephemeral=True)
+                    await interaction.response.send_message(clean_user_error(e), ephemeral=True)
             except Exception as err:
                 print(f"Failed to send error: {err}")
 
@@ -8238,7 +8320,7 @@ async def setnick(ctx, members: commands.Greedy[discord.Member], *, nickname: st
     except discord.Forbidden:
         await ctx.send("I don't have permission to change one or more of those nicknames.")
     except Exception as e:
-        await ctx.send(f"Error: {e}")
+        await ctx.send(clean_user_error(e))
 
 @bot.command()
 @is_admin_power()
@@ -8490,7 +8572,7 @@ async def purge(ctx, *, args: str = None):
     except discord.Forbidden:
         await ctx.send("I don’t have permission to delete messages.", delete_after=5)
     except discord.HTTPException as e:
-        await ctx.send(f"Error: {type(e).__name__} - {e}", delete_after=5)
+        await ctx.send(clean_user_error(e), delete_after=5)
 
 
 @bot.command()
@@ -8540,10 +8622,10 @@ async def rpurge(ctx, *, args: str = None):
         await ctx.send(summary, delete_after=10, allowed_mentions=discord.AllowedMentions.none())
 
     except discord.HTTPException as e:
-        await ctx.send(f"Failed to remove reactions: {type(e).__name__} - {e}", delete_after=5)
+        await ctx.send(f"Failed to remove reactions: {clean_user_error(e)}", delete_after=5)
     except Exception as e:
         print(f"[RPURGE ERROR] {type(e).__name__} - {e}")
-        await ctx.send(f"An unexpected error occurred: {type(e).__name__}", delete_after=5)
+        await ctx.send("An unexpected error occurred while removing reactions.", delete_after=5)
 
 @bot.command(name="lock")
 @is_admin_power()
@@ -8579,7 +8661,7 @@ async def unmute(ctx, members: commands.Greedy[discord.Member]):
         except discord.Forbidden:
             return await ctx.send("Missing permissions to unmute one or more of those members.")
         except Exception as e:
-            return await ctx.send(f"Failed to unmute: {e}")
+            return await ctx.send(f"Failed to unmute: {clean_user_error(e)}")
     await ctx.send(
         f"Unmuted **{len(changed)}** user(s): {', '.join(changed)}.",
         allowed_mentions=discord.AllowedMentions.none()
@@ -8733,9 +8815,9 @@ class NameModal(Modal):
             except discord.Forbidden:
                 await interaction.followup.send(f"{economy_q_reject} I don't have permission to create stickers.", ephemeral=True)
             except discord.HTTPException as e:
-                await interaction.followup.send(f"{economy_q_reject} Failed to add sticker: {e.text[:100] if e.text else e}", ephemeral=True)
+                await interaction.followup.send(f"{economy_q_reject} Failed to add sticker: {clean_user_error(e)}", ephemeral=True)
             except Exception as e:
-                await interaction.followup.send(f"{economy_q_reject} Failed to add sticker: {e}", ephemeral=True)
+                await interaction.followup.send(f"{economy_q_reject} Failed to add sticker: {clean_user_error(e)}", ephemeral=True)
         elif self.type_ in ["emoji", "animated_emoji"]:
             is_animated = getattr(self.emoji_char, "animated", False) if self.emoji_char else False
             try:
@@ -8749,9 +8831,9 @@ class NameModal(Modal):
             except discord.Forbidden:
                 await interaction.followup.send(f"{economy_q_reject} I don't have permission to create emojis.", ephemeral=True)
             except discord.HTTPException as e:
-                await interaction.followup.send(f"{economy_q_reject} Failed to add emoji: {e.text[:100] if e.text else e}", ephemeral=True)
+                await interaction.followup.send(f"{economy_q_reject} Failed to add emoji: {clean_user_error(e)}", ephemeral=True)
             except Exception as e:
-                await interaction.followup.send(f"{economy_q_reject} Failed to add emoji: {e}", ephemeral=True)
+                await interaction.followup.send(f"{economy_q_reject} Failed to add emoji: {clean_user_error(e)}", ephemeral=True)
 
 class StealView(View):
     def __init__(self, type_: str, asset: BytesIO, emoji_char=None, preview_url: str = None):
@@ -8817,7 +8899,7 @@ async def steal(ctx):
             embed.add_field(name="Format", value=sticker.format.name, inline=True)
             await ctx.send(embed=embed, view=StealView("sticker", buffer, preview_url=preview_url))
         except Exception as e:
-            await ctx.send(f"Error reading sticker: {e}", delete_after=5)
+            await ctx.send(f"Could not read sticker: {clean_user_error(e)}", delete_after=5)
             return
     
     elif attachments:
@@ -8838,7 +8920,7 @@ async def steal(ctx):
                 embed.add_field(name="Size", value=f"{first.size / 1024:.1f} KB", inline=True)
                 await ctx.send(embed=embed, view=StealView("sticker", buffer, preview_url=first.url))
             except Exception as e:
-                await ctx.send(f"Error downloading image: {e}", delete_after=5)
+                await ctx.send(f"Could not download image: {clean_user_error(e)}", delete_after=5)
                 return
         else:
             await ctx.send("Attachment is not an image.", delete_after=5)
@@ -8863,7 +8945,7 @@ async def steal(ctx):
                 embed.add_field(name="Preview", value=str(emoji_obj), inline=False)
                 await ctx.send(embed=embed, view=StealView("emoji", buffer, emoji_obj))
             except Exception as e:
-                await ctx.send(f"Error fetching animated emoji: {e}", delete_after=5)
+                await ctx.send(f"Could not fetch animated emoji: {clean_user_error(e)}", delete_after=5)
                 return
         else:
             await ctx.send("Could not fetch emoji.", delete_after=5)
@@ -8887,7 +8969,7 @@ async def steal(ctx):
                 embed.add_field(name="Preview", value=str(emoji_obj), inline=False)
                 await ctx.send(embed=embed, view=StealView("emoji", buffer, emoji_obj))
             except Exception as e:
-                await ctx.send(f"Error fetching emoji: {e}", delete_after=5)
+                await ctx.send(f"Could not fetch emoji: {clean_user_error(e)}", delete_after=5)
                 return
         else:
             await ctx.send("Could not fetch emoji - it may not be in this server.", delete_after=5)
@@ -8941,6 +9023,198 @@ async def send(ctx, target=None, *, msg=None):
         await ctx.send(
             f"Message sent to {target_channel.mention}.",
             delete_after=3,
+            allowed_mentions=discord.AllowedMentions.none()
+        )
+
+
+FORWARD_MESSAGE_LINK_RE = re.compile(
+    r"https?://(?:canary\.|ptb\.)?discord(?:app)?\.com/channels/(?P<guild>\d+|@me)/(?P<channel>\d+)/(?P<message>\d+)"
+)
+
+async def resolve_forward_channel(ctx, token):
+    if not token:
+        return None
+    raw = token.strip()
+    if raw.startswith("<#") and raw.endswith(">"):
+        raw = raw[2:-1]
+    if raw.isdigit():
+        try:
+            channel = bot.get_channel(int(raw)) or await bot.fetch_channel(int(raw))
+        except Exception:
+            return None
+        return channel if hasattr(channel, "send") else None
+    try:
+        channel = await commands.TextChannelConverter().convert(ctx, raw)
+    except commands.BadArgument:
+        return None
+    return channel if hasattr(channel, "send") else None
+
+async def resolve_forward_member(ctx, token):
+    if not token:
+        return None
+    try:
+        return await commands.MemberConverter().convert(ctx, token)
+    except commands.BadArgument:
+        return None
+
+async def fetch_forward_message(ctx, token):
+    raw = token.strip("<>")
+    match = FORWARD_MESSAGE_LINK_RE.search(raw)
+    if match:
+        channel_id = int(match.group("channel"))
+        message_id = int(match.group("message"))
+        try:
+            channel = bot.get_channel(channel_id) or await bot.fetch_channel(channel_id)
+        except Exception:
+            return None
+        if not hasattr(channel, "fetch_message"):
+            return None
+        try:
+            return await channel.fetch_message(message_id)
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            return None
+    if raw.isdigit() and len(raw) >= 15 and hasattr(ctx.channel, "fetch_message"):
+        try:
+            return await ctx.channel.fetch_message(int(raw))
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            return None
+    return None
+
+def render_forwarded_message(message):
+    channel_name = getattr(message.channel, "mention", f"#{getattr(message.channel, 'name', 'unknown')}")
+    lines = [
+        f"**Forwarded from <@{message.author.id}>** in {channel_name}",
+        f"[Jump to original]({message.jump_url})",
+    ]
+    if message.content:
+        lines.append(message.content)
+    if message.attachments:
+        attachment_lines = "\n".join(a.url for a in message.attachments[:8])
+        lines.append(f"Attachments:\n{attachment_lines}")
+    if message.stickers:
+        sticker_lines = "\n".join(f"{s.name}: {getattr(s, 'url', '')}".strip() for s in message.stickers[:5])
+        lines.append(f"Stickers:\n{sticker_lines}")
+    if message.embeds and not message.content:
+        embed_bits = []
+        for embed in message.embeds[:3]:
+            title = embed.title or embed.description or "Embed"
+            embed_bits.append(str(title)[:120])
+        lines.append("Embeds: " + ", ".join(embed_bits))
+    return fit_discord_content("\n".join(part for part in lines if part), 2000)
+
+async def collect_recent_forward_messages(ctx, count, member=None):
+    messages = []
+    fetch_limit = min(max(count * 12, 50), 500)
+    async for message in ctx.channel.history(limit=fetch_limit, before=ctx.message):
+        if message.id == ctx.message.id:
+            continue
+        if member and message.author.id != member.id:
+            continue
+        messages.append(message)
+        if len(messages) >= count:
+            break
+    messages.reverse()
+    return messages
+
+async def send_forwarded_messages(ctx, target_channel, messages):
+    sent = 0
+    for message in messages:
+        try:
+            await target_channel.send(
+                render_forwarded_message(message),
+                allowed_mentions=discord.AllowedMentions.none()
+            )
+            sent += 1
+            if len(messages) > 4:
+                await asyncio.sleep(0.35)
+        except discord.HTTPException as e:
+            print(f"[FWD ERROR] {type(e).__name__}: {e}")
+    return sent
+
+@bot.command(aliases=["forward", "fw"])
+@is_admin_power()
+async def fwd(ctx, *, raw_args=None):
+    await safe_delete_message(ctx.message)
+    if not raw_args:
+        return await send_command_input_ui(
+            ctx,
+            "fwd",
+            note="Forward recent messages with `.fwd 5`, `.fwd 5 @user`, `.fwd #target 5`, or `.fwd #target <message link>`."
+        )
+
+    try:
+        tokens = shlex.split(raw_args)
+    except ValueError:
+        tokens = raw_args.split()
+    target_channel = ctx.channel
+
+    for index, token in list(enumerate(tokens)):
+        if token.startswith("<#") or token.startswith("#"):
+            channel = await resolve_forward_channel(ctx, token)
+            if channel:
+                target_channel = channel
+                tokens.pop(index)
+                break
+    if tokens:
+        channel = await resolve_forward_channel(ctx, tokens[0])
+        if channel:
+            target_channel = channel
+            tokens.pop(0)
+
+    explicit_messages = []
+    seen_message_ids = set()
+    for match in FORWARD_MESSAGE_LINK_RE.finditer(raw_args):
+        message = await fetch_forward_message(ctx, match.group(0))
+        if message and message.id not in seen_message_ids:
+            explicit_messages.append(message)
+            seen_message_ids.add(message.id)
+    for token in tokens:
+        if token.isdigit() and len(token) >= 15:
+            message = await fetch_forward_message(ctx, token)
+            if message and message.id not in seen_message_ids:
+                explicit_messages.append(message)
+                seen_message_ids.add(message.id)
+
+    if explicit_messages:
+        sent = await send_forwarded_messages(ctx, target_channel, explicit_messages[:25])
+        if sent == 0:
+            return await ctx.send("I couldn't forward those messages.", delete_after=5)
+        if target_channel.id != ctx.channel.id:
+            await ctx.send(
+                f"Forwarded **{sent}** message(s) to {target_channel.mention}.",
+                delete_after=5,
+                allowed_mentions=discord.AllowedMentions.none()
+            )
+        return
+
+    count = None
+    member = None
+    for token in tokens:
+        if token.isdigit() and count is None:
+            count = int(token)
+            continue
+        if member is None:
+            member = await resolve_forward_member(ctx, token)
+    if member is None and ctx.message.mentions:
+        member = ctx.message.mentions[0]
+
+    if count is None:
+        return await send_command_input_ui(
+            ctx,
+            "fwd",
+            note="Add how many messages to forward. Example: `.fwd 5`, `.fwd 5 @user`, or `.fwd #logs 5`."
+        )
+    count = max(1, min(count, 25))
+    messages = await collect_recent_forward_messages(ctx, count, member)
+    if not messages:
+        who = f" from {member.mention}" if member else ""
+        return await ctx.send(f"No recent messages found{who}.", delete_after=5, allowed_mentions=discord.AllowedMentions.none())
+
+    sent = await send_forwarded_messages(ctx, target_channel, messages)
+    if target_channel.id != ctx.channel.id:
+        await ctx.send(
+            f"Forwarded **{sent}** message(s) to {target_channel.mention}.",
+            delete_after=5,
             allowed_mentions=discord.AllowedMentions.none()
         )
 
@@ -9008,7 +9282,7 @@ async def poll(ctx, *, args: str = None):
     try:
         await send_poll_message(ctx.channel, ctx.guild, ctx.author, question, remaining, delta)
     except ValueError as e:
-        await ctx.send(str(e))
+        await ctx.send(clean_user_error(e))
 
 
 class ConfirmEndPollView(View):
@@ -9219,7 +9493,7 @@ class GiveawaySetupModal(Modal):
         try:
             seconds, prize = await start_giveaway(interaction.channel, f"{self.duration.value} {self.prize.value}".strip())
         except ValueError as e:
-            return await interaction.response.send_message(str(e), ephemeral=True)
+            return await interaction.response.send_message(clean_user_error(e), ephemeral=True)
         await interaction.response.send_message(f"Giveaway started for **{prize}**. Ends in {format_remaining(seconds)}.", ephemeral=True)
 
 class OpenGiveawaySetupButton(Button):
@@ -9244,7 +9518,7 @@ async def giveaway(ctx, time: str = None, *, prize: str = None):
     try:
         seconds, parsed_prize = await start_giveaway(ctx.channel, raw)
     except ValueError as e:
-        return await ctx.send(str(e))
+        return await ctx.send(clean_user_error(e))
     await ctx.send(f"{economy_q_accept} Giveaway started for **{parsed_prize}**. Ends in {format_remaining(seconds)}.", delete_after=5)
 
 class PickerSetupModal(Modal):
@@ -9543,7 +9817,7 @@ class TimerSetupModal(Modal):
                 str(self.title_input.value).strip() or None
             )
         except ValueError as e:
-            return await interaction.followup.send(str(e), ephemeral=True)
+            return await interaction.followup.send(clean_user_error(e), ephemeral=True)
         await interaction.followup.send(f"Timer created: {message.jump_url}", ephemeral=True)
 
 class OpenTimerSetupButton(Button):
@@ -9572,7 +9846,7 @@ async def timer(ctx, *, args: str = None):
     try:
         await start_timer_for_user(ctx.channel, ctx.guild, ctx.author, time_str, title)
     except ValueError as e:
-        await ctx.send(str(e))
+        await ctx.send(clean_user_error(e))
 
 
 class CancelConfirmView(View):
@@ -9811,7 +10085,7 @@ class AlarmSetupModal(Modal):
         try:
             alarm_time, title = await schedule_alarm_for_user(interaction.channel, interaction.user, raw)
         except ValueError as e:
-            return await interaction.response.send_message(str(e), ephemeral=True)
+            return await interaction.response.send_message(clean_user_error(e), ephemeral=True)
         title_text = f" for **{title}**" if title else ""
         await interaction.response.send_message(
             f"{economy_q_alarm} Alarm set{title_text}: {discord.utils.format_dt(alarm_time, 'R')} ({discord.utils.format_dt(alarm_time, 'f')}).",
@@ -9839,7 +10113,7 @@ async def alarm(ctx, *, args: str = None):
     try:
         alarm_time, title = await schedule_alarm_for_user(ctx.channel, ctx.author, raw)
     except ValueError as e:
-        return await ctx.send(str(e))
+        return await ctx.send(clean_user_error(e))
     title_text = f" for **{title}**" if title else ""
     await ctx.send(
         f"{economy_q_alarm} Alarm set{title_text}: {discord.utils.format_dt(alarm_time, 'R')} ({discord.utils.format_dt(alarm_time, 'f')}).",
@@ -9980,7 +10254,7 @@ class CalcSetupModal(Modal):
         try:
             response = calculate_expression_text(str(self.expression.value))
         except Exception as e:
-            response = f"Error: {e}"
+            response = clean_user_error(e)
         await interaction.response.send_message(response)
 
 class OpenCalcSetupButton(Button):
@@ -10002,7 +10276,7 @@ async def calc(ctx, *, expression: str = None):
     try:
         await ctx.send(calculate_expression_text(expression))
     except Exception as e:
-        await ctx.send(f"Error: {e}")
+        await ctx.send(clean_user_error(e))
 
 async def define_word_text(word):
     async with aiohttp.ClientSession() as session:
@@ -10054,7 +10328,7 @@ async def define(ctx, *, word: str = None):
         response = await define_word_text(word.strip())
         await ctx.send(response or "Couldn't find that word.")
     except Exception:
-        await ctx.send("Error.")
+        await ctx.send("Could not look up that word right now.")
 
 @bot.command()
 @is_admin_power()
@@ -10300,7 +10574,7 @@ async def find(ctx, user_id: int):
         except discord.NotFound:
             member = None
         except discord.HTTPException as e:
-            return await ctx.send(f"Could not fetch server member: {e}")
+            return await ctx.send(f"Could not fetch server member: {clean_user_error(e)}")
 
     if member is None:
         try:
@@ -10308,7 +10582,7 @@ async def find(ctx, user_id: int):
         except discord.NotFound:
             return await ctx.send(f"User not found: `{user_id}`")
         except discord.HTTPException as e:
-            return await ctx.send(f"Could not fetch user: {e}")
+            return await ctx.send(f"Could not fetch user: {clean_user_error(e)}")
         return await ctx.send(
             f"User found globally: {user.mention} (`{user.id}`)",
             allowed_mentions=discord.AllowedMentions.none()
@@ -10390,7 +10664,7 @@ async def listbans(ctx):
     except discord.Forbidden:
         await ctx.send("I don’t have permission to view bans.")
     except Exception as e:
-        await ctx.send(f"Error: {type(e).__name__} - {e}")
+        await ctx.send(clean_user_error(e))
 
 @bot.command()
 @is_admin_power()
@@ -10571,7 +10845,7 @@ async def generate_command(ctx, *, prompt: str):
 
     except Exception as e:
         await safe_remove_reaction(ctx.message, economy_q_timer_tick, bot.user)
-        await ctx.send(f"Error: {str(e)[:100]}")
+        await ctx.send(ai_exception_message(e))
 
 
 # === IMAGE ANALYSIS COMMAND ===
@@ -10632,7 +10906,7 @@ async def analyse_command(ctx):
                 image_data_uri = await image_url_to_data_uri(session, image_url)
             except ValueError as e:
                 await safe_remove_reaction(ctx.message, economy_q_timer_tick, bot.user)
-                return await ctx.send(f"Could not read image: {e}")
+                return await ctx.send(f"Could not read image: {clean_user_error(e)}")
 
             payload = {
                 "messages": [
@@ -10651,7 +10925,7 @@ async def analyse_command(ctx):
                     error_text = await resp.text()
                     await safe_remove_reaction(ctx.message, economy_q_timer_tick, bot.user)
                     if resp.status == 400 and "agree" in error_text.lower():
-                        return await ctx.send("Error: Cloudflare needs the Meta vision model license accepted first.")
+                        return await ctx.send("Cloudflare needs the Meta vision model license accepted first.")
                     return await ctx.send(ai_http_error_message(resp.status, error_text))
                 
                 data = await resp.json(content_type=None)
@@ -10664,7 +10938,7 @@ async def analyse_command(ctx):
                 await ctx.send(result)
     except Exception as e:
         await safe_remove_reaction(ctx.message, economy_q_timer_tick, bot.user)
-        await ctx.send(f"Error: {str(e)[:100]}")
+        await ctx.send(ai_exception_message(e))
 
 # === TRANSLATE COMMAND ===
 LANGUAGE_ALIASES = {
@@ -10762,7 +11036,7 @@ class TranslateSetupModal(Modal):
         try:
             response = await translate_text_api("auto", target_lang, str(self.text.value).strip())
         except Exception as e:
-            response = f"Error: {str(e)[:100]}"
+            response = clean_user_error(e)
         await interaction.followup.send(response)
 
 class OpenTranslateSetupButton(Button):
@@ -10890,7 +11164,7 @@ async def translate_command(ctx, *, args: str = None):
             
     except Exception as e:
         await safe_remove_reaction(ctx.message, economy_q_timer_tick, bot.user)
-        await ctx.send(f"Error: {str(e)[:100]}")
+        await ctx.send(clean_user_error(e))
 
 # === RUN BOT ===
 

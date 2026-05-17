@@ -2236,7 +2236,7 @@ async def apply_lottery_edit(guild, author, setting, value, send, channel_mentio
                 lottery_house_cut(config)
             )
         except Exception as e:
-            await send(f"{Q_DENIED} I couldn't prepare that channel: `{type(e).__name__}`")
+            await send(f"{Q_DENIED} I couldn't prepare that channel: {public_error_text(e)}")
             return False
         updates["channel_id"] = channel.id
         updates["thread_id"] = None
@@ -2914,7 +2914,7 @@ class DoubleOrNothingView(discord.ui.View):
         try:
             await replay_double_or_nothing_game(interaction, self.game_key, self.stake)
         except Exception as e:
-            await interaction.followup.send(f"{Q_DENIED} Could not start Double or Nothing: {type(e).__name__}")
+            await interaction.followup.send(f"{Q_DENIED} Could not start Double or Nothing: {public_error_text(e)}")
 
 def double_or_nothing_view(user_id, game_key, result):
     stake = int(result.get("winnings", 0) or 0)
@@ -3555,6 +3555,24 @@ async def send_error(ctx, text):
     except:
         pass
 
+def public_error_text(error, fallback="That action failed."):
+    text = str(error or "").strip()
+    if not text:
+        return fallback
+    text = re.sub(r"^Error:\s*", "", text, flags=re.IGNORECASE).strip()
+    text = re.sub(r"^\d{3}\s+[A-Za-z ]+:\s*", "", text).strip()
+    text = re.sub(r"^[A-Za-z_][\w.]*Error:\s*", "", text).strip()
+    text = re.sub(r"\s*\([0-9a-f]{8}-[0-9a-f-]{27,}\)\s*$", "", text, flags=re.IGNORECASE).strip()
+    text = re.sub(r"\s+", " ", text).strip()
+    lowered = text.casefold()
+    if "missing permissions" in lowered or "forbidden" in lowered:
+        return "I do not have permission to do that."
+    if "unknown message" in lowered:
+        return "That message no longer exists."
+    if "must be 2000 or fewer" in lowered or "maximum size" in lowered:
+        return "That response was too long for Discord."
+    return text[:220] if text else fallback
+
 ECONOMY_INPUT_UI_COMMANDS = {"buytick", "give", "add", "remove", "addtick", "removetick", "settick", "setquesos"}
 
 ECONOMY_INPUT_PLACEHOLDERS = {
@@ -3585,7 +3603,7 @@ async def invoke_economy_command_from_interaction(interaction, command_name, arg
     try:
         await command.invoke(ctx)
     except commands.CommandError as e:
-        await ctx.send(f"{Q_DENIED} {str(e)[:120]}")
+        await ctx.send(f"{Q_DENIED} {public_error_text(e)}")
     except Exception as e:
         print(f"Economy setup UI failed for {command_name}: {type(e).__name__} - {e}")
         await interaction.followup.send(f"{Q_DENIED} That command failed.", ephemeral=True)
@@ -4246,7 +4264,7 @@ async def lottery(ctx, action: str = None, amount: str = None):
             await prepare_lottery_channel(ctx.guild, channel, period_seconds, LOTTERY_TICKET_COST, LOTTERY_HOUSE_CUT)
             role = await recreate_lottery_role(ctx.guild)
         except Exception as e:
-            await ctx.send(f"{Q_DENIED} I couldn't prepare the lottery channel: `{type(e).__name__}`")
+            await ctx.send(f"{Q_DENIED} I couldn't prepare the lottery channel: {public_error_text(e)}")
             print(f"Lottery setup failed: {type(e).__name__} - {e}")
             return
 
@@ -10479,6 +10497,11 @@ EXPLANATIONS = {
     "rlockdown": "Admin-power command. Disables reactions in this channel.",
     "runlock": "Admin-power command. Enables reactions in this channel.",
     "purge": "Admin-power command. Deletes messages. Count and member can be in either order.",
+    "send": "Admin-power command. Sends a message in the current channel or a chosen channel.",
+    "reply": "Admin-power command. Replies to a message by ID or link.",
+    "fwd": "Admin-power command. Forwards recent messages or specific message links. Use `.fwd 5`, `.fwd 5 @user`, `.fwd #channel 5`, or `.fwd #channel <message link>`.",
+    "forward": "Alias for `.fwd`. Forwards recent messages or message links.",
+    "fw": "Alias for `.fwd`. Forwards recent messages or message links.",
     "addrole": "Admin-power command. Adds a role to a member. Member and role can be in either order.",
     "removerole": "Admin-power command. Removes a role from a member. Member and role can be in either order.",
     "reactcount": "Admin-power command. Counts reactions on a message.",
@@ -10616,6 +10639,9 @@ DETAILED_EXPLANATIONS = {
     "minesweepeer": f"Choose 3x3, 4x4, or 5x5, then reveal tiles. Hidden tiles show as {Q_MS_HIDDEN}, safe gems show as {Q_XP}, bombs show as {Q_MINE}, and your cursor shows as {Q_MS_CURSOR}. 3x3 has 1 bomb, 4x4 has 3 bombs, and 5x5 has 5 bombs. Reveal every safe tile to win. The final multiplier starts at ×2.00 and each safe reveal adds +0.15, then the universal gambling streak bonus applies. Hitting a bomb or timing out loses the bet and resets the streak.",
     "wheel": f"The wheel lands on a segment: {wheel_segment_help_text()}. ×2, ×3, and ×5 are wins. ×1 gives your stake back, ×0.5 loses half the bet, and BLANK changes nothing. Wins use the universal gambling streak bonus; losses and partial losses reset it.",
     "give": f"Moves quesos from you to another user. Normal transfers burn {int(TRANSFER_TAX_RATE * 100)}% as tax. Use `.give @user 10k` or `.give 10k @user`. Admin-power users can use `all`. The message shows sent amount, tax, received amount, and balances.",
+    "fwd": "Forwards messages as quoted copies with the original author mention, source channel, jump link, text, attachments, stickers, and basic embed info. Use `.fwd 5` for the last 5 messages, `.fwd 5 @user` to filter by sender, `.fwd #logs 5` to forward into another channel, or `.fwd #logs <message link>` for exact messages. Limit is 25 messages per run.",
+    "forward": "Alias for `.fwd`. Forwards recent messages or exact message links.",
+    "fw": "Alias for `.fwd`. Forwards recent messages or exact message links.",
     "lb": "Shows a paginated leaderboard. Use the buttons to switch between local server rankings and global all-server rankings. Use the ranking type menu to sort by quesos, level, earnings, total won, total lost, net gambling, or messages. The embed also shows your rank for the selected scope and type.",
     "leaderboard": "Alias for `.lb`. Shows local/global paginated rankings with selectable ranking types and your rank.",
     "qstats": "Admin-power command for checking the global 𝚀𝚞𝚎wo economy. It shows total money supply, total earned, gambling won/lost/net, active lotteries, lottery pots, ticket count, tracked taxes/payments, richest user, and tracked messages. If you pass a member, it redirects to that user's economy audit.",
