@@ -19,7 +19,7 @@ try:
     import chess as chess_lib
 except ImportError:
     chess_lib = None
-from collections import Counter
+from collections import Counter, deque
 from datetime import datetime, timedelta, timezone
 from discord import Embed, Emoji, File, Interaction, StickerItem, app_commands
 from discord.ext import commands, tasks
@@ -51,6 +51,9 @@ from economy import (
     Q_ACCEPT as economy_q_accept,
     Q_ACTIVITY as economy_q_activity,
     Q_ALARM as economy_q_alarm,
+    Q_AUDIT as economy_q_audit,
+    Q_AI_HISTORY as economy_q_ai_history,
+    Q_ARCHIVE as economy_q_archive,
     Q_ATTACHMENT as economy_q_attachment,
     Q_BELL as economy_q_bell,
     Q_BIRTHDAY as economy_q_birthday,
@@ -64,13 +67,17 @@ from economy import (
     Q_CONNECT_WHITE as economy_q_connect_white,
     Q_EDIT as economy_q_edit,
     Q_FILTER as economy_q_filter,
+    Q_GAME_AUDIT as economy_q_game_audit,
     Q_GAME_O as economy_q_game_o,
     Q_GAME_TIMEOUT as economy_q_game_timeout,
     Q_GAME_WIN as economy_q_game_win,
     Q_GAME_X as economy_q_game_x,
     Q_GIFT as economy_q_gift,
     Q_HAMMER as economy_q_hammer,
+    Q_HISTORY as economy_q_history,
     Q_IMAGE as economy_q_image,
+    Q_QUOTE as economy_q_quote,
+    Q_COMMAND_CHECK as economy_q_command_check,
     Q_LEVEL_PULSE as economy_q_level_pulse,
     Q_LOCK as economy_q_lock,
     Q_PERMISSIONS as economy_q_permissions,
@@ -226,6 +233,7 @@ AI_MEMORY_DB_MAX_MESSAGES = 120
 AI_USER_MEMORY_MAX_FACTS = 24
 ai_conversation_memory = {}
 pending_ai_batch_actions = {}
+ai_action_history = deque(maxlen=80)
 
 TTT_EMPTY = "empty"
 TTT_X = "x"
@@ -563,7 +571,7 @@ async def send_ai_memory_summary(destination, guild, user, *, ephemeral=False):
     lines.extend(bot_facts)
     embed = discord.Embed(
         title=f"{economy_q_book} AI Memory",
-        description=f"What I know about {user.mention}:",
+        description=f"What I know about <@{user.id}>:",
         color=discord.Color.blurple(),
         timestamp=datetime.now(timezone.utc),
     )
@@ -3013,6 +3021,8 @@ COMMAND_EXAMPLE_OVERRIDES = {
     "alarm": ".alarm 1h reminder",
     "analyse": ".analyse while replying to an image",
     "analyze": ".analyze while replying to an image",
+    "archive": ".archive 50",
+    "auditcommands": ".auditcommands",
     "ban": ".ban @user reason",
     "blackjack": ".blackjack 1000",
     "block": ".block @user",
@@ -3028,9 +3038,10 @@ COMMAND_EXAMPLE_OVERRIDES = {
     "editlottery": ".editlottery duration 12h",
     "endseason": ".endseason 2026-05",
     "enable": ".enable command",
+    "event": ".event start jackpot 1h",
     "aiknow": ".aiknow slots",
     "aidoctor": ".aidoctor",
-    "aimemory": ".aimemory",
+    "aimemory": ".aimemory @user",
     "find": ".find 885548126365171824",
     "flagquiz": ".flagquiz",
     "fwd": ".fwd 5",
@@ -3050,6 +3061,7 @@ COMMAND_EXAMPLE_OVERRIDES = {
     "luckynumber": ".luckynumber 1000",
     "jackpotspin": ".jackpotspin 1000",
     "dungeon": ".dungeon",
+    "gameaudit": ".gameaudit",
     "gamestats": ".gamestats @user",
     "memory": ".memory 1000",
     "messages": ".messages",
@@ -3063,6 +3075,7 @@ COMMAND_EXAMPLE_OVERRIDES = {
     "prefix": ".prefix !",
     "preifx": ".preifx !",
     "purge": ".purge @user 20",
+    "quote": ".quote <message link>",
     "reopen": ".reopen",
     "remove": ".remove @user 1000",
     "removerole": ".removerole @user @role",
@@ -3128,7 +3141,7 @@ GENERIC_INPUT_UI_COMMANDS = {
     "howtoplay", "how", "rules", "flagquiz", "flags", "fq", "ttt", "c4", "chess",
     "move", "chessmove", "setnick", "shut", "unshut", "rshut", "unrshut", "purge",
     "rpurge", "unmute", "ban", "unban", "kick", "addrole", "removerole", "send",
-    "reply", "fwd", "forward", "fw", "aban", "raban", "summon2", "block", "unblock", "fsleep", "wake",
+    "reply", "fwd", "forward", "fw", "quote", "archive", "aban", "raban", "summon2", "block", "unblock", "fsleep", "wake",
     "find", "censor", "uncensor", "ask", "generate",
 }
 
@@ -3267,6 +3280,8 @@ AI_SAFE_COMMANDS = {
     "economyhelp", "ehelp", "explain", "lottery", "lotterystats",
     "aimemory", "aime", "memoryai", "whatyouknow", "aiknow", "aiknowledge", "knowcmd", "aicmd",
     "aidoctor", "botdoctor", "doctorai", "diagnosebot",
+    "aihistory", "aiactions", "actionhistory", "auditcommands", "cmdaudit", "commandaudit",
+    "gameaudit", "gaudit", "auditgames", "event", "qevent", "events", "quote", "archive", "transcript",
     "generate", "analyse", "analyze", "analyseimage", "analyzeimage", "vision",
 }
 
@@ -3278,10 +3293,10 @@ AI_CONFIRM_COMMANDS = {
 AI_SUPEROWNER_ONLY_COMMANDS = {
     "add", "remove", "addtick", "removetick", "remtick", "deltick", "settick", "setquesos",
     "disable", "enable", "disableall", "enableall", "prefix", "preifx", "setprefix",
-    "settings", "setup", "config", "setlogs", "slashsync",
+    "settings", "setup", "config", "setlogs", "slashsync", "auditcommands", "cmdaudit", "commandaudit", "aihistory", "aiactions", "actionhistory",
     "block", "unblock", "shut", "unshut", "rshut", "unrshut", "lockdown", "reopen",
     "rlockdown", "runlock", "lock", "unlock", "ban", "unban", "kick", "addrole",
-    "removerole", "deleterole", "send", "reply", "fwd", "forward", "fw", "censor", "uncensor", "clearcensors",
+    "removerole", "deleterole", "send", "reply", "fwd", "forward", "fw", "quote", "archive", "censor", "uncensor", "clearcensors",
     "editlottery", "stoplottery", "editactivity", "endactivity", "stopactivity",
 }
 
@@ -3514,6 +3529,7 @@ async def maybe_run_ai_command(message, question):
         if not view.value:
             return True
 
+    record_ai_action(message, f"run {command.name}", args, True)
     await invoke_prefix_command_from_message(message, command.name, args)
     return True
 
@@ -3543,6 +3559,19 @@ def save_ai_batch_draft(message, draft):
 
 def clear_ai_batch_draft(message):
     pending_ai_batch_actions.pop(ai_batch_pending_key(message), None)
+
+def record_ai_action(message, action, detail="", success=True):
+    guild = message.guild
+    ai_action_history.appendleft({
+        "time": datetime.now(timezone.utc),
+        "guild_id": guild.id if guild else 0,
+        "guild_name": guild.name if guild else "DM",
+        "channel_id": message.channel.id,
+        "user_id": message.author.id,
+        "action": str(action or "unknown")[:80],
+        "detail": str(detail or "")[:500],
+        "success": bool(success),
+    })
 
 def parse_ai_batch_duration(text):
     lowered = text.casefold()
@@ -3812,6 +3841,7 @@ async def maybe_run_ai_batch_action(message, question):
         return False
     if action.get("error"):
         clear_ai_batch_draft(message)
+        record_ai_action(message, "batch reward rejected", action["error"], False)
         await message.reply(action["error"], mention_author=False, allowed_mentions=discord.AllowedMentions.none())
         return True
     if action.get("pending"):
@@ -3824,6 +3854,7 @@ async def maybe_run_ai_batch_action(message, question):
         return True
     if not has_super_owner_power(message.author, message.guild):
         clear_ai_batch_draft(message)
+        record_ai_action(message, "batch reward denied", "not superowner", False)
         await message.reply(
             f"Only {QUE_OWNER_DISPLAY} can make me do batch 𝚀𝚞𝚎wo edits.",
             mention_author=False,
@@ -3835,6 +3866,7 @@ async def maybe_run_ai_batch_action(message, question):
     target_ids = [user_id for user_id in dict.fromkeys(target_ids) if user_id != bot.user.id]
     if not target_ids:
         clear_ai_batch_draft(message)
+        record_ai_action(message, "batch reward failed", "no matching users", False)
         await message.reply("I couldn't find any matching users from that source.", mention_author=False)
         return True
 
@@ -3898,10 +3930,12 @@ async def maybe_run_ai_batch_action(message, question):
             result_text = f"Added **{economy_format_balance(action['amount'])}** each to **{count:,}** user(s)."
     except Exception as e:
         clear_ai_batch_draft(message)
+        record_ai_action(message, "batch reward failed", clean_user_error(e), False)
         await message.reply(f"Batch reward failed: {clean_user_error(e)}", mention_author=False)
         return True
 
     clear_ai_batch_draft(message)
+    record_ai_action(message, "batch reward", f"{result_text} Source: {source_label}", True)
     await message.reply(
         f"{economy_q_accept} {result_text}",
         mention_author=False,
@@ -4017,7 +4051,20 @@ async def on_message(message):
                 return
 
             if question and message.guild and is_ai_memory_query(question):
-                await send_ai_memory_summary(message, message.guild, message.author)
+                target = message.author
+                mentioned_users = [user for user in (message.mentions or []) if not getattr(user, "bot", False)]
+                if mentioned_users:
+                    if has_super_owner_power(message.author, message.guild):
+                        target = mentioned_users[0]
+                    else:
+                        await message.reply(
+                            denial_message(f"Only {QUE_OWNER_DISPLAY} can inspect someone else's AI memory."),
+                            mention_author=False,
+                            allowed_mentions=discord.AllowedMentions.none(),
+                        )
+                        track_message_activity(message)
+                        return
+                await send_ai_memory_summary(message, message.guild, target)
                 track_message_activity(message)
                 return
 
@@ -4251,18 +4298,18 @@ HELP_CATEGORIES = {
         "guide", "onboard", "bal", "profile", "inventory", "settheme", "quests", "dailychallenge", "streaks", "shop", "cooldowns", "transactions", "lottery", "lotterystats", "buytick",
         "daily", "weekly", "monthly", "cf", "roulette", "slots", "blackjack", "scratch", "tower", "vault", "memory", "cardladder", "lockpick",
         "heist", "diceduel", "cases", "plinko", "luckynumber", "jackpotspin", "dungeon", "ms", "wheel",
-        "give", "lb", "gamestats", "achievements", "setbadge", "gamebalance", "gamehistory", "season", "limits", "qstats", "economyaudit", "abuseaudit", "econhelp", "explain",
+        "give", "lb", "gamestats", "achievements", "setbadge", "gamebalance", "gameaudit", "gamehistory", "season", "event", "limits", "qstats", "economyaudit", "abuseaudit", "econhelp", "explain",
     ],
     "Games": ["games", "howtoplay", "ttt", "c4", "chess", "move", "resign", "flagquiz", "flagstats", "q", "picker"],
     "Utility": ["help", "userinfo", "pfp", "calc", "define", "timer", "ctimer", "alarm", "poll", "epoll", "translate", "find"],
-    "AI": ["ask", "generate", "analyse", "aimemory", "aiknow", "aidoctor"],
+    "AI": ["ask", "generate", "analyse", "aimemory", "aiknow", "aihistory", "aidoctor"],
     "Server Tools": [
-        "dsnipe", "esnipe", "rsnipe", "rolesinfo", "roleinfo", "purge", "rpurge", "steal",
+        "dsnipe", "esnipe", "rsnipe", "rolesinfo", "roleinfo", "purge", "rpurge", "steal", "fwd", "quote", "archive",
         "giveaway", "listbans", "listblocks", "listtargets", "listcensors", "lists",
     ],
     "Status": ["afk", "sleep", "wake", "fsleep", "away", "setbday", "removebday", "setbdaychannel", "activity", "activitystats", "messages"],
     "Admin": [
-        "settings", "slashsync", "health", "perms", "sessions", "setlogs", "prefix", "disable", "enable", "disableall", "enableall", "dclist", "perf", "test", "testlog", "testrlog",
+        "settings", "slashsync", "health", "perms", "sessions", "auditcommands", "setlogs", "prefix", "disable", "enable", "disableall", "enableall", "dclist", "perf", "test", "testlog", "testrlog",
         "endttt", "setnick", "unmute", "kick", "ban", "unban", "addrole", "removerole", "deleterole",
         "lock", "unlock", "lockdown", "reopen", "rlockdown", "runlock", "shut", "unshut", "clearwatchlist", "rshut", "unrshut",
         "send", "reply", "fwd", "aban", "raban", "abanlist", "summon", "summon2", "block", "unblock",
@@ -4729,15 +4776,49 @@ async def settings_command(ctx):
         return await ctx.send("Settings only work in servers.")
     await ctx.send(embed=await build_settings_embed(ctx.guild), view=SettingsView(ctx.author.id), allowed_mentions=discord.AllowedMentions.none())
 
+async def resolve_ai_memory_target(ctx, raw):
+    if not raw:
+        return ctx.author
+    text = str(raw).strip()
+    if not text:
+        return ctx.author
+    try:
+        return await commands.UserConverter().convert(ctx, text)
+    except commands.BadArgument:
+        pass
+    mention_match = re.fullmatch(r"<@!?(\d{15,25})>", text)
+    raw_id = mention_match.group(1) if mention_match else text
+    if raw_id.isdigit():
+        user_id = int(raw_id)
+        member = ctx.guild.get_member(user_id) if ctx.guild else None
+        if member:
+            return member
+        try:
+            return await bot.fetch_user(user_id)
+        except (discord.NotFound, discord.HTTPException):
+            raise commands.BadArgument("User not found.")
+    raise commands.BadArgument("User not found.")
+
 @bot.command(name="aimemory", aliases=["aime", "memoryai", "whatyouknow"])
-async def aimemory_command(ctx, action: str = None, member: discord.Member = None):
+async def aimemory_command(ctx, *, args: str = None):
     """Shows or clears AI memory for yourself."""
     if ctx.guild is None:
         return await ctx.send("AI memory works in servers.")
-    target = member or ctx.author
+    tokens = args.split() if args else []
+    action_key = "show"
+    action_words = {"show", "view", "check", "clear", "delete", "forget", "remove", "reset"}
+    target_text = ""
+    if tokens and tokens[0].casefold() in action_words:
+        action_key = tokens.pop(0).casefold()
+    if tokens and tokens[-1].casefold() in action_words and action_key == "show":
+        action_key = tokens.pop(-1).casefold()
+    target_text = " ".join(tokens).strip()
+    try:
+        target = await resolve_ai_memory_target(ctx, target_text)
+    except commands.BadArgument:
+        return await ctx.send("Use `.aimemory`, `.aimemory @user`, `.aimemory clear`, or `.aimemory clear @user`.")
     if target.id != ctx.author.id and not has_super_owner_power(ctx.author, ctx.guild):
         return await ctx.send(denial_message(f"Only {QUE_OWNER_DISPLAY} can inspect someone else's AI memory."))
-    action_key = str(action or "show").casefold()
     if action_key in {"clear", "delete", "forget", "remove", "reset"}:
         if target.id != ctx.author.id and not has_super_owner_power(ctx.author, ctx.guild):
             return await ctx.send(denial_message(f"Only {QUE_OWNER_DISPLAY} can clear someone else's AI memory."))
@@ -4768,6 +4849,82 @@ async def aiknow_command(ctx, *, command_name: str = None):
     embed.add_field(name="Permission", value=command_permission_note(command), inline=True)
     embed.add_field(name="Impact", value=command_risk_note(command), inline=True)
     embed.add_field(name="Details", value=embed_value(detail, 1800), inline=False)
+    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
+@bot.command(name="aihistory", aliases=["aiactions", "actionhistory"])
+async def aihistory_command(ctx, member: discord.User = None):
+    """Shows recent actions the AI ran or attempted."""
+    if not has_super_owner_power(ctx.author, ctx.guild):
+        return await ctx.send(denial_message(f"Only {QUE_OWNER_DISPLAY} can inspect AI action history."))
+    rows = list(ai_action_history)
+    if member:
+        rows = [row for row in rows if int(row.get("user_id") or 0) == member.id]
+    rows = rows[:20]
+    embed = discord.Embed(
+        title=f"{economy_q_ai_history} AI Action History",
+        description=f"Recent AI-triggered bot actions and batch edits{f' for <@{member.id}>' if member else ''}.",
+        color=discord.Color.blurple(),
+    )
+    if not rows:
+        embed.add_field(name="Actions", value="No AI actions recorded since this restart.", inline=False)
+    else:
+        lines = []
+        for row in rows:
+            status = economy_q_accept if row["success"] else economy_q_warning
+            lines.append(
+                f"{status} <t:{int(row['time'].timestamp())}:R> <@{row['user_id']}> "
+                f"`{row['action']}` - {row['detail'] or 'no details'}"
+            )
+        embed.add_field(name="Actions", value=embed_value("\n".join(lines), 3800), inline=False)
+    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
+@bot.command(name="auditcommands", aliases=["cmdaudit", "commandaudit"])
+async def auditcommands_command(ctx):
+    """Checks command registry coverage for help, explanations, aliases, and UI fallbacks."""
+    if not has_super_owner_power(ctx.author, ctx.guild):
+        return await ctx.send(denial_message(f"Only {QUE_OWNER_DISPLAY} can audit the full command registry."))
+    category_map = {}
+    for category, names in HELP_CATEGORIES.items():
+        for name in names:
+            category_map.setdefault(name.casefold(), set()).add(category)
+    seen_aliases = {}
+    duplicate_alias_lines = []
+    missing_category = []
+    missing_explain = []
+    missing_detail = []
+    missing_example = []
+    input_without_ui = []
+    for command in sorted(bot.commands, key=lambda c: c.qualified_name):
+        if command.hidden:
+            continue
+        names = {command.name.casefold(), *(alias.casefold() for alias in command.aliases)}
+        if not any(name in category_map for name in names):
+            missing_category.append(f"`{command.name}`")
+        if not any(name in economy_explanations for name in names):
+            missing_explain.append(f"`{command.name}`")
+        if command.name in economy_explanations and command.name not in economy_detailed_explanations and command.signature:
+            missing_detail.append(f"`{command.name}`")
+        if command.signature and command.name not in COMMAND_EXAMPLE_OVERRIDES:
+            missing_example.append(f"`{command.name}`")
+        if command.signature and command.name not in COMMAND_EXAMPLE_OVERRIDES and not command_supports_input_ui(command):
+            input_without_ui.append(f"`{command.name}`")
+        for alias in command.aliases:
+            key = alias.casefold()
+            if key in seen_aliases and seen_aliases[key] != command.name:
+                duplicate_alias_lines.append(f"`{alias}`: `{seen_aliases[key]}` and `{command.name}`")
+            seen_aliases[key] = command.name
+
+    embed = discord.Embed(
+        title=f"{economy_q_command_check} Command Audit",
+        description=f"Scanned **{len([c for c in bot.commands if not c.hidden])}** visible prefix commands.",
+        color=discord.Color.orange(),
+    )
+    embed.add_field(name="Missing Help Category", value=embed_value(", ".join(missing_category) or "None", 1000), inline=False)
+    embed.add_field(name="Missing Explain Text", value=embed_value(", ".join(missing_explain) or "None", 1000), inline=False)
+    embed.add_field(name="Missing Detailed Text", value=embed_value(", ".join(missing_detail[:40]) or "None", 1000), inline=False)
+    embed.add_field(name="Missing Examples", value=embed_value(", ".join(missing_example[:40]) or "None", 1000), inline=False)
+    embed.add_field(name="Input Commands Without UI/Example", value=embed_value(", ".join(input_without_ui[:40]) or "None", 1000), inline=False)
+    embed.add_field(name="Duplicate Aliases", value=embed_value("\n".join(duplicate_alias_lines) or "None", 1000), inline=False)
     await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
 @bot.command(name="aidoctor", aliases=["botdoctor", "doctorai", "diagnosebot"])
@@ -9217,6 +9374,79 @@ async def fwd(ctx, *, raw_args=None):
             delete_after=5,
             allowed_mentions=discord.AllowedMentions.none()
         )
+
+@bot.command(name="quote", aliases=["qmsg"])
+@is_admin_power()
+async def quote_message(ctx, target=None):
+    await safe_delete_message(ctx.message)
+    if not target:
+        return await send_command_input_ui(ctx, "quote", note="Paste a message link or message ID to quote.")
+    message = await fetch_forward_message(ctx, target)
+    if not message:
+        return await ctx.send("I couldn't find that message.", delete_after=5)
+    sent = await send_forwarded_messages(ctx, ctx.channel, [message])
+    if sent == 0:
+        await ctx.send("I couldn't quote that message.", delete_after=5)
+
+@bot.command(name="archive", aliases=["transcript"])
+@is_admin_power()
+async def archive_messages(ctx, *, raw_args=None):
+    await safe_delete_message(ctx.message)
+    if not raw_args:
+        return await send_command_input_ui(
+            ctx,
+            "archive",
+            note="Create a transcript file with `.archive 50`, `.archive 50 @user`, or `.archive #logs 50`."
+        )
+    try:
+        tokens = shlex.split(raw_args)
+    except ValueError:
+        tokens = raw_args.split()
+    target_channel = ctx.channel
+    if tokens:
+        channel = await resolve_forward_channel(ctx, tokens[0])
+        if channel:
+            target_channel = channel
+            tokens.pop(0)
+    count = None
+    member = None
+    for token in tokens:
+        if token.isdigit() and count is None:
+            count = int(token)
+            continue
+        if member is None:
+            member = await resolve_forward_member(ctx, token)
+    if count is None:
+        return await send_command_input_ui(ctx, "archive", note="Add how many messages to archive. Example: `.archive 50`.")
+    count = max(1, min(count, 100))
+    messages = await collect_recent_forward_messages(ctx, count, member)
+    if not messages:
+        return await ctx.send("No recent messages found to archive.", delete_after=5)
+    header = [
+        f"ProQue archive",
+        f"Server: {ctx.guild.name if ctx.guild else 'DM'}",
+        f"Source channel: #{getattr(ctx.channel, 'name', ctx.channel.id)}",
+        f"Created by: {ctx.author} ({ctx.author.id})",
+        f"Created at: {datetime.now(timezone.utc).isoformat()}",
+        "-" * 60,
+    ]
+    lines = header[:]
+    for message in messages:
+        created = message.created_at.astimezone(timezone.utc).isoformat()
+        content = message.content or ""
+        attachment_text = " ".join(a.url for a in message.attachments)
+        sticker_text = " ".join(getattr(s, "url", "") for s in message.stickers)
+        extras = " ".join(part for part in (attachment_text, sticker_text) if part)
+        lines.append(f"[{created}] {message.author} ({message.author.id}): {content} {extras}".strip())
+    data = "\n".join(lines).encode("utf-8")
+    filename = f"proque-archive-{ctx.channel.id}-{int(time.time())}.txt"
+    await target_channel.send(
+        content=f"{economy_q_archive} Archived **{len(messages)}** message(s) from {ctx.channel.mention}.",
+        file=discord.File(BytesIO(data), filename=filename),
+        allowed_mentions=discord.AllowedMentions.none(),
+    )
+    if target_channel.id != ctx.channel.id:
+        await ctx.send(f"Archive sent to {target_channel.mention}.", delete_after=5, allowed_mentions=discord.AllowedMentions.none())
 
 
 @bot.command()

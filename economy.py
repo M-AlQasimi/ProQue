@@ -160,6 +160,16 @@ Q_RISK_HIGH = "<:QRiskHigh:1503820809293135954>"
 Q_RISK_EXTREME = "<:QRiskExtreme:1503820807691046912>"
 Q_PERF = "<:QPerf:1503820589121671199>"
 Q_FILTER = "<:QFilter:1503820570553356408>"
+Q_WATCH = "<:QWatch:1505602276650385578>"
+Q_TRUST = "<:QTrust:1505602273504399523>"
+Q_SETUP = "<:QSetup:1505602260015648848>"
+Q_QUOTE = "<:QQuote:1505602256467132426>"
+Q_GAME_AUDIT = "<:QGameAudit:1505602251723509870>"
+Q_EVENT = "<:QEvent:1505602249546530836>"
+Q_COMMAND_CHECK = "<:QCommandCheck:1505602244538536128>"
+Q_BALANCE = "<:QBalance:1505602235080380426>"
+Q_ARCHIVE = "<:QArchive:1505602232085643446>"
+Q_AI_HISTORY = "<:QAIHistory:1505602228466221117>"
 Q_DUNGEON = "<:QDungeon:1503459478690074644>"
 Q_DUNGEON_HEART = "<:QDungeonHeart:1503459480766255104>"
 Q_DUNGEON_KEY = "<:QDungeonKey:1503459483030917270>"
@@ -491,6 +501,17 @@ def init_db():
                 )
             """)
             cur.execute("""
+                CREATE TABLE IF NOT EXISTS economy_events (
+                    guild_id BIGINT PRIMARY KEY,
+                    event_key TEXT NOT NULL,
+                    started_by BIGINT NOT NULL,
+                    channel_id BIGINT,
+                    pot BIGINT NOT NULL DEFAULT 0,
+                    ends_at TIMESTAMP NOT NULL,
+                    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+                )
+            """)
+            cur.execute("""
                 CREATE TABLE IF NOT EXISTS lottery_config (
                     guild_id BIGINT PRIMARY KEY,
                     channel_id BIGINT NOT NULL,
@@ -552,6 +573,8 @@ def init_db():
             cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS quest_claims TEXT[] DEFAULT '{}'")
             cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS steal_blacklist BIGINT[] DEFAULT '{}'")
             cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS luck_boost_until TIMESTAMP")
+            cur.execute("ALTER TABLE economy_events ADD COLUMN IF NOT EXISTS channel_id BIGINT")
+            cur.execute("ALTER TABLE economy_events ADD COLUMN IF NOT EXISTS pot BIGINT NOT NULL DEFAULT 0")
             cur.execute("ALTER TABLE lottery_config ADD COLUMN IF NOT EXISTS thread_id BIGINT")
             cur.execute("ALTER TABLE lottery_config ADD COLUMN IF NOT EXISTS message_id BIGINT")
             cur.execute("ALTER TABLE lottery_config ADD COLUMN IF NOT EXISTS role_id BIGINT")
@@ -1091,6 +1114,131 @@ def get_game_history(user_id, limit=12):
     cur.close()
     conn.close()
     return rows
+
+def get_game_audit_rows(days=7):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT game_key,
+               COUNT(*) AS plays,
+               COUNT(*) FILTER (WHERE won IS TRUE) AS wins,
+               COUNT(*) FILTER (WHERE won IS FALSE) AS losses,
+               COALESCE(SUM(net_amount), 0) AS profit,
+               COALESCE(AVG(net_amount), 0) AS avg_net,
+               COALESCE(MAX(payout), 0) AS biggest_payout
+        FROM economy_game_history
+        WHERE created_at > NOW() - (%s * INTERVAL '1 day')
+        GROUP BY game_key
+        ORDER BY plays DESC, game_key ASC
+        """,
+        (int(days),)
+    )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
+
+EVENT_TYPES = {
+    "jackpot": "Community sink jackpot. Users donate quesos into a public pot.",
+    "shopdiscount": "Shop discount event marker for the server.",
+    "doublexp": "Double XP event marker for the server.",
+    "taxfree": "Tax-free event marker for the server.",
+}
+
+def parse_event_duration(raw):
+    text = str(raw or "").strip().casefold()
+    match = re.fullmatch(r"(\d{1,3})([smhd])", text)
+    if not match:
+        return None
+    amount = int(match.group(1))
+    unit = match.group(2)
+    multipliers = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+    seconds = amount * multipliers[unit]
+    return max(60, min(seconds, 14 * 86400))
+
+def start_economy_event(guild_id, event_key, started_by, channel_id, seconds):
+    event_key = str(event_key or "").casefold()
+    if event_key not in EVENT_TYPES:
+        raise ValueError("unknown_event")
+    ends_at = datetime.now(timezone.utc) + timedelta(seconds=int(seconds))
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO economy_events (guild_id, event_key, started_by, channel_id, ends_at)
+        VALUES (%s, %s, %s, %s, %s)
+        ON CONFLICT (guild_id) DO UPDATE SET
+            event_key = EXCLUDED.event_key,
+            started_by = EXCLUDED.started_by,
+            channel_id = EXCLUDED.channel_id,
+            ends_at = EXCLUDED.ends_at,
+            created_at = NOW()
+        RETURNING *
+        """,
+        (guild_id, event_key, started_by, channel_id, ends_at.replace(tzinfo=None))
+    )
+    row = cur.fetchone()
+    conn.commit()
+    cur.close()
+    conn.close()
+    return row
+
+def get_economy_event(guild_id):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM economy_events WHERE guild_id = %s AND ends_at <= NOW()", (guild_id,))
+    cur.execute("SELECT * FROM economy_events WHERE guild_id = %s", (guild_id,))
+    row = cur.fetchone()
+    conn.commit()
+    cur.close()
+    conn.close()
+    return row
+
+def stop_economy_event(guild_id):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM economy_events WHERE guild_id = %s RETURNING *", (guild_id,))
+    row = cur.fetchone()
+    conn.commit()
+    cur.close()
+    conn.close()
+    return row
+
+def donate_to_economy_event(guild_id, user_id, amount):
+    amount = int(amount)
+    if amount <= 0:
+        raise ValueError("amount_positive")
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM economy_events WHERE guild_id = %s AND ends_at > NOW() FOR UPDATE", (guild_id,))
+    event = cur.fetchone()
+    if not event:
+        conn.rollback()
+        cur.close()
+        conn.close()
+        raise ValueError("no_event")
+    cur.execute("INSERT INTO economy (user_id, balance) VALUES (%s, 0) ON CONFLICT (user_id) DO NOTHING", (user_id,))
+    cur.execute("SELECT balance FROM economy WHERE user_id = %s FOR UPDATE", (user_id,))
+    row = cur.fetchone()
+    balance = int(row["balance"] or 0)
+    if balance < amount:
+        conn.rollback()
+        cur.close()
+        conn.close()
+        raise ValueError("insufficient_balance")
+    new_balance = balance - amount
+    cur.execute("UPDATE economy SET balance = %s WHERE user_id = %s", (new_balance, user_id))
+    cur.execute("UPDATE economy_events SET pot = pot + %s WHERE guild_id = %s RETURNING *", (amount, guild_id))
+    event = cur.fetchone()
+    cur.execute(
+        "INSERT INTO economy_transactions (user_id, kind, amount, note) VALUES (%s, 'event_sink', %s, %s)",
+        (user_id, -amount, f"Event donation: {event['event_key']} in guild {guild_id}")
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+    return balance, new_balance, event
 
 def current_season_key(now=None):
     now = now or datetime.now(timezone.utc)
@@ -3718,7 +3866,23 @@ async def profile(ctx, member: discord.Member = None):
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
 
-    await ctx.send(embed=build_profile_embed(user, data), allowed_mentions=discord.AllowedMentions.none())
+    embed = build_profile_embed(user, data)
+    try:
+        rows = get_game_stats(user.id)
+    except Exception:
+        rows = []
+    if rows:
+        favorite = max(rows, key=lambda row: int(row["played"] or 0))
+        best = max(rows, key=lambda row: int(row["profit"] or 0))
+        embed.add_field(
+            name=f"{Q_GAME_STATS} Games",
+            value=(
+                f"Favorite: **{game_display_name(favorite['game_key'])}** ({int(favorite['played'] or 0):,} played)\n"
+                f"Best Profit: **{game_display_name(best['game_key'])}** ({format_balance(int(best['profit'] or 0))})"
+            ),
+            inline=False,
+        )
+    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
 @commands.command(name="settheme", aliases=["theme", "profiletheme"])
 async def settheme(ctx, theme: str = None):
@@ -9398,6 +9562,121 @@ async def gamebalance(ctx):
     add_split_embed_field(embed, "Games", lines, inline=False)
     await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
+@commands.command(name="gameaudit", aliases=["gaudit", "auditgames"])
+async def gameaudit(ctx, days: int = 7):
+    if not await ensure_db_ready(ctx):
+        return
+    if not has_economy_owner_power(ctx.author.id, ctx.guild):
+        return await ctx.send(f"{Q_DENIED} Server owner or admin only.")
+    days = max(1, min(int(days or 7), 30))
+    try:
+        rows = await asyncio.to_thread(get_game_audit_rows, days)
+    except Exception:
+        await send_error(ctx, "Database unavailable. Try again shortly.")
+        return
+    embed = discord.Embed(
+        title=f"{Q_GAME_AUDIT} Game Audit",
+        description=f"Last **{days} day(s)**. Positive house profit means users lost more than they won.",
+        color=discord.Color.orange(),
+    )
+    if not rows:
+        embed.add_field(name="Games", value="No tracked games in this window.", inline=False)
+    else:
+        lines = []
+        warnings = []
+        for row in rows:
+            plays = int(row["plays"] or 0)
+            wins = int(row["wins"] or 0)
+            losses = int(row["losses"] or 0)
+            user_profit = int(row["profit"] or 0)
+            house_profit = -user_profit
+            win_rate = (wins / max(1, wins + losses)) * 100
+            flag = ""
+            if plays >= 20 and win_rate >= 60 and user_profit > 0:
+                flag = " too generous"
+                warnings.append(f"**{game_display_name(row['game_key'])}** may be too generous ({win_rate:.1f}% win, users +{format_balance(user_profit)}).")
+            elif plays >= 20 and win_rate <= 12 and house_profit > 0:
+                flag = " too harsh"
+                warnings.append(f"**{game_display_name(row['game_key'])}** may be too harsh ({win_rate:.1f}% win).")
+            lines.append(
+                f"{risk_emoji(row['game_key'])} **{game_display_name(row['game_key'])}** - "
+                f"{plays:,} plays, {win_rate:.1f}% win, house {format_balance(house_profit)}{flag}"
+            )
+        add_split_embed_field(embed, "Games", lines[:20], inline=False)
+        if warnings:
+            add_split_embed_field(embed, "Signals", warnings[:8], inline=False)
+    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
+def economy_event_embed(guild, row):
+    embed = discord.Embed(
+        title=f"{Q_EVENT} Server Event",
+        color=discord.Color.blue(),
+    )
+    if not row:
+        embed.description = "No active 𝚀𝚞𝚎wo event in this server."
+        embed.add_field(name="Start One", value="`.event start jackpot 1h`\nTypes: jackpot, shopdiscount, doublexp, taxfree", inline=False)
+        return embed
+    ends_at = row["ends_at"]
+    if ends_at and ends_at.tzinfo is None:
+        ends_at = ends_at.replace(tzinfo=timezone.utc)
+    event_key = row["event_key"]
+    embed.description = f"**{event_key.title()}**\n{EVENT_TYPES.get(event_key, 'Server event')}"
+    embed.add_field(name="Pot / Burned", value=format_balance(int(row.get("pot") or 0)), inline=True)
+    embed.add_field(name="Ends", value=discord_relative_time(ends_at) if ends_at else "Unknown", inline=True)
+    embed.add_field(name="Started By", value=user_mention(row["started_by"]), inline=True)
+    embed.set_footer(text="Donate with .event donate 50k. Stop with .event stop.")
+    return embed
+
+@commands.command(name="event", aliases=["qevent", "events"])
+async def event(ctx, action: str = None, event_key: str = None, duration: str = None):
+    if not await ensure_db_ready(ctx):
+        return
+    if ctx.guild is None:
+        return await ctx.send(f"{Q_DENIED} Events only work in servers.")
+    action_key = str(action or "status").casefold()
+    if action_key in {"status", "show", "info", "current"}:
+        row = await asyncio.to_thread(get_economy_event, ctx.guild.id)
+        return await ctx.send(embed=economy_event_embed(ctx.guild, row), allowed_mentions=discord.AllowedMentions.none())
+    if action_key in {"start", "set", "begin"}:
+        if not has_economy_owner_power(ctx.author.id, ctx.guild):
+            return await ctx.send(f"{Q_DENIED} Server owner or admin only.")
+        seconds = parse_event_duration(duration or "1h")
+        if not event_key or event_key.casefold() not in EVENT_TYPES or not seconds:
+            return await ctx.send(
+                f"{Q_DENIED} Use `.event start <type> <duration>`.\n"
+                "Types: `jackpot`, `shopdiscount`, `doublexp`, `taxfree`. Example: `.event start jackpot 2h`"
+            )
+        row = await asyncio.to_thread(start_economy_event, ctx.guild.id, event_key, ctx.author.id, ctx.channel.id, seconds)
+        return await ctx.send(embed=economy_event_embed(ctx.guild, row), allowed_mentions=discord.AllowedMentions.none())
+    if action_key in {"stop", "end", "cancel"}:
+        if not has_economy_owner_power(ctx.author.id, ctx.guild):
+            return await ctx.send(f"{Q_DENIED} Server owner or admin only.")
+        row = await asyncio.to_thread(stop_economy_event, ctx.guild.id)
+        if not row:
+            return await ctx.send(f"{Q_DENIED} No active event to stop.")
+        return await ctx.send(f"{Q_SUCCESS} Stopped **{row['event_key']}**. Final pot: **{format_balance(int(row.get('pot') or 0))}**.")
+    if action_key in {"donate", "burn", "fund"}:
+        amount = parse_amount(event_key, ctx.author.id, ctx.guild, None) if event_key else None
+        if amount is None or amount <= 0:
+            return await ctx.send(f"{Q_DENIED} Use `.event donate <amount>`.")
+        try:
+            old_balance, new_balance, row = await asyncio.to_thread(donate_to_economy_event, ctx.guild.id, ctx.author.id, amount)
+        except ValueError as e:
+            reason = str(e)
+            if reason == "no_event":
+                return await ctx.send(f"{Q_DENIED} No active event in this server.")
+            if reason == "insufficient_balance":
+                return await ctx.send(f"{Q_DENIED} You do not have enough {CURRENCY_EMOJI}.")
+            return await ctx.send(f"{Q_DENIED} Donation amount has to be positive.")
+        await ctx.send(
+            f"{Q_ACCEPT} Donated **{format_balance(amount)}** to **{row['event_key']}**.\n"
+            f"Event Pot: **{format_balance(int(row.get('pot') or 0))}**\n"
+            f"Balance: **{format_balance(old_balance)}** -> **{format_balance(new_balance)}**",
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+        return
+    await ctx.send("Use `.event`, `.event start jackpot 1h`, `.event donate 50k`, or `.event stop`.")
+
 @commands.command(name="limits", aliases=["limit", "safety", "safetylimits"])
 async def limits(ctx, member: discord.Member = None):
     if not await ensure_db_ready(ctx):
@@ -10443,6 +10722,9 @@ EXPLANATIONS = {
     "balancegames": "Alias for `.gamebalance`. Shows game risk labels.",
     "risks": "Alias for `.gamebalance`. Shows game risk labels.",
     "gamerisks": "Alias for `.gamebalance`. Shows game risk labels.",
+    "gameaudit": "Admin-power command. Audits recent game win rates, house profit, and balance warnings.",
+    "gaudit": "Alias for `.gameaudit`. Audits game balance.",
+    "auditgames": "Alias for `.gameaudit`. Audits game balance.",
     "gamehistory": "Shows recent tracked game results.",
     "history": "Alias for `.gamehistory`. Shows recent game results.",
     "ghistory": "Alias for `.gamehistory`. Shows recent game results.",
@@ -10469,6 +10751,9 @@ EXPLANATIONS = {
     "seasonlb": "Alias for `.season`. Shows season standings.",
     "endseason": "Admin-power command that pays season rewards for a season key.",
     "rewardseason": "Alias for `.endseason`. Pays season rewards.",
+    "event": "Server owner/admin command for server 𝚀𝚞𝚎wo events. Use `.event`, `.event start jackpot 1h`, `.event donate 50k`, or `.event stop`.",
+    "qevent": "Alias for `.event`. Shows or manages server 𝚀𝚞𝚎wo events.",
+    "events": "Alias for `.event`. Shows or manages server 𝚀𝚞𝚎wo events.",
     "add": "Admin-power command. Adds quesos. Target and amount can be in either order.",
     "remove": "Admin-power command. Removes quesos. Target and amount can be in either order.",
     "addtick": f"{QUE_OWNER_DISPLAY} command. Adds free lottery tickets. Target and tickets can be in either order.",
@@ -10502,6 +10787,15 @@ EXPLANATIONS = {
     "fwd": "Admin-power command. Forwards recent messages or specific message links. Use `.fwd 5`, `.fwd 5 @user`, `.fwd #channel 5`, or `.fwd #channel <message link>`.",
     "forward": "Alias for `.fwd`. Forwards recent messages or message links.",
     "fw": "Alias for `.fwd`. Forwards recent messages or message links.",
+    "quote": "Admin-power command. Quotes one message by link or ID.",
+    "archive": "Admin-power command. Creates a transcript file from recent messages.",
+    "transcript": "Alias for `.archive`. Creates a transcript file.",
+    "auditcommands": f"{QUE_OWNER_DISPLAY} command. Audits command help, examples, aliases, and input UI coverage.",
+    "cmdaudit": "Alias for `.auditcommands`. Audits command registry coverage.",
+    "commandaudit": "Alias for `.auditcommands`. Audits command registry coverage.",
+    "aihistory": f"{QUE_OWNER_DISPLAY} command. Shows recent AI-triggered bot actions. Use `.aihistory @user` to filter by actor.",
+    "aiactions": "Alias for `.aihistory`. Shows AI-triggered actions.",
+    "actionhistory": "Alias for `.aihistory`. Shows AI-triggered actions.",
     "addrole": "Admin-power command. Adds a role to a member. Member and role can be in either order.",
     "removerole": "Admin-power command. Removes a role from a member. Member and role can be in either order.",
     "reactcount": "Admin-power command. Counts reactions on a message.",
@@ -10546,10 +10840,10 @@ EXPLANATIONS = {
     "generate": "Generates text with AI.",
     "analyse": "Analyzes an image from a replied message.",
     "analyze": "Alias for `.analyse`. Analyzes an image from a replied message.",
-    "aimemory": "Shows or clears what the AI remembers about you.",
+    "aimemory": f"Shows or clears AI memory. Use `.aimemory`, `.aimemory clear`, or {QUE_OWNER_DISPLAY} can use `.aimemory @user` / `.aimemory clear @user`.",
     "aime": "Alias for `.aimemory`. Shows or clears AI memory.",
     "memoryai": "Alias for `.aimemory`. Shows or clears AI memory.",
-    "whatyouknow": "Alias for `.aimemory`. Shows what the AI knows about you.",
+    "whatyouknow": "Alias for `.aimemory`. Shows what the AI knows about a user.",
     "aiknow": "Shows what the AI currently knows about a bot command.",
     "aiknowledge": "Alias for `.aiknow`. Shows AI command knowledge.",
     "knowcmd": "Alias for `.aiknow`. Shows AI command knowledge.",
@@ -10630,9 +10924,11 @@ DETAILED_EXPLANATIONS = {
     "achievements": "Shows hard game badge progress and rewards. Badges are intentionally long-term, like 100 wins in a game or 1,000 total games played. Earned badge rewards are paid automatically when the tracked game result completes.",
     "setbadge": "Use `.setbadge` with no arguments to list earned badge IDs. Use `.setbadge <badge_id> [badge_id] [badge_id]` to show up to 3 earned badges on `.profile`, or `.setbadge clear` to remove them.",
     "gamebalance": "Lists every 𝚀𝚞𝚎wo game with its current risk label. Use this as the quick balance audit before changing odds, multipliers, or max-risk behavior.",
+    "gameaudit": "Admin-power balancing dashboard. It reads recent tracked game history, then shows plays, win rate, house profit, and signals for games that look too generous or too harsh. Use `.gameaudit` for 7 days or `.gameaudit 30` for up to 30 days.",
     "gamehistory": "Shows your recent tracked game results from the shared game history table. Newer and tracked games appear here with result, net amount, and timestamp.",
     "season": "Monthly 𝚀𝚞𝚎wo season leaderboard. Game results add to the current month automatically. Ranking is by monthly game profit, then wins, then games played. Top rewards are 100m, 80m, and 50m.",
     "endseason": "Admin-power season payout command. Use `.endseason 2026-05` to pay the top 3 for that month once. If no season is passed, it pays the current season.",
+    "event": "Server event and sink system. `.event` shows the active event. `.event start jackpot 1h` starts a server event for 1 minute to 14 days. `.event donate 50k` burns the user's quesos into the event pot and records an event_sink transaction. `.event stop` ends the event and shows the final pot.",
     "abuseaudit": "Admin-power watch page for suspicious economy activity. It flags high one-hour game volume/profit, high 24-hour transaction volume, and large daily gambling losses. It is a signal page only; review context before acting.",
     "ms": f"Choose 3x3, 4x4, or 5x5, then reveal tiles. Hidden tiles show as {Q_MS_HIDDEN}, safe gems show as {Q_XP}, bombs show as {Q_MINE}, and your cursor shows as {Q_MS_CURSOR}. 3x3 has 1 bomb, 4x4 has 3 bombs, and 5x5 has 5 bombs. Reveal every safe tile to win. The final multiplier starts at ×2.00 and each safe reveal adds +0.15, then the universal gambling streak bonus applies. Hitting a bomb or timing out loses the bet and resets the streak.",
     "minesweeper": f"Choose 3x3, 4x4, or 5x5, then reveal tiles. Hidden tiles show as {Q_MS_HIDDEN}, safe gems show as {Q_XP}, bombs show as {Q_MINE}, and your cursor shows as {Q_MS_CURSOR}. 3x3 has 1 bomb, 4x4 has 3 bombs, and 5x5 has 5 bombs. Reveal every safe tile to win. The final multiplier starts at ×2.00 and each safe reveal adds +0.15, then the universal gambling streak bonus applies. Hitting a bomb or timing out loses the bet and resets the streak.",
@@ -10642,6 +10938,10 @@ DETAILED_EXPLANATIONS = {
     "fwd": "Forwards messages as quoted copies with the original author mention, source channel, jump link, text, attachments, stickers, and basic embed info. Use `.fwd 5` for the last 5 messages, `.fwd 5 @user` to filter by sender, `.fwd #logs 5` to forward into another channel, or `.fwd #logs <message link>` for exact messages. Limit is 25 messages per run.",
     "forward": "Alias for `.fwd`. Forwards recent messages or exact message links.",
     "fw": "Alias for `.fwd`. Forwards recent messages or exact message links.",
+    "quote": "Quotes one exact message by link or current-channel message ID. It uses the same forwarded-message format as `.fwd`, including author mention without pinging, source channel, jump link, content, and attachment links.",
+    "archive": "Creates a plain-text transcript file from recent messages. Use `.archive 50`, `.archive 50 @user`, or `.archive #logs 50`. Limit is 100 messages per archive.",
+    "auditcommands": f"{QUE_OWNER_DISPLAY}-only maintenance report. It scans the live command registry for missing help categories, missing explanation text, missing detailed text, missing examples, input commands without UI/example coverage, and duplicate aliases.",
+    "aihistory": f"{QUE_OWNER_DISPLAY}-only safety log for AI-triggered actions. It shows recent AI command runs and batch rewards since the current bot restart. Use `.aihistory @user` to filter by actor.",
     "lb": "Shows a paginated leaderboard. Use the buttons to switch between local server rankings and global all-server rankings. Use the ranking type menu to sort by quesos, level, earnings, total won, total lost, net gambling, or messages. The embed also shows your rank for the selected scope and type.",
     "leaderboard": "Alias for `.lb`. Shows local/global paginated rankings with selectable ranking types and your rank.",
     "qstats": "Admin-power command for checking the global 𝚀𝚞𝚎wo economy. It shows total money supply, total earned, gambling won/lost/net, active lotteries, lottery pots, ticket count, tracked taxes/payments, richest user, and tracked messages. If you pass a member, it redirects to that user's economy audit.",
@@ -10672,7 +10972,7 @@ DETAILED_EXPLANATIONS = {
     "define": "Looks up English dictionary definitions. Use `.define example`, or run `.define` to enter the word through a UI.",
     "setbday": "Saves your birthday as day/month. Use `.setbday 25/12`, or run `.setbday` to enter it through a UI. Birthday announcements use the server's configured birthday channel.",
     "ask": "Asks Pro𝚀𝚞𝚎's AI a question. The AI answers from its model knowledge, bot context, reply context, and saved memory; live web search is not connected.",
-    "aimemory": "Shows the AI memory attached to your Discord user across servers, including explicit remembered facts and bot-saved profile details. Use `.aimemory clear` to delete saved AI memory.",
+    "aimemory": f"Shows the AI memory attached to a Discord user across servers, including explicit remembered facts and bot-saved profile details. Normal users can use `.aimemory` and `.aimemory clear` for themselves. {QUE_OWNER_DISPLAY} can inspect or clear another user with `.aimemory @user`, `.aimemory <user id>`, `.aimemory clear @user`, or `.aimemory @user clear`.",
     "aiknow": "Debug/helper command that shows exactly what Pro𝚀𝚞𝚎's AI knows about a command from the live command registry, aliases, help text, permission note, and detailed explanation data.",
     "aidoctor": "Admin-power bot doctor panel. Shows task health, 𝚀𝚞𝚎wo DB status, slash sync status, active sessions, disabled commands, and slow command stats. Useful when replying to errors and asking the AI to diagnose them.",
     "translate": "Translates provided text or the message you reply to. Friendly forms work: `.translate hello to Italian`, `.translate to Spanish hello`, `.translate it hello`, or reply to a message with `.translate to Spanish`. If no target is given, it translates to English.",
@@ -10894,7 +11194,7 @@ async def setup(bot_ref, log_callback=None):
     economy_commands = [
         bal, profile, inventory, settheme, quests, dailychallenge, streaks, guide, onboard, shop, cooldowns, transactions, limits, lottery, editlottery, stoplottery, lotterystats, buytick,
         daily, weekly, monthly, gamble, roulette, slots, blackjack,
-        scratch, tower, vault, memory_game, card_ladder, lockpick, heist, dice_duel, cases, plinko, lucky_number, jackpot_spin, dungeon, minesweeper, wheel, give, lb, gamestats, achievements, setbadge, gamebalance, gamehistory, season, endseason, qstats, economyaudit, abuseaudit, add, remove, addtick, removetick, settick, setquesos, econhelp, explain
+        scratch, tower, vault, memory_game, card_ladder, lockpick, heist, dice_duel, cases, plinko, lucky_number, jackpot_spin, dungeon, minesweeper, wheel, give, lb, gamestats, achievements, setbadge, gamebalance, gameaudit, event, gamehistory, season, endseason, qstats, economyaudit, abuseaudit, add, remove, addtick, removetick, settick, setquesos, econhelp, explain
     ]
     for command in economy_commands:
         if bot.get_command(command.name):
