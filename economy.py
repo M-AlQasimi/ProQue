@@ -4262,8 +4262,8 @@ async def lottery(ctx, action: str = None, amount: str = None):
         return
 
     if action and action.casefold() in {"setup", "config"}:
-        if not has_economy_owner_power(ctx.author.id, ctx.guild):
-            await ctx.send(f"{Q_DENIED} Server owner or admin only.")
+        if not is_superowner_id(ctx.author.id):
+            await ctx.send(f"{Q_DENIED} Only {QUE_OWNER_DISPLAY} can use this.")
             return
         await ctx.send("To reconfigure, delete the current lottery config from the database or ask me to add a reset flow.")
         return
@@ -4286,8 +4286,8 @@ async def editlottery(ctx, setting: str = None, *, value: str = None):
         return
     if not await ensure_db_ready(ctx):
         return
-    if not has_economy_owner_power(ctx.author.id, ctx.guild):
-        await ctx.send(f"{Q_DENIED} Server owner or admin only.")
+    if not is_superowner_id(ctx.author.id):
+        await ctx.send(f"{Q_DENIED} Only {QUE_OWNER_DISPLAY} can use this.")
         return
 
     config = await asyncio.to_thread(get_lottery_config, ctx.guild.id)
@@ -4311,8 +4311,8 @@ async def stoplottery(ctx):
         return
     if not await ensure_db_ready(ctx):
         return
-    if not has_economy_owner_power(ctx.author.id, ctx.guild):
-        await ctx.send(f"{Q_DENIED} Server owner or admin only.")
+    if not is_superowner_id(ctx.author.id):
+        await ctx.send(f"{Q_DENIED} Only {QUE_OWNER_DISPLAY} can use this.")
         return
 
     config = get_lottery_config(ctx.guild.id)
@@ -5909,8 +5909,8 @@ async def lb(ctx):
 async def qstats(ctx, member: discord.Member = None):
     if not await ensure_db_ready(ctx):
         return
-    if not has_economy_owner_power(ctx.author.id, ctx.guild):
-        await ctx.send(f"{Q_DENIED} Server owner or admin only.")
+    if not is_superowner_id(ctx.author.id):
+        await ctx.send(f"{Q_DENIED} Only {QUE_OWNER_DISPLAY} can use this.")
         return
     if member is not None:
         command = bot.get_command("economyaudit") if bot else None
@@ -5961,8 +5961,8 @@ async def add(ctx, *, args: str = None):
     if not await ensure_db_ready(ctx):
         return
 
-    if not has_economy_owner_power(ctx.author.id, ctx.guild):
-        await ctx.send(f"{Q_DENIED} Server owner or admin only.")
+    if not is_superowner_id(ctx.author.id):
+        await ctx.send(f"{Q_DENIED} Only {QUE_OWNER_DISPLAY} can use this.")
         return
 
     target, amount = parse_target_amount_args(args)
@@ -6111,8 +6111,8 @@ async def remove(ctx, *, args: str = None):
     if not await ensure_db_ready(ctx):
         return
 
-    if not has_economy_owner_power(ctx.author.id, ctx.guild):
-        await ctx.send(f"{Q_DENIED} Server owner or admin only.")
+    if not is_superowner_id(ctx.author.id):
+        await ctx.send(f"{Q_DENIED} Only {QUE_OWNER_DISPLAY} can use this.")
         return
     target, amount = parse_target_amount_args(args, allow_all=True)
     if not target:
@@ -9734,8 +9734,8 @@ async def season(ctx, season_key: str = None):
 async def endseason(ctx, season_key: str = None):
     if not await ensure_db_ready(ctx):
         return
-    if not has_economy_owner_power(ctx.author.id, ctx.guild):
-        return await ctx.send(f"{Q_DENIED} Server owner or admin only.")
+    if not is_superowner_id(ctx.author.id):
+        return await ctx.send(f"{Q_DENIED} Only {QUE_OWNER_DISPLAY} can use this.")
     season_key = season_key or current_season_key()
     try:
         rewarded = await asyncio.to_thread(reward_previous_season, season_key)

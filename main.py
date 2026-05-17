@@ -720,15 +720,35 @@ CASUAL_AI_RE = re.compile(
 BOT_KNOWLEDGE_RE = re.compile(
     r"\b(proque|bot|command|help|how\s+do\s+i|how\s+to|use|run|alias|aliases|"
     r"quewo|quesos|economy|gambl|game|games|lottery|shop|inventory|profile|balance|"
-    r"level|xp|activity|messages|settings|setup|prefix|logs?|admin|permission|doctor|error)\b",
+    r"level|xp|activity|messages|settings|setup|prefix|logs?|admin|permission|perms|doctor|error|"
+    r"ignore|block|unblock|disable|enable|ban|kick|role|lock|unlock|stop\s+responding)\b",
     re.IGNORECASE,
 )
+AI_COMMAND_ACTION_RE = re.compile(
+    r"\b(run|use|do|start|set|show|open|check|make|create|generate|analyse|analyze|"
+    r"change|edit|enable|disable|turn\s+on|turn\s+off|add|remove|give|send|reply|"
+    r"block|unblock|ignore|stop\s+responding|lock|unlock|purge|ban|kick|role|permission|perms)\b",
+    re.IGNORECASE,
+)
+
+def looks_like_ai_image_command(text):
+    text = str(text or "")
+    return bool(re.search(
+        r"\b(generate|create|make|draw)\s+(?:an?\s+)?(?:image|picture|pic|photo)\b|"
+        r"\b(analy[sz]e|describe|what'?s?\s+in|what\s+is\s+in)\s+(?:this\s+)?(?:image|picture|pic|photo)\b",
+        text,
+        flags=re.IGNORECASE,
+    ))
 
 def should_try_ai_command_planner(text):
     text = str(text or "").strip()
     if not text or CASUAL_AI_RE.match(text):
         return False
-    return bool(BOT_KNOWLEDGE_RE.search(text))
+    if looks_like_ai_image_command(text):
+        return True
+    if re.search(r"(?:^|\s)[.!?][A-Za-z][\w-]*", text):
+        return True
+    return bool(AI_COMMAND_ACTION_RE.search(text) and BOT_KNOWLEDGE_RE.search(text))
 
 def should_use_full_bot_context(text):
     text = str(text or "").strip()
@@ -3165,6 +3185,7 @@ AI_SAFE_COMMANDS = {
     "economyhelp", "ehelp", "explain", "lottery", "lotterystats",
     "aimemory", "aime", "memoryai", "whatyouknow", "aiknow", "aiknowledge", "knowcmd", "aicmd",
     "aidoctor", "botdoctor", "doctorai", "diagnosebot",
+    "generate", "analyse", "analyze", "analyseimage", "analyzeimage", "vision",
 }
 
 AI_CONFIRM_COMMANDS = {
@@ -3172,8 +3193,18 @@ AI_CONFIRM_COMMANDS = {
     "activity", "settings", "prefix", "preifx", "setprefix",
 }
 
+AI_SUPEROWNER_ONLY_COMMANDS = {
+    "add", "remove", "addtick", "removetick", "remtick", "deltick", "settick", "setquesos",
+    "disable", "enable", "disableall", "enableall", "prefix", "preifx", "setprefix",
+    "settings", "setup", "config", "setlogs", "slashsync",
+    "block", "unblock", "shut", "unshut", "rshut", "unrshut", "lockdown", "reopen",
+    "rlockdown", "runlock", "lock", "unlock", "ban", "unban", "kick", "addrole",
+    "removerole", "deleterole", "send", "reply", "censor", "uncensor", "clearcensors",
+    "editlottery", "stoplottery", "editactivity", "endactivity", "stopactivity",
+}
+
 AI_BLOCKED_COMMANDS = {
-    "ask", "generate", "analyse", "analyze", "send", "reply",
+    "ask", "send", "reply",
 }
 
 def extract_ai_command_request(question, guild=None):
@@ -3191,8 +3222,26 @@ def extract_ai_command_request(question, guild=None):
             return match.group(1), (match.group(2) or "").strip(), True
 
     lowered = text.casefold()
+    image_generate_match = re.search(
+        r"\b(?:generate|create|make|draw)\s+(?:an?\s+)?(?:image|picture|pic|photo)\s*(?:of|for)?\s*(.+)",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if image_generate_match:
+        prompt = image_generate_match.group(1).strip()
+        if prompt:
+            return "generate", prompt, False
+
+    if re.search(
+        r"\b(?:analy[sz]e|describe|what'?s?\s+in|what\s+is\s+in)\s+(?:this\s+)?(?:image|picture|pic|photo)\b",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        return "analyse", "", False
+
     command_intent = any(word in lowered for word in (
-        "run ", "use ", "do ", "start ", "set ", "show ", "open ", "check ", "make "
+        "run ", "use ", "do ", "start ", "set ", "show ", "open ", "check ", "make ",
+        "change ", "edit ", "enable ", "disable ", "ignore ", "block ", "unblock ",
     ))
     if not command_intent:
         return None
@@ -3286,7 +3335,7 @@ async def semantic_ai_command_request(question, guild):
             "Return null if the user is asking a normal non-bot question.",
             "If the request is ambiguous between multiple commands, set needs_clarification true and ask a short question.",
             "For missing optional arguments, leave args empty; the bot can open its UI.",
-            "Never choose ask/generate/analyse/send/reply for AI self-recursion.",
+            "Never choose ask/send/reply for AI self-recursion. Generate and analyse are allowed for direct image requests.",
             "Return JSON only with keys: command, args, needs_clarification, question."
         ],
         "available_commands": "\n".join(command_lines)[:15000],
@@ -3342,6 +3391,14 @@ async def maybe_run_ai_command(message, question):
     command = get_command_case_insensitive(command_name)
     if not command:
         return False
+    command_keys = {command.name.casefold(), *(alias.casefold() for alias in getattr(command, "aliases", []) or [])}
+    if command_keys & AI_SUPEROWNER_ONLY_COMMANDS and not has_super_owner_power(message.author, message.guild):
+        await message.reply(
+            denial_message(f"Only {QUE_OWNER_DISPLAY} can make me change bot/server controls through AI."),
+            mention_author=False,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+        return True
 
     confirmation = ai_command_needs_confirmation(command)
     if confirmation is None:
