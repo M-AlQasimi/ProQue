@@ -3095,10 +3095,10 @@ COMMAND_EXAMPLE_OVERRIDES = {
     "gameaudit": ".gameaudit",
     "gamestats": ".gamestats @user",
     "commandstats": ".commandstats",
-    "snipe": ".snipe",
-    "dsnipe": ".dsnipe 2",
-    "esnipe": ".esnipe",
-    "rsnipe": ".rsnipe",
+    "snipe": ".snipe edited @user 2",
+    "dsnipe": ".dsnipe @user 2",
+    "esnipe": ".esnipe @user",
+    "rsnipe": ".rsnipe @user 2",
     "memory": ".memory 1000",
     "messages": ".messages",
     "onboard": ".onboard",
@@ -7327,24 +7327,44 @@ def parse_snipe_position(raw_index, total):
         return None
     return total + value if value < 0 else value - 1
 
-def snipe_entries(channel_id, snipe_type):
-    return SNIPE_TYPES[snipe_type]["store"].get(channel_id, [])
+def snipe_entry_user_id(snipe_type, entry):
+    if snipe_type in {"deleted", "edited"}:
+        return int(entry[1 if snipe_type == "deleted" else 2].id)
+    return int(entry[0].id)
 
-def snipe_empty_embed(ctx, snipe_type):
+def snipe_entries(channel_id, snipe_type, user_id=None):
+    entries = SNIPE_TYPES[snipe_type]["store"].get(channel_id, [])
+    if user_id is None:
+        return entries
+    return [entry for entry in entries if snipe_entry_user_id(snipe_type, entry) == int(user_id)]
+
+def snipe_empty_embed(ctx, snipe_type, user_id=None, show_guide=False):
     info = SNIPE_TYPES[snipe_type]
+    target_text = f" for <@{user_id}>" if user_id else ""
     embed = discord.Embed(
         title=f"{info['emoji']} {info['label']} Snipe",
-        description="Nothing saved for this channel yet.",
+        description=f"Nothing saved for this channel{target_text} yet.",
         color=discord.Color.dark_grey(),
     )
+    if show_guide:
+        embed.add_field(name="How To Use", value=snipe_usage_text(getattr(ctx, "prefix", prefix_for_guild(getattr(ctx, "guild", None)))), inline=False)
     embed.set_footer(text="Snipes only work for events the bot saw while online.")
     return embed
 
-def build_snipe_embed(ctx, snipe_type, index):
-    entries = snipe_entries(ctx.channel.id, snipe_type)
+def snipe_usage_text(prefix="."):
+    return (
+        f"`{prefix}snipe` deleted messages\n"
+        f"`{prefix}snipe edited` edited messages\n"
+        f"`{prefix}snipe reaction` removed reactions\n"
+        f"`{prefix}snipe @user` filter deleted snipes by user\n"
+        f"`{prefix}snipe edited @user 2` filter and jump to an older entry"
+    )
+
+def build_snipe_embed(ctx, snipe_type, index, user_id=None, show_guide=False):
+    entries = snipe_entries(ctx.channel.id, snipe_type, user_id)
     info = SNIPE_TYPES[snipe_type]
     if not entries:
-        return snipe_empty_embed(ctx, snipe_type)
+        return snipe_empty_embed(ctx, snipe_type, user_id, show_guide)
     index = max(0, min(index, len(entries) - 1))
     embed = discord.Embed(
         title=f"{info['emoji']} {info['label']} Snipe",
@@ -7381,16 +7401,22 @@ def build_snipe_embed(ctx, snipe_type, index):
         embed.add_field(name="Message", value=f"[Jump to message]({msg.jump_url})", inline=False)
         msg_content = getattr(msg, "content", "") or "[No content]"
         embed.add_field(name="Message Content", value=embed_value(msg_content, 1200), inline=False)
+    if user_id:
+        embed.add_field(name="Filter", value=f"Only showing entries for <@{user_id}>.", inline=False)
+    if show_guide:
+        embed.add_field(name="How To Use", value=snipe_usage_text(getattr(ctx, "prefix", prefix_for_guild(getattr(ctx, "guild", None)))), inline=False)
     embed.set_footer(text=f"{ctx.channel} • Snipe {index + 1}/{len(entries)}")
     return embed
 
 class SnipeView(View):
-    def __init__(self, author_id, channel_id, snipe_type="deleted", index=0):
+    def __init__(self, author_id, channel_id, snipe_type="deleted", index=0, user_id=None, show_guide=False):
         super().__init__(timeout=LONG_HELP_VIEW_TIMEOUT)
         self.author_id = author_id
         self.channel_id = channel_id
         self.snipe_type = snipe_type
         self.index = index
+        self.user_id = user_id
+        self.show_guide = show_guide
         self.type_select = Select(
             placeholder="Snipe type",
             min_values=1,
@@ -7411,16 +7437,17 @@ class SnipeView(View):
         return False
 
     async def refresh(self, interaction):
-        entries = snipe_entries(self.channel_id, self.snipe_type)
+        entries = snipe_entries(self.channel_id, self.snipe_type, self.user_id)
         if entries:
             self.index = max(0, min(self.index, len(entries) - 1))
         else:
             self.index = 0
-        await interaction.response.edit_message(embed=build_snipe_embed(interaction, self.snipe_type, self.index), view=self)
+        await interaction.response.edit_message(embed=build_snipe_embed(interaction, self.snipe_type, self.index, self.user_id, self.show_guide), view=self)
 
     async def select_type(self, interaction):
         self.snipe_type = self.type_select.values[0]
         self.index = 0
+        self.show_guide = False
         await self.refresh(interaction)
 
     @discord.ui.button(label="Previous", style=discord.ButtonStyle.secondary)
@@ -7441,38 +7468,80 @@ class SnipeView(View):
     @discord.ui.button(label="Guide", style=discord.ButtonStyle.secondary)
     async def guide_button(self, interaction, button):
         await interaction.response.send_message(
-            "Use `.snipe` for the full menu, `.dsnipe` for deleted messages, `.esnipe` for edits, or `.rsnipe` for removed reactions. Add a number like `.dsnipe 3` to jump to an older entry.",
+            snipe_usage_text(prefix_for_guild(interaction.guild)),
             ephemeral=True,
         )
 
-async def send_snipe_menu(ctx, snipe_type="deleted", index="1"):
+async def resolve_snipe_filter_user(ctx, token):
+    if not token:
+        return None
+    try:
+        return await commands.UserConverter().convert(ctx, token)
+    except commands.BadArgument:
+        return None
+
+async def parse_snipe_args(ctx, raw_args, default_type="deleted"):
+    raw_args = (raw_args or "").strip()
+    if not raw_args:
+        return default_type, None, "1", True
+    try:
+        tokens = shlex.split(raw_args)
+    except ValueError:
+        tokens = raw_args.split()
+    snipe_type = default_type
+    if tokens and resolve_snipe_type(tokens[0], None):
+        snipe_type = resolve_snipe_type(tokens.pop(0), default_type)
+    user = None
+    index = "1"
+    for token in list(tokens):
+        if user is None:
+            resolved_user = await resolve_snipe_filter_user(ctx, token)
+            if resolved_user:
+                user = resolved_user
+                tokens.remove(token)
+                continue
+        if parse_snipe_position(token, 1) is not None or token.casefold() in {"latest", "newest", "last", "oldest", "first"}:
+            index = token
+            tokens.remove(token)
+            break
+    if user is None and getattr(ctx.message, "mentions", None):
+        mentioned = [member for member in ctx.message.mentions if not getattr(member, "bot", False)]
+        if mentioned:
+            user = mentioned[0]
+    return snipe_type, (user.id if user else None), index, False
+
+async def send_snipe_menu(ctx, snipe_type="deleted", index="1", user_id=None, show_guide=False):
     snipe_type = resolve_snipe_type(snipe_type)
-    entries = snipe_entries(ctx.channel.id, snipe_type)
+    entries = snipe_entries(ctx.channel.id, snipe_type, user_id)
     position = parse_snipe_position(index, len(entries)) if entries else 0
     if position is None or (entries and (position < 0 or position >= len(entries))):
         return await ctx.send(f"Use a valid number from **1** to **{len(entries) or 1}**.")
-    view = SnipeView(ctx.author.id, ctx.channel.id, snipe_type, position)
-    await ctx.send(embed=build_snipe_embed(ctx, snipe_type, position), view=view, allowed_mentions=discord.AllowedMentions.none())
+    view = SnipeView(ctx.author.id, ctx.channel.id, snipe_type, position, user_id, show_guide)
+    await ctx.send(embed=build_snipe_embed(ctx, snipe_type, position, user_id, show_guide), view=view, allowed_mentions=discord.AllowedMentions.none())
 
 @bot.command(name="snipe", aliases=["snipes"])
-async def snipe(ctx, snipe_type: str = "deleted", index: str = "1"):
+async def snipe(ctx, *, raw_args: str = None):
     """Opens a menu for deleted, edited, and reaction snipes."""
-    await send_snipe_menu(ctx, snipe_type, index)
+    snipe_type, user_id, index, show_guide = await parse_snipe_args(ctx, raw_args, "deleted")
+    await send_snipe_menu(ctx, snipe_type, index, user_id, show_guide)
 
 @bot.command(name="dsnipe", aliases=["deleted", "deletedsnipe"])
-async def dsnipe(ctx, index: str = "1"):
+async def dsnipe(ctx, *, raw_args: str = None):
     """Shows deleted-message snipes with buttons."""
-    await send_snipe_menu(ctx, "deleted", index)
+    _, user_id, index, _ = await parse_snipe_args(ctx, raw_args, "deleted")
+    await send_snipe_menu(ctx, "deleted", index, user_id)
 
 @bot.command(name="esnipe", aliases=["editsnipe", "edited"])
-async def esnipe(ctx, index: str = "1"):
+async def esnipe(ctx, *, raw_args: str = None):
     """Shows edited-message snipes with buttons."""
-    await send_snipe_menu(ctx, "edited", index)
+    _, user_id, index, _ = await parse_snipe_args(ctx, raw_args, "edited")
+    await send_snipe_menu(ctx, "edited", index, user_id)
 
 @bot.command(name="rsnipe", aliases=["reactionsnipe", "reactsnipe"])
-async def rsnipe(ctx, index: str = "1"):
+async def rsnipe(ctx, *, raw_args: str = None):
     """Shows removed-reaction snipes with buttons."""
-    await send_snipe_menu(ctx, "reaction", index)
+    _, user_id, index, _ = await parse_snipe_args(ctx, raw_args, "reaction")
+    await send_snipe_menu(ctx, "reaction", index, user_id)
 
 @bot.command()
 @is_admin_power()
