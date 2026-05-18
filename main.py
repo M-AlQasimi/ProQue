@@ -187,7 +187,10 @@ CLOUDFLARE_ACCOUNT_ID = os.getenv("CLOUDFLARE_ACCOUNT_ID", "")
 AI_MODEL_TIMEOUT_SECONDS = 10
 AI_SUMMARY_MAX_MESSAGES = 250
 AI_SUMMARY_DEFAULT_MESSAGES = 80
-AI_SUMMARY_MAX_CHARS = 12000
+AI_SUMMARY_MAX_CHARS = 4500
+AI_REQUEST_MAX_CHARS = 6500
+AI_SYSTEM_CONTEXT_MAX_CHARS = 2500
+AI_MESSAGE_CONTEXT_MAX_CHARS = 2200
 
 # PostgreSQL is the single source of truth
 pg_init()
@@ -340,6 +343,60 @@ def joined_embed_value(lines, empty="None.", limit=1024):
     value = "\n".join(lines)
     return embed_value(value, limit)
 
+def compact_ai_payload_text(text, limit):
+    text = str(text or "")
+    if len(text) <= limit:
+        return text
+    if limit <= 20:
+        return text[:limit]
+    return text[:limit - 14].rstrip() + "\n...[trimmed]"
+
+def fit_ai_messages(messages, max_chars=AI_REQUEST_MAX_CHARS):
+    """Keep AI requests under the provider TPM limit by trimming hidden context first."""
+    cleaned = []
+    for msg in messages:
+        role = msg.get("role", "user")
+        content = str(msg.get("content") or "").strip()
+        if not content:
+            continue
+        per_message_limit = AI_SYSTEM_CONTEXT_MAX_CHARS if role == "system" else AI_MESSAGE_CONTEXT_MAX_CHARS
+        cleaned.append({"role": role, "content": compact_ai_payload_text(content, per_message_limit)})
+    if not cleaned:
+        return [{"role": "user", "content": "hi"}]
+
+    first_system = cleaned[0] if cleaned[0]["role"] == "system" else None
+    rest = cleaned[1:] if first_system else cleaned
+    result_reversed = []
+    used = 0
+
+    if first_system:
+        first = dict(first_system)
+        first["content"] = compact_ai_payload_text(first["content"], min(AI_SYSTEM_CONTEXT_MAX_CHARS, max_chars // 2))
+        used += len(first["content"])
+
+    for msg in reversed(rest):
+        remaining = max_chars - used
+        if remaining <= 200:
+            break
+        content = msg["content"]
+        if len(content) > remaining:
+            if msg["role"] == "user" or not result_reversed:
+                content = compact_ai_payload_text(content, remaining)
+            else:
+                continue
+        used += len(content)
+        result_reversed.append({"role": msg["role"], "content": content})
+
+    result = []
+    if first_system:
+        result.append(first)
+    result.extend(reversed(result_reversed))
+    if not any(msg["role"] == "user" for msg in result):
+        last_user = next((msg for msg in reversed(cleaned) if msg["role"] == "user"), None)
+        if last_user:
+            result.append({"role": "user", "content": compact_ai_payload_text(last_user["content"], AI_MESSAGE_CONTEXT_MAX_CHARS)})
+    return result
+
 def ai_memory_key(message):
     guild_id = message.guild.id if message.guild else 0
     return (int(guild_id), int(message.channel.id))
@@ -366,15 +423,15 @@ def ai_memory_messages(key):
             ai_conversation_memory[key] = stored
     entries = prune_ai_memory(key)
     messages = []
-    for entry in entries[-20:]:
+    for entry in entries[-8:]:
         role = entry.get("role")
         content = str(entry.get("content") or "").strip()
         if role not in {"user", "assistant"} or not content:
             continue
-        messages.append({"role": role, "content": content[:700]})
+        messages.append({"role": role, "content": content[:360]})
     return messages
 
-def ai_channel_context_text(key, limit=10):
+def ai_channel_context_text(key, limit=6):
     if key not in ai_conversation_memory:
         guild_id, channel_id = key
         stored = load_ai_channel_memory(guild_id, channel_id, AI_MEMORY_MAX_MESSAGES)
@@ -387,10 +444,10 @@ def ai_channel_context_text(key, limit=10):
             continue
         content = str(entry.get("content") or "").strip()
         if content:
-            context_lines.append(content[:240])
+            context_lines.append(content[:180])
     if not context_lines:
         return ""
-    return "\n".join(context_lines[-limit:])[:1800]
+    return "\n".join(context_lines[-limit:])[:1000]
 
 def remember_ai_message(key, role, content):
     content = str(content or "").strip()
@@ -708,6 +765,8 @@ def ai_http_error_message(status, body=""):
     status = int(status or 0)
     if status == 429:
         return "AI is rate-limited right now. Give it a minute and try again."
+    if status == 413:
+        return "AI context got too large, so I trimmed it. Try that again."
     if status in {401, 403}:
         return "AI API key/config is being rejected. Check the AI provider key in Railway."
     if status >= 500:
@@ -756,6 +815,8 @@ def clean_provider_error(body):
         return "Input prompt contains NSFW content."
     if "rate limit" in message.casefold() or "too many requests" in message.casefold():
         return "AI is rate-limited right now. Give it a minute and try again."
+    if "request too large" in message.casefold() or "tokens per minute" in message.casefold() or "tpm" in message.casefold():
+        return "AI context got too large, so I trimmed it. Try that again."
     return compact_ai_text(message, 220)
 
 def clean_user_error(error, fallback="Something went wrong."):
@@ -877,7 +938,7 @@ def command_ai_summary(command, prefix):
     bits.append(compact_ai_text(explanation, 260))
     return " - ".join(bits)
 
-def bot_command_knowledge_index(guild, max_chars=18000):
+def bot_command_knowledge_index(guild, max_chars=3200):
     prefix = prefix_for_guild(guild)
     seen = set()
     sections = []
@@ -911,7 +972,7 @@ def bot_command_knowledge_index(guild, max_chars=18000):
     details = []
     for key in sorted(economy_detailed_explanations):
         if key in economy_explanations or get_command_case_insensitive(key):
-            details.append(f"{key}: {compact_ai_text(economy_detailed_explanations[key], 320)}")
+            details.append(f"{key}: {compact_ai_text(economy_detailed_explanations[key], 180)}")
     if details:
         sections.append("Detailed mechanics snippets:\n" + "\n".join(details))
 
@@ -3536,15 +3597,15 @@ async def semantic_ai_command_request(question, guild, viewer=None):
             "Never choose ask/send/reply for AI self-recursion. Generate and analyse are allowed for direct image requests.",
             "Return JSON only with keys: command, args, needs_clarification, question."
         ],
-        "available_commands": "\n".join(command_lines)[:15000],
+        "available_commands": "\n".join(command_lines)[:6000],
         "request": question,
     }
     headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
     payload = {
-        "messages": [
+        "messages": fit_ai_messages([
             {"role": "system", "content": "You are a command intent parser. Return valid JSON only."},
             {"role": "user", "content": json.dumps(prompt)},
-        ],
+        ], max_chars=5200),
         "model": "llama-3.1-8b-instant",
         "temperature": 0.0,
         "max_tokens": 220,
@@ -3997,13 +4058,13 @@ async def summarize_messages_with_ai(messages, *, prompt, target_user=None, chan
         f"Messages:\n{source}"
     )
     payload = {
-        "messages": [
+        "messages": fit_ai_messages([
             {"role": "system", "content": system},
             {"role": "user", "content": user_prompt},
-        ],
+        ], max_chars=5600),
         "model": "llama-3.1-8b-instant",
         "temperature": 0.2,
-        "max_tokens": 700,
+        "max_tokens": 500,
     }
     async with aiohttp.ClientSession() as session:
         async with session.post("https://api.groq.com/openai/v1/chat/completions", json=payload, headers=headers, timeout=AI_MODEL_TIMEOUT_SECONDS) as resp:
@@ -4137,10 +4198,10 @@ async def semantic_ai_batch_action(question, guild, draft=None):
     }
     headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
     payload = {
-        "messages": [
+        "messages": fit_ai_messages([
             {"role": "system", "content": "You extract structured intent. Return valid JSON only. No markdown."},
             {"role": "user", "content": json.dumps(prompt)},
-        ],
+        ], max_chars=5200),
         "model": "llama-3.1-8b-instant",
         "temperature": 0.0,
         "max_tokens": 220,
@@ -4587,10 +4648,10 @@ async def on_message(message):
                 "Content-Type": "application/json"
             }
             payload = {
-                "messages": messages,
+                "messages": fit_ai_messages(messages, max_chars=AI_REQUEST_MAX_CHARS),
                 "model": "llama-3.1-8b-instant",
                 "temperature": 0.7,
-                "max_tokens": 500
+                "max_tokens": 420
             }
             try:
                 async with message.channel.typing():
@@ -11929,10 +11990,10 @@ async def ask_command(ctx, *, question: str):
     messages.append({"role": "user", "content": question})
 
     payload = {
-        "messages": messages,
+        "messages": fit_ai_messages(messages, max_chars=5200),
         "model": "llama-3.1-8b-instant",
         "temperature": 0.7,
-        "max_tokens": 500
+        "max_tokens": 420
     }
 
     try:
