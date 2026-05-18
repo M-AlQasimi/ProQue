@@ -185,7 +185,7 @@ SLOT_SYMBOL_PAYOUTS = [
 CHAT_XP_COOLDOWN_SECS = 60
 LEVEL_REWARD_BASE = 300_000
 LEVEL_REWARD_STEP = 50_000
-TRANSFER_TAX_RATE = 0.03
+TRANSFER_TAX_RATE = 0.05
 LOTTERY_TICKET_COST = 100_000
 LOTTERY_HOUSE_CUT = 0.10
 LOTTERY_MAX_BALANCE_SPEND_RATIO = 0.60
@@ -6100,7 +6100,7 @@ async def give(ctx, *, args: str = None):
                 log_transaction(user_id, "give_sent", -amount, f"Sent to {recipient_id}; tax {tax}")
                 log_transaction(recipient_id, "give_received", transfer["received_amount"], f"Received from {ctx.author.id}")
                 if tax:
-                    log_transaction(user_id, "transfer_tax_paid", -tax, "3% transfer tax burned")
+                    log_transaction(user_id, "transfer_tax_paid", -tax, f"{int(TRANSFER_TAX_RATE * 100)}% transfer tax burned")
                     log_transaction(SUPER_OWNER_ID, "transfer_tax", tax, f"Transfer tax from {user_id} to {recipient_id}")
             after_recipient_balances = get_balances_for_users(recipient_ids)
             receipt_id = create_receipt(
@@ -6169,7 +6169,7 @@ async def give(ctx, *, args: str = None):
         log_transaction(user_id, "give_sent", -amount, f"Sent to {member.id}; tax {tax}")
         log_transaction(member.id, "give_received", received_amount, f"Received from {ctx.author.id}")
         if tax:
-            log_transaction(user_id, "transfer_tax_paid", -tax, "3% transfer tax burned")
+            log_transaction(user_id, "transfer_tax_paid", -tax, f"{int(TRANSFER_TAX_RATE * 100)}% transfer tax burned")
             log_transaction(SUPER_OWNER_ID, "transfer_tax", tax, f"Transfer tax from {user_id} to {member.id}")
         receipt_id = create_receipt(
             ctx.guild.id if ctx.guild else 0,
@@ -11232,11 +11232,13 @@ ECONHELP_COMMANDS = [
     ("Core", ["guide", "onboard", "bal", "profile", "inventory", "settheme", "quests", "dailychallenge", "streaks", "shop", "cooldowns", "transactions", "limits", "lb"]),
     ("Stats", ["gamestats", "achievements", "setbadge", "gamebalance", "gamehistory", "season", "qstats", "economyhealth", "economyaudit", "abuseaudit", "riskprofile"]),
     ("Claims", ["daily", "weekly", "monthly"]),
-    ("Lottery", ["lottery", "buytick", "lotterystats", "editlottery", "stoplottery", "addtick", "removetick", "settick"]),
+    ("Lottery", ["lottery", "buytick", "lotterystats", "editlottery", "stoplottery"]),
     ("Gambling", ["cf", "roulette", "slots", "blackjack", "scratch", "tower", "vault", "memory", "cardladder", "lockpick", "heist", "diceduel", "cases", "plinko", "luckynumber", "jackpotspin", "dungeon", "ms", "wheel"]),
     ("Transfers", ["give"]),
     ("Help", ["econhelp", "explain"]),
 ]
+ECONHELP_SUPEROWNER_COMMANDS = ["add", "remove", "addtick", "removetick", "settick", "setquesos"]
+ECONHELP_SUPEROWNER_HIDDEN = {*ECONHELP_SUPEROWNER_COMMANDS, "remtick", "deltick"}
 
 def apply_prefix_to_help_text(text, prefix):
     return text.replace("`.", f"`{prefix}")
@@ -11280,18 +11282,21 @@ def add_split_embed_field(embed, name, lines, inline=False, limit=1024):
 async def econhelp(ctx):
     """Shows 𝚀𝚞𝚎wo commands, aliases, and short explanations."""
     prefix = getattr(ctx, "prefix", ".")
+    visible_econhelp_commands = list(ECONHELP_COMMANDS)
+    if is_superowner_id(ctx.author.id):
+        visible_econhelp_commands.append(("Superowner", ECONHELP_SUPEROWNER_COMMANDS))
 
     def build_embed(category_name="Core", page=0):
         selected = next(
-            ((category, commands_) for category, commands_ in ECONHELP_COMMANDS if category == category_name),
-            ECONHELP_COMMANDS[0],
+            ((category, commands_) for category, commands_ in visible_econhelp_commands if category == category_name),
+            visible_econhelp_commands[0],
         )
         category, commands_ = selected
         page = max(0, int(page or 0))
         per_page = 8
         page_count = max(1, math.ceil(len(commands_) / per_page))
         page = min(page, page_count - 1)
-        category_list = " | ".join(name for name, _ in ECONHELP_COMMANDS)
+        category_list = " | ".join(name for name, _ in visible_econhelp_commands)
         embed = discord.Embed(
             title=f"{Q_BOOK} 𝚀𝚞𝚎wo Help - {category}",
             description=(
@@ -11319,7 +11324,7 @@ async def econhelp(ctx):
                     value=category,
                     description=f"{len(commands_)} 𝚀𝚞𝚎wo command(s)"
                 )
-                for category, commands_ in ECONHELP_COMMANDS
+                for category, commands_ in visible_econhelp_commands
             ]
             super().__init__(placeholder="Choose a 𝚀𝚞𝚎wo help category", min_values=1, max_values=1, options=options)
 
@@ -11341,7 +11346,7 @@ async def econhelp(ctx):
             if interaction.user.id != ctx.author.id:
                 await interaction.response.send_message("Use your own econhelp menu.", ephemeral=True)
                 return
-            commands_ = next((items for category, items in ECONHELP_COMMANDS if category == self.view.category), [])
+            commands_ = next((items for category, items in visible_econhelp_commands if category == self.view.category), [])
             page_count = max(1, math.ceil(len(commands_) / 8))
             self.view.page = min(max(0, self.view.page + self.direction), page_count - 1)
             await interaction.response.edit_message(embed=build_embed(self.view.category, self.view.page), view=self.view)
@@ -11375,12 +11380,16 @@ async def explain(ctx, command_name: str = None):
     """Shows detailed help for one command."""
     prefix = getattr(ctx, "prefix", ".")
     if not command_name:
-        command_names = sorted({command.name for command in bot.commands})
+        hidden = set(ECONHELP_SUPEROWNER_HIDDEN) if not is_superowner_id(ctx.author.id) else set()
+        command_names = sorted({command.name for command in bot.commands if command.name not in hidden})
         names = ", ".join(command_names)
         await ctx.send(f"Use `{prefix}explain <command>`. Commands: {names}, admin")
         return
 
     key = command_name.casefold().removeprefix(prefix.casefold()).lstrip(".")
+    if key in ECONHELP_SUPEROWNER_HIDDEN and not is_superowner_id(ctx.author.id):
+        await ctx.send("I don't have a short explanation for that command.", delete_after=30)
+        return
     text = EXPLANATIONS.get(key)
     command = next(
         (

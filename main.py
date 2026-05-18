@@ -630,7 +630,7 @@ def command_permission_note(command):
     name = command.name.casefold()
     aliases = {alias.casefold() for alias in getattr(command, "aliases", []) or []}
     names = {name, *aliases}
-    if names & {"addtick", "removetick", "settick", "setquesos", "fsleep", "wake"}:
+    if names & SUPEROWNER_HIDDEN_COMMANDS:
         return f"{QUE_OWNER_DISPLAY} only."
     if name in set(HELP_CATEGORIES.get("Admin", [])) or name in set(HELP_CATEGORIES.get("Server Tools", [])):
         return "Requires admin/server-owner power unless the command itself says otherwise."
@@ -937,9 +937,8 @@ def denial_message(detail=None):
 def command_denial_detail(ctx, error=None):
     command_name = ctx.command.qualified_name if getattr(ctx, "command", None) else ""
     que_only = {
-        "addtick", "removetick", "settick", "setquesos", "fsleep", "wake",
+        "add", "remove", "addtick", "removetick", "settick", "setquesos", "send", "reply", "fsleep", "wake",
         "aisettings", "aiignore", "aiunignore", "aichannel", "aistyle",
-        "add", "remove",
     }
     if command_name in que_only:
         return f"Only {QUE_OWNER_DISPLAY} can use this."
@@ -993,11 +992,13 @@ def looks_like_command_message(message):
         return True
     return False
 
-def slash_runnable_commands():
+def slash_runnable_commands(viewer=None, guild=None):
     commands_ = []
     seen = set()
     for command in bot.walk_commands():
         if command.hidden or getattr(command, "parent", None):
+            continue
+        if is_superowner_help_command(command) and not can_see_superowner_help(viewer, guild):
             continue
         if command.name in seen:
             continue
@@ -1005,10 +1006,10 @@ def slash_runnable_commands():
         commands_.append(command)
     return sorted(commands_, key=lambda c: c.name.casefold())
 
-def slash_command_search(current):
+def slash_command_search(current, viewer=None, guild=None):
     current = (current or "").casefold().strip()
     results = []
-    for command in slash_runnable_commands():
+    for command in slash_runnable_commands(viewer, guild):
         names = [command.name, *command.aliases]
         haystack = " ".join(names).casefold()
         if current and current not in haystack:
@@ -1027,6 +1028,12 @@ async def invoke_prefix_command_from_interaction(interaction, command_name, args
     if not command:
         await interaction.followup.send(
             f"Command `{command_name}` was not found. Try `/commands`.",
+            ephemeral=True
+        )
+        return
+    if is_superowner_help_command(command) and not can_see_superowner_help(interaction.user, interaction.guild):
+        await interaction.followup.send(
+            f"Only {QUE_OWNER_DISPLAY} can use that.",
             ephemeral=True
         )
         return
@@ -3088,6 +3095,10 @@ COMMAND_EXAMPLE_OVERRIDES = {
     "gameaudit": ".gameaudit",
     "gamestats": ".gamestats @user",
     "commandstats": ".commandstats",
+    "snipe": ".snipe",
+    "dsnipe": ".dsnipe 2",
+    "esnipe": ".esnipe",
+    "rsnipe": ".rsnipe",
     "memory": ".memory 1000",
     "messages": ".messages",
     "onboard": ".onboard",
@@ -3425,11 +3436,13 @@ def command_search_blob(command):
     parts.append(getattr(command, "help", "") or "")
     return " ".join(parts).casefold()
 
-def fuzzy_command_guess(text):
+def fuzzy_command_guess(text, viewer=None, guild=None):
     lowered = str(text or "").casefold()
     candidates = []
     for command in bot.commands:
         if getattr(command, "hidden", False):
+            continue
+        if is_superowner_help_command(command) and not can_see_superowner_help(viewer, guild):
             continue
         names = {command.name.casefold(), *(alias.casefold() for alias in getattr(command, "aliases", []) or [])}
         score = 0
@@ -3447,14 +3460,16 @@ def fuzzy_command_guess(text):
     candidates.sort(key=lambda item: item[0], reverse=True)
     return candidates[0][1].name
 
-async def semantic_ai_command_request(question, guild):
+async def semantic_ai_command_request(question, guild, viewer=None):
     if not GROQ_API_KEY:
-        guessed = fuzzy_command_guess(question)
+        guessed = fuzzy_command_guess(question, viewer, guild)
         return (guessed, "", False) if guessed else None
     prefix = prefix_for_guild(guild)
     command_lines = []
     for command in sorted(bot.commands, key=lambda cmd: cmd.qualified_name.casefold()):
         if getattr(command, "hidden", False):
+            continue
+        if is_superowner_help_command(command) and not can_see_superowner_help(viewer, guild):
             continue
         command_lines.append(command_ai_summary(command, prefix))
     prompt = {
@@ -3484,14 +3499,14 @@ async def semantic_ai_command_request(question, guild):
         async with aiohttp.ClientSession() as session:
             async with session.post("https://api.groq.com/openai/v1/chat/completions", json=payload, headers=headers, timeout=AI_MODEL_TIMEOUT_SECONDS) as resp:
                 if resp.status != 200:
-                    guessed = fuzzy_command_guess(question)
+                    guessed = fuzzy_command_guess(question, viewer, guild)
                     return (guessed, "", False) if guessed else None
                 data = await resp.json(content_type=None)
         raw = data["choices"][0]["message"]["content"].strip()
         raw = raw.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
         parsed = json.loads(raw)
     except Exception:
-        guessed = fuzzy_command_guess(question)
+        guessed = fuzzy_command_guess(question, viewer, guild)
         return (guessed, "", False) if guessed else None
     if parsed.get("needs_clarification"):
         return {"clarify": str(parsed.get("question") or "Which command do you want me to use?")}
@@ -3506,7 +3521,7 @@ async def semantic_ai_command_request(question, guild):
 async def maybe_run_ai_command(message, question):
     request = extract_ai_command_request(question, message.guild)
     if not request:
-        request = await semantic_ai_command_request(question, message.guild)
+        request = await semantic_ai_command_request(question, message.guild, message.author)
     if not request:
         return False
     if isinstance(request, dict) and request.get("clarify"):
@@ -3608,6 +3623,10 @@ def record_ai_action(message, action, detail="", success=True):
 async def ai_settings_for(scope, scope_id):
     rows = await asyncio.to_thread(get_ai_control_settings, scope, scope_id)
     return {str(row[2]): str(row[3]) for row in rows}
+
+def user_setting_value(settings, key):
+    defaults = {"aifriendly": "on"}
+    return settings.get(key, defaults.get(key, "off"))
 
 async def ai_is_ignored(message):
     global_settings = await ai_settings_for("global", 0)
@@ -4210,7 +4229,8 @@ async def on_message(message):
             remember_user_facts_from_message(message)
             memory_key = ai_memory_key(message)
             recent_context = ai_channel_context_text(memory_key)
-            user_memory = ai_user_memory_text(message, referenced_message)
+            current_user_settings = await ai_settings_for("user", message.author.id)
+            user_memory = ai_user_memory_text(message, referenced_message) if user_setting_value(current_user_settings, "aifriendly") == "on" else ""
             use_full_bot_context = should_use_full_bot_context(question)
             if use_full_bot_context:
                 messages = [
@@ -4437,7 +4457,7 @@ HELP_CATEGORIES = {
     "Utility": ["help", "userinfo", "pfp", "calc", "define", "timer", "ctimer", "alarm", "poll", "epoll", "translate", "find"],
     "AI": ["ask", "generate", "analyse", "aimemory", "aiknow", "aihistory", "aisettings", "aiignore", "aiunignore", "aichannel", "aistyle", "usersettings", "aidoctor"],
     "Server Tools": [
-        "dsnipe", "esnipe", "rsnipe", "rolesinfo", "roleinfo", "purge", "rpurge", "steal", "fwd", "quote", "archive",
+        "snipe", "dsnipe", "esnipe", "rsnipe", "rolesinfo", "roleinfo", "purge", "rpurge", "steal", "fwd", "quote", "archive",
         "giveaway", "listbans", "listblocks", "listtargets", "listcensors", "lists",
     ],
     "Status": ["afk", "sleep", "wake", "fsleep", "away", "setbday", "removebday", "setbdaychannel", "activity", "activitystats", "messages"],
@@ -4450,20 +4470,55 @@ HELP_CATEGORIES = {
         "add", "remove", "addtick", "removetick", "settick", "setquesos",
     ],
 }
+SUPEROWNER_HELP_COMMANDS = [
+    "add", "remove", "addtick", "removetick", "settick", "setquesos",
+    "send", "reply", "fsleep", "wake",
+    "aisettings", "aiignore", "aiunignore", "aichannel", "aistyle",
+    "aihistory", "auditcommands",
+]
+SUPEROWNER_HIDDEN_COMMANDS = {
+    *SUPEROWNER_HELP_COMMANDS,
+    "remtick", "deltick", "ignoreai", "unignoreai", "aitoggle", "aipersonality",
+    "aiactions", "actionhistory", "cmdaudit", "commandaudit",
+}
 HELP_CATEGORY_ALIASES = {
     "quewo": "𝚀𝚞𝚎wo (Gambling)",
     "𝚀𝚞𝚎wo": "𝚀𝚞𝚎wo (Gambling)",
     "gambling": "𝚀𝚞𝚎wo (Gambling)",
 }
 
+def is_superowner_help_command(command_or_name):
+    names = {str(command_or_name).casefold()}
+    if hasattr(command_or_name, "name"):
+        names = {command_or_name.name.casefold(), *(alias.casefold() for alias in getattr(command_or_name, "aliases", []) or [])}
+    return bool(names & SUPEROWNER_HIDDEN_COMMANDS)
+
+def can_see_superowner_help(user, guild):
+    return has_super_owner_power(user, guild)
+
+def help_categories_for(user=None, guild=None):
+    visible = {}
+    for category, names in HELP_CATEGORIES.items():
+        filtered = []
+        for name in names:
+            if is_superowner_help_command(name):
+                continue
+            filtered.append(name)
+        if filtered:
+            visible[category] = filtered
+    if can_see_superowner_help(user, guild):
+        visible["Superowner"] = SUPEROWNER_HELP_COMMANDS
+    return visible
+
 def prefix_for_guild(guild):
     guild_id = guild.id if guild else 0
     return guild_prefixes.get(guild_id, DEFAULT_PREFIX)
 
-def render_help_embed(guild=None, category_name=None, page=0, per_page=10):
+def render_help_embed(guild=None, category_name=None, page=0, per_page=10, viewer=None):
     current_prefix = prefix_for_guild(guild)
+    categories = help_categories_for(viewer, guild)
     if category_name:
-        names = HELP_CATEGORIES.get(category_name, [])
+        names = categories.get(category_name, [])
         page = max(0, int(page or 0))
         embed = discord.Embed(
             title=f"Pro𝚀𝚞𝚎 Help: {category_name}",
@@ -4508,7 +4563,7 @@ def render_help_embed(guild=None, category_name=None, page=0, per_page=10):
         ),
         inline=False,
     )
-    for category, names in HELP_CATEGORIES.items():
+    for category, names in categories.items():
         loaded = {
             command.name
             for name in names
@@ -4518,8 +4573,8 @@ def render_help_embed(guild=None, category_name=None, page=0, per_page=10):
             embed.add_field(name=category, value=f"{len(loaded)} commands", inline=True)
     return embed
 
-def help_category_page_count(category_name, per_page=10):
-    names = HELP_CATEGORIES.get(category_name, [])
+def help_category_page_count(category_name, per_page=10, viewer=None, guild=None):
+    names = help_categories_for(viewer, guild).get(category_name, [])
     loaded = []
     seen_commands = set()
     for name in names:
@@ -4530,11 +4585,12 @@ def help_category_page_count(category_name, per_page=10):
         loaded.append(command.name)
     return max(1, math.ceil(len(loaded) / per_page))
 
-def resolve_help_category(name):
+def resolve_help_category(name, viewer=None, guild=None):
     if not name:
         return None
     normalized = name.strip().casefold()
-    for category in HELP_CATEGORIES:
+    categories = help_categories_for(viewer, guild)
+    for category in categories:
         if normalized == category.casefold():
             return category
     return HELP_CATEGORY_ALIASES.get(normalized)
@@ -4599,7 +4655,7 @@ class HelpCategoryButton(Button):
             return await interaction.response.send_message("Use your own help menu.", ephemeral=True)
         view.category_name = self.category_name
         view.page = 0
-        await interaction.response.edit_message(embed=render_help_embed(interaction.guild, self.category_name, view.page), view=view)
+        await interaction.response.edit_message(embed=render_help_embed(interaction.guild, self.category_name, view.page, viewer=interaction.user), view=view)
 
 class HelpHomeButton(Button):
     def __init__(self):
@@ -4611,7 +4667,7 @@ class HelpHomeButton(Button):
             return await interaction.response.send_message("Use your own help menu.", ephemeral=True)
         view.category_name = None
         view.page = 0
-        await interaction.response.edit_message(embed=render_help_embed(interaction.guild), view=view)
+        await interaction.response.edit_message(embed=render_help_embed(interaction.guild, viewer=interaction.user), view=view)
 
 class HelpPageButton(Button):
     def __init__(self, direction):
@@ -4625,10 +4681,10 @@ class HelpPageButton(Button):
             return await interaction.response.send_message("Use your own help menu.", ephemeral=True)
         if not view.category_name:
             return await interaction.response.send_message("Pick a category first.", ephemeral=True)
-        page_count = help_category_page_count(view.category_name)
+        page_count = help_category_page_count(view.category_name, viewer=interaction.user, guild=interaction.guild)
         view.page = min(max(0, view.page + self.direction), page_count - 1)
         await interaction.response.edit_message(
-            embed=render_help_embed(interaction.guild, view.category_name, view.page),
+            embed=render_help_embed(interaction.guild, view.category_name, view.page, viewer=interaction.user),
             view=view,
         )
 
@@ -4643,13 +4699,15 @@ class HelpView(View):
         self.add_item(HelpPageButton(1))
         for category in HELP_CATEGORIES:
             self.add_item(HelpCategoryButton(category))
+        if author_id == super_owner_id:
+            self.add_item(HelpCategoryButton("Superowner"))
 
-def command_search_results(query):
+def command_search_results(query, viewer=None, guild=None):
     query = (query or "").strip().casefold()
     if not query:
         return []
     results = []
-    for command in slash_runnable_commands():
+    for command in slash_runnable_commands(viewer, guild):
         names = [command.name, *command.aliases]
         description = command_short_description(command)
         explanation = economy_explanations.get(command.name, "")
@@ -4668,7 +4726,7 @@ async def help_command(ctx, *, command_name: str = None):
         if parts and parts[0].casefold() == "search":
             query = parts[1] if len(parts) > 1 else ""
             current_prefix = prefix_for_guild(ctx.guild)
-            matches = command_search_results(query)
+            matches = command_search_results(query, ctx.author, ctx.guild)
             embed = discord.Embed(
                 title=f"{economy_q_thinking} Help Search",
                 description=f"Search: `{query or 'nothing'}`",
@@ -4684,11 +4742,13 @@ async def help_command(ctx, *, command_name: str = None):
                 embed.add_field(name="Matches", value=joined_embed_value(lines), inline=False)
             return await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
-        category = resolve_help_category(command_name)
+        category = resolve_help_category(command_name, ctx.author, ctx.guild)
         if category:
-            return await ctx.send(embed=render_help_embed(ctx.guild, category), view=HelpView(ctx.author.id, category))
+            return await ctx.send(embed=render_help_embed(ctx.guild, category, viewer=ctx.author), view=HelpView(ctx.author.id, category))
 
         command = get_command_case_insensitive(command_name)
+        if command and is_superowner_help_command(command) and not can_see_superowner_help(ctx.author, ctx.guild):
+            command = None
         if not command:
             current_prefix = prefix_for_guild(ctx.guild)
             return await ctx.send(f"Command not found. Try `{current_prefix}help search {command_name}`.", delete_after=30)
@@ -4710,7 +4770,7 @@ async def help_command(ctx, *, command_name: str = None):
         embed.set_footer(text=f"More detail: {current_prefix}explain {command.name}")
         return await ctx.send(embed=embed, view=command_setup_view(ctx.author.id, command.name), allowed_mentions=discord.AllowedMentions.none())
 
-    await ctx.send(embed=render_help_embed(ctx.guild), view=HelpView(ctx.author.id))
+    await ctx.send(embed=render_help_embed(ctx.guild, viewer=ctx.author), view=HelpView(ctx.author.id))
 
 def channel_status(guild, channel_id):
     if not channel_id:
@@ -4971,6 +5031,8 @@ async def aiknow_command(ctx, *, command_name: str = None):
     if not command_name:
         return await ctx.send("Use `.aiknow <command>`.")
     command = get_command_case_insensitive(command_name.strip())
+    if command and is_superowner_help_command(command) and not can_see_superowner_help(ctx.author, ctx.guild):
+        command = None
     if not command:
         return await ctx.send(f"I don't know a command named `{command_name}`.")
     prefix = prefix_for_guild(ctx.guild)
@@ -5095,7 +5157,7 @@ async def usersettings_command(ctx, key: str = None, *, value: str = None):
             color=discord.Color.blurple(),
         )
         for setting, description in allowed.items():
-            embed.add_field(name=setting, value=f"{description}\nCurrent: **{settings.get(setting, 'off')}**", inline=False)
+            embed.add_field(name=setting, value=f"{description}\nCurrent: **{user_setting_value(settings, setting)}**", inline=False)
         return await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
     setting = key.casefold()
     if setting not in allowed:
@@ -6135,11 +6197,11 @@ async def slash_run(interaction: discord.Interaction, command: str, input: str =
 
 @slash_run.autocomplete("command")
 async def slash_run_command_autocomplete(interaction: discord.Interaction, current: str):
-    return slash_command_search(current)
+    return slash_command_search(current, interaction.user, interaction.guild)
 
 @bot.tree.command(name="commands", description="List slash command access for all Pro𝚀𝚞𝚎 commands.")
 async def slash_commands_list(interaction: discord.Interaction):
-    commands_ = slash_runnable_commands()
+    commands_ = slash_runnable_commands(interaction.user, interaction.guild)
     prefix = prefix_for_guild(interaction.guild)
     lines = []
     for command in commands_:
@@ -6185,6 +6247,8 @@ async def slash_status(interaction: discord.Interaction):
 async def slash_help(interaction: discord.Interaction, command: str = ""):
     if command:
         command_obj = get_command_case_insensitive(command)
+        if command_obj and is_superowner_help_command(command_obj) and not can_see_superowner_help(interaction.user, interaction.guild):
+            command_obj = None
         if not command_obj:
             return await interaction.response.send_message("Command not found.", ephemeral=True)
         prefix = prefix_for_guild(interaction.guild)
@@ -6193,11 +6257,11 @@ async def slash_help(interaction: discord.Interaction, command: str = ""):
         description = command_short_description(command_obj)
         setup_note = "\nRun it through `/run`, or use the setup UI where available." if command_obj.name in SETUP_UI_COMMANDS else "\nRun it through `/run command input`."
         return await interaction.response.send_message(f"**{usage}**\n{description}{aliases}{setup_note}", ephemeral=True)
-    await interaction.response.send_message(embed=render_help_embed(interaction.guild), ephemeral=True)
+    await interaction.response.send_message(embed=render_help_embed(interaction.guild, viewer=interaction.user), ephemeral=True)
 
 @slash_help.autocomplete("command")
 async def slash_help_command_autocomplete(interaction: discord.Interaction, current: str):
-    return slash_command_search(current)
+    return slash_command_search(current, interaction.user, interaction.guild)
 
 @bot.tree.command(name="settings", description="Open the server settings dashboard.")
 async def slash_settings(interaction: discord.Interaction):
@@ -7221,97 +7285,194 @@ async def dclist(ctx):
         formatted = "\n".join(f"**{name}**" for name in commands_for_guild)
         await ctx.send(f"Disabled Commands:\n{formatted}")
 
-@bot.command()
+SNIPE_TYPES = {
+    "deleted": {
+        "label": "Deleted",
+        "emoji": economy_q_trash,
+        "store": deleted_snipes,
+        "aliases": {"deleted", "delete", "d", "dsnipe"},
+    },
+    "edited": {
+        "label": "Edited",
+        "emoji": economy_q_edit,
+        "store": edited_snipes,
+        "aliases": {"edited", "edit", "e", "esnipe"},
+    },
+    "reaction": {
+        "label": "Reaction",
+        "emoji": economy_q_reaction,
+        "store": removed_reactions,
+        "aliases": {"reaction", "react", "r", "rsnipe"},
+    },
+}
+
+def resolve_snipe_type(raw, default="deleted"):
+    key = str(raw or "").casefold().strip()
+    for snipe_type, info in SNIPE_TYPES.items():
+        if key == snipe_type or key in info["aliases"]:
+            return snipe_type
+    return default
+
+def parse_snipe_position(raw_index, total):
+    raw = str(raw_index or "1").strip()
+    if raw.casefold() in {"latest", "newest", "last"}:
+        return 0
+    if raw.casefold() in {"oldest", "first"}:
+        return max(0, total - 1)
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    if value == 0:
+        return None
+    return total + value if value < 0 else value - 1
+
+def snipe_entries(channel_id, snipe_type):
+    return SNIPE_TYPES[snipe_type]["store"].get(channel_id, [])
+
+def snipe_empty_embed(ctx, snipe_type):
+    info = SNIPE_TYPES[snipe_type]
+    embed = discord.Embed(
+        title=f"{info['emoji']} {info['label']} Snipe",
+        description="Nothing saved for this channel yet.",
+        color=discord.Color.dark_grey(),
+    )
+    embed.set_footer(text="Snipes only work for events the bot saw while online.")
+    return embed
+
+def build_snipe_embed(ctx, snipe_type, index):
+    entries = snipe_entries(ctx.channel.id, snipe_type)
+    info = SNIPE_TYPES[snipe_type]
+    if not entries:
+        return snipe_empty_embed(ctx, snipe_type)
+    index = max(0, min(index, len(entries) - 1))
+    embed = discord.Embed(
+        title=f"{info['emoji']} {info['label']} Snipe",
+        color=discord.Color.blurple(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    if snipe_type == "deleted":
+        content, author, timestamp = entries[index]
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=timezone.utc)
+        embed.color = discord.Color.red()
+        embed.add_field(name="Author", value=f"<@{author.id}> (`{author.id}`)", inline=False)
+        embed.add_field(name="Deleted", value=discord.utils.format_dt(timestamp, "F"), inline=True)
+        embed.add_field(name="Ago", value=discord.utils.format_dt(timestamp, "R"), inline=True)
+        embed.add_field(name="Content", value=embed_value(content or "[No content]", 3500), inline=False)
+    elif snipe_type == "edited":
+        before, after, author, link, timestamp = entries[index]
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=timezone.utc)
+        embed.color = discord.Color.orange()
+        embed.add_field(name="Author", value=f"<@{author.id}> (`{author.id}`)", inline=False)
+        embed.add_field(name="Edited", value=discord.utils.format_dt(timestamp, "R"), inline=True)
+        embed.add_field(name="Message", value=f"[Jump to message]({link})", inline=True)
+        embed.add_field(name="Before", value=embed_value(before or "[No content]", 1700), inline=False)
+        embed.add_field(name="After", value=embed_value(after or "[No content]", 1700), inline=False)
+    else:
+        user, emoji, msg, timestamp = entries[index]
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=timezone.utc)
+        embed.color = discord.Color.purple()
+        embed.add_field(name="User", value=f"<@{user.id}> (`{user.id}`)", inline=False)
+        embed.add_field(name="Reaction", value=str(emoji), inline=True)
+        embed.add_field(name="Removed", value=discord.utils.format_dt(timestamp, "R"), inline=True)
+        embed.add_field(name="Message", value=f"[Jump to message]({msg.jump_url})", inline=False)
+        msg_content = getattr(msg, "content", "") or "[No content]"
+        embed.add_field(name="Message Content", value=embed_value(msg_content, 1200), inline=False)
+    embed.set_footer(text=f"{ctx.channel} • Snipe {index + 1}/{len(entries)}")
+    return embed
+
+class SnipeView(View):
+    def __init__(self, author_id, channel_id, snipe_type="deleted", index=0):
+        super().__init__(timeout=LONG_HELP_VIEW_TIMEOUT)
+        self.author_id = author_id
+        self.channel_id = channel_id
+        self.snipe_type = snipe_type
+        self.index = index
+        self.type_select = Select(
+            placeholder="Snipe type",
+            min_values=1,
+            max_values=1,
+            options=[
+                discord.SelectOption(label="Deleted messages", value="deleted", emoji=reaction_emoji(economy_q_trash)),
+                discord.SelectOption(label="Edited messages", value="edited", emoji=reaction_emoji(economy_q_edit)),
+                discord.SelectOption(label="Removed reactions", value="reaction", emoji=reaction_emoji(economy_q_reaction)),
+            ],
+        )
+        self.type_select.callback = self.select_type
+        self.add_item(self.type_select)
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id == self.author_id:
+            return True
+        await interaction.response.send_message("Open your own snipe menu.", ephemeral=True)
+        return False
+
+    async def refresh(self, interaction):
+        entries = snipe_entries(self.channel_id, self.snipe_type)
+        if entries:
+            self.index = max(0, min(self.index, len(entries) - 1))
+        else:
+            self.index = 0
+        await interaction.response.edit_message(embed=build_snipe_embed(interaction, self.snipe_type, self.index), view=self)
+
+    async def select_type(self, interaction):
+        self.snipe_type = self.type_select.values[0]
+        self.index = 0
+        await self.refresh(interaction)
+
+    @discord.ui.button(label="Previous", style=discord.ButtonStyle.secondary)
+    async def previous_button(self, interaction, button):
+        self.index -= 1
+        await self.refresh(interaction)
+
+    @discord.ui.button(label="Next", style=discord.ButtonStyle.secondary)
+    async def next_button(self, interaction, button):
+        self.index += 1
+        await self.refresh(interaction)
+
+    @discord.ui.button(label="Latest", style=discord.ButtonStyle.primary)
+    async def latest_button(self, interaction, button):
+        self.index = 0
+        await self.refresh(interaction)
+
+    @discord.ui.button(label="Guide", style=discord.ButtonStyle.secondary)
+    async def guide_button(self, interaction, button):
+        await interaction.response.send_message(
+            "Use `.snipe` for the full menu, `.dsnipe` for deleted messages, `.esnipe` for edits, or `.rsnipe` for removed reactions. Add a number like `.dsnipe 3` to jump to an older entry.",
+            ephemeral=True,
+        )
+
+async def send_snipe_menu(ctx, snipe_type="deleted", index="1"):
+    snipe_type = resolve_snipe_type(snipe_type)
+    entries = snipe_entries(ctx.channel.id, snipe_type)
+    position = parse_snipe_position(index, len(entries)) if entries else 0
+    if position is None or (entries and (position < 0 or position >= len(entries))):
+        return await ctx.send(f"Use a valid number from **1** to **{len(entries) or 1}**.")
+    view = SnipeView(ctx.author.id, ctx.channel.id, snipe_type, position)
+    await ctx.send(embed=build_snipe_embed(ctx, snipe_type, position), view=view, allowed_mentions=discord.AllowedMentions.none())
+
+@bot.command(name="snipe", aliases=["snipes"])
+async def snipe(ctx, snipe_type: str = "deleted", index: str = "1"):
+    """Opens a menu for deleted, edited, and reaction snipes."""
+    await send_snipe_menu(ctx, snipe_type, index)
+
+@bot.command(name="dsnipe", aliases=["deleted", "deletedsnipe"])
 async def dsnipe(ctx, index: str = "1"):
-    try:
-        messages = deleted_snipes.get(ctx.channel.id, [])
-        if not messages:
-            return await ctx.send("Nothing to snipe.")
+    """Shows deleted-message snipes with buttons."""
+    await send_snipe_menu(ctx, "deleted", index)
 
-        n = int(index)
-        if n == 0:
-            return await ctx.send("Index cannot be 0.")
-        if n < 0:
-            n = len(messages) + n
-        else:
-            n -= 1
-
-        if n < -len(messages) or n >= len(messages):
-            return await ctx.send("Invalid index. Use a number like `.dsnipe 3` or `.dsnipe -3`.")
-
-        content, author, timestamp = messages[n]
-        if timestamp.tzinfo is None:
-            timestamp = timestamp.replace(tzinfo=timezone.utc)
-        unix_time = int(timestamp.timestamp())
-
-        await ctx.send(
-            f"Deleted by <@{author.id}> at <t:{unix_time}:f>:\n{content}",
-            allowed_mentions=discord.AllowedMentions.none()
-        )
-    except Exception:
-        await ctx.send("Invalid index. Use a number like `.dsnipe 3` or `.dsnipe -3`.")
-
-
-@bot.command()
+@bot.command(name="esnipe", aliases=["editsnipe", "edited"])
 async def esnipe(ctx, index: str = "1"):
-    try:
-        messages = edited_snipes.get(ctx.channel.id, [])
-        if not messages:
-            return await ctx.send("Nothing to snipe.")
+    """Shows edited-message snipes with buttons."""
+    await send_snipe_menu(ctx, "edited", index)
 
-        n = int(index)
-        if n == 0:
-            return await ctx.send("Index cannot be 0.")
-        if n < 0:
-            n = len(messages) + n
-        else:
-            n -= 1
-
-        if n < -len(messages) or n >= len(messages):
-            return await ctx.send("Invalid index. Use a number like `.esnipe 2` or `.esnipe -3`.")
-
-        before, after, author, link, timestamp = messages[n]
-        if timestamp.tzinfo is None:
-            timestamp = timestamp.replace(tzinfo=timezone.utc)
-        unix_time = int(timestamp.timestamp())
-
-        await ctx.send(
-            f"Edited by <@{author.id}> at <t:{unix_time}:f>:\n**Before:** {before}\n**After:** {after}\n[Jump to message]({link})",
-            allowed_mentions=discord.AllowedMentions.none()
-        )
-    except Exception:
-        await ctx.send("Invalid index. Use a number like `.esnipe 2` or `.esnipe -3`.")
-
-
-@bot.command()
+@bot.command(name="rsnipe", aliases=["reactionsnipe", "reactsnipe"])
 async def rsnipe(ctx, index: str = "1"):
-    try:
-        logs = removed_reactions.get(ctx.channel.id, [])
-        if not logs:
-            return await ctx.send("Nothing to snipe.")
-
-        n = int(index)
-        if n == 0:
-            return await ctx.send("Index cannot be 0.")
-        if n < 0:
-            n = len(logs) + n
-        else:
-            n -= 1
-
-        if n < -len(logs) or n >= len(logs):
-            return await ctx.send("Invalid index. Use a number like `.rsnipe 2` or `.rsnipe -3`.")
-
-        user, emoji, msg, timestamp = logs[n]
-        if timestamp.tzinfo is None:
-            timestamp = timestamp.replace(tzinfo=timezone.utc)
-        unix_time = int(timestamp.timestamp())
-
-        await ctx.send(
-            f"<@{user.id}> removed {emoji} from [this message]({msg.jump_url}) at <t:{unix_time}:f>.",
-            allowed_mentions=discord.AllowedMentions.none()
-        )
-    except Exception:
-        await ctx.send("Invalid index. Use a number like `.rsnipe 2` or `.rsnipe -3`.")
+    """Shows removed-reaction snipes with buttons."""
+    await send_snipe_menu(ctx, "reaction", index)
 
 @bot.command()
 @is_admin_power()
@@ -9430,7 +9591,7 @@ async def steal(ctx):
         await ctx.send("No sticker, emoji, or image found in the replied message.", delete_after=5)
             
 @bot.command()
-@is_admin_power()
+@is_super_owner()
 async def send(ctx, target=None, *, msg=None):
     await safe_delete_message(ctx.message)
     attachments = ctx.message.attachments
@@ -9745,7 +9906,7 @@ async def archive_messages(ctx, *, raw_args=None):
 
 
 @bot.command()
-@is_admin_power()
+@is_super_owner()
 async def reply(ctx, message_id: int, *, text=None):
     await safe_delete_message(ctx.message)
     attachments = ctx.message.attachments
