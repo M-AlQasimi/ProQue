@@ -21,6 +21,7 @@ except ImportError:
     chess_lib = None
 from collections import Counter, deque
 from datetime import datetime, timedelta, timezone
+from difflib import SequenceMatcher
 from discord import Embed, Emoji, File, Interaction, StickerItem, app_commands
 from discord.ext import commands, tasks
 from discord.ui import Button, Modal, Select, TextInput, View
@@ -65,6 +66,7 @@ from economy import (
     Q_CONFETTI as economy_q_confetti,
     Q_CONNECT_BLACK as economy_q_connect_black,
     Q_CONNECT_WHITE as economy_q_connect_white,
+    Q_DENIED as economy_q_denied,
     Q_EDIT as economy_q_edit,
     Q_FILTER as economy_q_filter,
     Q_GAME_AUDIT as economy_q_game_audit,
@@ -87,6 +89,7 @@ from economy import (
     Q_REJECT as economy_q_reject,
     Q_ROLES as economy_q_roles,
     Q_SLEEP as economy_q_sleep,
+    Q_SETUP as economy_q_setup,
     Q_THINKING as economy_q_thinking,
     Q_TIMEOUT as economy_q_timeout,
     Q_TIMER as economy_q_timer,
@@ -96,6 +99,7 @@ from economy import (
     Q_VOICE as economy_q_voice,
     Q_WARNING as economy_q_warning,
     get_receipt as economy_get_receipt,
+    get_receipts_for_user as economy_get_receipts_for_user,
     risk_label as economy_risk_label,
     record_game_result as economy_record_game_result,
     setup as economy_setup,
@@ -181,6 +185,9 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 CLOUDFLARE_API_KEY = os.getenv("CLOUDFLARE_API_KEY", "")
 CLOUDFLARE_ACCOUNT_ID = os.getenv("CLOUDFLARE_ACCOUNT_ID", "")
 AI_MODEL_TIMEOUT_SECONDS = 10
+AI_SUMMARY_MAX_MESSAGES = 250
+AI_SUMMARY_DEFAULT_MESSAGES = 80
+AI_SUMMARY_MAX_CHARS = 12000
 
 # PostgreSQL is the single source of truth
 pg_init()
@@ -636,7 +643,7 @@ def command_permission_note(command):
         return "Requires admin/server-owner power unless the command itself says otherwise."
     if name in {"editlottery", "stoplottery", "editactivity", "endactivity", "stopactivity"}:
         return "Server owner/admin command."
-    return "Usually available to normal users."
+    return "Usually available."
 
 def command_risk_note(command):
     names = {command.name.casefold(), *(alias.casefold() for alias in getattr(command, "aliases", []) or [])}
@@ -815,13 +822,13 @@ CASUAL_AI_RE = re.compile(
 BOT_KNOWLEDGE_RE = re.compile(
     r"\b(proque|bot|command|help|how\s+do\s+i|how\s+to|use|run|alias|aliases|"
     r"quewo|quesos|economy|gambl|game|games|lottery|shop|inventory|profile|balance|"
-    r"level|xp|activity|messages|settings|setup|prefix|logs?|admin|permission|perms|doctor|error|"
+    r"level|xp|activity|messages|chat|summary|summarize|summarise|recap|settings|setup|prefix|logs?|admin|permission|perms|doctor|error|"
     r"ignore|block|unblock|disable|enable|ban|kick|role|lock|unlock|stop\s+responding)\b",
     re.IGNORECASE,
 )
 AI_COMMAND_ACTION_RE = re.compile(
     r"\b(run|use|do|start|set|show|open|check|make|create|generate|analyse|analyze|"
-    r"change|edit|enable|disable|turn\s+on|turn\s+off|add|remove|give|send|reply|"
+    r"change|edit|enable|disable|turn\s+on|turn\s+off|add|remove|give|send|reply|summarize|summarise|recap|catch\s+me\s+up|what\s+did|what\s+happened|"
     r"block|unblock|ignore|stop\s+responding|lock|unlock|purge|ban|kick|role|permission|perms)\b",
     re.IGNORECASE,
 )
@@ -958,6 +965,10 @@ daily_cooldown = {}
 weekly_cooldown = {}
 monthly_cooldown = {}
 chat_xp_memory = {}
+activity_recent_messages = {}
+ACTIVITY_DUPLICATE_WINDOW_SECONDS = 10 * 60
+ACTIVITY_NEAR_DUPLICATE_RATIO = 0.88
+ACTIVITY_RECENT_MESSAGE_LIMIT = 8
 
 class CommandDisabledError(commands.CheckFailure):
     def __init__(self, command_name):
@@ -1875,6 +1886,8 @@ def track_message_activity(message):
         return
     if message.author.id in guild_blacklisted_users(message.guild):
         return
+    if not should_count_message_activity(message):
+        return
     if message.guild.id in guild_activity_channels:
         activity_buffer[(message.guild.id, message.author.id, "messages")] += 1
     created_at = message.created_at
@@ -1889,6 +1902,41 @@ def track_message_activity(message):
     })
     if len(message_history_buffer) >= 200:
         asyncio.create_task(flush_activity_buffer())
+
+def normalize_activity_message_content(message):
+    content = str(getattr(message, "content", "") or "").casefold().strip()
+    if not content:
+        attachment_names = " ".join(getattr(attachment, "filename", "") for attachment in getattr(message, "attachments", []) or [])
+        return f"attachments:{attachment_names.casefold().strip()}" if attachment_names else ""
+    content = re.sub(r"https?://\S+", " link ", content)
+    content = re.sub(r"<@!?\d+>|<#\d+>|<@&\d+>", " mention ", content)
+    content = re.sub(r"<a?:([a-zA-Z0-9_]+):\d+>", r" emoji_\1 ", content)
+    content = re.sub(r"\d+", "#", content)
+    content = re.sub(r"(.)\1{3,}", r"\1\1", content)
+    content = re.sub(r"[^a-z0-9#\s_]+", " ", content)
+    return re.sub(r"\s+", " ", content).strip()
+
+def should_count_message_activity(message):
+    normalized = normalize_activity_message_content(message)
+    if not normalized:
+        return False
+    now = message.created_at.timestamp() if getattr(message, "created_at", None) else time.time()
+    key = (message.guild.id, message.author.id)
+    recent = activity_recent_messages.setdefault(key, deque(maxlen=ACTIVITY_RECENT_MESSAGE_LIMIT))
+    while recent and now - recent[0][0] > ACTIVITY_DUPLICATE_WINDOW_SECONDS:
+        recent.popleft()
+    should_count = True
+    for _, previous in recent:
+        if normalized == previous:
+            should_count = False
+            break
+        if min(len(normalized), len(previous)) >= 6:
+            similarity = SequenceMatcher(None, normalized, previous).ratio()
+            if similarity >= ACTIVITY_NEAR_DUPLICATE_RATIO:
+                should_count = False
+                break
+    recent.append((now, normalized))
+    return should_count
 
 def activity_report_embed(guild, rows):
     embed = discord.Embed(
@@ -3048,6 +3096,7 @@ COMMAND_EXAMPLE_OVERRIDES = {
     "analyze": ".analyze while replying to an image",
     "archive": ".archive 50",
     "auditcommands": ".auditcommands",
+    "balanceaudit": ".balanceaudit 14",
     "aisettings": ".aisettings",
     "aiignore": ".aiignore @user",
     "aiunignore": ".aiunignore @user",
@@ -3103,6 +3152,7 @@ COMMAND_EXAMPLE_OVERRIDES = {
     "messages": ".messages",
     "onboard": ".onboard",
     "health": ".health",
+    "permaudit": ".permaudit",
     "perms": ".perms @user",
     "sessions": ".sessions",
     "move": ".move e2e4",
@@ -3113,6 +3163,7 @@ COMMAND_EXAMPLE_OVERRIDES = {
     "purge": ".purge @user 20",
     "quote": ".quote <message link>",
     "receipt": ".receipt QTX-...",
+    "receipts": ".receipts latest",
     "reopen": ".reopen",
     "remove": ".remove @user 1000",
     "removerole": ".removerole @user @role",
@@ -3124,6 +3175,7 @@ COMMAND_EXAMPLE_OVERRIDES = {
     "scratch": ".scratch 1000",
     "season": ".season",
     "send": ".send #channel message",
+    "summarize": ".summarize @user 1h",
     "setbday": ".setbday 25/12",
     "setbdaychannel": ".setbdaychannel #birthdays",
     "setnick": ".setnick @user new nickname",
@@ -3181,7 +3233,7 @@ GENERIC_INPUT_UI_COMMANDS = {
     "move", "chessmove", "setnick", "shut", "unshut", "rshut", "unrshut", "purge",
     "rpurge", "unmute", "ban", "unban", "kick", "addrole", "removerole", "send",
     "reply", "fwd", "forward", "fw", "quote", "archive", "aban", "raban", "summon2", "block", "unblock", "fsleep", "wake",
-    "find", "censor", "uncensor", "ask", "generate",
+    "find", "censor", "uncensor", "ask", "generate", "summarize", "summarise", "summary", "aisummary", "tldr", "recap",
 }
 
 INPUT_UI_EXCLUDED_COMMANDS = {
@@ -3222,7 +3274,7 @@ def command_argument_hint(error, ctx=None):
     if param_name == "amount":
         command_keys = {command_name, *command_aliases}
         if command_keys & GAMBLING_AMOUNT_COMMANDS:
-            return "Use a number like `1000`, `4k`, or `all`. Gambling commands cap normal users at `200k`."
+            return "Use a number like `1000`, `4k`, or `all`. Gambling commands are capped at `200k`."
         return "Use a number like `1000`, `4k`, `1m`, `1.5b`, or `all` where allowed."
     if param_name in ARGUMENT_HINTS:
         return ARGUMENT_HINTS[param_name]
@@ -3318,6 +3370,7 @@ AI_SAFE_COMMANDS = {
     "activitystats", "astats", "away", "userinfo", "pfp", "avatar", "calc",
     "define", "timer", "ctimer", "alarm", "find", "econhelp", "quewohelp",
     "economyhelp", "ehelp", "explain", "lottery", "lotterystats",
+    "summarize", "summarise", "summary", "aisummary", "tldr", "recap",
     "aimemory", "aime", "memoryai", "whatyouknow", "aiknow", "aiknowledge", "knowcmd", "aicmd",
     "aidoctor", "botdoctor", "doctorai", "diagnosebot",
     "aihistory", "aiactions", "actionhistory", "aisettings", "aiconfig", "aicontrols", "usersettings", "mysettings", "preferences", "prefs",
@@ -3400,6 +3453,7 @@ def extract_ai_command_request(question, guild=None):
 
     simple_patterns = [
         (("message stats", "messages tracker", "messages leaderboard", "message leaderboard", "who talks the most", "chat leaderboard"), "messages", ""),
+        (("summarize messages", "summarise messages", "chat summary", "summarize chat", "summarise chat", "recap chat", "catch me up"), "summarize", ""),
         (("games", "game list", "what can we play", "play list"), "games", ""),
         (("shop", "store", "what can i buy"), "shop", ""),
         (("inventory", "my items", "stuff i own", "what do i own"), "inventory", ""),
@@ -3788,6 +3842,223 @@ def ai_batch_missing_prompt(missing):
     if not parts:
         return "I need a bit more detail before I touch balances or tickets."
     return f"{economy_q_thinking} I need {', and '.join(parts)}."
+
+def looks_like_ai_summary_request(text):
+    lowered = str(text or "").casefold()
+    if not lowered:
+        return False
+    summary_words = (
+        "summarize", "summarise", "summary", "recap", "tldr", "tl;dr",
+        "catch me up", "what did", "what was said", "what happened",
+    )
+    chat_words = (
+        "say", "said", "talk", "talking", "messages", "chat", "conversation",
+        "thread", "this channel", "today", "yesterday", "last",
+    )
+    return any(word in lowered for word in summary_words) and any(word in lowered for word in chat_words)
+
+def parse_summary_duration(text):
+    lowered = str(text or "").casefold()
+    compact_matches = re.findall(r"\b\d{1,3}\s*[wdhms]\b", lowered)
+    if compact_matches:
+        try:
+            compact = parse_poll_duration(" ".join(compact_matches))
+            if compact:
+                return min(compact, timedelta(days=14))
+        except Exception:
+            pass
+    if "today" in lowered:
+        now = datetime.now(timezone.utc)
+        return now - now.replace(hour=0, minute=0, second=0, microsecond=0)
+    if "yesterday" in lowered:
+        return timedelta(days=2)
+    patterns = [
+        (r"\blast\s+(\d{1,3})\s*messages?\b", "messages"),
+        (r"\b(\d{1,3})\s*messages?\b", "messages"),
+        (r"\blast\s+(\d{1,3})\s*hours?\b", "hours"),
+        (r"\b(\d{1,3})\s*hours?\b", "hours"),
+        (r"\blast\s+(\d{1,3})\s*days?\b", "days"),
+        (r"\b(\d{1,3})\s*days?\b", "days"),
+    ]
+    for pattern, unit in patterns:
+        match = re.search(pattern, lowered)
+        if not match:
+            continue
+        value = max(1, int(match.group(1)))
+        if unit == "hours":
+            return timedelta(hours=min(value, 72))
+        if unit == "days":
+            return timedelta(days=min(value, 14))
+    if "week" in lowered:
+        return timedelta(days=7)
+    return None
+
+def parse_summary_limit(text):
+    lowered = str(text or "").casefold()
+    match = re.search(r"\b(?:last\s+)?(\d{1,3})\s*messages?\b", lowered)
+    if match:
+        return max(1, min(int(match.group(1)), AI_SUMMARY_MAX_MESSAGES))
+    return AI_SUMMARY_DEFAULT_MESSAGES
+
+async def resolve_summary_target(ctx_or_message, raw_text):
+    guild = getattr(ctx_or_message, "guild", None)
+    channel = getattr(ctx_or_message, "channel", None)
+    user = None
+    text = str(raw_text or "")
+    mentions = getattr(ctx_or_message, "mentions", None)
+    if mentions is None and hasattr(ctx_or_message, "message"):
+        mentions = getattr(ctx_or_message.message, "mentions", None)
+    channel_mentions = getattr(ctx_or_message, "channel_mentions", None)
+    if channel_mentions is None and hasattr(ctx_or_message, "message"):
+        channel_mentions = getattr(ctx_or_message.message, "channel_mentions", None)
+    mentioned_users = [u for u in (mentions or []) if not getattr(u, "bot", False)]
+    if mentioned_users:
+        user = mentioned_users[0]
+    if channel_mentions:
+        channel = channel_mentions[0]
+    if guild:
+        for token in re.findall(r"<#\d+>|\b\d{15,22}\b", text):
+            try:
+                channel_candidate = await commands.TextChannelConverter().convert(ctx_or_message if hasattr(ctx_or_message, "bot") else await bot.get_context(ctx_or_message), token)
+                channel = channel_candidate
+                break
+            except Exception:
+                pass
+        if user is None:
+            for token in re.findall(r"<@!?\d+>|\b\d{15,22}\b", text):
+                try:
+                    context = ctx_or_message if hasattr(ctx_or_message, "bot") else await bot.get_context(ctx_or_message)
+                    user = await commands.MemberConverter().convert(context, token)
+                    break
+                except Exception:
+                    pass
+    return user, channel
+
+async def collect_summary_messages(channel, *, target_user=None, limit=AI_SUMMARY_DEFAULT_MESSAGES, duration=None, requester_id=None):
+    limit = max(1, min(int(limit or AI_SUMMARY_DEFAULT_MESSAGES), AI_SUMMARY_MAX_MESSAGES))
+    after = None
+    if duration:
+        after = datetime.now(timezone.utc) - duration
+    fetched = []
+    history_limit = min(max(limit * 4, limit), 500)
+    async for msg in channel.history(limit=history_limit, after=after, oldest_first=False):
+        if msg.author.bot:
+            continue
+        if target_user and msg.author.id != target_user.id:
+            continue
+        content = (msg.content or "").strip()
+        if not content and msg.attachments:
+            content = " ".join(f"[attachment: {a.filename}]" for a in msg.attachments[:3])
+        if not content:
+            continue
+        fetched.append(msg)
+        if len(fetched) >= limit:
+            break
+    return list(reversed(fetched))
+
+def format_summary_source(messages):
+    lines = []
+    for msg in messages:
+        created = msg.created_at.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        author = getattr(msg.author, "display_name", msg.author.name)
+        content = re.sub(r"\s+", " ", (msg.content or "").strip())
+        if not content and msg.attachments:
+            content = " ".join(f"[attachment: {a.filename}]" for a in msg.attachments[:3])
+        lines.append(f"[{created}] {author} ({msg.author.id}): {content[:700]}")
+    text = "\n".join(lines)
+    return text[-AI_SUMMARY_MAX_CHARS:]
+
+async def summarize_messages_with_ai(messages, *, prompt, target_user=None, channel=None):
+    source = format_summary_source(messages)
+    if not source:
+        return "I could not find messages to summarize."
+    if not GROQ_API_KEY:
+        people = Counter(msg.author.id for msg in messages)
+        top = ", ".join(f"<@{uid}> ({count})" for uid, count in people.most_common(5))
+        first = messages[0].created_at
+        last = messages[-1].created_at
+        return (
+            f"Found **{len(messages)}** message(s)"
+            f"{f' from <@{target_user.id}>' if target_user else ''}.\n"
+            f"Range: {discord.utils.format_dt(first, 'R')} to {discord.utils.format_dt(last, 'R')}.\n"
+            f"Top speakers: {top or 'none'}.\n"
+            "AI summaries need `GROQ_API_KEY` configured."
+        )
+    headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
+    system = (
+        "You summarize Discord chat. Be accurate, concise, and neutral. "
+        "Do not invent context. Mention key points, decisions, questions, and tone. "
+        "If one user is targeted, summarize only that user's messages. Do not ping users."
+    )
+    user_prompt = (
+        f"Request: {prompt or 'Summarize this Discord chat.'}\n"
+        f"Channel: #{getattr(channel, 'name', 'unknown')}\n"
+        f"Target user: {getattr(target_user, 'display_name', 'all users') if target_user else 'all users'}\n\n"
+        f"Messages:\n{source}"
+    )
+    payload = {
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user_prompt},
+        ],
+        "model": "llama-3.1-8b-instant",
+        "temperature": 0.2,
+        "max_tokens": 700,
+    }
+    async with aiohttp.ClientSession() as session:
+        async with session.post("https://api.groq.com/openai/v1/chat/completions", json=payload, headers=headers, timeout=AI_MODEL_TIMEOUT_SECONDS) as resp:
+            if resp.status != 200:
+                body = await resp.text()
+                return ai_http_error_message(resp.status, body)
+            data = await resp.json(content_type=None)
+    return data["choices"][0]["message"]["content"].strip()
+
+async def send_chat_summary(destination, *, prompt="", target_user=None, channel=None, limit=AI_SUMMARY_DEFAULT_MESSAGES, duration=None):
+    channel = channel or destination.channel
+    try:
+        messages = await collect_summary_messages(channel, target_user=target_user, limit=limit, duration=duration)
+    except discord.Forbidden:
+        return await destination.reply(
+            f"{economy_q_denied} I can't read message history there.",
+            mention_author=False,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+    except Exception as e:
+        return await destination.reply(
+            clean_user_error(e, "I couldn't fetch those messages."),
+            mention_author=False,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+    if not messages:
+        return await destination.reply(
+            f"{economy_q_warning} I couldn't find messages to summarize.",
+            mention_author=False,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+    try:
+        async with channel.typing():
+            summary = await summarize_messages_with_ai(messages, prompt=prompt, target_user=target_user, channel=channel)
+    except Exception as e:
+        summary = ai_exception_message(e)
+    embed = discord.Embed(
+        title=f"{economy_q_ai_history} Chat Summary",
+        description=embed_value(summary, 3800),
+        color=discord.Color.blurple(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.add_field(name="Source", value=f"#{getattr(channel, 'name', channel.id)}", inline=True)
+    embed.add_field(name="Messages", value=f"{len(messages):,}", inline=True)
+    if target_user:
+        embed.add_field(name="User", value=f"<@{target_user.id}>", inline=True)
+    if duration:
+        if duration < timedelta(days=1):
+            hours = max(1, int(duration.total_seconds() // 3600))
+            range_text = f"last {hours} hour{'s' if hours != 1 else ''}"
+        else:
+            days = max(1, duration.days)
+            range_text = f"last {days} day{'s' if days != 1 else ''}"
+        embed.add_field(name="Range", value=range_text, inline=True)
+    return await destination.reply(embed=embed, mention_author=False, allowed_mentions=discord.AllowedMentions.none())
 
 async def ai_batch_targets_from_source(message, text, limit):
     lowered = text.casefold()
@@ -4222,6 +4493,24 @@ async def on_message(message):
                     track_message_activity(message)
                     return
 
+                if looks_like_ai_summary_request(question):
+                    target_user, summary_channel = await resolve_summary_target(message, question)
+                    if target_user is None and referenced_message and not referenced_message.author.bot:
+                        if re.search(r"\b(they|them|their|he|him|his|she|her|that user|this user|the person)\b", question, flags=re.IGNORECASE):
+                            target_user = referenced_message.author
+                    duration = parse_summary_duration(question)
+                    limit = parse_summary_limit(question)
+                    await send_chat_summary(
+                        message,
+                        prompt=question,
+                        target_user=target_user,
+                        channel=summary_channel,
+                        limit=limit,
+                        duration=duration,
+                    )
+                    track_message_activity(message)
+                    return
+
                 if await maybe_run_ai_command(message, question):
                     track_message_activity(message)
                     return
@@ -4451,18 +4740,18 @@ HELP_CATEGORIES = {
         "guide", "onboard", "bal", "profile", "inventory", "settheme", "quests", "dailychallenge", "streaks", "shop", "cooldowns", "transactions", "lottery", "lotterystats", "buytick",
         "daily", "weekly", "monthly", "cf", "roulette", "slots", "blackjack", "scratch", "tower", "vault", "memory", "cardladder", "lockpick",
         "heist", "diceduel", "cases", "plinko", "luckynumber", "jackpotspin", "dungeon", "ms", "wheel",
-        "give", "lb", "gamestats", "achievements", "setbadge", "gamebalance", "gameaudit", "gamehistory", "season", "event", "limits", "qstats", "economyhealth", "economyaudit", "abuseaudit", "riskprofile", "econhelp", "explain",
+        "give", "lb", "gamestats", "achievements", "setbadge", "gamebalance", "gameaudit", "balanceaudit", "gamehistory", "season", "event", "limits", "qstats", "economyhealth", "economyaudit", "abuseaudit", "riskprofile", "econhelp", "explain",
     ],
     "Games": ["games", "howtoplay", "ttt", "c4", "chess", "move", "resign", "flagquiz", "flagstats", "q", "picker"],
     "Utility": ["help", "userinfo", "pfp", "calc", "define", "timer", "ctimer", "alarm", "poll", "epoll", "translate", "find"],
-    "AI": ["ask", "generate", "analyse", "aimemory", "aiknow", "aihistory", "aisettings", "aiignore", "aiunignore", "aichannel", "aistyle", "usersettings", "aidoctor"],
+    "AI": ["ask", "generate", "analyse", "summarize", "aimemory", "aiknow", "aihistory", "aisettings", "aiignore", "aiunignore", "aichannel", "aistyle", "usersettings", "aidoctor"],
     "Server Tools": [
         "snipe", "dsnipe", "esnipe", "rsnipe", "rolesinfo", "roleinfo", "purge", "rpurge", "steal", "fwd", "quote", "archive",
         "giveaway", "listbans", "listblocks", "listtargets", "listcensors", "lists",
     ],
     "Status": ["afk", "sleep", "wake", "fsleep", "away", "setbday", "removebday", "setbdaychannel", "activity", "activitystats", "messages"],
     "Admin": [
-        "settings", "slashsync", "health", "perms", "sessions", "auditcommands", "commandstats", "receipt", "setlogs", "prefix", "disable", "enable", "disableall", "enableall", "dclist", "perf", "test", "testlog", "testrlog",
+        "settings", "slashsync", "health", "perms", "permaudit", "sessions", "auditcommands", "commandstats", "receipt", "receipts", "setlogs", "prefix", "disable", "enable", "disableall", "enableall", "dclist", "perf", "test", "testlog", "testrlog",
         "endttt", "setnick", "unmute", "kick", "ban", "unban", "addrole", "removerole", "deleterole",
         "lock", "unlock", "lockdown", "reopen", "rlockdown", "runlock", "shut", "unshut", "clearwatchlist", "rshut", "unrshut",
         "send", "reply", "fwd", "aban", "raban", "abanlist", "summon", "summon2", "block", "unblock",
@@ -4474,12 +4763,12 @@ SUPEROWNER_HELP_COMMANDS = [
     "add", "remove", "addtick", "removetick", "settick", "setquesos",
     "send", "reply", "fsleep", "wake",
     "aisettings", "aiignore", "aiunignore", "aichannel", "aistyle",
-    "aihistory", "auditcommands",
+    "aihistory", "auditcommands", "permaudit", "receipts",
 ]
 SUPEROWNER_HIDDEN_COMMANDS = {
     *SUPEROWNER_HELP_COMMANDS,
     "remtick", "deltick", "ignoreai", "unignoreai", "aitoggle", "aipersonality",
-    "aiactions", "actionhistory", "cmdaudit", "commandaudit",
+    "aiactions", "actionhistory", "cmdaudit", "commandaudit", "permsaudit", "permissionaudit", "sensitiveaudit", "receiptlist", "txreceipts",
 }
 HELP_CATEGORY_ALIASES = {
     "quewo": "𝚀𝚞𝚎wo (Gambling)",
@@ -4964,6 +5253,21 @@ class SettingsView(View):
             ephemeral=True,
         )
 
+    @discord.ui.button(label="Setup Guide", style=discord.ButtonStyle.success)
+    async def setup_guide_button(self, interaction, button):
+        prefix = prefix_for_guild(interaction.guild)
+        embed = discord.Embed(
+            title=f"{economy_q_setup} Setup Guide",
+            description="Clean setup checklist for this server.",
+            color=discord.Color.green(),
+        )
+        embed.add_field(name="Core", value=f"`{prefix}prefix <new>`\n`{prefix}setlogs`\n`{prefix}settings`", inline=True)
+        embed.add_field(name="Community", value=f"`{prefix}setbdaychannel #channel`\n`{prefix}activity setup`\n`{prefix}messages`", inline=True)
+        embed.add_field(name="𝚀𝚞𝚎wo", value=f"`{prefix}lottery`\n`{prefix}editlottery`\n`{prefix}balanceaudit`", inline=True)
+        embed.add_field(name="Safety", value=f"`{prefix}disable <command>`\n`{prefix}permaudit`\n`{prefix}receipts latest`", inline=True)
+        embed.add_field(name="AI", value=f"`{prefix}aiknow <command>`\n`{prefix}aimemory`\n`{prefix}aidoctor`", inline=True)
+        await interaction.response.send_message(embed=embed, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+
 @bot.command(name="settings", aliases=["setup", "setupbot", "config"])
 @is_admin_power()
 async def settings_command(ctx):
@@ -5218,6 +5522,35 @@ async def auditcommands_command(ctx):
     embed.add_field(name="Duplicate Aliases", value=embed_value("\n".join(duplicate_alias_lines) or "None", 1000), inline=False)
     await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
+@bot.command(name="permaudit", aliases=["permsaudit", "permissionaudit", "sensitiveaudit"])
+async def permaudit_command(ctx):
+    """Audits sensitive commands and where they are exposed."""
+    if not has_super_owner_power(ctx.author, ctx.guild):
+        return await ctx.send(denial_message(f"Only {QUE_OWNER_DISPLAY} can audit sensitive command exposure."))
+    lines = []
+    missing = []
+    for name in sorted(SUPEROWNER_HELP_COMMANDS):
+        command = get_command_case_insensitive(name)
+        if not command:
+            missing.append(f"`{name}`")
+            continue
+        aliases = ", ".join(command.aliases) if command.aliases else "none"
+        hidden_public = "yes" if is_superowner_help_command(command) else "no"
+        lines.append(
+            f"`{command.name}` - aliases: `{aliases}` | public-hidden: **{hidden_public}** | {command_risk_note(command)}"
+        )
+    slash_blocked = ", ".join(f"`{name}`" for name in sorted(SUPEROWNER_HIDDEN_COMMANDS & set(SUPEROWNER_HELP_COMMANDS)))
+    embed = discord.Embed(
+        title=f"{economy_q_permissions} Permission Audit",
+        description=f"Sensitive commands are only visible in help/search/run surfaces for {QUE_OWNER_DISPLAY}.",
+        color=discord.Color.orange(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.add_field(name="Sensitive Commands", value=embed_value("\n".join(lines) or "None", 3000), inline=False)
+    embed.add_field(name="Missing Registered Commands", value=", ".join(missing) or "None", inline=False)
+    embed.add_field(name="Slash/AI Visibility", value=embed_value(f"Blocked from public `/run` autocomplete/direct use and public AI command knowledge.\nTracked: {slash_blocked}", 1000), inline=False)
+    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
 @bot.command(name="commandstats", aliases=["cmdstats", "usage"])
 @is_admin_power()
 async def commandstats_command(ctx, scope: str = "local"):
@@ -5275,6 +5608,47 @@ async def receipt_command(ctx, receipt_id: str = None):
     embed.add_field(name="Targets", value=joined_embed_value(targets, empty="None", limit=1000), inline=False)
     if details:
         embed.add_field(name="Details", value=embed_value(str(details), 1800), inline=False)
+    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
+@bot.command(name="receipts", aliases=["receiptlist", "txreceipts"])
+async def receipts_command(ctx, target: str = "latest"):
+    """Lists recent sensitive action receipts."""
+    if not has_super_owner_power(ctx.author, ctx.guild):
+        return await ctx.send(denial_message(f"Only {QUE_OWNER_DISPLAY} can inspect receipt lists."))
+    user = None
+    if target and str(target).casefold() not in {"latest", "recent", "all"}:
+        try:
+            user = await commands.UserConverter().convert(ctx, target)
+        except Exception:
+            return await ctx.send("Use `.receipts latest` or `.receipts @user`.")
+    rows = await asyncio.to_thread(
+        economy_get_receipts_for_user,
+        user.id if user else None,
+        ctx.guild.id if ctx.guild else None,
+        12,
+    )
+    embed = discord.Embed(
+        title=f"{economy_q_archive} Receipts",
+        description=(f"Recent receipts involving {user.mention}." if user else "Latest sensitive action receipts in this server."),
+        color=discord.Color.gold(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    if not rows:
+        embed.add_field(name="Results", value="No receipts found.", inline=False)
+    else:
+        lines = []
+        for row in rows:
+            rid = row.get("receipt_id") if isinstance(row, dict) else row[0]
+            actor_id = row.get("actor_id") if isinstance(row, dict) else row[3]
+            target_ids = row.get("target_ids") if isinstance(row, dict) else row[4]
+            action = row.get("action") if isinstance(row, dict) else row[5]
+            amount = row.get("amount") if isinstance(row, dict) else row[6]
+            created_at = row.get("created_at") if isinstance(row, dict) else row[8]
+            ts = discord.utils.format_dt(created_at.replace(tzinfo=timezone.utc), "R") if created_at else "unknown"
+            targets = ", ".join(f"<@{uid}>" for uid in (target_ids or [])[:3]) or "none"
+            amount_text = economy_format_balance(amount) if amount is not None else "none"
+            lines.append(f"`{rid}` - **{action}** | actor <@{actor_id}> | targets {targets} | {amount_text} | {ts}")
+        embed.add_field(name="Latest", value=embed_value("\n".join(lines), 3800), inline=False)
     await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
 @bot.command(name="aidoctor", aliases=["botdoctor", "doctorai", "diagnosebot"])
@@ -5531,6 +5905,26 @@ class GamesView(View):
             color=discord.Color.green(),
         )
         embed.add_field(name="Start", value=usage.replace("`.", f"`{self.prefix}"), inline=False)
+        if game_key:
+            embed.add_field(name="Risk", value=f"**{economy_risk_label(game_key)}**", inline=True)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @discord.ui.button(label="Risk / Payouts", style=discord.ButtonStyle.secondary)
+    async def risk_payout_button(self, interaction, button):
+        selected = getattr(self, "selected_game", None)
+        row = next((item for item in GAME_MENU if item[1] == selected), None) if selected else None
+        if row is None:
+            return await interaction.response.send_message("Pick a game from the menu first.", ephemeral=True)
+        _, name, game_key, usage, desc = row
+        command_key = game_key or name.casefold().replace(" ", "")
+        details = economy_detailed_explanations.get(command_key) or economy_explanations.get(command_key) or desc
+        embed = discord.Embed(
+            title=f"{economy_q_game_audit} {name} Risk / Payouts",
+            description=embed_value(details, 1800),
+            color=discord.Color.orange(),
+        )
+        embed.add_field(name="Risk Label", value=f"**{economy_risk_label(command_key)}**" if game_key else "No bet / free game", inline=True)
+        embed.add_field(name="Start", value=usage.replace("`.", f"`{self.prefix}"), inline=True)
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 @bot.command(name="games", aliases=["gamelist"])
@@ -5560,6 +5954,8 @@ async def howtoplay_command(ctx, *, game: str = None):
     details = economy_detailed_explanations.get(command_key) or economy_explanations.get(command_key) or desc
     embed = discord.Embed(title=f"{economy_q_book} How To Play: {name}", description=details, color=discord.Color.green())
     embed.add_field(name="Start", value=usage.replace("`.", f"`{prefix}"), inline=False)
+    if game_key:
+        embed.add_field(name="Risk", value=f"**{economy_risk_label(game_key)}**", inline=True)
     await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
 FLAG_COUNTRY_ROWS = """
@@ -11559,6 +11955,23 @@ async def ask_command(ctx, *, question: str):
     except Exception as e:
         await safe_remove_reaction(ctx.message, economy_q_timer_tick, bot.user)
         await ctx.send(ai_exception_message(e))
+
+@bot.command(name="summarize", aliases=["summarise", "summary", "aisummary", "tldr", "recap"])
+async def summarize_command(ctx, *, request: str = ""):
+    """Summarizes recent messages in this channel or a mentioned channel/user."""
+    target_user, summary_channel = await resolve_summary_target(ctx, request)
+    duration = parse_summary_duration(request)
+    limit = parse_summary_limit(request)
+    if not request.strip():
+        limit = AI_SUMMARY_DEFAULT_MESSAGES
+    await send_chat_summary(
+        ctx,
+        prompt=request or "Summarize the recent chat.",
+        target_user=target_user,
+        channel=summary_channel,
+        limit=limit,
+        duration=duration,
+    )
 
 @bot.command(name="generate")
 async def generate_command(ctx, *, prompt: str):

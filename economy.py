@@ -424,7 +424,9 @@ def init_db():
                     last_daily_challenge_claim DATE,
                     quest_claims TEXT[] DEFAULT '{}',
                     steal_blacklist BIGINT[] DEFAULT '{}',
-                    luck_boost_until TIMESTAMP
+                    luck_boost_until TIMESTAMP,
+                    personal_bet_limit BIGINT,
+                    gambling_pause_until TIMESTAMP
                 )
             """)
             cur.execute("""
@@ -586,6 +588,8 @@ def init_db():
             cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS quest_claims TEXT[] DEFAULT '{}'")
             cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS steal_blacklist BIGINT[] DEFAULT '{}'")
             cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS luck_boost_until TIMESTAMP")
+            cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS personal_bet_limit BIGINT")
+            cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS gambling_pause_until TIMESTAMP")
             cur.execute("ALTER TABLE economy_events ADD COLUMN IF NOT EXISTS channel_id BIGINT")
             cur.execute("ALTER TABLE economy_events ADD COLUMN IF NOT EXISTS pot BIGINT NOT NULL DEFAULT 0")
             cur.execute("ALTER TABLE lottery_config ADD COLUMN IF NOT EXISTS thread_id BIGINT")
@@ -1152,6 +1156,37 @@ def get_game_audit_rows(days=7):
     conn.close()
     return rows
 
+def set_user_safety_settings(user_id, personal_bet_limit=None, gambling_pause_until=None, clear_limit=False, clear_pause=False):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("INSERT INTO economy (user_id, balance) VALUES (%s, 0) ON CONFLICT (user_id) DO NOTHING", (int(user_id),))
+    updates = []
+    params = []
+    if clear_limit:
+        updates.append("personal_bet_limit = NULL")
+    elif personal_bet_limit is not None:
+        updates.append("personal_bet_limit = %s")
+        params.append(max(0, int(personal_bet_limit)))
+    if clear_pause:
+        updates.append("gambling_pause_until = NULL")
+    elif gambling_pause_until is not None:
+        updates.append("gambling_pause_until = %s")
+        pause_value = gambling_pause_until
+        if getattr(pause_value, "tzinfo", None) is not None:
+            pause_value = pause_value.astimezone(timezone.utc).replace(tzinfo=None)
+        params.append(pause_value)
+    if updates:
+        params.append(int(user_id))
+        cur.execute(f"UPDATE economy SET {', '.join(updates)} WHERE user_id = %s RETURNING *", params)
+        row = cur.fetchone()
+    else:
+        cur.execute("SELECT * FROM economy WHERE user_id = %s", (int(user_id),))
+        row = cur.fetchone()
+    conn.commit()
+    cur.close()
+    conn.close()
+    return row
+
 EVENT_TYPES = {
     "jackpot": "Community sink jackpot. Users donate quesos into a public pot.",
     "shopdiscount": "Shop discount event marker for the server.",
@@ -1305,6 +1340,35 @@ def get_receipt(receipt_id):
     cur.close()
     conn.close()
     return row
+
+def get_receipts_for_user(user_id=None, guild_id=None, limit=10):
+    limit = max(1, min(int(limit or 10), 25))
+    conn = get_db_connection()
+    cur = conn.cursor()
+    clauses = []
+    params = []
+    if guild_id is not None:
+        clauses.append("guild_id = %s")
+        params.append(int(guild_id))
+    if user_id is not None:
+        clauses.append("(actor_id = %s OR %s = ANY(target_ids))")
+        params.extend([int(user_id), int(user_id)])
+    where_sql = "WHERE " + " AND ".join(clauses) if clauses else ""
+    params.append(limit)
+    cur.execute(
+        f"""
+        SELECT receipt_id, guild_id, channel_id, actor_id, target_ids, action, amount, details, created_at
+        FROM bot_receipts
+        {where_sql}
+        ORDER BY created_at DESC
+        LIMIT %s
+        """,
+        params,
+    )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
 
 def current_season_key(now=None):
     now = now or datetime.now(timezone.utc)
@@ -3458,6 +3522,8 @@ async def send_gambling_cooldown(ctx, seconds):
         msg = await ctx.send(f"{Q_TIMER_TICK} You can gamble again {discord_relative_time(ready_at)}.")
     except Exception:
         return
+    if seconds > 60:
+        return
     await asyncio.sleep(seconds)
     try:
         await msg.edit(content=f"{Q_SUCCESS} You can gamble now.")
@@ -3674,6 +3740,17 @@ def cooldown_multiplier_for_user(user_id, data=None):
 def check_cooldown(user_id, command, data=None):
     if is_super_owner(user_id):
         return 0
+    try:
+        latest = data if data is not None else (get_user(user_id) if db_ready else None)
+        pause_until = latest.get("gambling_pause_until") if latest else None
+        if pause_until:
+            if pause_until.tzinfo is None:
+                pause_until = pause_until.replace(tzinfo=timezone.utc)
+            remaining_pause = (pause_until - datetime.now(timezone.utc)).total_seconds()
+            if remaining_pause > 0:
+                return remaining_pause
+    except Exception:
+        pass
     key = (user_id, "quewo")
     now = time.time()
     cooldown = COOLDOWN_SECS * cooldown_multiplier_for_user(user_id, data)
@@ -3686,11 +3763,21 @@ def check_cooldown(user_id, command, data=None):
 
 def parse_amount(raw, user_id=None, guild=None, balance=None):
     raw_text = str(raw).strip().lower().replace(",", "").replace("_", "")
+    personal_limit = None
+    if user_id is not None and not has_economy_owner_power(user_id, guild) and db_ready:
+        try:
+            data = get_user(user_id)
+            stored_limit = data.get("personal_bet_limit")
+            if stored_limit is not None and int(stored_limit) > 0:
+                personal_limit = int(stored_limit)
+        except Exception:
+            personal_limit = None
     if raw_text == "all":
         if balance is None:
-            return MAX_BET
+            return min(MAX_BET, personal_limit) if personal_limit else MAX_BET
         balance = max(0, int(balance))
-        return min(balance, MAX_BET)
+        cap = min(balance, MAX_BET)
+        return min(cap, personal_limit) if personal_limit else cap
     multipliers = {"k": 1_000, "m": 1_000_000, "b": 1_000_000_000, "bn": 1_000_000_000}
     try:
         suffix = ""
@@ -3703,7 +3790,8 @@ def parse_amount(raw, user_id=None, guild=None, balance=None):
         val = int(float(number) * multipliers.get(suffix, 1))
         if user_id is not None and has_economy_owner_power(user_id, guild):
             return val
-        return min(val, MAX_BET)
+        cap = min(val, MAX_BET)
+        return min(cap, personal_limit) if personal_limit else cap
     except (TypeError, ValueError):
         return None
 
@@ -9779,6 +9867,63 @@ async def gameaudit(ctx, days: int = 7):
             add_split_embed_field(embed, "Signals", warnings[:8], inline=False)
     await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
+@commands.command(name="balanceaudit", aliases=["balaudit", "economybalance", "balancing"])
+async def balanceaudit(ctx, days: int = 14):
+    if not await ensure_db_ready(ctx):
+        return
+    if not has_economy_owner_power(ctx.author.id, ctx.guild):
+        return await ctx.send(f"{Q_DENIED} Server owner or admin only.")
+    days = max(1, min(int(days or 14), 30))
+    try:
+        rows = await asyncio.to_thread(get_game_audit_rows, days)
+    except Exception:
+        await send_error(ctx, "Database unavailable. Try again shortly.")
+        return
+    embed = discord.Embed(
+        title=f"{Q_BALANCE} Balance Audit",
+        description=f"Last **{days} day(s)**. This looks for games that may need odds or payout tuning.",
+        color=discord.Color.orange(),
+    )
+    if not rows:
+        embed.add_field(name="Signals", value="No tracked games in this window.", inline=False)
+    else:
+        lines = []
+        actions = []
+        total_house = 0
+        total_plays = 0
+        for row in rows:
+            game_key = row["game_key"]
+            plays = int(row["plays"] or 0)
+            wins = int(row["wins"] or 0)
+            losses = int(row["losses"] or 0)
+            user_profit = int(row["profit"] or 0)
+            house_profit = -user_profit
+            total_house += house_profit
+            total_plays += plays
+            win_rate = (wins / max(1, wins + losses)) * 100
+            label = risk_label(game_key)
+            if plays < 10:
+                verdict = "needs more data"
+            elif win_rate >= 60 and user_profit > 0:
+                verdict = "watch/nerf"
+                actions.append(f"**{game_display_name(game_key)}**: high win rate and users are ahead.")
+            elif win_rate <= 10 and house_profit > 0:
+                verdict = "watch/buff"
+                actions.append(f"**{game_display_name(game_key)}**: very low win rate.")
+            elif abs(house_profit) > 2_000_000 and plays >= 20:
+                verdict = "big swing"
+                actions.append(f"**{game_display_name(game_key)}**: large money movement, review recent changes.")
+            else:
+                verdict = "stable"
+            lines.append(
+                f"{risk_emoji(game_key)} **{game_display_name(game_key)}** - "
+                f"{plays:,} plays, {win_rate:.1f}% win, risk **{label}**, house {format_balance(house_profit)} | {verdict}"
+            )
+        embed.add_field(name="Summary", value=f"Tracked Plays: **{total_plays:,}**\nHouse Net: **{format_balance(total_house)}**", inline=False)
+        add_split_embed_field(embed, "Games", lines[:20], inline=False)
+        add_split_embed_field(embed, "Action Notes", actions[:8] or ["No obvious balance problems from recent tracked data."], inline=False)
+    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
 def economy_event_embed(guild, row):
     embed = discord.Embed(
         title=f"{Q_EVENT} Server Event",
@@ -9849,11 +9994,49 @@ async def event(ctx, action: str = None, event_key: str = None, duration: str = 
         return
     await ctx.send("Use `.event`, `.event start jackpot 1h`, `.event donate 50k`, or `.event stop`.")
 
-@commands.command(name="limits", aliases=["limit", "safety", "safetylimits"])
-async def limits(ctx, member: discord.Member = None):
+@commands.command(name="limits", aliases=["limit", "safety", "safetylimits", "gamblelimit", "betlimit"])
+async def limits(ctx, target_or_action: str = None, value: str = None):
     if not await ensure_db_ready(ctx):
         return
-    user = member or ctx.author
+    action_key = str(target_or_action or "").casefold()
+    if action_key in {"set", "cap", "max"}:
+        limit = parse_whole_number(value)
+        if limit is None or limit <= 0:
+            return await ctx.reply(f"{Q_DENIED} Use `.limits set <amount>`, like `.limits set 50k`.", mention_author=False)
+        limit = min(limit, MAX_BET)
+        data = await asyncio.to_thread(set_user_safety_settings, ctx.author.id, personal_bet_limit=limit)
+        return await ctx.reply(
+            f"{Q_LIMITS} Your personal gambling cap is now **{format_balance(int(data.get('personal_bet_limit') or limit))}**.",
+            mention_author=False,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+    if action_key in {"clear", "reset", "default"}:
+        data = await asyncio.to_thread(set_user_safety_settings, ctx.author.id, clear_limit=True, clear_pause=True)
+        return await ctx.reply(f"{Q_SUCCESS} Cleared your personal gambling cap and pause.", mention_author=False)
+    if action_key in {"pause", "break", "stop"}:
+        seconds = parse_event_duration(value or "1h")
+        if not seconds:
+            return await ctx.reply(f"{Q_DENIED} Use `.limits pause <time>`, like `.limits pause 2h`.", mention_author=False)
+        pause_until = datetime.now(timezone.utc) + timedelta(seconds=seconds)
+        data = await asyncio.to_thread(set_user_safety_settings, ctx.author.id, gambling_pause_until=pause_until)
+        saved_until = data.get("gambling_pause_until") or pause_until
+        if saved_until.tzinfo is None:
+            saved_until = saved_until.replace(tzinfo=timezone.utc)
+        return await ctx.reply(
+            f"{Q_TIMER_TICK} Gambling paused until {discord_relative_time(saved_until)}.",
+            mention_author=False,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+    if action_key in {"resume", "unpause"}:
+        await asyncio.to_thread(set_user_safety_settings, ctx.author.id, clear_pause=True)
+        return await ctx.reply(f"{Q_SUCCESS} Gambling pause removed.", mention_author=False)
+
+    user = ctx.author
+    if target_or_action:
+        try:
+            user = await commands.MemberConverter().convert(ctx, target_or_action)
+        except Exception:
+            return await ctx.reply(f"{Q_DENIED} Use `.limits`, `.limits @user`, `.limits set 50k`, `.limits pause 2h`, or `.limits clear`.", mention_author=False)
     try:
         data = get_user(user.id)
         loss = await asyncio.to_thread(daily_loss_status, user.id, int(data["balance"]), 0)
@@ -9903,7 +10086,23 @@ async def limits(ctx, member: discord.Member = None):
         embed.add_field(name="Lottery Remaining", value=format_balance(remaining_lottery), inline=True)
     else:
         embed.add_field(name="Lottery Round", value="No current lottery tickets in this server.", inline=False)
-    embed.add_field(name="Max Normal Bet", value=format_balance(MAX_BET), inline=True)
+    embed.add_field(name="Bet Cap", value=format_balance(MAX_BET), inline=True)
+    personal_limit = data.get("personal_bet_limit")
+    pause_until = data.get("gambling_pause_until")
+    if pause_until and pause_until.tzinfo is None:
+        pause_until = pause_until.replace(tzinfo=timezone.utc)
+    if pause_until and pause_until <= datetime.now(timezone.utc):
+        pause_until = None
+    embed.add_field(
+        name="Personal Cap",
+        value=format_balance(int(personal_limit)) if personal_limit else "Not set",
+        inline=True,
+    )
+    embed.add_field(
+        name="Personal Pause",
+        value=discord_relative_time(pause_until) if pause_until else "Not active",
+        inline=True,
+    )
     embed.add_field(name="Gambling Cooldown", value=f"{plural_unit(effective_cooldown, 'second')} effective\nBase: {plural_unit(COOLDOWN_SECS, 'second')}", inline=True)
     embed.add_field(name="Lottery Spend Cap", value=f"{int(LOTTERY_MAX_BALANCE_SPEND_RATIO * 100)}% of lottery-adjusted balance", inline=True)
     embed.add_field(name="Daily Loss Rules", value=f"Warns at {int(DAILY_LOSS_WARNING_RATIO * 100)}%; blocks before {int(DAILY_LOSS_HARD_RATIO * 100)}%.", inline=False)
@@ -10880,10 +11079,12 @@ EXPLANATIONS = {
     "dc": "Alias for `.dailychallenge`. Shows today's 𝚀𝚞𝚎wo challenge.",
     "qchallenge": "Alias for `.dailychallenge`. Shows today's 𝚀𝚞𝚎wo challenge.",
     "shop": "Opens the categorized 𝚀𝚞𝚎wo shop UI. Select an item, press Buy, then enter quantity. The shop refreshes after purchases and while the UI is open.",
-    "limits": "Shows daily gambling loss limits, remaining risk, lottery spend, max bet, and cooldown.",
+    "limits": "Shows daily gambling loss limits, remaining risk, lottery spend, max bet, cooldown, and personal safety settings.",
     "limit": "Alias for `.limits`. Shows safety limits.",
     "safety": "Alias for `.limits`. Shows safety limits.",
     "safetylimits": "Alias for `.limits`. Shows safety limits.",
+    "gamblelimit": "Alias for `.limits`. Shows or sets personal gambling safety limits.",
+    "betlimit": "Alias for `.limits`. Shows or sets personal gambling safety limits.",
     "cooldowns": "Shows daily, weekly, monthly, and gambling cooldowns. Use `.cooldowns` or `.cd`.",
     "transactions": "Shows recent 𝚀𝚞𝚎wo transactions. Use `.transactions` or `.transactions @user`.",
     "lottery": "Shows and refreshes the lottery ticket panel. First server run sets channel and draw period.",
@@ -10954,6 +11155,10 @@ EXPLANATIONS = {
     "gameaudit": "Admin-power command. Audits recent game win rates, house profit, and balance warnings.",
     "gaudit": "Alias for `.gameaudit`. Audits game balance.",
     "auditgames": "Alias for `.gameaudit`. Audits game balance.",
+    "balanceaudit": "Admin-power command. Shows recent balance signals, risk labels, house net, and tune/watch notes.",
+    "balaudit": "Alias for `.balanceaudit`. Shows balance tuning signals.",
+    "economybalance": "Alias for `.balanceaudit`. Shows balance tuning signals.",
+    "balancing": "Alias for `.balanceaudit`. Shows balance tuning signals.",
     "riskprofile": "Shows a user's 𝚀𝚞𝚎wo risk profile: daily loss usage, game volume, profit, lottery spend, and recent transaction volume.",
     "risk": "Alias for `.riskprofile`. Shows a user's risk profile.",
     "userrisk": "Alias for `.riskprofile`. Shows a user's risk profile.",
@@ -11030,6 +11235,13 @@ EXPLANATIONS = {
     "auditcommands": f"{QUE_OWNER_DISPLAY} command. Audits command help, examples, aliases, and input UI coverage.",
     "cmdaudit": "Alias for `.auditcommands`. Audits command registry coverage.",
     "commandaudit": "Alias for `.auditcommands`. Audits command registry coverage.",
+    "permaudit": f"{QUE_OWNER_DISPLAY} command. Audits sensitive command exposure and permission notes.",
+    "permsaudit": "Alias for `.permaudit`. Audits sensitive command exposure.",
+    "permissionaudit": "Alias for `.permaudit`. Audits sensitive command exposure.",
+    "sensitiveaudit": "Alias for `.permaudit`. Audits sensitive command exposure.",
+    "receipts": f"{QUE_OWNER_DISPLAY} command. Lists recent sensitive action receipts or receipts involving one user.",
+    "receiptlist": "Alias for `.receipts`. Lists recent receipts.",
+    "txreceipts": "Alias for `.receipts`. Lists recent receipts.",
     "aihistory": f"{QUE_OWNER_DISPLAY} command. Shows recent AI-triggered bot actions. Use `.aihistory @user` to filter by actor.",
     "aiactions": "Alias for `.aihistory`. Shows AI-triggered actions.",
     "actionhistory": "Alias for `.aihistory`. Shows AI-triggered actions.",
@@ -11077,6 +11289,12 @@ EXPLANATIONS = {
     "generate": "Generates text with AI.",
     "analyse": "Analyzes an image from a replied message.",
     "analyze": "Alias for `.analyse`. Analyzes an image from a replied message.",
+    "summarize": "Summarizes recent channel messages, optionally filtered by user, channel, message count, or time range.",
+    "summarise": "Alias for `.summarize`. Summarizes recent chat.",
+    "summary": "Alias for `.summarize`. Summarizes recent chat.",
+    "aisummary": "Alias for `.summarize`. Summarizes recent chat with AI.",
+    "tldr": "Alias for `.summarize`. Summarizes recent chat.",
+    "recap": "Alias for `.summarize`. Summarizes recent chat.",
     "aimemory": f"Shows or clears AI memory. Use `.aimemory`, `.aimemory clear`, or {QUE_OWNER_DISPLAY} can use `.aimemory @user` / `.aimemory clear @user`.",
     "aime": "Alias for `.aimemory`. Shows or clears AI memory.",
     "memoryai": "Alias for `.aimemory`. Shows or clears AI memory.",
@@ -11122,7 +11340,7 @@ DETAILED_EXPLANATIONS = {
     "shop": "Opens an interactive categorized 𝚀𝚞𝚎wo shop. Select an item, press Buy, then enter the quantity. The bot checks your balance, item limit, and total price before purchasing.",
     "cooldowns": "Shows daily, weekly, monthly, and active gambling command cooldowns in one place.",
     "transactions": "Shows recent money movement including shop purchases, quest rewards, level rewards, transfer tax, admin changes, and lottery activity.",
-    "limits": f"Shows your daily gambling loss safety limit. The bot warns near {int(DAILY_LOSS_WARNING_RATIO * 100)}% and blocks bets before daily losses exceed {int(DAILY_LOSS_HARD_RATIO * 100)}% of your current daily gambling bankroll. It also shows lottery round spending where available.",
+    "limits": f"Shows your daily gambling loss safety limit. The bot warns near {int(DAILY_LOSS_WARNING_RATIO * 100)}% and blocks bets before daily losses exceed {int(DAILY_LOSS_HARD_RATIO * 100)}% of your current daily gambling bankroll. It also shows lottery round spending, your personal gambling cap, and any active gambling pause. Use `.limits set 50k`, `.limits pause 2h`, `.limits resume`, or `.limits clear`.",
     "lottery": f"Server lottery. First run asks the server owner or an admin for a channel and draw period, locks the channel, and posts a persistent ticket panel with buy buttons. Existing active lottery data is preserved when the panel is refreshed. The prize is the full current pot. Tickets cost {format_balance(LOTTERY_TICKET_COST)} and {int(LOTTERY_HOUSE_CUT * 100)}% is burned as a money sink. Users can spend up to {int(LOTTERY_MAX_BALANCE_SPEND_RATIO * 100)}% of their lottery-adjusted balance per round.",
     "editlottery": "Server owner/admin command. Run `.editlottery` to open the edit UI, or use `.editlottery price 250000`, `.editlottery duration 12h`, `.editlottery cut 5`, or `.editlottery channel #lottery`. Duration resets the next draw timer. Channel posts a fresh lottery panel. Updates ping the lottery participant role.",
     "stoplottery": "Server owner/admin command. Use `.stoplottery` to remove the lottery setup for this server, clear the current pot/tickets, and delete the participant role if the bot can. It leaves channels and panel messages alone.",
@@ -11163,6 +11381,7 @@ DETAILED_EXPLANATIONS = {
     "gamebalance": "Lists every 𝚀𝚞𝚎wo game with its current risk label. Use this as the quick balance audit before changing odds, multipliers, or max-risk behavior.",
     "riskprofile": "Shows user-specific safety signals rather than game-wide risk. It combines balance, current daily loss usage, tracked game play/win/profit totals, current lottery spend in this server, recent transaction volume, and plain warning notes.",
     "gameaudit": "Admin-power balancing dashboard. It reads recent tracked game history, then shows plays, win rate, house profit, and signals for games that look too generous or too harsh. Use `.gameaudit` for 7 days or `.gameaudit 30` for up to 30 days.",
+    "balanceaudit": "Admin-power economy balancing dashboard. It reads recent tracked game history, compares play count, win rate, house net, and risk labels, then gives tune/watch notes for games that may need odds, payout, or risk-label updates. Use `.balanceaudit` for 14 days or `.balanceaudit 30` for up to 30 days.",
     "gamehistory": "Shows your recent tracked game results from the shared game history table. Newer and tracked games appear here with result, net amount, and timestamp.",
     "season": "Monthly 𝚀𝚞𝚎wo season leaderboard. Game results add to the current month automatically. Ranking is by monthly game profit, then wins, then games played. Top rewards are 100m, 80m, and 50m.",
     "endseason": "Admin-power season payout command. Use `.endseason 2026-05` to pay the top 3 for that month once. If no season is passed, it pays the current season.",
@@ -11179,6 +11398,8 @@ DETAILED_EXPLANATIONS = {
     "quote": "Quotes one exact message by link or current-channel message ID. It uses the same forwarded-message format as `.fwd`, including author mention without pinging, source channel, jump link, content, and attachment links.",
     "archive": "Creates a plain-text transcript file from recent messages. Use `.archive 50`, `.archive 50 @user`, or `.archive #logs 50`. Limit is 100 messages per archive.",
     "auditcommands": f"{QUE_OWNER_DISPLAY}-only maintenance report. It scans the live command registry for missing help categories, missing explanation text, missing detailed text, missing examples, input commands without UI/example coverage, and duplicate aliases.",
+    "permaudit": f"{QUE_OWNER_DISPLAY}-only permission audit. It checks sensitive command registration, public help visibility, AI/slash visibility notes, and the risk note for each command that can move money, alter tickets, send as the bot, or change AI controls.",
+    "receipts": f"{QUE_OWNER_DISPLAY}-only receipt list. Use `.receipts latest` for recent sensitive actions in the server or `.receipts @user` to see receipts involving a specific user. Use `.receipt <id>` for the full details of one receipt.",
     "aihistory": f"{QUE_OWNER_DISPLAY}-only safety log for AI-triggered actions. It shows recent AI command runs and batch rewards since the current bot restart. Use `.aihistory @user` to filter by actor.",
     "lb": "Shows a paginated leaderboard. Use the buttons to switch between local server rankings and global all-server rankings. Use the ranking type menu to sort by quesos, level, earnings, total won, total lost, net gambling, or messages. The embed also shows your rank for the selected scope and type.",
     "leaderboard": "Alias for `.lb`. Shows local/global paginated rankings with selectable ranking types and your rank.",
@@ -11211,6 +11432,7 @@ DETAILED_EXPLANATIONS = {
     "define": "Looks up English dictionary definitions. Use `.define example`, or run `.define` to enter the word through a UI.",
     "setbday": "Saves your birthday as day/month. Use `.setbday 25/12`, or run `.setbday` to enter it through a UI. Birthday announcements use the server's configured birthday channel.",
     "ask": "Asks Pro𝚀𝚞𝚎's AI a question. The AI answers from its model knowledge, bot context, reply context, and saved memory; live web search is not connected.",
+    "summarize": "Summarizes recent messages from the current channel, a mentioned channel, a specific user, or a time/message window. Examples: `.summarize`, `.summarize 50 messages`, `.summarize @user today`, `.summarize #general last 2 hours`. Mention or reply to Pro𝚀𝚞𝚎 with a natural request like `summarize what @user said today` and it will run directly without asking for confirmation.",
     "aimemory": f"Shows the AI memory attached to a Discord user across servers, including explicit remembered facts and bot-saved profile details. Normal users can use `.aimemory` and `.aimemory clear` for themselves. {QUE_OWNER_DISPLAY} can inspect or clear another user with `.aimemory @user`, `.aimemory <user id>`, `.aimemory clear @user`, or `.aimemory @user clear`.",
     "aiknow": "Debug/helper command that shows exactly what Pro𝚀𝚞𝚎's AI knows about a command from the live command registry, aliases, help text, permission note, and detailed explanation data.",
     "aidoctor": "Admin-power bot doctor panel. Shows task health, 𝚀𝚞𝚎wo DB status, slash sync status, active sessions, disabled commands, and slow command stats. Useful when replying to errors and asking the AI to diagnose them.",
@@ -11230,7 +11452,7 @@ DETAILED_EXPLANATIONS = {
 
 ECONHELP_COMMANDS = [
     ("Core", ["guide", "onboard", "bal", "profile", "inventory", "settheme", "quests", "dailychallenge", "streaks", "shop", "cooldowns", "transactions", "limits", "lb"]),
-    ("Stats", ["gamestats", "achievements", "setbadge", "gamebalance", "gamehistory", "season", "qstats", "economyhealth", "economyaudit", "abuseaudit", "riskprofile"]),
+    ("Stats", ["gamestats", "achievements", "setbadge", "gamebalance", "gameaudit", "balanceaudit", "gamehistory", "season", "qstats", "economyhealth", "economyaudit", "abuseaudit", "riskprofile"]),
     ("Claims", ["daily", "weekly", "monthly"]),
     ("Lottery", ["lottery", "buytick", "lotterystats", "editlottery", "stoplottery"]),
     ("Gambling", ["cf", "roulette", "slots", "blackjack", "scratch", "tower", "vault", "memory", "cardladder", "lockpick", "heist", "diceduel", "cases", "plinko", "luckynumber", "jackpotspin", "dungeon", "ms", "wheel"]),
@@ -11442,7 +11664,7 @@ async def setup(bot_ref, log_callback=None):
     economy_commands = [
         bal, profile, inventory, settheme, quests, dailychallenge, streaks, guide, onboard, shop, cooldowns, transactions, limits, lottery, editlottery, stoplottery, lotterystats, buytick,
         daily, weekly, monthly, gamble, roulette, slots, blackjack,
-        scratch, tower, vault, memory_game, card_ladder, lockpick, heist, dice_duel, cases, plinko, lucky_number, jackpot_spin, dungeon, minesweeper, wheel, give, lb, gamestats, achievements, setbadge, gamebalance, gameaudit, event, gamehistory, season, endseason, qstats, economyhealth, economyaudit, abuseaudit, riskprofile, add, remove, addtick, removetick, settick, setquesos, econhelp, explain
+        scratch, tower, vault, memory_game, card_ladder, lockpick, heist, dice_duel, cases, plinko, lucky_number, jackpot_spin, dungeon, minesweeper, wheel, give, lb, gamestats, achievements, setbadge, gamebalance, gameaudit, balanceaudit, event, gamehistory, season, endseason, qstats, economyhealth, economyaudit, abuseaudit, riskprofile, add, remove, addtick, removetick, settick, setquesos, econhelp, explain
     ]
     for command in economy_commands:
         if bot.get_command(command.name):
