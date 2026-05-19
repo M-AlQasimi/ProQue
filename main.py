@@ -191,6 +191,7 @@ AI_SUMMARY_MAX_CHARS = 4500
 AI_REQUEST_MAX_CHARS = 6500
 AI_SYSTEM_CONTEXT_MAX_CHARS = 2500
 AI_MESSAGE_CONTEXT_MAX_CHARS = 2200
+AI_DETECT_MAX_CHARS = 9000
 
 # PostgreSQL is the single source of truth
 pg_init()
@@ -819,6 +820,148 @@ def clean_provider_error(body):
         return "AI context got too large, so I trimmed it. Try that again."
     return compact_ai_text(message, 220)
 
+def ai_likelihood_heuristic(text):
+    text = str(text or "").strip()
+    words = re.findall(r"[A-Za-z']+", text.lower())
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    word_count = len(words)
+    unique_ratio = len(set(words)) / max(1, word_count)
+    avg_sentence = word_count / max(1, len([s for s in sentences if s.strip()]))
+    transitions = sum(1 for phrase in (
+        "in conclusion", "moreover", "furthermore", "overall", "it is important to note",
+        "this essay will", "in today's society", "a significant impact", "plays a crucial role",
+    ) if phrase in text.lower())
+    personal_markers = sum(1 for word in {"i", "me", "my", "we", "our"} if word in words)
+    score = 35
+    if word_count < 80:
+        score -= 10
+    if unique_ratio < 0.42:
+        score += 12
+    if 18 <= avg_sentence <= 28:
+        score += 8
+    if transitions:
+        score += min(20, transitions * 5)
+    if personal_markers == 0 and word_count > 180:
+        score += 8
+    if re.search(r"\b(?:specific example|real life example|personal experience)\b", text, re.IGNORECASE):
+        score -= 6
+    score = max(5, min(90, score))
+    if score >= 70:
+        label = "High"
+    elif score >= 45:
+        label = "Medium"
+    else:
+        label = "Low"
+    return {
+        "label": label,
+        "score": score,
+        "signals": [
+            f"Word count: {word_count}",
+            f"Vocabulary variety: {unique_ratio:.2f}",
+            f"Average sentence length: {avg_sentence:.1f} words",
+            f"Template-like transition phrases: {transitions}",
+        ],
+        "notes": "Heuristic fallback only; this is not proof of AI authorship.",
+    }
+
+def parse_ai_detection_json(raw):
+    raw = str(raw or "").strip()
+    raw = raw.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+    try:
+        data = json.loads(raw)
+    except Exception:
+        data = {}
+    label = str(data.get("label") or data.get("likelihood") or "Unclear").title()
+    if label not in {"Low", "Medium", "High", "Unclear"}:
+        label = "Unclear"
+    try:
+        score = int(float(data.get("score", 0)))
+    except Exception:
+        score = 0
+    score = max(0, min(100, score))
+    reasons = data.get("reasons") or data.get("signals") or []
+    if isinstance(reasons, str):
+        reasons = [reasons]
+    suggestions = data.get("suggestions") or data.get("advice") or []
+    if isinstance(suggestions, str):
+        suggestions = [suggestions]
+    return {
+        "label": label,
+        "score": score,
+        "reasons": [str(item) for item in reasons[:6] if str(item).strip()],
+        "suggestions": [str(item) for item in suggestions[:5] if str(item).strip()],
+        "confidence": str(data.get("confidence") or "Limited").title(),
+    }
+
+async def run_ai_likelihood_check(text):
+    text = compact_ai_payload_text(text, AI_DETECT_MAX_CHARS)
+    if not GROQ_API_KEY:
+        heuristic = ai_likelihood_heuristic(text)
+        return {
+            "label": heuristic["label"],
+            "score": heuristic["score"],
+            "confidence": "Low",
+            "reasons": heuristic["signals"],
+            "suggestions": ["Use a configured AI provider for a stronger writing-pattern review."],
+        }
+    prompt = {
+        "task": "Assess whether writing appears AI-generated. This is a likelihood analysis, not proof.",
+        "rules": [
+            "Return JSON only.",
+            "Use label Low, Medium, High, or Unclear.",
+            "Score is 0-100 where 100 means strongest AI-like pattern.",
+            "Do not claim certainty or accuse the writer.",
+            "Consider specificity, voice, structure, repetition, sentence variety, personal detail, factual anchoring, and revision artifacts.",
+            "Also note signs that may explain false positives such as ESL writing, formal school style, short length, or heavy editing.",
+        ],
+        "return_schema": {
+            "label": "Low|Medium|High|Unclear",
+            "score": 0,
+            "confidence": "Low|Medium",
+            "reasons": ["short concrete reason"],
+            "suggestions": ["optional improvement or verification step"],
+        },
+        "text": text,
+    }
+    headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
+    payload = {
+        "messages": fit_ai_messages([
+            {"role": "system", "content": "You are a cautious writing authenticity analyst. Return valid JSON only."},
+            {"role": "user", "content": json.dumps(prompt)},
+        ], max_chars=5600),
+        "model": "llama-3.1-8b-instant",
+        "temperature": 0.1,
+        "max_tokens": 420,
+    }
+    async with aiohttp.ClientSession() as session:
+        async with session.post("https://api.groq.com/openai/v1/chat/completions", json=payload, headers=headers, timeout=AI_MODEL_TIMEOUT_SECONDS) as resp:
+            if resp.status != 200:
+                body = await resp.text()
+                raise RuntimeError(ai_http_error_message(resp.status, body))
+            data = await resp.json(content_type=None)
+    return parse_ai_detection_json(data["choices"][0]["message"]["content"])
+
+def ai_likelihood_embed(result, text):
+    label = result.get("label", "Unclear")
+    score = int(result.get("score") or 0)
+    color = discord.Color.green() if label == "Low" else (discord.Color.orange() if label in {"Medium", "Unclear"} else discord.Color.red())
+    embed = discord.Embed(
+        title=f"{economy_q_thinking} Writing Authenticity Check",
+        description=(
+            f"AI-like likelihood: **{label}** ({score}/100)\n"
+            "This is a pattern check, not proof. Do not use it as the only reason to accuse someone."
+        ),
+        color=color,
+        timestamp=datetime.now(timezone.utc),
+    )
+    reasons = result.get("reasons") or ["No clear pattern notes returned."]
+    suggestions = result.get("suggestions") or ["Compare drafts, sources, assignment history, and ask the writer about their process."]
+    embed.add_field(name="Signals", value=embed_value("\n".join(f"- {item}" for item in reasons), 1200), inline=False)
+    embed.add_field(name="What To Do", value=embed_value("\n".join(f"- {item}" for item in suggestions), 1200), inline=False)
+    embed.add_field(name="Text Checked", value=f"**{len(text):,}** characters", inline=True)
+    embed.add_field(name="Confidence", value=str(result.get("confidence") or "Limited"), inline=True)
+    return embed
+
 def clean_user_error(error, fallback="Something went wrong."):
     if isinstance(error, discord.Forbidden):
         return "I do not have permission to do that."
@@ -883,13 +1026,13 @@ CASUAL_AI_RE = re.compile(
 BOT_KNOWLEDGE_RE = re.compile(
     r"\b(proque|bot|command|help|how\s+do\s+i|how\s+to|use|run|alias|aliases|"
     r"quewo|quesos|economy|gambl|game|games|lottery|shop|inventory|profile|balance|"
-    r"level|xp|activity|messages|chat|summary|summarize|summarise|recap|settings|setup|prefix|logs?|admin|permission|perms|doctor|error|"
+    r"level|xp|activity|messages|chat|summary|summarize|summarise|recap|essay|writing|ai\s*detect|ai-written|plagiarism|authenticity|settings|setup|prefix|logs?|admin|permission|perms|doctor|error|"
     r"ignore|block|unblock|disable|enable|ban|kick|role|lock|unlock|stop\s+responding)\b",
     re.IGNORECASE,
 )
 AI_COMMAND_ACTION_RE = re.compile(
     r"\b(run|use|do|start|set|show|open|check|make|create|generate|analyse|analyze|"
-    r"change|edit|enable|disable|turn\s+on|turn\s+off|add|remove|give|send|reply|summarize|summarise|recap|catch\s+me\s+up|what\s+did|what\s+happened|"
+    r"change|edit|enable|disable|turn\s+on|turn\s+off|add|remove|give|send|reply|summarize|summarise|recap|catch\s+me\s+up|what\s+did|what\s+happened|detect|check|"
     r"block|unblock|ignore|stop\s+responding|lock|unlock|purge|ban|kick|role|permission|perms)\b",
     re.IGNORECASE,
 )
@@ -3156,6 +3299,7 @@ COMMAND_EXAMPLE_OVERRIDES = {
     "analyse": ".analyse while replying to an image",
     "analyze": ".analyze while replying to an image",
     "archive": ".archive 50",
+    "aidetect": ".aidetect <essay text>",
     "auditcommands": ".auditcommands",
     "balanceaudit": ".balanceaudit 14",
     "aisettings": ".aisettings",
@@ -3295,6 +3439,7 @@ GENERIC_INPUT_UI_COMMANDS = {
     "rpurge", "unmute", "ban", "unban", "kick", "addrole", "removerole", "send",
     "reply", "fwd", "forward", "fw", "quote", "archive", "aban", "raban", "summon2", "block", "unblock", "fsleep", "wake",
     "find", "censor", "uncensor", "ask", "generate", "summarize", "summarise", "summary", "aisummary", "tldr", "recap",
+    "aidetect", "aicheck", "detectai", "authenticity", "authcheck", "essaycheck",
 }
 
 INPUT_UI_EXCLUDED_COMMANDS = {
@@ -3432,6 +3577,7 @@ AI_SAFE_COMMANDS = {
     "define", "timer", "ctimer", "alarm", "find", "econhelp", "quewohelp",
     "economyhelp", "ehelp", "explain", "lottery", "lotterystats",
     "summarize", "summarise", "summary", "aisummary", "tldr", "recap",
+    "aidetect", "aicheck", "detectai", "authenticity", "authcheck", "essaycheck",
     "aimemory", "aime", "memoryai", "whatyouknow", "aiknow", "aiknowledge", "knowcmd", "aicmd",
     "aidoctor", "botdoctor", "doctorai", "diagnosebot",
     "aihistory", "aiactions", "actionhistory", "aisettings", "aiconfig", "aicontrols", "usersettings", "mysettings", "preferences", "prefs",
@@ -3493,6 +3639,19 @@ def extract_ai_command_request(question, guild=None):
     ):
         return "analyse", "", False
 
+    if re.search(
+        r"\b(?:ai\s*detect|detect\s+ai|ai[-\s]?written|written\s+by\s+ai|sounds?\s+ai|authenticity|check\s+(?:this\s+)?(?:essay|writing|text))\b",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        cleaned = re.sub(
+            r"\b(?:can you|please|pls|check|detect|tell me if|is this|does this|sound|sounds|ai|written|by|essay|writing|text|authenticity|like)\b",
+            " ",
+            text,
+            flags=re.IGNORECASE,
+        ).strip()
+        return "aidetect", cleaned, False
+
     command_intent = any(word in lowered for word in (
         "run ", "use ", "do ", "start ", "set ", "show ", "open ", "check ", "make ",
         "change ", "edit ", "enable ", "disable ", "ignore ", "block ", "unblock ",
@@ -3515,6 +3674,7 @@ def extract_ai_command_request(question, guild=None):
     simple_patterns = [
         (("message stats", "messages tracker", "messages leaderboard", "message leaderboard", "who talks the most", "chat leaderboard"), "messages", ""),
         (("summarize messages", "summarise messages", "chat summary", "summarize chat", "summarise chat", "recap chat", "catch me up"), "summarize", ""),
+        (("ai detector", "ai detect", "written by ai", "ai-written", "sounds ai", "authenticity check"), "aidetect", ""),
         (("games", "game list", "what can we play", "play list"), "games", ""),
         (("shop", "store", "what can i buy"), "shop", ""),
         (("inventory", "my items", "stuff i own", "what do i own"), "inventory", ""),
@@ -4805,7 +4965,7 @@ HELP_CATEGORIES = {
     ],
     "Games": ["games", "howtoplay", "ttt", "c4", "chess", "move", "resign", "flagquiz", "flagstats", "q", "picker"],
     "Utility": ["help", "userinfo", "pfp", "calc", "define", "timer", "ctimer", "alarm", "poll", "epoll", "translate", "find"],
-    "AI": ["ask", "generate", "analyse", "summarize", "aimemory", "aiknow", "aihistory", "aisettings", "aiignore", "aiunignore", "aichannel", "aistyle", "usersettings", "aidoctor"],
+    "AI": ["ask", "generate", "analyse", "summarize", "aidetect", "aimemory", "aiknow", "aihistory", "aisettings", "aiignore", "aiunignore", "aichannel", "aistyle", "usersettings", "aidoctor"],
     "Server Tools": [
         "snipe", "dsnipe", "esnipe", "rsnipe", "rolesinfo", "roleinfo", "purge", "rpurge", "steal", "fwd", "quote", "archive",
         "giveaway", "listbans", "listblocks", "listtargets", "listcensors", "lists",
@@ -12033,6 +12193,46 @@ async def summarize_command(ctx, *, request: str = ""):
         limit=limit,
         duration=duration,
     )
+
+@bot.command(name="aidetect", aliases=["aicheck", "detectai", "authenticity", "authcheck", "essaycheck"])
+async def aidetect_command(ctx, *, text: str = None):
+    """Checks whether writing has AI-like patterns. This is not proof."""
+    if not text and ctx.message.reference:
+        ref_msg = ctx.message.reference.resolved
+        if not isinstance(ref_msg, discord.Message):
+            try:
+                ref_msg = await ctx.channel.fetch_message(ctx.message.reference.message_id)
+            except Exception:
+                ref_msg = None
+        if ref_msg:
+            text = ref_msg.content
+            if not text and ref_msg.attachments:
+                text_attachments = [
+                    attachment for attachment in ref_msg.attachments
+                    if (attachment.content_type or "").startswith("text/") or attachment.filename.lower().endswith((".txt", ".md"))
+                ]
+                if text_attachments:
+                    try:
+                        raw = await text_attachments[0].read()
+                        text = raw.decode("utf-8", errors="ignore")
+                    except Exception:
+                        text = None
+    if not text:
+        return await ctx.send(
+            "Reply to text with `.aidetect`, or use `.aidetect <essay text>`.",
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+    text = str(text).strip()
+    if len(text) < 80:
+        return await ctx.send("Send a longer sample if possible. AI-likelihood checks are weak on very short text.")
+    await safe_add_reaction(ctx.message, economy_q_timer_tick)
+    try:
+        result = await run_ai_likelihood_check(text)
+        await safe_remove_reaction(ctx.message, economy_q_timer_tick, bot.user)
+        await ctx.reply(embed=ai_likelihood_embed(result, text), mention_author=False, allowed_mentions=discord.AllowedMentions.none())
+    except Exception as e:
+        await safe_remove_reaction(ctx.message, economy_q_timer_tick, bot.user)
+        await ctx.send(clean_user_error(e, ai_exception_message(e)))
 
 @bot.command(name="generate")
 async def generate_command(ctx, *, prompt: str):
