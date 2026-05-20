@@ -221,6 +221,24 @@ bot = MyBot(command_prefix=get_prefix, intents=intents, case_insensitive=True)
 bot.remove_command("help")
 print(f"Bot is starting with intents: {bot.intents}")
 
+async def polished_view_error(self, interaction: discord.Interaction, error: Exception, item):
+    text = clean_user_error(error, "That panel had a problem. Run the command again for a fresh one.")
+    if "This interaction failed" in text:
+        text = "That panel expired or restarted. Run the command again for a fresh one."
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(text, ephemeral=True)
+        else:
+            await interaction.response.send_message(text, ephemeral=True)
+    except Exception:
+        pass
+    try:
+        await notify_superowner_error(interaction, error)
+    except Exception:
+        pass
+
+discord.ui.View.on_error = polished_view_error
+
 log_channel_id = None
 rlog_channel_id = None
 super_owner_id = 885548126365171824  
@@ -1166,6 +1184,10 @@ activity_buffer = Counter()
 message_history_buffer = []
 active_activity_status_messages = {}
 command_timing_stats = {}
+slow_command_events = deque(maxlen=40)
+help_render_cache = {}
+games_render_cache = {}
+HELP_RENDER_CACHE_TTL = 300
 daily_cooldown = {}
 weekly_cooldown = {}
 monthly_cooldown = {}
@@ -1174,6 +1196,23 @@ activity_recent_messages = {}
 ACTIVITY_DUPLICATE_WINDOW_SECONDS = 10 * 60
 ACTIVITY_NEAR_DUPLICATE_RATIO = 0.88
 ACTIVITY_RECENT_MESSAGE_LIMIT = 8
+
+def clear_help_cache():
+    help_render_cache.clear()
+
+def standard_embed(title, description=None, color=discord.Color.blurple(), *, icon=None, timestamp=True):
+    clean_title = f"{icon} {title}" if icon else title
+    embed = discord.Embed(
+        title=clean_title,
+        description=description,
+        color=color,
+        timestamp=datetime.now(timezone.utc) if timestamp else None,
+    )
+    embed.set_footer(text="Pro𝚀𝚞𝚎")
+    return embed
+
+def clone_embed(embed):
+    return discord.Embed.from_dict(embed.to_dict())
 
 class CommandDisabledError(commands.CheckFailure):
     def __init__(self, command_name):
@@ -3327,6 +3366,7 @@ COMMAND_EXAMPLE_OVERRIDES = {
     "economyhealth": ".economyhealth",
     "aiknow": ".aiknow slots",
     "aidoctor": ".aidoctor",
+    "aiperms": ".aiperms",
     "aimemory": ".aimemory @user",
     "find": ".find 885548126365171824",
     "flagquiz": ".flagquiz",
@@ -3368,7 +3408,7 @@ COMMAND_EXAMPLE_OVERRIDES = {
     "preifx": ".preifx !",
     "purge": ".purge @user 20",
     "quote": ".quote <message link>",
-    "receipt": ".receipt QTX-...",
+    "receipt": ".receipt latest",
     "receipts": ".receipts latest",
     "reopen": ".reopen",
     "remove": ".remove @user 1000",
@@ -3529,10 +3569,21 @@ def status_reason_text(reason):
     return str(reason).strip()
 
 def mention_summary_lines(mentions_list):
-    return [
-        f"{idx}. <@{uid}> · <t:{ts}:R> · [jump]({link})"
-        for idx, (uid, link, ts) in enumerate(mentions_list, start=1)
-    ]
+    grouped = {}
+    order = []
+    for uid, link, ts in mentions_list:
+        if uid not in grouped:
+            grouped[uid] = []
+            order.append(uid)
+        grouped[uid].append((link, ts))
+
+    lines = []
+    for uid in order:
+        entries = sorted(grouped[uid], key=lambda item: item[1])
+        lines.append(f"**<@{uid}>** mentioned you **{len(entries):,}** time(s):")
+        for idx, (link, ts) in enumerate(entries, start=1):
+            lines.append(f"  {idx}. <t:{ts}:R> · <t:{ts}:t> · [jump]({link})")
+    return lines
 
 def add_mentions_to_status_embed(embed, mentions_list):
     if not mentions_list:
@@ -3588,11 +3639,11 @@ async def handle_returning_status(message):
         duration = datetime.now(timezone.utc) - start
         formatted = short_status_duration(duration)
 
-        embed = discord.Embed(
-            title=f"{economy_q_bell} Back from sleep mode",
+        embed = standard_embed(
+            "Back from sleep mode",
             description=f"<@{message.author.id}> woke up after **{formatted}**. Brain back online, allegedly.",
             color=0xF1C40F,
-            timestamp=datetime.now(timezone.utc)
+            icon=economy_q_bell,
         )
         embed.add_field(name="Status", value=f"{economy_q_sleep} Sleep mode cleared", inline=True)
         embed.add_field(name="Away for", value=f"**{formatted}**", inline=True)
@@ -3610,11 +3661,11 @@ async def handle_returning_status(message):
         formatted = short_status_duration(duration)
         reason = status_reason_text(afk_data.get("reason"))
 
-        embed = discord.Embed(
-            title=f"{economy_q_bell} Back in the chat",
+        embed = standard_embed(
+            "Back in the chat",
             description=f"<@{message.author.id}> returned after **{formatted}**. The side quest is over.",
             color=0x2ECC71,
-            timestamp=datetime.now(timezone.utc)
+            icon=economy_q_bell,
         )
         embed.add_field(name="Status", value=f"{economy_q_accept} AFK cleared", inline=True)
         embed.add_field(name="Away for", value=f"**{formatted}**", inline=True)
@@ -3640,6 +3691,7 @@ AI_SAFE_COMMANDS = {
     "aidetect", "aicheck", "detectai", "authenticity", "authcheck", "essaycheck",
     "aimemory", "aime", "memoryai", "whatyouknow", "aiknow", "aiknowledge", "knowcmd", "aicmd",
     "aidoctor", "botdoctor", "doctorai", "diagnosebot",
+    "aiperms", "aipermissions", "aicapabilities", "aiauthority",
     "aihistory", "aiactions", "actionhistory", "aisettings", "aiconfig", "aicontrols", "usersettings", "mysettings", "preferences", "prefs",
     "commandstats", "cmdstats", "usage", "receipt", "txreceipt", "qreceipt",
     "auditcommands", "cmdaudit", "commandaudit",
@@ -4049,6 +4101,46 @@ async def save_sensitive_receipt(ctx, action, target_ids=None, amount=None, deta
         details,
     )
     return receipt_id if ok else None
+
+def normalize_receipt_row(row):
+    if not row:
+        return None
+    if isinstance(row, dict):
+        return row
+    rid, guild_id, channel_id, actor_id, target_ids, action, amount, details, created_at = row
+    return {
+        "receipt_id": rid,
+        "guild_id": guild_id,
+        "channel_id": channel_id,
+        "actor_id": actor_id,
+        "target_ids": target_ids,
+        "action": action,
+        "amount": amount,
+        "details": details,
+        "created_at": created_at,
+    }
+
+def receipt_time_text(created_at):
+    if not created_at:
+        return "unknown"
+    if getattr(created_at, "tzinfo", None) is None:
+        created_at = created_at.replace(tzinfo=timezone.utc)
+    return f"{discord.utils.format_dt(created_at, 'R')} · {discord.utils.format_dt(created_at, 'f')}"
+
+def receipt_summary_line(row):
+    row = normalize_receipt_row(row)
+    rid = row.get("receipt_id")
+    action = str(row.get("action") or "unknown").replace("_", " ")
+    actor_id = row.get("actor_id")
+    amount = row.get("amount")
+    target_ids = row.get("target_ids") or []
+    created_at = row.get("created_at")
+    amount_text = economy_format_balance(amount) if amount is not None else "no amount"
+    target_text = ", ".join(f"<@{uid}>" for uid in target_ids[:3]) or "none"
+    if len(target_ids) > 3:
+        target_text += f" +{len(target_ids) - 3:,}"
+    ts = discord.utils.format_dt(created_at.replace(tzinfo=timezone.utc), "R") if created_at else "unknown"
+    return f"`{rid}` · **{action}** · {amount_text} · <@{actor_id}> → {target_text} · {ts}"
 
 def parse_ai_batch_duration(text):
     lowered = text.casefold()
@@ -4686,6 +4778,15 @@ async def on_message(message):
             stats["total_ms"] += elapsed_ms
             stats["max_ms"] = max(stats["max_ms"], elapsed_ms)
             if elapsed_ms >= 1500:
+                slow_command_events.append({
+                    "name": name,
+                    "elapsed_ms": elapsed_ms,
+                    "guild_id": message.guild.id if message.guild else 0,
+                    "channel_id": message.channel.id,
+                    "user_id": message.author.id,
+                    "message_id": message.id,
+                    "created_at": datetime.now(timezone.utc),
+                })
                 print(f"Slow command: {name} took {elapsed_ms}ms in guild {message.guild.id if message.guild else 'DM'}")
         return
 
@@ -5013,6 +5114,11 @@ async def on_command_error(ctx, error):
     else:
         print(f"Unexpected error in {ctx.command}: {type(error).__name__} - {error}")
         await notify_superowner_error(ctx, error)
+        if ctx.guild is None:
+            text = clean_user_error(error)
+            if "guild" in str(error).casefold() or "server" in str(error).casefold():
+                text = "That command needs to be used in a server. DM-safe commands still work here, like help, AI, summaries, and simple utilities."
+            return await ctx.send(fit_discord_content(text))
         if has_owner_power(ctx.author, ctx.guild):
             await ctx.send(fit_discord_content(clean_user_error(error)))
         else:
@@ -5027,7 +5133,7 @@ HELP_CATEGORIES = {
     ],
     "Games": ["games", "howtoplay", "ttt", "c4", "chess", "move", "resign", "flagquiz", "flagstats", "q", "picker"],
     "Utility": ["help", "userinfo", "pfp", "calc", "define", "timer", "ctimer", "alarm", "poll", "epoll", "translate", "find"],
-    "AI": ["ask", "generate", "analyse", "summarize", "aidetect", "aimemory", "aiknow", "aihistory", "aisettings", "aiignore", "aiunignore", "aichannel", "aistyle", "usersettings", "aidoctor"],
+    "AI": ["ask", "generate", "analyse", "summarize", "aidetect", "aimemory", "aiknow", "aihistory", "aiperms", "aisettings", "aiignore", "aiunignore", "aichannel", "aistyle", "usersettings", "aidoctor"],
     "Server Tools": [
         "snipe", "dsnipe", "esnipe", "rsnipe", "rolesinfo", "roleinfo", "purge", "rpurge", "steal", "fwd", "quote", "archive",
         "giveaway", "listbans", "listblocks", "listtargets", "listcensors", "lists",
@@ -5086,16 +5192,17 @@ def prefix_for_guild(guild):
     guild_id = guild.id if guild else 0
     return guild_prefixes.get(guild_id, DEFAULT_PREFIX)
 
-def render_help_embed(guild=None, category_name=None, page=0, per_page=10, viewer=None):
+def _render_help_embed_uncached(guild=None, category_name=None, page=0, per_page=10, viewer=None):
     current_prefix = prefix_for_guild(guild)
     categories = help_categories_for(viewer, guild)
     if category_name:
         names = categories.get(category_name, [])
         page = max(0, int(page or 0))
-        embed = discord.Embed(
-            title=f"Pro𝚀𝚞𝚎 Help: {category_name}",
+        embed = standard_embed(
+            f"Help: {category_name}",
             description=f"Use `{current_prefix}help <command>` for usage or `{current_prefix}explain <command>` for details.",
-            color=discord.Color.blurple()
+            color=discord.Color.blurple(),
+            icon=economy_q_book,
         )
         command_lines = []
         seen_commands = set()
@@ -5122,10 +5229,11 @@ def render_help_embed(guild=None, category_name=None, page=0, per_page=10, viewe
             embed.description += "\n\nNo commands loaded for this category."
         return embed
 
-    embed = discord.Embed(
-        title="Pro𝚀𝚞𝚎 Help",
+    embed = standard_embed(
+        "Help",
         description=f"Pick a category below, or use `{current_prefix}help <command>`.",
-        color=discord.Color.blurple()
+        color=discord.Color.blurple(),
+        icon=economy_q_book,
     )
     embed.add_field(
         name="AI Chatbot",
@@ -5143,6 +5251,22 @@ def render_help_embed(guild=None, category_name=None, page=0, per_page=10, viewe
         }
         if loaded:
             embed.add_field(name=category, value=f"{len(loaded)} commands", inline=True)
+    return embed
+
+def render_help_embed(guild=None, category_name=None, page=0, per_page=10, viewer=None):
+    prefix = prefix_for_guild(guild)
+    is_que = can_see_superowner_help(viewer, guild) if viewer else False
+    command_count = len(bot.commands)
+    key = (getattr(guild, "id", 0), prefix, bool(is_que), category_name or "", int(page or 0), int(per_page or 10), command_count)
+    now = time.monotonic()
+    cached = help_render_cache.get(key)
+    if cached and now - cached[0] < HELP_RENDER_CACHE_TTL:
+        return clone_embed(cached[1])
+    embed = _render_help_embed_uncached(guild, category_name, page, per_page, viewer)
+    help_render_cache[key] = (now, clone_embed(embed))
+    if len(help_render_cache) > 128:
+        for old_key in list(help_render_cache)[:32]:
+            help_render_cache.pop(old_key, None)
     return embed
 
 def help_category_page_count(category_name, per_page=10, viewer=None, guild=None):
@@ -5299,10 +5423,11 @@ async def help_command(ctx, *, command_name: str = None):
             query = parts[1] if len(parts) > 1 else ""
             current_prefix = prefix_for_guild(ctx.guild)
             matches = command_search_results(query, ctx.author, ctx.guild)
-            embed = discord.Embed(
-                title=f"{economy_q_thinking} Help Search",
+            embed = standard_embed(
+                "Help Search",
                 description=f"Search: `{query or 'nothing'}`",
                 color=discord.Color.blurple(),
+                icon=economy_q_thinking,
             )
             if not matches:
                 embed.description += f"\nNo matches. Try `{current_prefix}help` for categories."
@@ -5328,10 +5453,11 @@ async def help_command(ctx, *, command_name: str = None):
         current_prefix = prefix_for_guild(ctx.guild)
         usage = command_usage_text(command, current_prefix)
         description = command_short_description(command)
-        embed = discord.Embed(
-            title=f"{economy_q_book} {current_prefix}{command.name}",
+        embed = standard_embed(
+            f"{current_prefix}{command.name}",
             description=description,
             color=discord.Color.blurple(),
+            icon=economy_q_book,
         )
         embed.add_field(name="Usage", value=f"`{usage}`", inline=False)
         embed.add_field(name="Aliases", value=", ".join(command.aliases) if command.aliases else "None", inline=True)
@@ -5417,6 +5543,8 @@ class PrefixSettingsModal(Modal):
         if not saved:
             return await interaction.response.send_message("Prefix save failed because the database is unavailable.", ephemeral=True)
         guild_prefixes[interaction.guild.id] = new_prefix
+        clear_help_cache()
+        games_render_cache.clear()
         await interaction.response.send_message(f"Prefix changed to `{new_prefix}`. Press Refresh on the settings panel to update it.", ephemeral=True)
 
 class SettingsView(View):
@@ -5679,6 +5807,35 @@ async def aisettings_command(ctx):
     embed.add_field(name="This Server", value=joined_embed_value([f"`{k}` = `{v}`" for k, v in guild_settings.items()], empty="None"), inline=False)
     await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
+@bot.command(name="aiperms", aliases=["aipermissions", "aicapabilities", "aiauthority"])
+async def aiperms_command(ctx):
+    """Shows what the AI is allowed to do."""
+    if not has_super_owner_power(ctx.author, ctx.guild):
+        return await ctx.send(denial_message(f"Only {QUE_OWNER_DISPLAY} can inspect AI control permissions."))
+    global_settings = await ai_settings_for("global", 0)
+    guild_settings = await ai_settings_for("guild", ctx.guild.id if ctx.guild else 0)
+    ignored = [part for part in global_settings.get("ignored_users", "").split(",") if part.strip()]
+    embed = standard_embed(
+        "AI Permissions",
+        "What Pro𝚀𝚞𝚎 AI can do when people talk to it.",
+        color=discord.Color.blurple(),
+        icon=economy_q_ai_history,
+    )
+    embed.add_field(
+        name="Can Run Without Confirmation",
+        value=joined_embed_value(sorted(f"`{name}`" for name in AI_SAFE_COMMANDS), limit=1200),
+        inline=False,
+    )
+    embed.add_field(
+        name="Needs Confirmation / 𝚀𝚞𝚎 Control",
+        value="Sensitive actions like rewards, ignores, channel AI on/off, and style changes require context and are limited to 𝚀𝚞𝚎.",
+        inline=False,
+    )
+    embed.add_field(name="Ignored Users", value=joined_embed_value([f"<@{uid}> (`{uid}`)" for uid in ignored], empty="None", limit=1000), inline=False)
+    embed.add_field(name="Global Settings", value=joined_embed_value([f"`{k}` = `{v}`" for k, v in global_settings.items()], empty="None"), inline=False)
+    embed.add_field(name="This Server", value=joined_embed_value([f"`{k}` = `{v}`" for k, v in guild_settings.items()], empty="None"), inline=False)
+    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
 @bot.command(name="aiignore", aliases=["ignoreai"])
 async def aiignore_command(ctx, member: discord.User = None):
     """Makes the AI ignore a user globally."""
@@ -5861,33 +6018,38 @@ async def commandstats_command(ctx, scope: str = "local"):
 async def receipt_command(ctx, receipt_id: str = None):
     """Shows a stored receipt for sensitive bot actions."""
     if not receipt_id:
-        return await ctx.send("Use `.receipt QTX-...`.")
-    row = await asyncio.to_thread(economy_get_receipt, receipt_id.strip())
+        receipt_id = "latest"
+    if str(receipt_id).casefold() in {"latest", "recent"}:
+        rows = await asyncio.to_thread(economy_get_receipts_for_user, None, ctx.guild.id if ctx.guild else None, 1)
+        row = rows[0] if rows else None
+    else:
+        row = await asyncio.to_thread(economy_get_receipt, receipt_id.strip())
     if not row:
-        row = await asyncio.to_thread(get_bot_receipt, receipt_id.strip())
+        row = await asyncio.to_thread(get_bot_receipt, receipt_id.strip()) if str(receipt_id).casefold() not in {"latest", "recent"} else None
     if not row:
         return await ctx.send("Receipt not found.")
-    if isinstance(row, dict):
-        rid = row.get("receipt_id")
-        guild_id = row.get("guild_id")
-        channel_id = row.get("channel_id")
-        actor_id = row.get("actor_id")
-        target_ids = row.get("target_ids")
-        action = row.get("action")
-        amount = row.get("amount")
-        details = row.get("details")
-        created_at = row.get("created_at")
-    else:
-        rid, guild_id, channel_id, actor_id, target_ids, action, amount, details, created_at = row
-    embed = discord.Embed(
-        title=f"{economy_q_archive} Receipt {rid}",
+    row = normalize_receipt_row(row)
+    rid = row.get("receipt_id")
+    guild_id = row.get("guild_id")
+    channel_id = row.get("channel_id")
+    actor_id = row.get("actor_id")
+    target_ids = row.get("target_ids") or []
+    action = row.get("action")
+    amount = row.get("amount")
+    details = row.get("details")
+    created_at = row.get("created_at")
+    embed = standard_embed(
+        f"Receipt {rid}",
         color=discord.Color.gold(),
-        timestamp=created_at.replace(tzinfo=timezone.utc) if created_at else datetime.now(timezone.utc),
+        icon=economy_q_archive,
     )
-    embed.add_field(name="Action", value=str(action), inline=True)
-    embed.add_field(name="Actor", value=f"<@{actor_id}>", inline=True)
+    embed.add_field(name="Action", value=str(action).replace("_", " "), inline=True)
+    embed.add_field(name="Actor", value=f"<@{actor_id}>\n`{actor_id}`", inline=True)
     embed.add_field(name="Amount", value=economy_format_balance(amount) if amount is not None else "None", inline=True)
-    targets = [f"<@{user_id}>" for user_id in (target_ids or [])]
+    embed.add_field(name="When", value=receipt_time_text(created_at), inline=False)
+    if guild_id:
+        embed.add_field(name="Location", value=f"Guild `{guild_id}` · Channel `{channel_id or 'unknown'}`", inline=False)
+    targets = [f"<@{user_id}> (`{user_id}`)" for user_id in target_ids]
     embed.add_field(name="Targets", value=joined_embed_value(targets, empty="None", limit=1000), inline=False)
     if details:
         embed.add_field(name="Details", value=embed_value(str(details), 1800), inline=False)
@@ -5910,27 +6072,18 @@ async def receipts_command(ctx, target: str = "latest"):
         ctx.guild.id if ctx.guild else None,
         12,
     )
-    embed = discord.Embed(
-        title=f"{economy_q_archive} Receipts",
+    embed = standard_embed(
+        "Receipts",
         description=(f"Recent receipts involving {user.mention}." if user else "Latest sensitive action receipts in this server."),
         color=discord.Color.gold(),
-        timestamp=datetime.now(timezone.utc),
+        icon=economy_q_archive,
     )
     if not rows:
         embed.add_field(name="Results", value="No receipts found.", inline=False)
     else:
         lines = []
         for row in rows:
-            rid = row.get("receipt_id") if isinstance(row, dict) else row[0]
-            actor_id = row.get("actor_id") if isinstance(row, dict) else row[3]
-            target_ids = row.get("target_ids") if isinstance(row, dict) else row[4]
-            action = row.get("action") if isinstance(row, dict) else row[5]
-            amount = row.get("amount") if isinstance(row, dict) else row[6]
-            created_at = row.get("created_at") if isinstance(row, dict) else row[8]
-            ts = discord.utils.format_dt(created_at.replace(tzinfo=timezone.utc), "R") if created_at else "unknown"
-            targets = ", ".join(f"<@{uid}>" for uid in (target_ids or [])[:3]) or "none"
-            amount_text = economy_format_balance(amount) if amount is not None else "none"
-            lines.append(f"`{rid}` - **{action}** | actor <@{actor_id}> | targets {targets} | {amount_text} | {ts}")
+            lines.append(receipt_summary_line(row))
         embed.add_field(name="Latest", value=embed_value("\n".join(lines), 3800), inline=False)
     await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
@@ -5973,13 +6126,27 @@ async def perf_command(ctx):
     for name, stats in sorted(command_timing_stats.items(), key=lambda item: item[1]["max_ms"], reverse=True)[:15]:
         count = max(1, int(stats["count"]))
         avg = int(stats["total_ms"] / count)
-        rows.append(f"**{name}** - avg `{avg}ms`, max `{int(stats['max_ms'])}ms`, runs `{count}`")
-    embed = discord.Embed(
-        title=f"{economy_q_perf} Command Performance",
+        rows.append(f"`{name}` · avg **{avg:,}ms** · max **{int(stats['max_ms']):,}ms** · runs **{count:,}**")
+    embed = standard_embed(
+        "Command Performance",
         description="Tracked since this bot process started.",
         color=discord.Color.orange(),
+        icon=economy_q_perf,
     )
     embed.add_field(name="Slowest", value=joined_embed_value(rows), inline=False)
+    if slow_command_events:
+        recent = []
+        for event in list(slow_command_events)[-8:][::-1]:
+            ts = discord.utils.format_dt(event["created_at"], "R")
+            jump = f"https://discord.com/channels/{event['guild_id']}/{event['channel_id']}/{event['message_id']}" if event["guild_id"] else None
+            jump_text = f" · [jump]({jump})" if jump else ""
+            recent.append(f"`{event['name']}` · **{event['elapsed_ms']:,}ms** · <@{event['user_id']}> · {ts}{jump_text}")
+        embed.add_field(name="Recent Slow Runs", value=embed_value("\n".join(recent), 1800), inline=False)
+    embed.add_field(
+        name="Health",
+        value=f"Gateway latency **{round(bot.latency * 1000):,}ms** · Help cache **{len(help_render_cache):,}** pages",
+        inline=False,
+    )
     await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
 @bot.command(name="perms", aliases=["permissions", "permcheck"])
@@ -6101,11 +6268,17 @@ GAME_FILTERS = {
 }
 
 def games_embed(prefix=".", selected_filter="All"):
+    key = (prefix, selected_filter)
+    now = time.monotonic()
+    cached = games_render_cache.get(key)
+    if cached and now - cached[0] < HELP_RENDER_CACHE_TTL:
+        return clone_embed(cached[1])
     filter_fn = GAME_FILTERS.get(selected_filter, GAME_FILTERS["All"])
-    embed = discord.Embed(
-        title=f"{economy_q_game_win} Games - {selected_filter}",
+    embed = standard_embed(
+        f"Games - {selected_filter}",
         description="Filter by solo, multiplayer, skill, luck, free, high risk, or no-bet games.",
-        color=discord.Color.green()
+        color=discord.Color.green(),
+        icon=economy_q_game_win,
     )
     for category in ["PvP", "Skill", "Luck", "Solo", "Utility"]:
         lines = []
@@ -6122,6 +6295,7 @@ def games_embed(prefix=".", selected_filter="All"):
     if not embed.fields:
         embed.add_field(name="Games", value="No games match this filter.", inline=False)
     embed.set_footer(text="Use .explain <game> for full rules.")
+    games_render_cache[key] = (now, clone_embed(embed))
     return embed
 
 class GamesFilterButton(Button):
@@ -7892,6 +8066,8 @@ async def prefix_command(ctx, new_prefix: str = None):
         return
 
     guild_prefixes[ctx.guild.id] = new_prefix
+    clear_help_cache()
+    games_render_cache.clear()
     await ctx.send(f"Prefix changed to `{new_prefix}`")
 
 @bot.command()
@@ -11821,11 +11997,11 @@ async def unblock(ctx, members: commands.Greedy[discord.Member]):
 async def sleep(ctx):
     sleeping_users[ctx.author.id] = datetime.now(timezone.utc)
     save_sleeping_user(ctx.author.id, sleeping_users[ctx.author.id])
-    embed = discord.Embed(
-        title=f"{economy_q_sleep} Sleep mode",
+    embed = standard_embed(
+        "Sleep mode",
         description=f"<@{ctx.author.id}> clocked out. Messages are being saved for the comeback.",
         color=0x5865F2,
-        timestamp=sleeping_users[ctx.author.id]
+        icon=economy_q_sleep,
     )
     embed.add_field(name="Since", value=f"<t:{int(sleeping_users[ctx.author.id].timestamp())}:R>", inline=True)
     embed.add_field(name="Return", value="Send any message to wake up.", inline=True)
@@ -11894,11 +12070,11 @@ async def afk(ctx, *, reason="AFK"):
     }
     save_afk_user(ctx.author.id, reason, afk_users[ctx.author.id]["since"])
 
-    embed = discord.Embed(
-        title=f"{economy_q_sleep} AFK mode",
+    embed = standard_embed(
+        "AFK mode",
         description=f"<@{ctx.author.id}> stepped away. I’ll keep the receipts if people mention you.",
         color=0x3498DB,
-        timestamp=now
+        icon=economy_q_sleep,
     )
     embed.add_field(name="Since", value=f"<t:{int(now.timestamp())}:R>", inline=True)
     embed.add_field(name="Return", value="Send any message to clear AFK.", inline=True)
@@ -11965,10 +12141,11 @@ async def away(ctx):
     now = datetime.now(timezone.utc)
 
     async def format_status_embed():
-        embed = discord.Embed(
-            title=f"{economy_q_sleep} Away Board",
+        embed = standard_embed(
+            "Away Board",
             description="Who is AFK, sleeping, or pretending they have responsibilities.",
-            color=0x3498db
+            color=0x3498db,
+            icon=economy_q_sleep,
         )
         now = datetime.now(timezone.utc)
 
@@ -12618,10 +12795,11 @@ async def send_command_input_ui(ctx, command_name=None, error=None, note=None):
     usage = command_usage_example(ctx)
     hint = command_argument_hint(error, ctx)
     description = note or "This command needs input. Press the button and enter what should come after the command."
-    embed = discord.Embed(
-        title=f"{economy_q_edit} {prefix}{command.name}",
+    embed = standard_embed(
+        f"{prefix}{command.name}",
         description=description,
         color=discord.Color.blurple(),
+        icon=economy_q_edit,
     )
     embed.add_field(name="Example", value=f"`{usage}`", inline=False)
     if hint:

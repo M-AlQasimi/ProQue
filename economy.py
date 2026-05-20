@@ -1327,7 +1327,7 @@ def create_receipt(guild_id, channel_id, actor_id, target_ids, action, amount=No
     return receipt_id
 
 def receipt_line(receipt_id):
-    return f"\nReceipt: `{receipt_id}`" if receipt_id else ""
+    return f"\n-# {Q_ARCHIVE} Receipt `{receipt_id}`" if receipt_id else ""
 
 def get_receipt(receipt_id):
     conn = get_db_connection()
@@ -3193,6 +3193,17 @@ class DoubleOrNothingView(discord.ui.View):
             await replay_double_or_nothing_game(interaction, self.game_key, self.stake)
         except Exception as e:
             await interaction.followup.send(f"{Q_DENIED} Could not start Double or Nothing: {public_error_text(e)}")
+
+    @discord.ui.button(label="How To Play", emoji=Q_BOOK, style=discord.ButtonStyle.secondary)
+    async def how_to_play(self, interaction, button):
+        details = DETAILED_EXPLANATIONS.get(self.game_key) or EXPLANATIONS.get(self.game_key) or f"Play {game_display_name(self.game_key)}."
+        embed = discord.Embed(
+            title=f"{Q_BOOK} How To Play: {game_display_name(self.game_key)}",
+            description=embed_value(details, 1800),
+            color=discord.Color.green(),
+        )
+        embed.add_field(name="Risk", value=f"**{risk_label(self.game_key)}**", inline=True)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
 def double_or_nothing_view(user_id, game_key, result):
     stake = int(result.get("winnings", 0) or 0)
@@ -11276,12 +11287,15 @@ EXPLANATIONS = {
     "permsaudit": "Alias for `.permaudit`. Audits sensitive command exposure.",
     "permissionaudit": "Alias for `.permaudit`. Audits sensitive command exposure.",
     "sensitiveaudit": "Alias for `.permaudit`. Audits sensitive command exposure.",
+    "receipt": "Shows one sensitive action receipt. Use `.receipt latest` for the newest receipt.",
     "receipts": f"{QUE_OWNER_DISPLAY} command. Lists recent sensitive action receipts or receipts involving one user.",
     "receiptlist": "Alias for `.receipts`. Lists recent receipts.",
     "txreceipts": "Alias for `.receipts`. Lists recent receipts.",
     "aihistory": f"{QUE_OWNER_DISPLAY} command. Shows recent AI-triggered bot actions. Use `.aihistory @user` to filter by actor.",
     "aiactions": "Alias for `.aihistory`. Shows AI-triggered actions.",
     "actionhistory": "Alias for `.aihistory`. Shows AI-triggered actions.",
+    "aiperms": f"{QUE_OWNER_DISPLAY} command. Shows what the AI is allowed to do and what sensitive actions are restricted.",
+    "aipermissions": "Alias for `.aiperms`. Shows AI control permissions.",
     "addrole": "Admin-power command. Adds a role to a member. Member and role can be in either order.",
     "removerole": "Admin-power command. Removes a role from a member. Member and role can be in either order.",
     "reactcount": "Admin-power command. Counts reactions on a message.",
@@ -11442,8 +11456,10 @@ DETAILED_EXPLANATIONS = {
     "archive": "Creates a plain-text transcript file from recent messages. Use `.archive 50`, `.archive 50 @user`, or `.archive #logs 50`. Limit is 100 messages per archive.",
     "auditcommands": f"{QUE_OWNER_DISPLAY}-only maintenance report. It scans the live command registry for missing help categories, missing explanation text, missing detailed text, missing examples, input commands without UI/example coverage, and duplicate aliases.",
     "permaudit": f"{QUE_OWNER_DISPLAY}-only permission audit. It checks sensitive command registration, public help visibility, AI/slash visibility notes, and the risk note for each command that can move money, alter tickets, send as the bot, or change AI controls.",
-    "receipts": f"{QUE_OWNER_DISPLAY}-only receipt list. Use `.receipts latest` for recent sensitive actions in the server or `.receipts @user` to see receipts involving a specific user. Use `.receipt <id>` for the full details of one receipt.",
+    "receipt": "Shows full details for one sensitive action receipt, including actor, targets, amount, time, and stored details. Use `.receipt latest` for the newest receipt or `.receipt QTX-...` for a specific one.",
+    "receipts": f"{QUE_OWNER_DISPLAY}-only receipt list. Use `.receipts latest` for recent sensitive actions in the server or `.receipts @user` to see receipts involving a specific user. Use `.receipt latest` or `.receipt <id>` for full details.",
     "aihistory": f"{QUE_OWNER_DISPLAY}-only safety log for AI-triggered actions. It shows recent AI command runs and batch rewards since the current bot restart. Use `.aihistory @user` to filter by actor.",
+    "aiperms": f"{QUE_OWNER_DISPLAY}-only AI permissions dashboard. It lists safe commands the AI can run directly, sensitive controls that stay restricted, ignored users, and current AI settings.",
     "lb": "Shows a paginated leaderboard. Use the buttons to switch between local server rankings and global all-server rankings. Use the ranking type menu to sort by quesos, level, earnings, total won, total lost, net gambling, or messages. The embed also shows your rank for the selected scope and type.",
     "leaderboard": "Alias for `.lb`. Shows local/global paginated rankings with selectable ranking types and your rank.",
     "qstats": "Admin-power command for checking the global 𝚀𝚞𝚎wo economy. It shows total money supply, total earned, gambling won/lost/net, active lotteries, lottery pots, ticket count, tracked taxes/payments, richest user, and tracked messages. If you pass a member, it redirects to that user's economy audit.",
