@@ -3507,65 +3507,124 @@ async def send_command_usage_correction(ctx, error=None):
         lines.append(f"More help: `{prefix}help {ctx.command.qualified_name}` or `{prefix}explain {ctx.command.qualified_name}`")
     await ctx.send("\n".join(lines), allowed_mentions=discord.AllowedMentions.none())
 
+def short_status_duration(delta):
+    total = max(0, int(delta.total_seconds()))
+    days, remainder = divmod(total, 86400)
+    hours, remainder = divmod(remainder, 3600)
+    mins, secs = divmod(remainder, 60)
+    parts = []
+    if days:
+        parts.append(f"{days}d")
+    if hours:
+        parts.append(f"{hours}h")
+    if mins:
+        parts.append(f"{mins}m")
+    if not parts:
+        parts.append(f"{secs}s")
+    return " ".join(parts[:3])
+
+def status_reason_text(reason):
+    if not reason or str(reason).strip().lower() == "afk":
+        return None
+    return str(reason).strip()
+
+def mention_summary_lines(mentions_list):
+    return [
+        f"{idx}. <@{uid}> · <t:{ts}:R> · [jump]({link})"
+        for idx, (uid, link, ts) in enumerate(mentions_list, start=1)
+    ]
+
+def add_mentions_to_status_embed(embed, mentions_list):
+    if not mentions_list:
+        embed.add_field(name="Mentions", value="No one bothered the mission. Peaceful.", inline=False)
+        return None
+
+    lines = mention_summary_lines(mentions_list)
+    full_text = "\n".join(lines)
+    shown_lines = []
+    shown_chars = 0
+    for line in lines:
+        if len(shown_lines) >= 35 or shown_chars + len(line) + 1 > 3600:
+            break
+        shown_lines.append(line)
+        shown_chars += len(line) + 1
+
+    current = []
+    current_len = 0
+    field_index = 1
+    for line in shown_lines:
+        if current and current_len + len(line) + 1 > 950:
+            embed.add_field(
+                name="Mentions" if field_index == 1 else f"Mentions {field_index}",
+                value="\n".join(current),
+                inline=False
+            )
+            field_index += 1
+            current = []
+            current_len = 0
+        current.append(line)
+        current_len += len(line) + 1
+    if current:
+        embed.add_field(
+            name="Mentions" if field_index == 1 else f"Mentions {field_index}",
+            value="\n".join(current),
+            inline=False
+        )
+
+    hidden = len(lines) - len(shown_lines)
+    if hidden > 0:
+        embed.add_field(
+            name="Full mention log",
+            value=f"Discord would make this message huge, so I attached the full **{len(lines):,}** mention list.",
+            inline=False
+        )
+        return File(BytesIO(full_text.encode("utf-8")), filename="mentions.txt")
+    return None
+
 async def handle_returning_status(message):
     if message.author.id in sleeping_users:
         start = sleeping_users.pop(message.author.id)
         remove_sleeping_user(message.author.id)
         duration = datetime.now(timezone.utc) - start
-        days, remainder = divmod(int(duration.total_seconds()), 86400)
-        hours, remainder = divmod(remainder, 3600)
-        mins = remainder // 60
-        formatted = " ".join([f"{days}d" if days else "", f"{hours}h" if hours else "", f"{mins}m" if mins or not (days or hours) else ""]).strip()
+        formatted = short_status_duration(duration)
 
         embed = discord.Embed(
-            title=f"{economy_q_bell} Good morning",
-            description=f"<@{message.author.id}> was sleeping for **{formatted}**.",
+            title=f"{economy_q_bell} Back from sleep mode",
+            description=f"<@{message.author.id}> woke up after **{formatted}**. Brain back online, allegedly.",
             color=0xF1C40F,
             timestamp=datetime.now(timezone.utc)
         )
+        embed.add_field(name="Status", value=f"{economy_q_sleep} Sleep mode cleared", inline=True)
+        embed.add_field(name="Away for", value=f"**{formatted}**", inline=True)
 
         mentions_list = user_mentions.pop(message.author.id, [])
-        if mentions_list:
-            embed.add_field(name="Mentions received", value=f"You received **{len(mentions_list)}** mentions:", inline=False)
-            for uid, link, ts in mentions_list:
-                embed.add_field(
-                    name="Mention",
-                    value=f"<@{uid}> — <t:{ts}:R> — [Click to view message]({link})",
-                    inline=True
-                )
+        mention_file = add_mentions_to_status_embed(embed, mentions_list)
 
-        await message.channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+        await message.channel.send(embed=embed, file=mention_file, allowed_mentions=discord.AllowedMentions.none())
 
     if message.author.id in afk_users:
         afk_data = afk_users.pop(message.author.id)
         remove_afk_user(message.author.id)
 
         duration = datetime.now(timezone.utc) - afk_data["since"]
-        days, remainder = divmod(int(duration.total_seconds()), 86400)
-        hours, remainder = divmod(remainder, 3600)
-        mins = remainder // 60
-        formatted = " ".join([f"{days}d" if days else "", f"{hours}h" if hours else "", f"{mins}m" if mins or not (days or hours) else ""]).strip()
-        reason = afk_data['reason']
-        reason_text = f": **{reason}**" if reason.lower() != "afk" else ""
+        formatted = short_status_duration(duration)
+        reason = status_reason_text(afk_data.get("reason"))
 
         embed = discord.Embed(
-            title="Welcome back",
-            description=f"<@{message.author.id}> was AFK for **{formatted}**{reason_text}",
+            title=f"{economy_q_bell} Back in the chat",
+            description=f"<@{message.author.id}> returned after **{formatted}**. The side quest is over.",
             color=0x2ECC71,
             timestamp=datetime.now(timezone.utc)
         )
+        embed.add_field(name="Status", value=f"{economy_q_accept} AFK cleared", inline=True)
+        embed.add_field(name="Away for", value=f"**{formatted}**", inline=True)
+        if reason:
+            embed.add_field(name="Reason", value=embed_value(reason), inline=False)
 
         mentions_list = user_mentions.pop(message.author.id, [])
-        if mentions_list:
-            embed.add_field(name="Mentions received", value=f"You received **{len(mentions_list)}** mentions:", inline=False)
-            for uid, link, ts in mentions_list:
-                embed.add_field(
-                    name="Mention",
-                    value=f"<@{uid}> — <t:{ts}:R> — [Click to view message]({link})",
-                    inline=True
-                )
+        mention_file = add_mentions_to_status_embed(embed, mentions_list)
 
-        await message.channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+        await message.channel.send(embed=embed, file=mention_file, allowed_mentions=discord.AllowedMentions.none())
 
 AI_SAFE_COMMANDS = {
     "help", "commands", "cmds", "games", "howtoplay", "how", "rules",
@@ -4871,25 +4930,23 @@ async def on_message(message):
             message.reference and message.reference.resolved and message.reference.resolved.author.id == uid
         ):
             sleep_messages = [
-                f"Shut up you’re gonna wake them up {economy_q_sleep}.",
-                f"Let the thing sleep peacefully {economy_q_sleep}"
+                f"{economy_q_sleep} Quiet mode, boss. <@{uid}> is sleeping. Let them cook dreams.",
+                f"{economy_q_sleep} <@{uid}> is asleep. Whisper energy only."
             ]
             chosen_msg = random.choice(sleep_messages)
-            await message.reply(chosen_msg, mention_author=True)
+            await message.reply(chosen_msg, mention_author=False, allowed_mentions=discord.AllowedMentions.none())
             break
 
     for user in message.mentions:
         if user.id in afk_users:
             afk_data = afk_users[user.id]
             duration = datetime.now(timezone.utc) - afk_data["since"]
-            days, remainder = divmod(int(duration.total_seconds()), 86400)
-            hours, remainder = divmod(remainder, 3600)
-            mins = remainder // 60
-            formatted = " ".join([f"{days}d" if days else "", f"{hours}h" if hours else "", f"{mins}m" if mins or not (days or hours) else ""]).strip()
-            reason = afk_data['reason']
-            reason_text = f": **{reason}**" if reason.lower() != "afk" else ""
-            await message.channel.send(
-                f"<@{user.id}> is AFK{reason_text}",
+            formatted = short_status_duration(duration)
+            reason = status_reason_text(afk_data.get("reason"))
+            reason_text = f"\nReason: **{reason}**" if reason else ""
+            await message.reply(
+                f"{economy_q_sleep} <@{user.id}> is AFK for **{formatted}**. They’ll see this when they’re back.{reason_text}",
+                mention_author=False,
                 allowed_mentions=discord.AllowedMentions.none()
             )
             break
@@ -11764,7 +11821,15 @@ async def unblock(ctx, members: commands.Greedy[discord.Member]):
 async def sleep(ctx):
     sleeping_users[ctx.author.id] = datetime.now(timezone.utc)
     save_sleeping_user(ctx.author.id, sleeping_users[ctx.author.id])
-    await ctx.send(f"You’re now in sleep mode. {economy_q_sleep} Good night!")
+    embed = discord.Embed(
+        title=f"{economy_q_sleep} Sleep mode",
+        description=f"<@{ctx.author.id}> clocked out. Messages are being saved for the comeback.",
+        color=0x5865F2,
+        timestamp=sleeping_users[ctx.author.id]
+    )
+    embed.add_field(name="Since", value=f"<t:{int(sleeping_users[ctx.author.id].timestamp())}:R>", inline=True)
+    embed.add_field(name="Return", value="Send any message to wake up.", inline=True)
+    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
 @bot.command()
 async def fsleep(ctx, members: commands.Greedy[discord.Member], *, time: str = None):
@@ -11800,12 +11865,10 @@ async def fsleep(ctx, members: commands.Greedy[discord.Member], *, time: str = N
 
         sleeping_users[member.id] = start_time
         save_sleeping_user(member.id, start_time)
-        await ctx.send(
-            f"Marked {member.mention} as asleep since <t:{int(start_time.timestamp())}:F>"
-        )
+        results.append(f"{economy_q_sleep} <@{member.id}> asleep since <t:{int(start_time.timestamp())}:R>")
 
     if results:
-        await ctx.send("\n".join(results), delete_after=10)
+        await ctx.send("\n".join(results), allowed_mentions=discord.AllowedMentions.none())
 
 @bot.command()
 async def wake(ctx, members: commands.Greedy[discord.Member]):
@@ -11817,17 +11880,32 @@ async def wake(ctx, members: commands.Greedy[discord.Member]):
     for member in members:
         sleeping_users.pop(member.id, None)
         remove_sleeping_user(member.id)
+    await ctx.send(
+        f"{economy_q_bell} Woke **{len(members):,}** user(s): " + ", ".join(f"<@{member.id}>" for member in members),
+        allowed_mentions=discord.AllowedMentions.none()
+    )
 
 @bot.command()
 async def afk(ctx, *, reason="AFK"):
+    now = datetime.now(timezone.utc)
     afk_users[ctx.author.id] = {
         "reason": reason,
-        "since": datetime.now(timezone.utc)
+        "since": now
     }
     save_afk_user(ctx.author.id, reason, afk_users[ctx.author.id]["since"])
 
-    reason_text = f": **{reason}**" if reason.lower() != "afk" else ""
-    await ctx.send(f"{ctx.author.mention} You're now AFK {reason_text}", allowed_mentions=discord.AllowedMentions.none())
+    embed = discord.Embed(
+        title=f"{economy_q_sleep} AFK mode",
+        description=f"<@{ctx.author.id}> stepped away. I’ll keep the receipts if people mention you.",
+        color=0x3498DB,
+        timestamp=now
+    )
+    embed.add_field(name="Since", value=f"<t:{int(now.timestamp())}:R>", inline=True)
+    embed.add_field(name="Return", value="Send any message to clear AFK.", inline=True)
+    clean_reason = status_reason_text(reason)
+    if clean_reason:
+        embed.add_field(name="Reason", value=embed_value(clean_reason), inline=False)
+    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
 def save_user_birthday(user_id, date):
     datetime.strptime(date, "%d/%m")
@@ -11887,7 +11965,11 @@ async def away(ctx):
     now = datetime.now(timezone.utc)
 
     async def format_status_embed():
-        embed = discord.Embed(title="AFK & Sleeping Users", color=0x3498db)
+        embed = discord.Embed(
+            title=f"{economy_q_sleep} Away Board",
+            description="Who is AFK, sleeping, or pretending they have responsibilities.",
+            color=0x3498db
+        )
         now = datetime.now(timezone.utc)
 
         if afk_users:
@@ -11895,18 +11977,10 @@ async def away(ctx):
             for uid, data in afk_users.items():
                 user = bot.get_user(uid) or await bot.fetch_user(uid)
                 duration = now - data["since"]
-                days, remainder = divmod(int(duration.total_seconds()), 86400)
-                hours, remainder = divmod(remainder, 3600)
-                mins = remainder // 60
-
-                time_parts = []
-                if days: time_parts.append(f"{days}d")
-                if hours: time_parts.append(f"{hours}h")
-                if mins or not time_parts:
-                    time_parts.append(f"{mins}m")
-                formatted = " ".join(time_parts)
-
-                afk_text += f"<@!{user.id}> — been AFK for {formatted}\n"
+                formatted = short_status_duration(duration)
+                reason = status_reason_text(data.get("reason"))
+                reason_bits = f" — {reason}" if reason else ""
+                afk_text += f"<@{user.id}> — **{formatted}**{reason_bits}\n"
 
             embed.add_field(name="AFK Users", value=embed_value(afk_text), inline=False)
 
@@ -11915,23 +11989,13 @@ async def away(ctx):
             for uid, start in sleeping_users.items():
                 user = bot.get_user(uid) or await bot.fetch_user(uid)
                 duration = now - start
-                days, remainder = divmod(int(duration.total_seconds()), 86400)
-                hours, remainder = divmod(remainder, 3600)
-                mins = remainder // 60
-
-                time_parts = []
-                if days: time_parts.append(f"{days}d")
-                if hours: time_parts.append(f"{hours}h")
-                if mins or not time_parts:
-                    time_parts.append(f"{mins}m")
-                formatted = " ".join(time_parts)
-
-                sleep_text += f"<@!{user.id}> — been asleep for {formatted}\n"
+                formatted = short_status_duration(duration)
+                sleep_text += f"<@{user.id}> — **{formatted}**\n"
 
             embed.add_field(name="Sleeping Users", value=embed_value(sleep_text), inline=False)
 
         if not afk_users and not sleeping_users:
-            embed.description = "No users are currently AFK or sleeping."
+            embed.description = "Nobody is AFK or sleeping right now. Suspiciously productive."
 
         embed.timestamp = now
         return embed

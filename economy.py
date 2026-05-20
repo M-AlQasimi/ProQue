@@ -6389,10 +6389,13 @@ async def add(ctx, *, args: str = None):
         members = list(ctx.guild.members)
         user_ids = [m.id for m in members]
         try:
-            before_balances = get_balances_for_users(user_ids)
-            count = bulk_add_users(user_ids, amount, ctx.author.id, "@everyone")
-            after_balances = get_balances_for_users(user_ids)
-            receipt_id = create_receipt(ctx.guild.id if ctx.guild else 0, ctx.channel.id, ctx.author.id, user_ids, "add_everyone", amount, f"count={count}")
+            def run_bulk_add():
+                before = get_balances_for_users(user_ids)
+                count = bulk_add_users(user_ids, amount, ctx.author.id, "@everyone")
+                after = get_balances_for_users(user_ids)
+                receipt = create_receipt(ctx.guild.id if ctx.guild else 0, ctx.channel.id, ctx.author.id, user_ids, "add_everyone", amount, f"count={count}")
+                return before, count, after, receipt
+            before_balances, count, after_balances, receipt_id = await asyncio.to_thread(run_bulk_add)
         except Exception:
             await send_error(ctx, "Database unavailable. Try again shortly.")
             return
@@ -6428,10 +6431,13 @@ async def add(ctx, *, args: str = None):
             return
         user_ids = [m.id for m in members]
         try:
-            before_balances = get_balances_for_users(user_ids)
-            count = bulk_add_users(user_ids, amount, ctx.author.id, f"role {role.id}")
-            after_balances = get_balances_for_users(user_ids)
-            receipt_id = create_receipt(ctx.guild.id if ctx.guild else 0, ctx.channel.id, ctx.author.id, user_ids, "add_role", amount, f"role={role.id}; count={count}")
+            def run_bulk_add():
+                before = get_balances_for_users(user_ids)
+                count = bulk_add_users(user_ids, amount, ctx.author.id, f"role {role.id}")
+                after = get_balances_for_users(user_ids)
+                receipt = create_receipt(ctx.guild.id if ctx.guild else 0, ctx.channel.id, ctx.author.id, user_ids, "add_role", amount, f"role={role.id}; count={count}")
+                return before, count, after, receipt
+            before_balances, count, after_balances, receipt_id = await asyncio.to_thread(run_bulk_add)
         except Exception:
             await send_error(ctx, "Database unavailable. Try again shortly.")
             return
@@ -6462,10 +6468,13 @@ async def add(ctx, *, args: str = None):
                 await ctx.send(f"{Q_DENIED} You can't edit one or more of those users' 𝚀𝚞𝚎wo balances.")
                 return
             try:
-                before_balances = get_balances_for_users(targets["user_ids"])
-                count = bulk_add_users(targets["user_ids"], amount, ctx.author.id, "multiple users")
-                after_balances = get_balances_for_users(targets["user_ids"])
-                receipt_id = create_receipt(ctx.guild.id if ctx.guild else 0, ctx.channel.id, ctx.author.id, targets["user_ids"], "add_multi", amount, f"count={count}")
+                def run_bulk_add():
+                    before = get_balances_for_users(targets["user_ids"])
+                    count = bulk_add_users(targets["user_ids"], amount, ctx.author.id, "multiple users")
+                    after = get_balances_for_users(targets["user_ids"])
+                    receipt = create_receipt(ctx.guild.id if ctx.guild else 0, ctx.channel.id, ctx.author.id, targets["user_ids"], "add_multi", amount, f"count={count}")
+                    return before, count, after, receipt
+                before_balances, count, after_balances, receipt_id = await asyncio.to_thread(run_bulk_add)
             except Exception:
                 await send_error(ctx, "Database unavailable. Try again shortly.")
                 return
@@ -6494,9 +6503,12 @@ async def add(ctx, *, args: str = None):
         return
 
     try:
-        old_balance, new_balance = add_user_balance(member.id, amount, earned_delta=amount)
-        log_transaction(member.id, "owner_add", amount, f"By {ctx.author.id}")
-        receipt_id = create_receipt(ctx.guild.id if ctx.guild else 0, ctx.channel.id, ctx.author.id, [member.id], "add", amount, f"{old_balance}->{new_balance}")
+        def run_single_add():
+            old, new = add_user_balance(member.id, amount, earned_delta=amount)
+            log_transaction(member.id, "owner_add", amount, f"By {ctx.author.id}")
+            receipt = create_receipt(ctx.guild.id if ctx.guild else 0, ctx.channel.id, ctx.author.id, [member.id], "add", amount, f"{old}->{new}")
+            return old, new, receipt
+        old_balance, new_balance, receipt_id = await asyncio.to_thread(run_single_add)
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
@@ -6542,27 +6554,34 @@ async def remove(ctx, *, args: str = None):
             before_balances = {}
             after_balances = {}
             try:
-                for user_id in targets["user_ids"]:
-                    data = get_user(user_id)
-                    old_balance = int(data["balance"])
-                    before_balances[user_id] = old_balance
-                    if str(raw_amount).lower() == "all":
-                        remove_amount = old_balance
-                    else:
-                        remove_amount = parse_whole_number(raw_amount)
-                        if remove_amount is None:
-                            raise ValueError
-                    if remove_amount <= 0:
-                        after_balances[user_id] = old_balance
-                        continue
-                    remove_amount = min(remove_amount, old_balance)
-                    new_balance = max(0, old_balance - remove_amount)
-                    update_user(user_id, balance=new_balance)
-                    log_transaction(user_id, "owner_remove", -remove_amount, f"By {ctx.author.id}")
-                    after_balances[user_id] = new_balance
-                    total_removed += remove_amount
-                    changed += 1
-                receipt_id = create_receipt(ctx.guild.id if ctx.guild else 0, ctx.channel.id, ctx.author.id, targets["user_ids"], "remove_multi", total_removed, f"changed={changed}; raw={raw_amount}")
+                def run_multi_remove():
+                    local_total = 0
+                    local_changed = 0
+                    local_before = {}
+                    local_after = {}
+                    for user_id in targets["user_ids"]:
+                        data = get_user(user_id)
+                        old_balance = int(data["balance"])
+                        local_before[user_id] = old_balance
+                        if str(raw_amount).lower() == "all":
+                            remove_amount = old_balance
+                        else:
+                            remove_amount = parse_whole_number(raw_amount)
+                            if remove_amount is None:
+                                raise ValueError
+                        if remove_amount <= 0:
+                            local_after[user_id] = old_balance
+                            continue
+                        remove_amount = min(remove_amount, old_balance)
+                        new_balance = max(0, old_balance - remove_amount)
+                        update_user(user_id, balance=new_balance)
+                        log_transaction(user_id, "owner_remove", -remove_amount, f"By {ctx.author.id}")
+                        local_after[user_id] = new_balance
+                        local_total += remove_amount
+                        local_changed += 1
+                    receipt = create_receipt(ctx.guild.id if ctx.guild else 0, ctx.channel.id, ctx.author.id, targets["user_ids"], "remove_multi", local_total, f"changed={local_changed}; raw={raw_amount}")
+                    return local_total, local_changed, local_before, local_after, receipt
+                total_removed, changed, before_balances, after_balances, receipt_id = await asyncio.to_thread(run_multi_remove)
             except ValueError:
                 await ctx.send(f"{Q_DENIED} Use `.remove @user @user 10k` or `.remove @user @user all`.")
                 return
@@ -6596,22 +6615,28 @@ async def remove(ctx, *, args: str = None):
         return
 
     try:
-        target_data = get_user(member.id)
-        old_balance = target_data['balance']
         raw_amount = amount
-        if str(amount).lower() == "all":
-            amount = old_balance
-        else:
-            amount = parse_whole_number(amount)
-            if amount is None:
-                raise ValueError
+        def run_single_remove():
+            target_data = get_user(member.id)
+            old = target_data['balance']
+            if str(raw_amount).lower() == "all":
+                remove_amount = old
+            else:
+                remove_amount = parse_whole_number(raw_amount)
+                if remove_amount is None:
+                    raise ValueError
+            if remove_amount <= 0:
+                return old, old, remove_amount, None
+            remove_amount = min(remove_amount, old)
+            new = max(0, old - remove_amount)
+            update_user(member.id, balance=new)
+            log_transaction(member.id, "owner_remove", -remove_amount, f"By {ctx.author.id}")
+            receipt = create_receipt(ctx.guild.id if ctx.guild else 0, ctx.channel.id, ctx.author.id, [member.id], "remove", remove_amount, f"{old}->{new}")
+            return old, new, remove_amount, receipt
+        old_balance, new_balance, amount, receipt_id = await asyncio.to_thread(run_single_remove)
         if amount <= 0:
             await send_nonpositive_amount_error(ctx, raw_amount)
             return
-        new_balance = max(0, old_balance - amount)
-        update_user(member.id, balance=new_balance)
-        log_transaction(member.id, "owner_remove", -amount, f"By {ctx.author.id}")
-        receipt_id = create_receipt(ctx.guild.id if ctx.guild else 0, ctx.channel.id, ctx.author.id, [member.id], "remove", amount, f"{old_balance}->{new_balance}")
     except ValueError:
         await ctx.send(f"{Q_DENIED} Use `.remove @user all`, `.remove all @user`, or a number like `10k`.")
         return
@@ -6670,14 +6695,17 @@ async def addtick(ctx, *, args: str = None):
         return
 
     try:
-        before_tickets = get_lottery_ticket_counts(ctx.guild.id, targets["user_ids"])
-        count = bulk_adjust_lottery_tickets(ctx.guild.id, targets["user_ids"], amount, "add", ctx.author.id)
-        after_tickets = get_lottery_ticket_counts(ctx.guild.id, targets["user_ids"])
-        updated = get_lottery_config(ctx.guild.id)
+        def run_ticket_add():
+            before = get_lottery_ticket_counts(ctx.guild.id, targets["user_ids"])
+            count = bulk_adjust_lottery_tickets(ctx.guild.id, targets["user_ids"], amount, "add", ctx.author.id)
+            after = get_lottery_ticket_counts(ctx.guild.id, targets["user_ids"])
+            updated_config = get_lottery_config(ctx.guild.id)
+            receipt = create_receipt(ctx.guild.id, ctx.channel.id, ctx.author.id, targets["user_ids"], "addtick", amount, f"count={count}; total_added={amount * count}")
+            return before, count, after, updated_config, receipt
+        before_tickets, count, after_tickets, updated, receipt_id = await asyncio.to_thread(run_ticket_add)
         schedule_lottery_refresh(ctx.guild, updated)
         if count == 1 and targets["member"] is not None:
             await assign_lottery_role(ctx.guild, targets["member"].id, updated.get("role_id") if updated else None)
-        receipt_id = create_receipt(ctx.guild.id, ctx.channel.id, ctx.author.id, targets["user_ids"], "addtick", amount, f"count={count}; total_added={amount * count}")
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
@@ -6736,13 +6764,16 @@ async def removetick(ctx, *, args: str = None):
         return
 
     try:
-        before_tickets = get_lottery_ticket_counts(ctx.guild.id, targets["user_ids"])
-        count = bulk_adjust_lottery_tickets(ctx.guild.id, targets["user_ids"], amount, "remove", ctx.author.id)
-        after_tickets = get_lottery_ticket_counts(ctx.guild.id, targets["user_ids"])
-        updated = get_lottery_config(ctx.guild.id)
+        def run_ticket_remove():
+            before = get_lottery_ticket_counts(ctx.guild.id, targets["user_ids"])
+            count = bulk_adjust_lottery_tickets(ctx.guild.id, targets["user_ids"], amount, "remove", ctx.author.id)
+            after = get_lottery_ticket_counts(ctx.guild.id, targets["user_ids"])
+            updated_config = get_lottery_config(ctx.guild.id)
+            removed = sum(max(0, before.get(user_id, 0) - after.get(user_id, 0)) for user_id in targets["user_ids"])
+            receipt = create_receipt(ctx.guild.id, ctx.channel.id, ctx.author.id, targets["user_ids"], "removetick", removed, f"limit_each={amount}; count={count}")
+            return before, count, after, updated_config, removed, receipt
+        before_tickets, count, after_tickets, updated, total_removed, receipt_id = await asyncio.to_thread(run_ticket_remove)
         schedule_lottery_refresh(ctx.guild, updated)
-        total_removed = sum(max(0, before_tickets.get(user_id, 0) - after_tickets.get(user_id, 0)) for user_id in targets["user_ids"])
-        receipt_id = create_receipt(ctx.guild.id, ctx.channel.id, ctx.author.id, targets["user_ids"], "removetick", total_removed, f"limit_each={amount}; count={count}")
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
@@ -6800,14 +6831,17 @@ async def settick(ctx, *, args: str = None):
         return
 
     try:
-        before_tickets = get_lottery_ticket_counts(ctx.guild.id, targets["user_ids"])
-        count = bulk_adjust_lottery_tickets(ctx.guild.id, targets["user_ids"], amount, "set", ctx.author.id)
-        after_tickets = get_lottery_ticket_counts(ctx.guild.id, targets["user_ids"])
-        updated = get_lottery_config(ctx.guild.id)
+        def run_ticket_set():
+            before = get_lottery_ticket_counts(ctx.guild.id, targets["user_ids"])
+            count = bulk_adjust_lottery_tickets(ctx.guild.id, targets["user_ids"], amount, "set", ctx.author.id)
+            after = get_lottery_ticket_counts(ctx.guild.id, targets["user_ids"])
+            updated_config = get_lottery_config(ctx.guild.id)
+            receipt = create_receipt(ctx.guild.id, ctx.channel.id, ctx.author.id, targets["user_ids"], "settick", amount, f"count={count}")
+            return before, count, after, updated_config, receipt
+        before_tickets, count, after_tickets, updated, receipt_id = await asyncio.to_thread(run_ticket_set)
         schedule_lottery_refresh(ctx.guild, updated)
         if count == 1 and amount > 0 and targets["member"] is not None:
             await assign_lottery_role(ctx.guild, targets["member"].id, updated.get("role_id") if updated else None)
-        receipt_id = create_receipt(ctx.guild.id, ctx.channel.id, ctx.author.id, targets["user_ids"], "settick", amount, f"count={count}")
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
@@ -6858,10 +6892,13 @@ async def setquesos(ctx, *, args: str = None):
         return
 
     try:
-        before_balances = get_balances_for_users(targets["user_ids"])
-        count = bulk_set_balances(targets["user_ids"], amount, ctx.author.id, targets["log_label"])
-        after_balances = get_balances_for_users(targets["user_ids"])
-        receipt_id = create_receipt(ctx.guild.id, ctx.channel.id, ctx.author.id, targets["user_ids"], "setquesos", amount, f"count={count}; target={targets['log_label']}")
+        def run_bulk_set():
+            before = get_balances_for_users(targets["user_ids"])
+            count = bulk_set_balances(targets["user_ids"], amount, ctx.author.id, targets["log_label"])
+            after = get_balances_for_users(targets["user_ids"])
+            receipt = create_receipt(ctx.guild.id, ctx.channel.id, ctx.author.id, targets["user_ids"], "setquesos", amount, f"count={count}; target={targets['log_label']}")
+            return before, count, after, receipt
+        before_balances, count, after_balances, receipt_id = await asyncio.to_thread(run_bulk_set)
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
@@ -11248,10 +11285,10 @@ EXPLANATIONS = {
     "addrole": "Admin-power command. Adds a role to a member. Member and role can be in either order.",
     "removerole": "Admin-power command. Removes a role from a member. Member and role can be in either order.",
     "reactcount": "Admin-power command. Counts reactions on a message.",
-    "sleep": "Marks you as sleeping until you send a message.",
-    "fsleep": f"{QUE_OWNER_DISPLAY} command. Marks members as sleeping.",
+    "sleep": "Marks you as sleeping, tracks mentions, and clears when you send a message.",
+    "fsleep": f"{QUE_OWNER_DISPLAY} command. Marks members as sleeping and tracks their mentions.",
     "wake": f"{QUE_OWNER_DISPLAY} command. Removes sleep mode from members.",
-    "afk": "Marks you AFK until you send a message.",
+    "afk": "Marks you AFK, tracks mentions, and clears when you send a message.",
     "setbday": "Saves your birthday. Use `.setbday 25/12`, or run `.setbday` to open a setup UI.",
     "removebday": "Removes your birthday.",
     "setbdaychannel": "Sets the server's birthday announcement channel. Use `.setbdaychannel #channel` or `.setbdaychannel <channel id>`.",
@@ -11273,7 +11310,7 @@ EXPLANATIONS = {
     "activityreset": "Alias for `.endactivity`.",
     "stopactivity": "Admin command. Stops this server's daily activity reports and clears the current activity window.",
     "activitystop": "Alias for `.stopactivity`.",
-    "away": "Shows AFK and sleeping users.",
+    "away": "Shows a live board of AFK and sleeping users.",
     "listbans": "Admin-power command. Lists blacklisted users.",
     "calc": "Calculates a math expression. Use `.calc 2+2*5`, or run `.calc` to open a setup UI.",
     "define": "Looks up a word definition. Use `.define example`, or run `.define` to open a setup UI.",
