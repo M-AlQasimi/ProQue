@@ -7,6 +7,7 @@ import time
 import math
 import psycopg2
 from psycopg2.extras import RealDictCursor
+from collections import Counter
 from datetime import datetime, timezone, timedelta
 import discord
 from discord.ext import commands
@@ -3209,29 +3210,31 @@ def double_or_nothing_view(user_id, game_key, result):
     stake = int(result.get("winnings", 0) or 0)
     return DoubleOrNothingView(user_id, game_key, stake) if stake > 0 else None
 
-def gamble_result_block(game_key, amount, result, base_multiplier=None):
+def gamble_result_block(game_key, amount, result, base_multiplier=None, outcome=None, details=None):
     lines = [
         f"{risk_emoji(game_key)} Risk: **{risk_label(game_key)}**",
         f"Bet: **{format_balance(amount)}**",
     ]
+    if details:
+        lines.extend(str(details).splitlines())
     if result["winnings"] > 0:
         multiplier = base_multiplier * result["streak_mult"] if base_multiplier else None
         if multiplier:
             lines.append(f"Multiplier: **×{multiplier:.3f}** (base ×{base_multiplier:g}, streak ×{result['streak_mult']:.3f})")
         lines.extend([
-            f"Result: **Win**",
+            f"Result: **{outcome or 'Win'}**",
             f"Prize: **{format_balance(result['winnings'])}**",
             f"Streak: **{result['streak']}** win(s)",
             f"New Balance: **{format_balance(result['balance'])}**",
+            "Double or Nothing replays the same game with the prize at risk.",
         ])
     else:
         lines.extend([
-            f"Result: **Loss**",
+            f"Result: **{outcome or 'Loss'}**",
             f"Lost: **{format_balance(amount)}**",
             f"New Balance: **{format_balance(result['balance'])}**",
             "Streak reset.",
         ])
-    lines.append("Double or Nothing replays the same game with the prize at risk.")
     lines.append(achievement_reward_text(result.get("achievements", [])))
     return "\n".join(line for line in lines if line)
 
@@ -5576,15 +5579,20 @@ async def gamble(ctx, amount: str, choice: str = None):
                 gamble_streak=new_streak,
                 total_won=data['total_won'] + winnings - amount
             )
-            streak_msg = gambling_streak_text(data, new_streak)
+            result_block = gamble_result_block(
+                "cf",
+                amount,
+                {"winnings": winnings, "balance": new_balance, "streak": new_streak, "streak_mult": mult},
+                2,
+                outcome=f"{coin_result} - You Win",
+            )
             await flip_msg.edit(
                 content=(
                 f"{Q_FLIP} **COIN FLIP**\n"
                 f"─────────────────\n"
                 f"Pick: **{chosen_side}**\n"
-                f">>> {Q_SUCCESS} **{coin_result} — YOU WIN!**\n"
-                f"Prize: **{format_balance(winnings)}**{streak_msg}\n"
-                f"New Balance: **{format_balance(new_balance)}**"
+                f">>> {Q_SUCCESS} **{coin_result} - YOU WIN!**\n"
+                f"{result_block}"
                 ),
                 view=double_or_nothing_view(user_id, "cf", {"winnings": winnings})
             )
@@ -5596,15 +5604,19 @@ async def gamble(ctx, amount: str, choice: str = None):
                 gamble_streak=0,
                 total_lost=data['total_lost'] + amount
             )
+            result_block = gamble_result_block(
+                "cf",
+                amount,
+                {"winnings": 0, "balance": new_balance},
+                outcome=f"{coin_result} - You Lose",
+            )
             await flip_msg.edit(
                 content=(
                 f"{Q_FLIP} **COIN FLIP**\n"
                 f"─────────────────\n"
                 f"Pick: **{chosen_side}**\n"
-                f">>> {Q_DENIED} **{coin_result} — YOU LOSE**\n"
-                f"Lost: **{format_balance(amount)}**\n"
-                f"New Balance: **{format_balance(new_balance)}**\n"
-                f"Streak reset."
+                f">>> {Q_DENIED} **{coin_result} - YOU LOSE**\n"
+                f"{result_block}"
                 )
             )
     except Exception:
@@ -5743,7 +5755,13 @@ async def roulette(ctx, amount: str, color: str = None):
                 gamble_streak=new_streak,
                 total_won=data['total_won'] + winnings - amount
             )
-            streak_msg = gambling_streak_text(data, new_streak)
+            result_block = gamble_result_block(
+                "roulette",
+                amount,
+                {"winnings": winnings, "balance": new_balance, "streak": new_streak, "streak_mult": mult},
+                multipliers[color],
+                outcome=f"{color.upper()}",
+            )
             await roulette_msg.edit(
                 content=(
                 f"{Q_WHEEL} **ROULETTE**\n"
@@ -5751,9 +5769,7 @@ async def roulette(ctx, amount: str, color: str = None):
                 f"{Q_TARGET} You picked: **{emoji_map[color]} {color.upper()}**\n"
                 f"─────────────────\n"
                 f">>> {Q_SUCCESS} **{color.upper()}!**\n"
-                f"Multiplier: ×{mult * multipliers[color]:.2f}\n"
-                f"Prize: **{format_balance(winnings)}**{streak_msg}\n"
-                f"New Balance: **{format_balance(new_balance)}**"
+                f"{result_block}"
                 ),
                 view=double_or_nothing_view(user_id, "roulette", {"winnings": winnings})
             )
@@ -5765,6 +5781,12 @@ async def roulette(ctx, amount: str, color: str = None):
                 gamble_streak=0,
                 total_lost=data['total_lost'] + amount
             )
+            result_block = gamble_result_block(
+                "roulette",
+                amount,
+                {"winnings": 0, "balance": new_balance},
+                outcome=f"{result.upper()}",
+            )
             await roulette_msg.edit(
                 content=(
                 f"{Q_WHEEL} **ROULETTE**\n"
@@ -5772,9 +5794,7 @@ async def roulette(ctx, amount: str, color: str = None):
                 f"{Q_TARGET} You picked: **{emoji_map[color]} {color.upper()}**\n"
                 f"─────────────────\n"
                 f">>> {emoji_map[result]} **{result.upper()}!**\n"
-                f"Lost: **{format_balance(amount)}**\n"
-                f"New Balance: **{format_balance(new_balance)}**\n"
-                f"Streak reset."
+                f"{result_block}"
                 )
             )
     except Exception:
@@ -5878,7 +5898,13 @@ async def slots(ctx, amount: str):
                 gamble_streak=new_streak,
                 total_won=data['total_won'] + winnings - amount
             )
-            streak_msg = gambling_streak_text(data, new_streak)
+            result_block = gamble_result_block(
+                "slots",
+                amount,
+                {"winnings": winnings, "balance": new_balance, "streak": new_streak, "streak_mult": mult},
+                result_multiplier,
+                outcome=f"Three Match x{result_multiplier}",
+            )
             await slots_msg.edit(
                 content=(
                     f"{Q_SLOTS} **RESULTS**\n"
@@ -5886,8 +5912,7 @@ async def slots(ctx, amount: str):
                     f"| {r1} | {r2} | {r3} |\n"
                     f"─────────────────\n"
                     f">>> {QOIN_CHEST} **THREE MATCH!** ×{result_multiplier}\n"
-                    f"Prize: **{format_balance(winnings)}**{streak_msg}\n"
-                    f"New Balance: **{format_balance(new_balance)}**"
+                    f"{result_block}"
                 ),
                 view=double_or_nothing_view(user_id, "slots", {"winnings": winnings})
             )
@@ -5899,6 +5924,12 @@ async def slots(ctx, amount: str):
                 gamble_streak=0,
                 total_lost=data['total_lost'] + amount
             )
+            result_block = gamble_result_block(
+                "slots",
+                amount,
+                {"winnings": 0, "balance": new_balance},
+                outcome="No Match",
+            )
             await slots_msg.edit(
                 content=(
                     f"{Q_SLOTS} **RESULTS**\n"
@@ -5906,9 +5937,7 @@ async def slots(ctx, amount: str):
                     f"| {r1} | {r2} | {r3} |\n"
                     f"─────────────────\n"
                     f">>> {Q_DENIED} **NO MATCH**\n"
-                    f"Lost: **{format_balance(amount)}**\n"
-                    f"New Balance: **{format_balance(new_balance)}**\n"
-                    f"Streak reset."
+                    f"{result_block}"
                 )
             )
     except Exception:
@@ -6014,7 +6043,13 @@ async def blackjack(ctx, amount: str):
                     gamble_streak=new_streak,
                     total_won=data['total_won'] + winnings
                 )
-                streak_msg = gambling_streak_text(data, new_streak)
+                result_block = gamble_result_block(
+                    "blackjack",
+                    amount,
+                    {"winnings": prize, "balance": data["balance"] + winnings, "streak": new_streak, "streak_mult": mult},
+                    None,
+                    outcome=win_type,
+                )
                 await msg.edit(
                     content=(
                         f"{Q_CARDS} **BLACKJACK**\n"
@@ -6023,8 +6058,7 @@ async def blackjack(ctx, amount: str):
                         f"**Dealer:**     {format_hand(dealer_hand)}  →  **{dealer_final}**\n"
                         f"─────────────────\n"
                         f">>> {Q_SUCCESS} **{win_type}!**\n"
-                        f"Prize: **{format_balance(prize)}**{streak_msg}\n"
-                        f"New Balance: **{format_balance(data['balance'] + winnings)}**"
+                        f"{result_block}"
                     ),
                     view=double_or_nothing_view(user_id, "blackjack", {"winnings": prize})
                 )
@@ -6049,6 +6083,12 @@ async def blackjack(ctx, amount: str):
                     gamble_streak=0,
                     total_lost=data['total_lost'] + abs(amount_delta)
                 )
+                result_block = gamble_result_block(
+                    "blackjack",
+                    abs(amount_delta),
+                    {"winnings": 0, "balance": new_balance},
+                    outcome=win_type,
+                )
                 await msg.edit(
                     content=(
                         f"{Q_CARDS} **BLACKJACK**\n"
@@ -6057,9 +6097,7 @@ async def blackjack(ctx, amount: str):
                         f"**Dealer:**     {format_hand(dealer_hand)}  →  **{dealer_final}**\n"
                         f"─────────────────\n"
                         f">>> {Q_DENIED} **{win_type}**\n"
-                        f"Lost: **{format_balance(abs(amount_delta))}**\n"
-                        f"New Balance: **{format_balance(new_balance)}**\n"
-                        f"Streak reset."
+                        f"{result_block}"
                     )
                 )
         except Exception:
@@ -7724,17 +7762,21 @@ async def card_ladder(ctx, amount: str):
             latest = get_user(user_id)
             new_balance = max(0, latest["balance"] - amount)
             update_user(user_id, balance=new_balance, gamble_streak=0, total_lost=latest["total_lost"] + amount)
-            record_game_result(user_id, "lockpick", False, -amount, 0)
             record_game_result(user_id, "cardladder", False, -amount, 0)
         except Exception:
             await interaction.message.edit(content=render(f"{Q_DENIED} Database unavailable."), view=None)
             return
+        result_block = gamble_result_block(
+            "cardladder",
+            amount,
+            {"winnings": 0, "balance": new_balance},
+            outcome=f"Wrong call ({label})",
+        )
         view.clear_items()
         await interaction.message.edit(
             content=render(
                 f">>> {Q_DENIED} **Wrong call.** You picked **{label}**.\n"
-                f"Lost: **{format_balance(amount)}**\n"
-                f"New Balance: **{format_balance(new_balance)}**"
+                f"{result_block}"
             ),
             view=view
         )
@@ -7759,14 +7801,18 @@ async def card_ladder(ctx, amount: str):
         except Exception:
             await interaction.edit_original_response(content=render(f"{Q_DENIED} Database unavailable."), view=None)
             return
+        result_block = gamble_result_block(
+            "cardladder",
+            amount,
+            {"winnings": winnings, "balance": new_balance, "streak": new_streak, "streak_mult": streak_mult},
+            base_multiplier,
+            outcome=label,
+        )
         view.clear_items()
         await interaction.edit_original_response(
             content=render(
                 f">>> {Q_SUCCESS} **{label}**\n"
-                f"Multiplier: **×{base_multiplier * streak_mult:.3f}** (base ×{base_multiplier:.2f}, streak ×{streak_mult:.3f})"
-                f"{gambling_streak_text(latest, new_streak)}\n"
-                f"Prize: **{format_balance(winnings)}**\n"
-                f"New Balance: **{format_balance(new_balance)}**"
+                f"{result_block}"
             ),
             view=double_or_nothing_view(user_id, "cardladder", {"winnings": winnings})
         )
@@ -7914,16 +7960,22 @@ async def lockpick(ctx, amount: str):
             latest = get_user(user_id)
             new_balance = max(0, latest["balance"] - amount)
             update_user(user_id, balance=new_balance, gamble_streak=0, total_lost=latest["total_lost"] + amount)
+            record_game_result(user_id, "lockpick", False, -amount, 0)
         except Exception:
             await interaction.message.edit(content=render(f"{Q_DENIED} Database unavailable."), view=None)
             return
+        result_block = gamble_result_block(
+            "lockpick",
+            amount,
+            {"winnings": 0, "balance": new_balance},
+            outcome=reason,
+            details=f"Code: **{'-'.join(map(str, target))}**",
+        )
         view.clear_items()
         await interaction.message.edit(
             content=render(
                 f">>> {Q_DENIED} **{reason}**\n"
-                f"Code was: **{'-'.join(map(str, target))}**\n"
-                f"Lost: **{format_balance(amount)}**\n"
-                f"New Balance: **{format_balance(new_balance)}**"
+                f"{result_block}"
             ),
             view=view
         )
@@ -7942,14 +7994,18 @@ async def lockpick(ctx, amount: str):
         except Exception:
             await interaction.message.edit(content=render(f"{Q_DENIED} Database unavailable."), view=None)
             return
+        result_block = gamble_result_block(
+            "lockpick",
+            amount,
+            {"winnings": winnings, "balance": new_balance, "streak": new_streak, "streak_mult": streak_mult},
+            LOCKPICK_MULTIPLIER,
+            outcome="Lock opened",
+        )
         view.clear_items()
         await interaction.message.edit(
             content=render(
                 f">>> {Q_SUCCESS} **Lock opened!**\n"
-                f"Multiplier: **×{LOCKPICK_MULTIPLIER * streak_mult:.3f}** (base ×{LOCKPICK_MULTIPLIER:g}, streak ×{streak_mult:.3f})"
-                f"{gambling_streak_text(latest, new_streak)}\n"
-                f"Prize: **{format_balance(winnings)}**\n"
-                f"New Balance: **{format_balance(new_balance)}**"
+                f"{result_block}"
             ),
             view=double_or_nothing_view(user_id, "lockpick", {"winnings": winnings})
         )
@@ -9940,12 +9996,29 @@ async def dailychallenge(ctx, action: str = None):
 @commands.command(name="gamebalance", aliases=["balancegames", "risks", "gamerisks"])
 async def gamebalance(ctx):
     lines = []
+    risk_counts = Counter()
     for game_key in GAME_DISPLAY_NAMES:
+        risk_counts[risk_label(game_key)] += 1
         lines.append(f"**{game_display_name(game_key)}** - Risk: **{risk_label(game_key)}**")
     embed = discord.Embed(
         title=f"{Q_WARNING} Game Balance",
         description="Risk labels are the quick balance audit for current 𝚀𝚞𝚎wo games. Higher risk means harder wins or larger loss swings.",
         color=discord.Color.orange(),
+    )
+    summary = [
+        f"**{label}**: {count}"
+        for label, count in sorted(risk_counts.items(), key=lambda item: item[0])
+    ]
+    embed.add_field(name="Risk Mix", value=", ".join(summary) or "No games found.", inline=False)
+    embed.add_field(
+        name="Balance Checks",
+        value=(
+            f"- Max standard bet: **{format_balance(MAX_BET)}**\n"
+            "- Wins use the universal gambling streak bonus.\n"
+            "- Use `.gameaudit` after real play to catch games that are too generous or too harsh.\n"
+            "- Use `.balanceaudit` for the wider economy flow."
+        ),
+        inline=False,
     )
     add_split_embed_field(embed, "Games", lines, inline=False)
     await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
@@ -11432,9 +11505,9 @@ EXPLANATIONS = {
     "authenticity": "Alias for `.aidetect`. Checks writing authenticity signals.",
     "authcheck": "Alias for `.aidetect`. Checks writing authenticity signals.",
     "essaycheck": "Alias for `.aidetect`. Checks AI-like essay patterns.",
-    "aimemory": f"Shows or clears AI memory. Use `.aimemory`, `.aimemory clear`, or {QUE_OWNER_DISPLAY} can use `.aimemory @user` / `.aimemory clear @user`.",
-    "aime": "Alias for `.aimemory`. Shows or clears AI memory.",
-    "memoryai": "Alias for `.aimemory`. Shows or clears AI memory.",
+    "aimemory": f"Shows AI memory. Use `.aimemory`; {QUE_OWNER_DISPLAY} can inspect another user with `.aimemory @user`.",
+    "aime": "Alias for `.aimemory`. Shows AI memory.",
+    "memoryai": "Alias for `.aimemory`. Shows AI memory.",
     "whatyouknow": "Alias for `.aimemory`. Shows what the AI knows about a user.",
     "aiknow": "Shows what the AI currently knows about a bot command.",
     "aiknowledge": "Alias for `.aiknow`. Shows AI command knowledge.",
@@ -11573,7 +11646,7 @@ DETAILED_EXPLANATIONS = {
     "ask": "Asks Pro𝚀𝚞𝚎's AI a question. The AI answers from its model knowledge, bot context, reply context, and saved memory; live web search is not connected.",
     "summarize": "Summarizes recent messages from the current channel, a mentioned channel, a specific user, or a time/message window. Examples: `.summarize`, `.summarize 50 messages`, `.summarize @user today`, `.summarize #general last 2 hours`. Mention or reply to Pro𝚀𝚞𝚎 with a natural request like `summarize what @user said today` and it will run directly without asking for confirmation.",
     "aidetect": "Writing authenticity check for essays and long text. Use `.aidetect <text>` or reply to text with `.aidetect`. It returns Low/Medium/High AI-like likelihood, a score, signals, and next-step suggestions. It never treats the result as proof because AI detectors can falsely flag human writing and miss edited AI writing.",
-    "aimemory": f"Shows the AI memory attached to a Discord user across servers, including explicit remembered facts and bot-saved profile details. Normal users can use `.aimemory` and `.aimemory clear` for themselves. {QUE_OWNER_DISPLAY} can inspect or clear another user with `.aimemory @user`, `.aimemory <user id>`, `.aimemory clear @user`, or `.aimemory @user clear`.",
+    "aimemory": f"Shows the AI memory attached to a Discord user, including explicit remembered facts and bot-saved profile details. AI memory stays on so Pro𝚀𝚞𝚎 can keep context and bot help consistent. Normal users can use `.aimemory` for themselves. {QUE_OWNER_DISPLAY} can inspect another user with `.aimemory @user` or `.aimemory <user id>`.",
     "aiknow": "Debug/helper command that shows exactly what Pro𝚀𝚞𝚎's AI knows about a command from the live command registry, aliases, help text, permission note, and detailed explanation data.",
     "aidoctor": "Admin-power bot doctor panel. Shows task health, 𝚀𝚞𝚎wo DB status, slash sync status, active sessions, disabled commands, and slow command stats. Useful when replying to errors and asking the AI to diagnose them.",
     "translate": "Translates provided text or the message you reply to. Friendly forms work: `.translate hello to Italian`, `.translate to Spanish hello`, `.translate it hello`, or reply to a message with `.translate to Spanish`. If no target is given, it translates to English.",
@@ -11713,6 +11786,20 @@ async def econhelp(ctx):
             self.view.page = min(max(0, self.view.page + self.direction), page_count - 1)
             await interaction.response.edit_message(embed=build_embed(self.view.category, self.view.page), view=self.view)
 
+    class EconHelpRefreshButton(discord.ui.Button):
+        def __init__(self):
+            try:
+                emoji = discord.PartialEmoji.from_str(Q_TIMER)
+            except Exception:
+                emoji = Q_TIMER
+            super().__init__(label="Refresh", emoji=emoji, style=discord.ButtonStyle.secondary)
+
+        async def callback(self, interaction):
+            if interaction.user.id != ctx.author.id:
+                await interaction.response.send_message("Use your own econhelp menu.", ephemeral=True)
+                return
+            await interaction.response.edit_message(embed=build_embed(self.view.category, self.view.page), view=self.view)
+
     class EconHelpView(discord.ui.View):
         def __init__(self):
             super().__init__(timeout=LONG_HELP_VIEW_TIMEOUT)
@@ -11721,6 +11808,7 @@ async def econhelp(ctx):
             self.add_item(EconHelpSelect())
             self.add_item(EconHelpPageButton(-1))
             self.add_item(EconHelpPageButton(1))
+            self.add_item(EconHelpRefreshButton())
 
         async def on_timeout(self):
             for item in self.children:

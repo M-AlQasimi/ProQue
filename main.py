@@ -111,7 +111,6 @@ from pgdata import (
     add_guild_activity_counts,
     add_message_activity_events,
     clear_guild_activity_counts,
-    delete_ai_user_memory,
     delete_guild_activity_channel,
     delete_guild_birthday_channel,
     delete_active_game_session,
@@ -671,7 +670,7 @@ async def send_ai_memory_summary(destination, guild, user, *, ephemeral=False):
         value=joined_embed_value([f"- {line}" for line in lines], empty="Nothing saved yet.", limit=3500),
         inline=False,
     )
-    embed.set_footer(text="Say 'forget what you know about me' or use .aimemory clear to erase saved AI memory.")
+    embed.set_footer(text="AI memory stays on so Pro𝚀𝚞𝚎 can keep bot help and user context consistent.")
     kwargs = {"embed": embed, "allowed_mentions": discord.AllowedMentions.none()}
     if isinstance(destination, discord.Interaction):
         return await destination.response.send_message(**kwargs, ephemeral=ephemeral)
@@ -1463,6 +1462,27 @@ def log_user(value):
         return "Unknown"
     return f"<@{user_id}> ({user_id})"
 
+def normalize_log_embed(embed, guild):
+    normalized = clone_embed(embed)
+    if not normalized.color:
+        normalized.color = discord.Color.blurple()
+    if normalized.description:
+        normalized.description = embed_value(normalized.description, 3900)
+    if not normalized.timestamp:
+        normalized.timestamp = datetime.now(timezone.utc)
+    if not normalized.footer or not normalized.footer.text:
+        normalized.set_footer(text=f"Server {guild.id}")
+    if len(normalized.fields) > 20:
+        normalized._fields = normalized._fields[:20]
+    for index, field in enumerate(list(normalized.fields)):
+        normalized.set_field_at(
+            index,
+            name=embed_value(field.name, 256),
+            value=embed_value(field.value, 1024),
+            inline=field.inline,
+        )
+    return normalized
+
 async def send_log(embed, guild=None):
     try:
         if guild is None:
@@ -1495,10 +1515,7 @@ async def send_log(embed, guild=None):
             print(f"Log skipped: missing Embed Links permission in normal log channel {channel_id}.")
             return False
 
-        if not embed.timestamp:
-            embed.timestamp = datetime.now(timezone.utc)
-        if not embed.footer or not embed.footer.text:
-            embed.set_footer(text=f"Server {guild.id}")
+        embed = normalize_log_embed(embed, guild)
         await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
         print(f"Sending log: {embed.title} | Server: {guild_log_label(guild)}")
         return True
@@ -4029,6 +4046,75 @@ def user_setting_value(settings, key):
     defaults = {"aifriendly": "on"}
     return settings.get(key, defaults.get(key, "off"))
 
+SYNC_DB_AUDIT_PATTERNS = (
+    "get_user(",
+    "update_user(",
+    "get_lottery_config(",
+    "save_lottery_config(",
+    "update_lottery_config(",
+    "get_db_connection(",
+)
+
+def sync_db_audit(limit=24):
+    findings = []
+    for path in ("main.py", "economy.py"):
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                lines = handle.readlines()
+        except OSError:
+            continue
+        async_context = None
+        for number, raw in enumerate(lines, 1):
+            stripped = raw.lstrip()
+            indent = len(raw) - len(stripped)
+            if stripped.startswith("async def "):
+                async_context = (indent, stripped.split("(", 1)[0].replace("async def", "").strip())
+            elif async_context and stripped and indent <= async_context[0] and not stripped.startswith(("#", "@")):
+                async_context = None
+            if not async_context:
+                continue
+            if "to_thread" in raw or "await " in raw:
+                continue
+            if any(pattern in raw for pattern in SYNC_DB_AUDIT_PATTERNS):
+                findings.append(f"`{path}:{number}` in `{async_context[1]}` - {stripped.strip()[:90]}")
+                if len(findings) >= limit:
+                    return findings
+    return findings
+
+def ui_callback_audit(limit=20):
+    findings = []
+    for path in ("main.py", "economy.py"):
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                lines = handle.readlines()
+        except OSError:
+            continue
+        callback_start = None
+        callback_name = None
+        touched_response = False
+        for number, raw in enumerate(lines, 1):
+            stripped = raw.lstrip()
+            indent = len(raw) - len(stripped)
+            if stripped.startswith("async def ") and "interaction" in stripped:
+                callback_start = (number, indent)
+                callback_name = stripped.split("(", 1)[0].replace("async def", "").strip()
+                touched_response = False
+                continue
+            if callback_start:
+                if stripped and indent <= callback_start[1] and not stripped.startswith(("#", "@")):
+                    if not touched_response:
+                        findings.append(f"`{path}:{callback_start[0]}` in `{callback_name}`")
+                        if len(findings) >= limit:
+                            return findings
+                    callback_start = None
+                    callback_name = None
+                    touched_response = False
+                elif "interaction.response" in raw or "interaction.followup" in raw or "interaction.edit_original_response" in raw:
+                    touched_response = True
+        if callback_start and not touched_response:
+            findings.append(f"`{path}:{callback_start[0]}` in `{callback_name}`")
+    return findings[:limit]
+
 async def ai_is_ignored(message):
     global_settings = await ai_settings_for("global", 0)
     guild_settings = await ai_settings_for("guild", message.guild.id if message.guild else 0)
@@ -4853,9 +4939,8 @@ async def on_message(message):
                 question = "Respond to the replied message using the reply context."
 
             if question and message.guild and is_ai_forget_memory_request(question):
-                ok = await asyncio.to_thread(delete_ai_user_memory, message.guild.id, message.author.id)
                 await message.reply(
-                    "done, I cleared what I remembered about you." if ok else "I tried, but memory clearing is unavailable right now.",
+                    "AI memory stays on now so I can keep context and bot help consistent.",
                     mention_author=False,
                     allowed_mentions=discord.AllowedMentions.none(),
                 )
@@ -4914,8 +4999,7 @@ async def on_message(message):
             remember_user_facts_from_message(message)
             memory_key = ai_memory_key(message)
             recent_context = ai_channel_context_text(memory_key)
-            current_user_settings = await ai_settings_for("user", message.author.id)
-            user_memory = ai_user_memory_text(message, referenced_message) if user_setting_value(current_user_settings, "aifriendly") == "on" else ""
+            user_memory = ai_user_memory_text(message, referenced_message)
             use_full_bot_context = should_use_full_bot_context(question)
             if use_full_bot_context:
                 messages = [
@@ -5741,7 +5825,7 @@ async def resolve_ai_memory_target(ctx, raw):
 
 @bot.command(name="aimemory", aliases=["aime", "memoryai", "whatyouknow"])
 async def aimemory_command(ctx, *, args: str = None):
-    """Shows or clears AI memory for yourself."""
+    """Shows AI memory for yourself, or another user for 𝚀𝚞𝚎."""
     if ctx.guild is None:
         return await ctx.send("AI memory works in servers.")
     tokens = args.split() if args else []
@@ -5756,17 +5840,11 @@ async def aimemory_command(ctx, *, args: str = None):
     try:
         target = await resolve_ai_memory_target(ctx, target_text)
     except commands.BadArgument:
-        return await ctx.send("Use `.aimemory`, `.aimemory @user`, `.aimemory clear`, or `.aimemory clear @user`.")
+        return await ctx.send("Use `.aimemory` or `.aimemory @user`.")
     if target.id != ctx.author.id and not has_super_owner_power(ctx.author, ctx.guild):
         return await ctx.send(denial_message(f"Only {QUE_OWNER_DISPLAY} can inspect someone else's AI memory."), allowed_mentions=discord.AllowedMentions.none())
     if action_key in {"clear", "delete", "forget", "remove", "reset"}:
-        if target.id != ctx.author.id and not has_super_owner_power(ctx.author, ctx.guild):
-            return await ctx.send(denial_message(f"Only {QUE_OWNER_DISPLAY} can clear someone else's AI memory."), allowed_mentions=discord.AllowedMentions.none())
-        ok = await asyncio.to_thread(delete_ai_user_memory, ctx.guild.id, target.id)
-        return await ctx.send(
-            f"{economy_q_accept if ok else economy_q_warning} {'Cleared' if ok else 'Could not clear'} AI memory for {target.mention}.",
-            allowed_mentions=discord.AllowedMentions.none(),
-        )
+        return await ctx.send("AI memory stays on now, so `.aimemory clear` is disabled.")
     await send_ai_memory_summary(ctx, ctx.guild, target)
 
 @bot.command(name="aiknow", aliases=["aiknowledge", "knowcmd", "aicmd"])
@@ -5919,20 +5997,25 @@ async def usersettings_command(ctx, key: str = None, *, value: str = None):
     """Shows or changes your personal bot preferences."""
     allowed = {
         "compact": "Compact command results where supported",
-        "aifriendly": "Let the AI use your saved bot profile naturally",
         "quiet": "Reduce optional reminder-style text where supported",
     }
     if not key:
         settings = await ai_settings_for("user", ctx.author.id)
         embed = discord.Embed(
             title=f"{economy_q_user_edit} User Settings",
-            description=f"Use `.usersettings <setting> on/off`.\nSettings: {', '.join(f'`{name}`' for name in allowed)}",
+            description=(
+                f"Use `.usersettings <setting> on/off`.\n"
+                f"Settings: {', '.join(f'`{name}`' for name in allowed)}\n"
+                "AI memory stays on so Pro𝚀𝚞𝚎 can keep useful bot context and remembered profile details."
+            ),
             color=discord.Color.blurple(),
         )
         for setting, description in allowed.items():
             embed.add_field(name=setting, value=f"{description}\nCurrent: **{user_setting_value(settings, setting)}**", inline=False)
         return await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
     setting = key.casefold()
+    if setting == "aifriendly":
+        return await ctx.send("AI memory is always on now, so there is nothing to toggle.")
     if setting not in allowed:
         return await ctx.send(f"Unknown setting. Use `.usersettings` to see the list.")
     normalized = str(value or "").casefold().strip()
@@ -5959,6 +6042,7 @@ async def auditcommands_command(ctx):
     missing_detail = []
     missing_example = []
     input_without_ui = []
+    stale_explain = []
     for command in sorted(bot.commands, key=lambda c: c.qualified_name):
         if command.hidden:
             continue
@@ -5973,11 +6057,16 @@ async def auditcommands_command(ctx):
             missing_example.append(f"`{command.name}`")
         if command.signature and command.name not in COMMAND_EXAMPLE_OVERRIDES and not command_supports_input_ui(command):
             input_without_ui.append(f"`{command.name}`")
+        text = economy_explanations.get(command.name, "")
+        if text and "Runs this Quewo command" in text:
+            stale_explain.append(f"`{command.name}`")
         for alias in command.aliases:
             key = alias.casefold()
             if key in seen_aliases and seen_aliases[key] != command.name:
                 duplicate_alias_lines.append(f"`{alias}`: `{seen_aliases[key]}` and `{command.name}`")
             seen_aliases[key] = command.name
+    sync_db_findings = sync_db_audit()
+    ui_findings = ui_callback_audit()
     command_names = sorted({command.name for command in bot.commands if not command.hidden})
     for index, left in enumerate(command_names):
         for right in command_names[index + 1:]:
@@ -5996,7 +6085,7 @@ async def auditcommands_command(ctx):
         color=discord.Color.orange(),
     )
     critical = len(missing_category) + len(missing_explain) + len(input_without_ui) + len(duplicate_alias_lines)
-    warnings = len(missing_detail) + len(missing_example)
+    warnings = len(missing_detail) + len(missing_example) + len(stale_explain) + len(sync_db_findings) + len(ui_findings)
     status = f"{economy_q_accept} Clean" if critical == 0 and warnings == 0 else (f"{economy_q_warning} Needs cleanup" if critical else f"{economy_q_thinking} Minor gaps")
     embed.add_field(
         name="Summary",
@@ -6016,6 +6105,12 @@ async def auditcommands_command(ctx):
         top_actions.append("Add short explain text so help/AI can describe commands correctly.")
     if input_without_ui:
         top_actions.append("Add examples or input UI for commands that need arguments.")
+    if stale_explain:
+        top_actions.append("Replace generic explain text with real command behavior.")
+    if sync_db_findings:
+        top_actions.append("Move direct database calls inside async commands into `asyncio.to_thread` when they are on hot paths.")
+    if ui_findings:
+        top_actions.append("Review UI callbacks that may not acknowledge interactions directly; global UI error handling still catches failures.")
     if not top_actions:
         top_actions.append("No high-impact cleanup needed right now.")
     embed.add_field(name="Next Fixes", value=embed_value("\n".join(f"- {item}" for item in top_actions), 1000), inline=False)
@@ -6024,6 +6119,9 @@ async def auditcommands_command(ctx):
     embed.add_field(name="Missing Detailed Text", value=embed_value(", ".join(missing_detail[:40]) or "None", 1000), inline=False)
     embed.add_field(name="Missing Examples", value=embed_value(", ".join(missing_example[:40]) or "None", 1000), inline=False)
     embed.add_field(name="Input Commands Without UI/Example", value=embed_value(", ".join(input_without_ui[:40]) or "None", 1000), inline=False)
+    embed.add_field(name="Generic Explain Text", value=embed_value(", ".join(stale_explain[:40]) or "None", 1000), inline=False)
+    embed.add_field(name="Sync DB Calls In Async Paths", value=embed_value("\n".join(sync_db_findings[:12]) or "None", 1000), inline=False)
+    embed.add_field(name="UI Callback Audit", value=embed_value("\n".join(ui_findings[:12]) or "None", 1000), inline=False)
     embed.add_field(name="Duplicate Aliases", value=embed_value("\n".join(duplicate_alias_lines) or "None", 1000), inline=False)
     embed.add_field(name="Near-Duplicate Commands", value=embed_value("\n".join(near_duplicate_lines) or "None", 1000), inline=False)
     await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
@@ -6379,12 +6477,24 @@ class GamesFilterButton(Button):
                 item.style = discord.ButtonStyle.primary if item.filter_name == self.filter_name else discord.ButtonStyle.secondary
         await interaction.response.edit_message(embed=games_embed(view.prefix, self.filter_name), view=view)
 
+class GamesRefreshButton(Button):
+    def __init__(self):
+        super().__init__(label="Refresh", emoji=reaction_emoji(economy_q_timer), style=discord.ButtonStyle.secondary)
+
+    async def callback(self, interaction):
+        view = self.view
+        if interaction.user.id != view.author_id:
+            return await interaction.response.send_message("Use your own games menu.", ephemeral=True)
+        games_render_cache.clear()
+        await interaction.response.edit_message(embed=games_embed(view.prefix, view.selected_filter), view=view)
+
 class GamesView(View):
     def __init__(self, author_id, prefix):
         super().__init__(timeout=LONG_HELP_VIEW_TIMEOUT)
         self.author_id = author_id
         self.prefix = prefix
         self.selected_filter = "All"
+        self.add_item(GamesRefreshButton())
         for filter_name in ["All", "Solo", "PvP", "Skill", "Luck", "Free", "High Risk", "No Bet"]:
             self.add_item(GamesFilterButton(filter_name))
 

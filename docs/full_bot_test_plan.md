@@ -34,10 +34,12 @@ Test these once before role testing.
 ### Help
 
 - `.help`
+- Press Refresh in `.help`.
 - `.help 𝚀𝚞𝚎wo`
 - `.help activity`
 - `.help poll` then press the setup UI button.
 - `.econhelp`
+- Press category/page/Refresh buttons in `.econhelp`.
 - `.quewohelp`
 - `.explain lottery`
 - `.explain activity`
@@ -45,7 +47,7 @@ Test these once before role testing.
 - `.explain settings`
 - `.explain games`
 
-Expected: all are current and mention the right aliases/settings.
+Expected: all are current, mention the right aliases/settings, have no duplicate entries, and long panels still work after Refresh.
 
 ### Slash Commands
 
@@ -134,10 +136,16 @@ Run:
 - `.settings`
 - In `.settings`, test Refresh, Prefix, Birthdays Here, Activity Here, and Admin Commands if safe.
 - `.perf`
+- `.auditcommands`
+- `.gamebalance`
 - `.find <normal_user_id>`
 - `.listtargets`
 - `.listcensors`
 - `.ask hello`
+- Mention/reply to the bot and ask what it remembers about you.
+- `.aimemory`
+- `.usersettings`
+- `.usersettings aifriendly off`
 - `.generate short test prompt`
 - Reply to an image with `.analyse`
 - Reply to an image with `.analyze`
@@ -292,11 +300,12 @@ Run:
 - `.lb`
 - `.qstats`
 - `.economyaudit`
+- `.auditcommands`
 - `.econhelp`
 - `.quewohelp`
 - `.explain scratch`
 
-Expected: balances update correctly and cooldown/results make sense.
+Expected: balances update correctly and cooldown/results make sense. `.gamebalance` includes risk mix and balance checks. `.auditcommands` includes help/explain, duplicate alias, stale explanation, input UI, and sync DB call sections.
 
 ### 𝚀𝚞𝚎wo Admin
 
@@ -606,7 +615,7 @@ Run:
 - `.move e2e4` or `.chessmove e2e4` during chess fallback testing
 - `.resign`
 
-Expected: games work, bet accept prompts appear, risk labels show where relevant, daily loss warning appears near 70%, and gambling is blocked before daily losses can exceed 85%.
+Expected: games work, bet accept prompts appear, result receipts use consistent fields (`Risk`, `Bet`, `Result`, `Prize/Lost`, `Streak`, `New Balance`), daily loss warning appears near 70%, and gambling is blocked before daily losses can exceed 85%.
 
 ### 𝚀𝚞𝚎wo
 
