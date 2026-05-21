@@ -35,7 +35,7 @@ COINFLIP_WIN_CHANCE = 0.49
 ROULETTE_WIN_CHANCE = 0.32
 SLOTS_WIN_CHANCE = 0.25
 SUPER_OWNER_ID = 885548126365171824
-QUE_OWNER_DISPLAY = "𝚀𝚞𝚎 (@queziee)"
+QUE_OWNER_DISPLAY = f"𝚀𝚞𝚎 (<@{SUPER_OWNER_ID}>)"
 SUPEROWNER_LUCK_BONUS = 0.05
 CURRENCY_EMOJI = "<:Qoins:1500255107428782100>"
 QASH_EMOJI = "<:Qash:1500235432011497703>"
@@ -3868,6 +3868,40 @@ async def send_error(ctx, text):
     except:
         pass
 
+async def send_owner_only(ctx):
+    await ctx.send(f"{Q_DENIED} Only {QUE_OWNER_DISPLAY} can use this.", allowed_mentions=discord.AllowedMentions.none())
+
+async def send_bulk_progress(ctx, action, count):
+    if int(count or 0) < 20:
+        return None
+    return await ctx.send(
+        f"{Q_TIMER_TICK} Working on **{int(count):,}** target(s) for **{action}**...",
+        allowed_mentions=discord.AllowedMentions.none(),
+    )
+
+async def finish_bulk_progress(message, text):
+    if not message:
+        return
+    try:
+        await message.edit(content=f"{Q_SUCCESS} {text}")
+    except Exception:
+        pass
+
+def strip_bulk_confirm(args):
+    text = str(args or "")
+    confirmed = bool(re.search(r"(?i)(?:^|\s)--confirm(?:\s|$)", text))
+    return confirmed, re.sub(r"(?i)(?:^|\s)--confirm(?:\s|$)", " ", text).strip()
+
+async def require_bulk_confirmation(ctx, action, count):
+    if int(count or 0) < 100:
+        return False
+    await ctx.send(
+        f"{Q_WARNING} **Large {action}** affects **{int(count):,}** target(s).\n"
+        f"Run the same command again with `--confirm` at the end if that is intentional.",
+        allowed_mentions=discord.AllowedMentions.none(),
+    )
+    return True
+
 def public_error_text(error, fallback="That action failed."):
     text = str(error or "").strip()
     if not text:
@@ -4135,6 +4169,14 @@ async def inventory(ctx, member: discord.Member = None):
         async def refresh_button(self, interaction, button):
             await interaction.response.defer()
             await self.refresh(interaction)
+
+        @discord.ui.button(label="Shop", emoji=Q_SHOP, style=discord.ButtonStyle.success)
+        async def shop_hint_button(self, interaction, button):
+            await interaction.response.send_message("Use `.shop` to buy boosts, cosmetics, and active effects.", ephemeral=True)
+
+        @discord.ui.button(label="Profile", emoji=Q_XP, style=discord.ButtonStyle.secondary)
+        async def profile_hint_button(self, interaction, button):
+            await interaction.response.send_message("Use `.profile` to view your equipped badges, level, balance, and theme.", ephemeral=True)
 
         @discord.ui.button(label="Equip Theme", style=discord.ButtonStyle.primary)
         async def equip_theme_button(self, interaction, button):
@@ -4648,7 +4690,7 @@ async def lottery(ctx, action: str = None, amount: str = None):
 
     if action and action.casefold() in {"setup", "config"}:
         if not is_superowner_id(ctx.author.id):
-            await ctx.send(f"{Q_DENIED} Only {QUE_OWNER_DISPLAY} can use this.")
+            await send_owner_only(ctx)
             return
         await ctx.send("To reconfigure, delete the current lottery config from the database or ask me to add a reset flow.")
         return
@@ -4672,7 +4714,7 @@ async def editlottery(ctx, setting: str = None, *, value: str = None):
     if not await ensure_db_ready(ctx):
         return
     if not is_superowner_id(ctx.author.id):
-        await ctx.send(f"{Q_DENIED} Only {QUE_OWNER_DISPLAY} can use this.")
+        await send_owner_only(ctx)
         return
 
     config = await asyncio.to_thread(get_lottery_config, ctx.guild.id)
@@ -4697,7 +4739,7 @@ async def stoplottery(ctx):
     if not await ensure_db_ready(ctx):
         return
     if not is_superowner_id(ctx.author.id):
-        await ctx.send(f"{Q_DENIED} Only {QUE_OWNER_DISPLAY} can use this.")
+        await send_owner_only(ctx)
         return
 
     config = get_lottery_config(ctx.guild.id)
@@ -6317,7 +6359,7 @@ async def qstats(ctx, member: discord.Member = None):
     if not await ensure_db_ready(ctx):
         return
     if not is_superowner_id(ctx.author.id):
-        await ctx.send(f"{Q_DENIED} Only {QUE_OWNER_DISPLAY} can use this.")
+        await send_owner_only(ctx)
         return
     if member is not None:
         command = bot.get_command("economyaudit") if bot else None
@@ -6373,9 +6415,10 @@ async def add(ctx, *, args: str = None):
         return
 
     if not is_superowner_id(ctx.author.id):
-        await ctx.send(f"{Q_DENIED} Only {QUE_OWNER_DISPLAY} can use this.")
+        await send_owner_only(ctx)
         return
 
+    bulk_confirmed, args = strip_bulk_confirm(args)
     target, amount = parse_target_amount_args(args)
     if not target:
         await send_economy_command_input_ui(ctx, "add", "Enter the target and amount. Users, roles, and @everyone work where allowed.")
@@ -6395,10 +6438,13 @@ async def add(ctx, *, args: str = None):
 
     if ctx.guild and is_everyone:
         if ctx.author.id != 885548126365171824:
-            await ctx.send(f"{Q_DENIED} Bulk `.add @everyone` is only for {QUE_OWNER_DISPLAY}.")
+            await ctx.send(f"{Q_DENIED} Bulk `.add @everyone` is only for {QUE_OWNER_DISPLAY}.", allowed_mentions=discord.AllowedMentions.none())
             return
         members = list(ctx.guild.members)
         user_ids = [m.id for m in members]
+        if not bulk_confirmed and await require_bulk_confirmation(ctx, "add", len(user_ids)):
+            return
+        progress_msg = await send_bulk_progress(ctx, "add quesos", len(user_ids))
         try:
             def run_bulk_add():
                 before = get_balances_for_users(user_ids)
@@ -6410,6 +6456,7 @@ async def add(ctx, *, args: str = None):
         except Exception:
             await send_error(ctx, "Database unavailable. Try again shortly.")
             return
+        await finish_bulk_progress(progress_msg, f"Finished adding {format_balance(amount)} to **{count:,}** member(s).")
 
         await reply_to_command(
             ctx,
@@ -6434,13 +6481,16 @@ async def add(ctx, *, args: str = None):
 
     if role is not None:
         if ctx.author.id != 885548126365171824:
-            await ctx.send(f"{Q_DENIED} Bulk `.add @role` is only for {QUE_OWNER_DISPLAY}.")
+            await ctx.send(f"{Q_DENIED} Bulk `.add @role` is only for {QUE_OWNER_DISPLAY}.", allowed_mentions=discord.AllowedMentions.none())
             return
         members = list(role.members)
         if not members:
             await ctx.send(f"{Q_DENIED} That role has no members.")
             return
         user_ids = [m.id for m in members]
+        if not bulk_confirmed and await require_bulk_confirmation(ctx, "add", len(user_ids)):
+            return
+        progress_msg = await send_bulk_progress(ctx, "add quesos", len(user_ids))
         try:
             def run_bulk_add():
                 before = get_balances_for_users(user_ids)
@@ -6452,6 +6502,7 @@ async def add(ctx, *, args: str = None):
         except Exception:
             await send_error(ctx, "Database unavailable. Try again shortly.")
             return
+        await finish_bulk_progress(progress_msg, f"Finished adding {format_balance(amount)} to **{count:,}** member(s).")
 
         await reply_to_command(
             ctx,
@@ -6478,6 +6529,9 @@ async def add(ctx, *, args: str = None):
             if blocked:
                 await ctx.send(f"{Q_DENIED} You can't edit one or more of those users' 𝚀𝚞𝚎wo balances.")
                 return
+            if not bulk_confirmed and await require_bulk_confirmation(ctx, "add", len(targets["user_ids"])):
+                return
+            progress_msg = await send_bulk_progress(ctx, "add quesos", len(targets["user_ids"]))
             try:
                 def run_bulk_add():
                     before = get_balances_for_users(targets["user_ids"])
@@ -6489,6 +6543,7 @@ async def add(ctx, *, args: str = None):
             except Exception:
                 await send_error(ctx, "Database unavailable. Try again shortly.")
                 return
+            await finish_bulk_progress(progress_msg, f"Finished adding {format_balance(amount)} to **{count:,}** user(s).")
             await reply_to_command(
                 ctx,
                 f"{Q_SUCCESS} Added **{format_balance(amount)}** each to **{count:,}** users: {targets['label']}.\n"
@@ -6543,8 +6598,9 @@ async def remove(ctx, *, args: str = None):
         return
 
     if not is_superowner_id(ctx.author.id):
-        await ctx.send(f"{Q_DENIED} Only {QUE_OWNER_DISPLAY} can use this.")
+        await send_owner_only(ctx)
         return
+    bulk_confirmed, args = strip_bulk_confirm(args)
     target, amount = parse_target_amount_args(args, allow_all=True)
     if not target:
         await send_economy_command_input_ui(ctx, "remove", "Enter the target and amount. Either order works.")
@@ -6559,11 +6615,14 @@ async def remove(ctx, *, args: str = None):
             if blocked:
                 await ctx.send(f"{Q_DENIED} You can't edit one or more of those users' 𝚀𝚞𝚎wo balances.")
                 return
+            if not bulk_confirmed and await require_bulk_confirmation(ctx, "remove", len(targets["user_ids"])):
+                return
             raw_amount = amount
             total_removed = 0
             changed = 0
             before_balances = {}
             after_balances = {}
+            progress_msg = await send_bulk_progress(ctx, "remove quesos", len(targets["user_ids"]))
             try:
                 def run_multi_remove():
                     local_total = 0
@@ -6599,6 +6658,7 @@ async def remove(ctx, *, args: str = None):
             except Exception:
                 await send_error(ctx, "Database unavailable. Try again shortly.")
                 return
+            await finish_bulk_progress(progress_msg, f"Finished removing balances for **{changed:,}** user(s).")
             if changed <= 0:
                 await send_nonpositive_amount_error(ctx, raw_amount)
                 return
@@ -6677,8 +6737,9 @@ async def addtick(ctx, *, args: str = None):
     if not await ensure_db_ready(ctx):
         return
     if not is_superowner_id(ctx.author.id):
-        await ctx.send(f"{Q_DENIED} Only {QUE_OWNER_DISPLAY} can use this.")
+        await send_owner_only(ctx)
         return
+    bulk_confirmed, args = strip_bulk_confirm(args)
     target, amount = parse_target_amount_args(args)
     if not target:
         await send_economy_command_input_ui(ctx, "addtick", "Enter the target and ticket amount. Users, roles, and @everyone work.")
@@ -6704,7 +6765,10 @@ async def addtick(ctx, *, args: str = None):
     if not targets["user_ids"]:
         await ctx.send(f"{Q_DENIED} No users matched that target.")
         return
+    if not bulk_confirmed and await require_bulk_confirmation(ctx, "ticket add", len(targets["user_ids"])):
+        return
 
+    progress_msg = await send_bulk_progress(ctx, "add lottery tickets", len(targets["user_ids"]))
     try:
         def run_ticket_add():
             before = get_lottery_ticket_counts(ctx.guild.id, targets["user_ids"])
@@ -6720,6 +6784,7 @@ async def addtick(ctx, *, args: str = None):
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
+    await finish_bulk_progress(progress_msg, f"Finished adding tickets to **{count:,}** target(s).")
 
     total_added = amount * count
     await reply_to_command(
@@ -6746,8 +6811,9 @@ async def removetick(ctx, *, args: str = None):
     if not await ensure_db_ready(ctx):
         return
     if not is_superowner_id(ctx.author.id):
-        await ctx.send(f"{Q_DENIED} Only {QUE_OWNER_DISPLAY} can use this.")
+        await send_owner_only(ctx)
         return
+    bulk_confirmed, args = strip_bulk_confirm(args)
     target, amount = parse_target_amount_args(args)
     if not target:
         await send_economy_command_input_ui(ctx, "removetick", "Enter the target and ticket amount to remove. Users, roles, and @everyone work.")
@@ -6773,7 +6839,10 @@ async def removetick(ctx, *, args: str = None):
     if not targets["user_ids"]:
         await ctx.send(f"{Q_DENIED} No users matched that target.")
         return
+    if not bulk_confirmed and await require_bulk_confirmation(ctx, "ticket remove", len(targets["user_ids"])):
+        return
 
+    progress_msg = await send_bulk_progress(ctx, "remove lottery tickets", len(targets["user_ids"]))
     try:
         def run_ticket_remove():
             before = get_lottery_ticket_counts(ctx.guild.id, targets["user_ids"])
@@ -6788,6 +6857,7 @@ async def removetick(ctx, *, args: str = None):
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
+    await finish_bulk_progress(progress_msg, f"Finished removing tickets from **{count:,}** target(s).")
 
     await reply_to_command(
         ctx,
@@ -6813,8 +6883,9 @@ async def settick(ctx, *, args: str = None):
     if not await ensure_db_ready(ctx):
         return
     if not is_superowner_id(ctx.author.id):
-        await ctx.send(f"{Q_DENIED} Only {QUE_OWNER_DISPLAY} can use this.")
+        await send_owner_only(ctx)
         return
+    bulk_confirmed, args = strip_bulk_confirm(args)
     target, amount = parse_target_amount_args(args)
     if not target:
         await send_economy_command_input_ui(ctx, "settick", "Enter the target and exact ticket amount. Users, roles, and @everyone work.")
@@ -6840,7 +6911,10 @@ async def settick(ctx, *, args: str = None):
     if not targets["user_ids"]:
         await ctx.send(f"{Q_DENIED} No users matched that target.")
         return
+    if not bulk_confirmed and await require_bulk_confirmation(ctx, "ticket set", len(targets["user_ids"])):
+        return
 
+    progress_msg = await send_bulk_progress(ctx, "set lottery tickets", len(targets["user_ids"]))
     try:
         def run_ticket_set():
             before = get_lottery_ticket_counts(ctx.guild.id, targets["user_ids"])
@@ -6856,6 +6930,7 @@ async def settick(ctx, *, args: str = None):
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
+    await finish_bulk_progress(progress_msg, f"Finished setting tickets for **{count:,}** target(s).")
 
     await reply_to_command(
         ctx,
@@ -6879,8 +6954,9 @@ async def setquesos(ctx, *, args: str = None):
     if not await ensure_db_ready(ctx):
         return
     if not is_superowner_id(ctx.author.id):
-        await ctx.send(f"{Q_DENIED} Only {QUE_OWNER_DISPLAY} can use this.")
+        await send_owner_only(ctx)
         return
+    bulk_confirmed, args = strip_bulk_confirm(args)
     target, amount = parse_target_amount_args(args)
     if not target:
         await send_economy_command_input_ui(ctx, "setquesos", "Enter the target and exact balance. Users, roles, and @everyone work.")
@@ -6901,7 +6977,10 @@ async def setquesos(ctx, *, args: str = None):
     if not targets["user_ids"]:
         await ctx.send(f"{Q_DENIED} No users matched that target.")
         return
+    if not bulk_confirmed and await require_bulk_confirmation(ctx, "balance set", len(targets["user_ids"])):
+        return
 
+    progress_msg = await send_bulk_progress(ctx, "set balances", len(targets["user_ids"]))
     try:
         def run_bulk_set():
             before = get_balances_for_users(targets["user_ids"])
@@ -6913,6 +6992,7 @@ async def setquesos(ctx, *, args: str = None):
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
+    await finish_bulk_progress(progress_msg, f"Finished setting balances for **{count:,}** target(s).")
 
     await reply_to_command(
         ctx,
@@ -10451,7 +10531,7 @@ async def endseason(ctx, season_key: str = None):
     if not await ensure_db_ready(ctx):
         return
     if not is_superowner_id(ctx.author.id):
-        return await ctx.send(f"{Q_DENIED} Only {QUE_OWNER_DISPLAY} can use this.")
+        return await send_owner_only(ctx)
     season_key = season_key or current_season_key()
     try:
         rewarded = await asyncio.to_thread(reward_previous_season, season_key)

@@ -242,7 +242,7 @@ discord.ui.View.on_error = polished_view_error
 log_channel_id = None
 rlog_channel_id = None
 super_owner_id = 885548126365171824  
-QUE_OWNER_DISPLAY = "𝚀𝚞𝚎 (@queziee)"
+QUE_OWNER_DISPLAY = f"𝚀𝚞𝚎 (<@{super_owner_id}>)"
 autoban_ids = load_autoban_ids()
 blacklisted_users = load_blacklisted_users()
 shutdown_channels = load_shutdown_channels()
@@ -1101,6 +1101,11 @@ def command_ai_summary(command, prefix):
 
 def bot_command_knowledge_index(guild, max_chars=3200):
     prefix = prefix_for_guild(guild)
+    key = (getattr(guild, "id", 0), prefix, int(max_chars), len(bot.commands))
+    now = time.monotonic()
+    cached = ai_knowledge_cache.get(key)
+    if cached and now - cached[0] < HELP_RENDER_CACHE_TTL:
+        return cached[1]
     seen = set()
     sections = []
 
@@ -1140,6 +1145,7 @@ def bot_command_knowledge_index(guild, max_chars=3200):
     index = "\n\n".join(sections)
     if len(index) > max_chars:
         index = index[:max_chars].rstrip() + "\n...truncated. For exact details, tell users to run the matching help command or `.explain <command>`."
+    ai_knowledge_cache[key] = (now, index)
     return index
 
 def bot_capabilities_summary(guild):
@@ -1162,7 +1168,8 @@ def bot_capabilities_summary(guild):
 
 def denial_message(detail=None):
     detail = str(detail or "").strip()
-    return "You can't use that heh" if not detail else f"You can't use that heh\n{detail}"
+    base = f"{economy_q_reject} You can't use that heh"
+    return base if not detail else f"{base}\n{detail}"
 
 def command_denial_detail(ctx, error=None):
     command_name = ctx.command.qualified_name if getattr(ctx, "command", None) else ""
@@ -1187,6 +1194,7 @@ command_timing_stats = {}
 slow_command_events = deque(maxlen=40)
 help_render_cache = {}
 games_render_cache = {}
+ai_knowledge_cache = {}
 HELP_RENDER_CACHE_TTL = 300
 daily_cooldown = {}
 weekly_cooldown = {}
@@ -1199,6 +1207,7 @@ ACTIVITY_RECENT_MESSAGE_LIMIT = 8
 
 def clear_help_cache():
     help_render_cache.clear()
+    ai_knowledge_cache.clear()
 
 def standard_embed(title, description=None, color=discord.Color.blurple(), *, icon=None, timestamp=True):
     clean_title = f"{icon} {title}" if icon else title
@@ -1289,7 +1298,8 @@ async def invoke_prefix_command_from_interaction(interaction, command_name, args
     if is_superowner_help_command(command) and not can_see_superowner_help(interaction.user, interaction.guild):
         await interaction.followup.send(
             f"Only {QUE_OWNER_DISPLAY} can use that.",
-            ephemeral=True
+            ephemeral=True,
+            allowed_mentions=discord.AllowedMentions.none(),
         )
         return
     if StringView is None or not hasattr(commands.Context, "from_interaction"):
@@ -1485,6 +1495,10 @@ async def send_log(embed, guild=None):
             print(f"Log skipped: missing Embed Links permission in normal log channel {channel_id}.")
             return False
 
+        if not embed.timestamp:
+            embed.timestamp = datetime.now(timezone.utc)
+        if not embed.footer or not embed.footer.text:
+            embed.set_footer(text=f"Server {guild.id}")
         await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
         print(f"Sending log: {embed.title} | Server: {guild_log_label(guild)}")
         return True
@@ -2628,7 +2642,7 @@ async def set_birthday_channel(ctx, *, channel_arg: str = None):
     if ctx.guild is None:
         return await ctx.send("Birthday channels only work in servers.")
     if not await can_manage_birthday_channel(ctx.author, ctx.guild):
-        return await ctx.send(f"Only the person who added me, an admin, the server owner, or {QUE_OWNER_DISPLAY} can set the birthday channel.")
+        return await ctx.send(f"Only the person who added me, an admin, the server owner, or {QUE_OWNER_DISPLAY} can set the birthday channel.", allowed_mentions=discord.AllowedMentions.none())
 
     if channel_arg:
         channel = await resolve_server_channel(ctx.guild, channel_arg, ctx.message.channel_mentions)
@@ -2671,7 +2685,7 @@ async def activity(ctx, action: str = None):
         return
 
     if not await can_manage_activity_channel(ctx.author, ctx.guild):
-        return await ctx.send(f"Only the person who added me, an admin, the server owner, or {QUE_OWNER_DISPLAY} can set the activity channel.")
+        return await ctx.send(f"Only the person who added me, an admin, the server owner, or {QUE_OWNER_DISPLAY} can set the activity channel.", allowed_mentions=discord.AllowedMentions.none())
 
     async def save_activity_channel(selected_channel, user_id):
         return await save_activity_report_config(ctx.guild, selected_channel, user_id)
@@ -3045,7 +3059,7 @@ async def editactivity(ctx, setting: str = None, *, value: str = None):
     if ctx.guild is None:
         return await ctx.send("Activity report editing only works in servers.")
     if not await can_manage_activity_channel(ctx.author, ctx.guild):
-        return await ctx.send(f"Only the person who added me, an admin, the server owner, or {QUE_OWNER_DISPLAY} can edit activity reports.")
+        return await ctx.send(f"Only the person who added me, an admin, the server owner, or {QUE_OWNER_DISPLAY} can edit activity reports.", allowed_mentions=discord.AllowedMentions.none())
 
     config = guild_activity_channels.get(ctx.guild.id)
     if config is None:
@@ -3070,7 +3084,7 @@ async def stopactivity(ctx):
     if ctx.guild is None:
         return await ctx.send("Activity report stopping only works in servers.")
     if not await can_manage_activity_channel(ctx.author, ctx.guild):
-        return await ctx.send(f"Only the person who added me, an admin, the server owner, or {QUE_OWNER_DISPLAY} can stop activity reports.")
+        return await ctx.send(f"Only the person who added me, an admin, the server owner, or {QUE_OWNER_DISPLAY} can stop activity reports.", allowed_mentions=discord.AllowedMentions.none())
 
     saved_configs = await asyncio.to_thread(load_guild_activity_channels)
     if saved_configs:
@@ -3107,7 +3121,7 @@ async def endactivity(ctx):
     if ctx.guild is None:
         return await ctx.send("Activity report ending only works in servers.")
     if not await can_manage_activity_channel(ctx.author, ctx.guild):
-        return await ctx.send(f"Only the person who added me, an admin, the server owner, or {QUE_OWNER_DISPLAY} can end the current activity report.")
+        return await ctx.send(f"Only the person who added me, an admin, the server owner, or {QUE_OWNER_DISPLAY} can end the current activity report.", allowed_mentions=discord.AllowedMentions.none())
 
     saved_configs = await asyncio.to_thread(load_guild_activity_channels)
     if saved_configs:
@@ -5085,7 +5099,7 @@ async def on_command_error(ctx, error):
         if ctx.author.id in guild_blacklisted_users(ctx.guild):
             await ctx.send(f"LMAO you're blocked you can't use ts {economy_q_reject}")
         else:
-            await ctx.send(denial_message(command_denial_detail(ctx, error)))
+            await ctx.send(denial_message(command_denial_detail(ctx, error)), allowed_mentions=discord.AllowedMentions.none())
 
     elif isinstance(error, commands.MissingPermissions):
         print(f"Command missing permissions: {ctx.command} for {ctx.author} ({ctx.author.id}) - {error}")
@@ -5122,7 +5136,7 @@ async def on_command_error(ctx, error):
         if has_owner_power(ctx.author, ctx.guild):
             await ctx.send(fit_discord_content(clean_user_error(error)))
         else:
-            await ctx.send(denial_message("Something went wrong while running this command. Try the help command for the right usage."))
+            await ctx.send(denial_message("Something went wrong while running this command. Try the help command for the right usage."), allowed_mentions=discord.AllowedMentions.none())
 
 HELP_CATEGORIES = {
     "𝚀𝚞𝚎wo (Gambling)": [
@@ -5384,6 +5398,20 @@ class HelpPageButton(Button):
             view=view,
         )
 
+class HelpRefreshButton(Button):
+    def __init__(self):
+        super().__init__(label="Refresh", emoji=reaction_emoji(economy_q_refresh if "economy_q_refresh" in globals() else economy_q_timer), style=discord.ButtonStyle.secondary)
+
+    async def callback(self, interaction: discord.Interaction):
+        view = self.view
+        if interaction.user.id != view.author_id:
+            return await interaction.response.send_message("Use your own help menu.", ephemeral=True)
+        clear_help_cache()
+        await interaction.response.edit_message(
+            embed=render_help_embed(interaction.guild, view.category_name, view.page, viewer=interaction.user),
+            view=view,
+        )
+
 class HelpView(View):
     def __init__(self, author_id, category_name=None):
         super().__init__(timeout=LONG_HELP_VIEW_TIMEOUT)
@@ -5393,6 +5421,7 @@ class HelpView(View):
         self.add_item(HelpHomeButton())
         self.add_item(HelpPageButton(-1))
         self.add_item(HelpPageButton(1))
+        self.add_item(HelpRefreshButton())
         for category in HELP_CATEGORIES:
             self.add_item(HelpCategoryButton(category))
         if author_id == super_owner_id:
@@ -5729,10 +5758,10 @@ async def aimemory_command(ctx, *, args: str = None):
     except commands.BadArgument:
         return await ctx.send("Use `.aimemory`, `.aimemory @user`, `.aimemory clear`, or `.aimemory clear @user`.")
     if target.id != ctx.author.id and not has_super_owner_power(ctx.author, ctx.guild):
-        return await ctx.send(denial_message(f"Only {QUE_OWNER_DISPLAY} can inspect someone else's AI memory."))
+        return await ctx.send(denial_message(f"Only {QUE_OWNER_DISPLAY} can inspect someone else's AI memory."), allowed_mentions=discord.AllowedMentions.none())
     if action_key in {"clear", "delete", "forget", "remove", "reset"}:
         if target.id != ctx.author.id and not has_super_owner_power(ctx.author, ctx.guild):
-            return await ctx.send(denial_message(f"Only {QUE_OWNER_DISPLAY} can clear someone else's AI memory."))
+            return await ctx.send(denial_message(f"Only {QUE_OWNER_DISPLAY} can clear someone else's AI memory."), allowed_mentions=discord.AllowedMentions.none())
         ok = await asyncio.to_thread(delete_ai_user_memory, ctx.guild.id, target.id)
         return await ctx.send(
             f"{economy_q_accept if ok else economy_q_warning} {'Cleared' if ok else 'Could not clear'} AI memory for {target.mention}.",
@@ -5768,7 +5797,7 @@ async def aiknow_command(ctx, *, command_name: str = None):
 async def aihistory_command(ctx, member: discord.User = None):
     """Shows recent actions the AI ran or attempted."""
     if not has_super_owner_power(ctx.author, ctx.guild):
-        return await ctx.send(denial_message(f"Only {QUE_OWNER_DISPLAY} can inspect AI action history."))
+        return await ctx.send(denial_message(f"Only {QUE_OWNER_DISPLAY} can inspect AI action history."), allowed_mentions=discord.AllowedMentions.none())
     rows = list(ai_action_history)
     if member:
         rows = [row for row in rows if int(row.get("user_id") or 0) == member.id]
@@ -5795,7 +5824,7 @@ async def aihistory_command(ctx, member: discord.User = None):
 async def aisettings_command(ctx):
     """Shows AI control settings."""
     if not has_super_owner_power(ctx.author, ctx.guild):
-        return await ctx.send(denial_message(f"Only {QUE_OWNER_DISPLAY} can change AI controls."))
+        return await ctx.send(denial_message(f"Only {QUE_OWNER_DISPLAY} can change AI controls."), allowed_mentions=discord.AllowedMentions.none())
     global_settings = await ai_settings_for("global", 0)
     guild_settings = await ai_settings_for("guild", ctx.guild.id if ctx.guild else 0)
     embed = discord.Embed(
@@ -5811,7 +5840,7 @@ async def aisettings_command(ctx):
 async def aiperms_command(ctx):
     """Shows what the AI is allowed to do."""
     if not has_super_owner_power(ctx.author, ctx.guild):
-        return await ctx.send(denial_message(f"Only {QUE_OWNER_DISPLAY} can inspect AI control permissions."))
+        return await ctx.send(denial_message(f"Only {QUE_OWNER_DISPLAY} can inspect AI control permissions."), allowed_mentions=discord.AllowedMentions.none())
     global_settings = await ai_settings_for("global", 0)
     guild_settings = await ai_settings_for("guild", ctx.guild.id if ctx.guild else 0)
     ignored = [part for part in global_settings.get("ignored_users", "").split(",") if part.strip()]
@@ -5840,7 +5869,7 @@ async def aiperms_command(ctx):
 async def aiignore_command(ctx, member: discord.User = None):
     """Makes the AI ignore a user globally."""
     if not has_super_owner_power(ctx.author, ctx.guild):
-        return await ctx.send(denial_message(f"Only {QUE_OWNER_DISPLAY} can change AI controls."))
+        return await ctx.send(denial_message(f"Only {QUE_OWNER_DISPLAY} can change AI controls."), allowed_mentions=discord.AllowedMentions.none())
     if not member:
         return await ctx.send("Use `.aiignore @user`.")
     settings = await ai_settings_for("global", 0)
@@ -5853,7 +5882,7 @@ async def aiignore_command(ctx, member: discord.User = None):
 async def aiunignore_command(ctx, member: discord.User = None):
     """Allows the AI to respond to an ignored user again."""
     if not has_super_owner_power(ctx.author, ctx.guild):
-        return await ctx.send(denial_message(f"Only {QUE_OWNER_DISPLAY} can change AI controls."))
+        return await ctx.send(denial_message(f"Only {QUE_OWNER_DISPLAY} can change AI controls."), allowed_mentions=discord.AllowedMentions.none())
     if not member:
         return await ctx.send("Use `.aiunignore @user`.")
     settings = await ai_settings_for("global", 0)
@@ -5866,7 +5895,7 @@ async def aiunignore_command(ctx, member: discord.User = None):
 async def aichannel_command(ctx, mode: str = None):
     """Turns AI replies on or off in this server."""
     if not has_super_owner_power(ctx.author, ctx.guild):
-        return await ctx.send(denial_message(f"Only {QUE_OWNER_DISPLAY} can change AI controls."))
+        return await ctx.send(denial_message(f"Only {QUE_OWNER_DISPLAY} can change AI controls."), allowed_mentions=discord.AllowedMentions.none())
     if ctx.guild is None:
         return await ctx.send("Use this in a server.")
     key = str(mode or "").casefold()
@@ -5879,7 +5908,7 @@ async def aichannel_command(ctx, mode: str = None):
 async def aistyle_command(ctx, *, style: str = None):
     """Changes the AI's global style note."""
     if not has_super_owner_power(ctx.author, ctx.guild):
-        return await ctx.send(denial_message(f"Only {QUE_OWNER_DISPLAY} can change AI controls."))
+        return await ctx.send(denial_message(f"Only {QUE_OWNER_DISPLAY} can change AI controls."), allowed_mentions=discord.AllowedMentions.none())
     if not style:
         return await ctx.send("Use `.aistyle casual`, `.aistyle serious`, `.aistyle short`, or any short style note.")
     ok = await asyncio.to_thread(set_ai_control_setting, "global", 0, "style", style[:200], ctx.author.id)
@@ -5917,13 +5946,14 @@ async def usersettings_command(ctx, key: str = None, *, value: str = None):
 async def auditcommands_command(ctx):
     """Checks command registry coverage for help, explanations, aliases, and UI fallbacks."""
     if not has_super_owner_power(ctx.author, ctx.guild):
-        return await ctx.send(denial_message(f"Only {QUE_OWNER_DISPLAY} can audit the full command registry."))
+        return await ctx.send(denial_message(f"Only {QUE_OWNER_DISPLAY} can audit the full command registry."), allowed_mentions=discord.AllowedMentions.none())
     category_map = {}
     for category, names in HELP_CATEGORIES.items():
         for name in names:
             category_map.setdefault(name.casefold(), set()).add(category)
     seen_aliases = {}
     duplicate_alias_lines = []
+    near_duplicate_lines = []
     missing_category = []
     missing_explain = []
     missing_detail = []
@@ -5948,25 +5978,61 @@ async def auditcommands_command(ctx):
             if key in seen_aliases and seen_aliases[key] != command.name:
                 duplicate_alias_lines.append(f"`{alias}`: `{seen_aliases[key]}` and `{command.name}`")
             seen_aliases[key] = command.name
+    command_names = sorted({command.name for command in bot.commands if not command.hidden})
+    for index, left in enumerate(command_names):
+        for right in command_names[index + 1:]:
+            if abs(len(left) - len(right)) > 3:
+                continue
+            if SequenceMatcher(None, left, right).ratio() >= 0.86:
+                near_duplicate_lines.append(f"`{left}` / `{right}`")
+                if len(near_duplicate_lines) >= 20:
+                    break
+        if len(near_duplicate_lines) >= 20:
+            break
 
     embed = discord.Embed(
         title=f"{economy_q_command_check} Command Audit",
         description=f"Scanned **{len([c for c in bot.commands if not c.hidden])}** visible prefix commands.",
         color=discord.Color.orange(),
     )
+    critical = len(missing_category) + len(missing_explain) + len(input_without_ui) + len(duplicate_alias_lines)
+    warnings = len(missing_detail) + len(missing_example)
+    status = f"{economy_q_accept} Clean" if critical == 0 and warnings == 0 else (f"{economy_q_warning} Needs cleanup" if critical else f"{economy_q_thinking} Minor gaps")
+    embed.add_field(
+        name="Summary",
+        value=(
+            f"Status: **{status}**\n"
+            f"Critical: **{critical:,}**\n"
+            f"Warnings: **{warnings:,}**"
+        ),
+        inline=False,
+    )
+    top_actions = []
+    if duplicate_alias_lines:
+        top_actions.append("Resolve duplicate aliases first; they can route users to the wrong command.")
+    if missing_category:
+        top_actions.append("Add uncategorized commands to help so users can discover them.")
+    if missing_explain:
+        top_actions.append("Add short explain text so help/AI can describe commands correctly.")
+    if input_without_ui:
+        top_actions.append("Add examples or input UI for commands that need arguments.")
+    if not top_actions:
+        top_actions.append("No high-impact cleanup needed right now.")
+    embed.add_field(name="Next Fixes", value=embed_value("\n".join(f"- {item}" for item in top_actions), 1000), inline=False)
     embed.add_field(name="Missing Help Category", value=embed_value(", ".join(missing_category) or "None", 1000), inline=False)
     embed.add_field(name="Missing Explain Text", value=embed_value(", ".join(missing_explain) or "None", 1000), inline=False)
     embed.add_field(name="Missing Detailed Text", value=embed_value(", ".join(missing_detail[:40]) or "None", 1000), inline=False)
     embed.add_field(name="Missing Examples", value=embed_value(", ".join(missing_example[:40]) or "None", 1000), inline=False)
     embed.add_field(name="Input Commands Without UI/Example", value=embed_value(", ".join(input_without_ui[:40]) or "None", 1000), inline=False)
     embed.add_field(name="Duplicate Aliases", value=embed_value("\n".join(duplicate_alias_lines) or "None", 1000), inline=False)
+    embed.add_field(name="Near-Duplicate Commands", value=embed_value("\n".join(near_duplicate_lines) or "None", 1000), inline=False)
     await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
 @bot.command(name="permaudit", aliases=["permsaudit", "permissionaudit", "sensitiveaudit"])
 async def permaudit_command(ctx):
     """Audits sensitive commands and where they are exposed."""
     if not has_super_owner_power(ctx.author, ctx.guild):
-        return await ctx.send(denial_message(f"Only {QUE_OWNER_DISPLAY} can audit sensitive command exposure."))
+        return await ctx.send(denial_message(f"Only {QUE_OWNER_DISPLAY} can audit sensitive command exposure."), allowed_mentions=discord.AllowedMentions.none())
     lines = []
     missing = []
     for name in sorted(SUPEROWNER_HELP_COMMANDS):
@@ -6059,7 +6125,7 @@ async def receipt_command(ctx, receipt_id: str = None):
 async def receipts_command(ctx, target: str = "latest"):
     """Lists recent sensitive action receipts."""
     if not has_super_owner_power(ctx.author, ctx.guild):
-        return await ctx.send(denial_message(f"Only {QUE_OWNER_DISPLAY} can inspect receipt lists."))
+        return await ctx.send(denial_message(f"Only {QUE_OWNER_DISPLAY} can inspect receipt lists."), allowed_mentions=discord.AllowedMentions.none())
     user = None
     if target and str(target).casefold() not in {"latest", "recent", "all"}:
         try:
@@ -6383,6 +6449,11 @@ class GamesView(View):
         embed.add_field(name="Risk Label", value=f"**{economy_risk_label(command_key)}**" if game_key else "No bet / free game", inline=True)
         embed.add_field(name="Start", value=usage.replace("`.", f"`{self.prefix}"), inline=True)
         await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @discord.ui.button(label="Refresh", style=discord.ButtonStyle.secondary)
+    async def refresh_button(self, interaction, button):
+        games_render_cache.clear()
+        await interaction.response.edit_message(embed=games_embed(self.prefix, self.selected_filter), view=self)
 
 @bot.command(name="games", aliases=["gamelist"])
 async def games_command(ctx):
