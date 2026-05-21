@@ -1328,7 +1328,7 @@ def create_receipt(guild_id, channel_id, actor_id, target_ids, action, amount=No
     return receipt_id
 
 def receipt_line(receipt_id):
-    return f"\n-# {Q_ARCHIVE} Receipt `{receipt_id}`" if receipt_id else ""
+    return f"\n-# {Q_ARCHIVE} ||Receipt `{receipt_id}`||" if receipt_id else ""
 
 def get_receipt(receipt_id):
     conn = get_db_connection()
