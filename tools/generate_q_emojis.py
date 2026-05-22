@@ -625,6 +625,69 @@ def qvault_dial():
     c.line(92, 91, 84, 80, ICE, 3)
     return c
 
+def qbank():
+    c = Canvas()
+    c.rect(25, 50, 78, 48, BLUE_DARK, outline=NAVY, width=5)
+    c.poly([(20, 50), (64, 24), (108, 50)], SILVER, outline=BLUE_DARK, width=4)
+    for x in [38, 54, 74, 90]:
+        c.rect(x - 5, 56, 10, 34, ICE, outline=BLUE_MID, width=2)
+    c.rect(28, 93, 72, 9, BLUE_MID, outline=BLUE_DARK, width=2)
+    coin(c, 64, 68, 18)
+    c.sparkle(100, 32, 6)
+    return c
+
+def qstreak_freeze():
+    c = qstreak_fire()
+    c.circle(41, 41, 18, ICE, outline=CYAN, width=4)
+    for angle in [0, math.tau / 6, math.tau / 3]:
+        x1 = 41 + math.cos(angle) * 4
+        y1 = 41 + math.sin(angle) * 4
+        x2 = 41 + math.cos(angle) * 15
+        y2 = 41 + math.sin(angle) * 15
+        c.line(x1, y1, x2, y2, BLUE_MID, 2)
+        c.line(41 - (x2 - 41), 41 - (y2 - 41), 41 - (x1 - 41), 41 - (y1 - 41), BLUE_MID, 2)
+    c.sparkle(28, 27, 5)
+    return c
+
+def qrob():
+    c = Canvas()
+    c.rect(30, 54, 68, 45, NAVY, outline=BLUE_DARK, width=4)
+    c.poly([(32, 54), (43, 34), (87, 34), (98, 54)], BLUE_MID, outline=BLUE_DARK, width=4)
+    c.circle(64, 76, 19, SILVER, outline=CYAN, width=3)
+    c.text_q(64, 77, 21, BLUE_MID)
+    c.line(35, 31, 95, 101, RED, 8)
+    c.line(36, 31, 94, 101, ICE, 2)
+    c.sparkle(100, 34, 5)
+    return c
+
+def qtutorial():
+    c = qbook()
+    c.circle(43, 85, 18, GOLD, outline=BLUE_DARK, width=3)
+    c.line(43, 77, 43, 88, NAVY, 5)
+    c.circle(43, 95, 3, NAVY)
+    c.sparkle(97, 29, 6)
+    return c
+
+def qrecommend():
+    c = Canvas()
+    c.circle(64, 58, 35, BLUE_MID, outline=BLUE_DARK, width=5)
+    c.poly([(54, 96), (74, 96), (69, 111), (59, 111)], GOLD, outline=BLUE_DARK, width=3)
+    c.poly([(45, 56), (58, 68), (84, 40), (62, 79)], ICE, outline=CYAN, width=3)
+    c.text_q(64, 59, 22, BLUE_MID)
+    c.sparkle(99, 33, 7)
+    return c
+
+def qseason_pass():
+    c = Canvas()
+    c.rect(28, 31, 72, 74, BLUE_MID, outline=BLUE_DARK, width=5)
+    c.rect(38, 44, 52, 12, ICE, outline=CYAN, width=2)
+    c.rect(38, 64, 36, 8, SILVER, outline=BLUE_DARK, width=1.5)
+    c.rect(38, 80, 44, 8, SILVER, outline=BLUE_DARK, width=1.5)
+    c.circle(88, 91, 19, GOLD, outline=BLUE_DARK, width=3)
+    c.text_q(88, 92, 18, BLUE_MID)
+    c.sparkle(99, 28, 6)
+    return c
+
 
 def qmemory():
     c = Canvas()
@@ -1855,6 +1918,12 @@ STATIC = {
     "QDungeonKey": qdungeon_key,
     "QDungeonRelic": qdungeon_relic,
     "QDungeonMonster": qdungeon_monster,
+    "QBank": qbank,
+    "QStreakFreeze": qstreak_freeze,
+    "QRob": qrob,
+    "QTutorial": qtutorial,
+    "QRecommend": qrecommend,
+    "QSeasonPass": qseason_pass,
 }
 
 STATIC_CATEGORIES = {
@@ -1862,17 +1931,18 @@ STATIC_CATEGORIES = {
         "QAccept", "QDenied", "QReject", "QSuccess", "QWarning", "QTimer", "QTimeout",
         "QBell", "QBook", "QGift", "QConfetti", "QThinking", "QTarget", "QBirthday",
         "QBirthdayCake", "QBirthdayBalloons", "QAlarm", "QSleep", "QImage", "QAttachment", "QActivity",
+        "QTutorial", "QRecommend",
     },
     "quewo": {
         "QoinBag", "QoinChest", "QoinTransfer", "QXP", "QLevelUp", "QQuest", "QShop",
         "QTicket", "QTicketMinus", "QLuckyCharm", "QXPTonic", "QQuesoMagnet", "QDailySpice",
         "QStreakPolish", "QGoldBadge", "QHighRoller", "QVelvetFrame", "QTicketCharm",
         "QCooldownClock", "QRoyalCrown", "QStreakFire", "QFortuneVial",
-        "QAudit", "QLimits", "QPerf", "QFilter",
+        "QAudit", "QLimits", "QPerf", "QFilter", "QBank", "QStreakFreeze", "QSeasonPass",
     },
     "moderation": {
         "QHammer", "QTrash", "QEdit", "QLock", "QBroom", "QReaction", "QUserEdit",
-        "QRoles", "QVoice", "QPermissions",
+        "QRoles", "QVoice", "QPermissions", "QRob",
     },
     "games/common": {
         "QGameWin", "QGameTimeout", "QGameX", "QGameO", "QCards",

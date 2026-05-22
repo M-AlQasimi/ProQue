@@ -7,7 +7,7 @@ import time
 import math
 import psycopg2
 from psycopg2.extras import RealDictCursor
-from collections import Counter
+from collections import Counter, defaultdict
 from datetime import datetime, timezone, timedelta
 import discord
 from discord.ext import commands
@@ -176,6 +176,12 @@ Q_DUNGEON_HEART = "<:QDungeonHeart:1503459480766255104>"
 Q_DUNGEON_KEY = "<:QDungeonKey:1503459483030917270>"
 Q_DUNGEON_RELIC = "<:QDungeonRelic:1503459486633955450>"
 Q_DUNGEON_MONSTER = "<:QDungeonMonster:1503459485081927701>"
+Q_BANK = "<:QBank:1507457909745782844>"
+Q_STREAK_FREEZE = "<:QStreakFreeze:1507457952821415976>"
+Q_ROB = "<:QRob:1507458102977364020>"
+Q_TUTORIAL = "<:QTutorial:1507458236968865993>"
+Q_RECOMMEND = "<:QRecommend:1507458216437747833>"
+Q_SEASON_PASS = "<:QSeasonPass:1507457946756321482>"
 INTERNAL_SUPEROWNER_TRANSACTION_KINDS = {"transfer_tax", "lottery_house_cut", "shop_payment"}
 SLOT_SYMBOL_PAYOUTS = [
     (Q_SLOT_STAR, 2),
@@ -335,6 +341,15 @@ SHOP_ITEMS = {
         "luck_bonus": 0.07,
         "description": "Temporary: +7% win chance for 4 hours per vial. Time stacks.",
     },
+    "streak_freeze": {
+        "category": "Claims",
+        "rarity": "Rare",
+        "name": "Streak Freeze",
+        "emoji": Q_STREAK_FREEZE,
+        "cost": 850_000,
+        "max_qty": 25,
+        "description": "Consumable: protects one missed daily, weekly, or monthly streak.",
+    },
     "royal_crown": {
         "category": "Cosmetics",
         "rarity": "Royal",
@@ -398,6 +413,8 @@ def init_db():
                 CREATE TABLE IF NOT EXISTS economy (
                     user_id BIGINT PRIMARY KEY,
                     balance BIGINT DEFAULT 0,
+                    bank_balance BIGINT DEFAULT 0,
+                    last_bank_interest TIMESTAMP,
                     daily_streak INTEGER DEFAULT 0,
                     weekly_streak INTEGER DEFAULT 0,
                     monthly_streak INTEGER DEFAULT 0,
@@ -427,7 +444,9 @@ def init_db():
                     steal_blacklist BIGINT[] DEFAULT '{}',
                     luck_boost_until TIMESTAMP,
                     personal_bet_limit BIGINT,
-                    gambling_pause_until TIMESTAMP
+                    gambling_pause_until TIMESTAMP,
+                    tutorial_mode BOOLEAN DEFAULT TRUE,
+                    tutorial_uses INTEGER DEFAULT 0
                 )
             """)
             cur.execute("""
@@ -438,6 +457,12 @@ def init_db():
                     amount BIGINT NOT NULL,
                     note TEXT,
                     created_at TIMESTAMP NOT NULL DEFAULT NOW()
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS economy_guild_settings (
+                    guild_id BIGINT PRIMARY KEY,
+                    robbing_enabled BOOLEAN NOT NULL DEFAULT FALSE
                 )
             """)
             cur.execute("""
@@ -561,6 +586,8 @@ def init_db():
                 )
             """)
             cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS balance BIGINT DEFAULT 0")
+            cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS bank_balance BIGINT DEFAULT 0")
+            cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS last_bank_interest TIMESTAMP")
             cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS daily_streak INTEGER DEFAULT 0")
             cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS weekly_streak INTEGER DEFAULT 0")
             cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS monthly_streak INTEGER DEFAULT 0")
@@ -591,6 +618,8 @@ def init_db():
             cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS luck_boost_until TIMESTAMP")
             cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS personal_bet_limit BIGINT")
             cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS gambling_pause_until TIMESTAMP")
+            cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS tutorial_mode BOOLEAN DEFAULT TRUE")
+            cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS tutorial_uses INTEGER DEFAULT 0")
             cur.execute("ALTER TABLE economy_events ADD COLUMN IF NOT EXISTS channel_id BIGINT")
             cur.execute("ALTER TABLE economy_events ADD COLUMN IF NOT EXISTS pot BIGINT NOT NULL DEFAULT 0")
             cur.execute("ALTER TABLE lottery_config ADD COLUMN IF NOT EXISTS thread_id BIGINT")
@@ -2402,7 +2431,21 @@ async def send_lottery_stats(interaction):
         embed = await asyncio.to_thread(build_lottery_embed, interaction.guild, config)
         rows = await asyncio.to_thread(lottery_ticket_rows, interaction.guild.id)
         own = next((row for row in rows if int(row["user_id"]) == interaction.user.id), None)
-        own_text = f"You have **{int(own['tickets']):,}** entries this round." if own else "You have no tickets this round."
+        data = await asyncio.to_thread(get_user, interaction.user.id)
+        ticket_cost = lottery_ticket_cost(config)
+        round_spent = int(own["spent"] or 0) if own else 0
+        spend_base = int(data["balance"] or 0) + round_spent
+        max_round_spend = int(spend_base * LOTTERY_MAX_BALANCE_SPEND_RATIO)
+        remaining_lottery_spend = max(0, max_round_spend - round_spent)
+        max_more_tickets = remaining_lottery_spend // max(1, ticket_cost)
+        total_tickets = sum(int(row["tickets"]) for row in rows)
+        own_tickets = int(own["tickets"]) if own else 0
+        odds = (own_tickets / total_tickets * 100) if total_tickets else 0
+        own_text = (
+            f"{Q_TICKET} Your Entries: **{own_tickets:,}** ({odds:.2f}% current chance)\n"
+            f"Spent This Round: **{format_balance(round_spent)}**\n"
+            f"Max More Tickets Now: **{max_more_tickets:,}**"
+        )
         await interaction.followup.send(own_text, embed=embed, ephemeral=True)
     except Exception as e:
         print(f"Lottery stats button failed: {type(e).__name__} - {e}")
@@ -2699,6 +2742,155 @@ def item_count(data, item_id):
 
 def has_item(data, item_id):
     return item_count(data, item_id) > 0
+
+def consume_inventory_item(user_id, item_id, quantity=1):
+    data = get_user(user_id)
+    inventory = user_inventory(data)
+    quantity = max(1, int(quantity or 1))
+    removed = 0
+    remaining = []
+    for owned in inventory:
+        if owned == item_id and removed < quantity:
+            removed += 1
+            continue
+        remaining.append(owned)
+    if removed <= 0:
+        return False, data
+    updated = update_user(user_id, inventory=remaining)
+    return True, updated
+
+def robbing_enabled(guild_id):
+    if guild_id is None:
+        return False
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT robbing_enabled FROM economy_guild_settings WHERE guild_id = %s", (int(guild_id),))
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    return bool(row and row["robbing_enabled"])
+
+def set_robbing_enabled(guild_id, enabled):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO economy_guild_settings (guild_id, robbing_enabled)
+        VALUES (%s, %s)
+        ON CONFLICT (guild_id) DO UPDATE SET robbing_enabled = EXCLUDED.robbing_enabled
+        """,
+        (int(guild_id), bool(enabled)),
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+    return bool(enabled)
+
+def transfer_to_bank(user_id, amount, mode):
+    amount = int(amount)
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("INSERT INTO economy (user_id, balance, bank_balance) VALUES (%s, 0, 0) ON CONFLICT (user_id) DO NOTHING", (int(user_id),))
+        cur.execute("SELECT balance, bank_balance FROM economy WHERE user_id = %s FOR UPDATE", (int(user_id),))
+        row = cur.fetchone()
+        balance = int(row["balance"] or 0)
+        bank = int(row["bank_balance"] or 0)
+        if mode == "deposit":
+            if amount <= 0 or amount > balance:
+                raise ValueError("deposit")
+            new_balance = balance - amount
+            new_bank = bank + amount
+            kind = "bank_deposit"
+            note = "Bank deposit"
+        else:
+            if amount <= 0 or amount > bank:
+                raise ValueError("withdraw")
+            new_balance = balance + amount
+            new_bank = bank - amount
+            kind = "bank_withdraw"
+            note = "Bank withdraw"
+        cur.execute("UPDATE economy SET balance = %s, bank_balance = %s WHERE user_id = %s", (new_balance, new_bank, int(user_id)))
+        cur.execute("INSERT INTO economy_transactions (user_id, kind, amount, note) VALUES (%s, %s, %s, %s)", (int(user_id), kind, amount if mode == "withdraw" else -amount, note))
+        conn.commit()
+        return {"old_balance": balance, "old_bank": bank, "balance": new_balance, "bank": new_bank, "amount": amount}
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cur.close()
+        conn.close()
+
+def claim_bank_interest(user_id):
+    current = get_user(user_id)
+    bank = int(current.get("bank_balance") or 0)
+    if bank <= 0:
+        return {"ok": False, "message": f"{Q_DENIED} You need banked money before claiming interest."}
+    last = current.get("last_bank_interest")
+    now = datetime.now(timezone.utc)
+    if last:
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=timezone.utc)
+        next_claim = last + timedelta(hours=24)
+        if now < next_claim:
+            return {"ok": False, "message": f"{Q_TIMER_TICK} Bank interest is ready {discord_relative_time(next_claim)}."}
+    interest = max(1_000, min(100_000, int(bank * 0.005)))
+    updated = update_user(
+        user_id,
+        balance=int(current["balance"] or 0) + interest,
+        total_earned=int(current["total_earned"] or 0) + interest,
+        last_bank_interest=now.replace(tzinfo=None)
+    )
+    log_transaction(user_id, "bank_interest", interest, "daily bank interest")
+    return {"ok": True, "amount": interest, "balance": int(updated["balance"] or 0), "bank": bank}
+
+def rob_user_sync(guild_id, robber_id, target_id):
+    if not robbing_enabled(guild_id):
+        return {"ok": False, "message": f"{Q_DENIED} Robbing is disabled in this server."}
+    if int(robber_id) == int(target_id):
+        return {"ok": False, "message": f"{Q_DENIED} Robbing yourself is just moving money with extra drama."}
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        for uid in (int(robber_id), int(target_id)):
+            cur.execute("INSERT INTO economy (user_id, balance, bank_balance) VALUES (%s, 0, 0) ON CONFLICT (user_id) DO NOTHING", (uid,))
+        first, second = sorted([int(robber_id), int(target_id)])
+        cur.execute("SELECT * FROM economy WHERE user_id = %s FOR UPDATE", (first,))
+        first_row = cur.fetchone()
+        cur.execute("SELECT * FROM economy WHERE user_id = %s FOR UPDATE", (second,))
+        second_row = cur.fetchone()
+        rows = {int(first_row["user_id"]): first_row, int(second_row["user_id"]): second_row}
+        robber = rows[int(robber_id)]
+        target = rows[int(target_id)]
+        target_cash = int(target["balance"] or 0)
+        robber_cash = int(robber["balance"] or 0)
+        if target_cash < 25_000:
+            return {"ok": False, "message": f"{Q_DENIED} They do not have enough cash out to rob. Banked money is protected."}
+        success = random.random() < 0.34
+        if success:
+            amount = min(200_000, max(10_000, int(target_cash * random.uniform(0.05, 0.12))))
+            new_robber = robber_cash + amount
+            new_target = target_cash - amount
+            cur.execute("UPDATE economy SET balance = %s, total_earned = total_earned + %s WHERE user_id = %s", (new_robber, amount, int(robber_id)))
+            cur.execute("UPDATE economy SET balance = %s WHERE user_id = %s", (new_target, int(target_id)))
+            cur.execute("INSERT INTO economy_transactions (user_id, kind, amount, note) VALUES (%s, 'rob_success', %s, %s)", (int(robber_id), amount, f"Robbed {target_id}"))
+            cur.execute("INSERT INTO economy_transactions (user_id, kind, amount, note) VALUES (%s, 'robbed', %s, %s)", (int(target_id), -amount, f"Robbed by {robber_id}"))
+            conn.commit()
+            return {"ok": True, "success": True, "amount": amount, "robber_balance": new_robber, "target_balance": new_target}
+        fine = min(max(15_000, int(robber_cash * 0.08)), 75_000, robber_cash)
+        if fine > 0:
+            cur.execute("UPDATE economy SET balance = balance - %s WHERE user_id = %s", (fine, int(robber_id)))
+            cur.execute("UPDATE economy SET balance = balance + %s WHERE user_id = %s", (fine, int(target_id)))
+            cur.execute("INSERT INTO economy_transactions (user_id, kind, amount, note) VALUES (%s, 'rob_fail_fine', %s, %s)", (int(robber_id), -fine, f"Failed rob against {target_id}"))
+            cur.execute("INSERT INTO economy_transactions (user_id, kind, amount, note) VALUES (%s, 'rob_fail_paid', %s, %s)", (int(target_id), fine, f"Rob attempt by {robber_id} failed"))
+        conn.commit()
+        return {"ok": True, "success": False, "fine": fine, "robber_balance": robber_cash - fine, "target_balance": target_cash + fine}
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cur.close()
+        conn.close()
 
 def item_bonus(data, item_id, per_item, max_qty=None):
     qty = item_count(data, item_id)
@@ -3246,6 +3438,69 @@ def level_reward_multiplier(data):
 
 def claim_reward_multiplier(data):
     return 1 + item_bonus(data, "daily_spice", 0.02, 10)
+
+def next_claim_streak(user_id, data, field, last_field, period_seconds):
+    streak = int(data.get(field) or 0)
+    last = data.get(last_field)
+    if not last:
+        return streak + 1, ""
+    now = datetime.now(timezone.utc)
+    last = last.replace(tzinfo=timezone.utc) if last.tzinfo is None else last
+    elapsed = (now - last).total_seconds()
+    if elapsed <= period_seconds * 2:
+        return streak + 1, ""
+    used, _ = consume_inventory_item(user_id, "streak_freeze", 1)
+    if used:
+        return streak + 1, f"\n{Q_STREAK_FREEZE} Streak Freeze used. Your streak survived."
+    return 1, f"\n{Q_TIMER_TICK} Streak reset because this claim was late."
+
+def tutorial_enabled(data):
+    if not bool(data.get("tutorial_mode", True)):
+        return False
+    if int(data.get("tutorial_uses") or 0) > 0:
+        return True
+    is_new_profile = (
+        int(data.get("messages_sent") or 0) < 15
+        and int(data.get("total_earned") or 0) <= 0
+        and not user_inventory(data)
+        and not achievement_ids(data)
+    )
+    return is_new_profile
+
+def tutorial_prompt_text(data, topic="start"):
+    uses = int(data.get("tutorial_uses") or 0)
+    if topic == "games":
+        base = f"{Q_TUTORIAL} Tutorial Mode: try `.games`, then pick a game with **Low** or **Medium** risk first. `.recommendgame` can pick one for you."
+    elif topic == "shop":
+        base = f"{Q_TUTORIAL} Tutorial Mode: shop items are grouped by category and rarity. Start with XP Tonic or Daily Spice before risky boosts."
+    else:
+        base = f"{Q_TUTORIAL} Tutorial Mode: start with `.daily`, check `.games`, use `.shop`, and protect cash with `.bank deposit <amount>`."
+    if uses >= 3:
+        base += "\nYou can keep this on, or press **End Tutorial** when you are done."
+    return base
+
+class TutorialEndView(discord.ui.View):
+    def __init__(self, author_id):
+        super().__init__(timeout=LONG_HELP_VIEW_TIMEOUT)
+        self.author_id = int(author_id)
+
+    @discord.ui.button(label="End Tutorial", emoji=Q_ACCEPT, style=discord.ButtonStyle.secondary)
+    async def end_tutorial(self, interaction, button):
+        if interaction.user.id != self.author_id:
+            return await interaction.response.send_message("This tutorial button is not yours.", ephemeral=True)
+        await asyncio.to_thread(update_user, interaction.user.id, tutorial_mode=False)
+        await interaction.response.edit_message(content=f"{Q_SUCCESS} Tutorial mode turned off. Use `.tutorial on` if you want it back.", view=None)
+
+async def maybe_send_tutorial(ctx, data, topic="start"):
+    if not tutorial_enabled(data):
+        return
+    uses = int(data.get("tutorial_uses") or 0) + 1
+    try:
+        await asyncio.to_thread(update_user, ctx.author.id, tutorial_uses=uses)
+    except Exception:
+        pass
+    view = TutorialEndView(ctx.author.id) if uses >= 3 else None
+    await ctx.send(tutorial_prompt_text({**dict(data), "tutorial_uses": uses}, topic), view=view, allowed_mentions=discord.AllowedMentions.none())
 
 def active_luck_bonus(data):
     user_id = None
@@ -4044,7 +4299,9 @@ async def bal(ctx, member: discord.Member = None):
         description=user_mention(user.id),
         color=discord.Color.gold()
     )
-    embed.add_field(name="Balance", value=format_balance(data['balance']), inline=False)
+    embed.add_field(name="Cash", value=format_balance(data['balance']), inline=True)
+    embed.add_field(name="Bank", value=format_balance(data.get('bank_balance', 0)), inline=True)
+    embed.add_field(name="Total", value=format_balance(int(data['balance'] or 0) + int(data.get('bank_balance') or 0)), inline=True)
     if streak_lines:
         embed.add_field(name="Streaks", value=streak_lines.strip(), inline=False)
     embed.add_field(name="Daily Streak", value=plural_unit(data["daily_streak"], "day"), inline=True)
@@ -4055,6 +4312,180 @@ async def bal(ctx, member: discord.Member = None):
     embed.add_field(name="Total Lost", value=format_balance(data['total_lost']), inline=True)
 
     await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+    if user.id == ctx.author.id:
+        await maybe_send_tutorial(ctx, data, "start")
+
+@commands.command(name="bank", aliases=["safe", "vaultcash", "deposit", "withdraw"])
+async def bank(ctx, action: str = None, *, raw_amount: str = None):
+    if not await ensure_db_ready(ctx):
+        return
+    try:
+        data = await asyncio.to_thread(get_user, ctx.author.id)
+    except Exception:
+        return await send_error(ctx, "Database unavailable. Try again shortly.")
+    invoked = ctx.invoked_with.casefold()
+    if invoked in {"deposit", "withdraw"} and action is not None and raw_amount is None:
+        raw_amount = action
+        action = invoked
+    action = (action or "status").casefold()
+    if action in {"status", "bal", "balance", "show"}:
+        last_interest = data.get("last_bank_interest")
+        next_interest = None
+        if last_interest:
+            if last_interest.tzinfo is None:
+                last_interest = last_interest.replace(tzinfo=timezone.utc)
+            next_interest = last_interest + timedelta(hours=24)
+        embed = discord.Embed(
+            title=f"{Q_BANK} Bank",
+            description=f"{user_mention(ctx.author.id)}\nBanked money is protected from robbery.",
+            color=discord.Color.gold(),
+        )
+        embed.add_field(name="Cash", value=format_balance(int(data["balance"] or 0)), inline=True)
+        embed.add_field(name="Bank", value=format_balance(int(data.get("bank_balance") or 0)), inline=True)
+        embed.add_field(name="Total", value=format_balance(int(data["balance"] or 0) + int(data.get("bank_balance") or 0)), inline=True)
+        embed.add_field(name="Daily Interest", value=(discord_relative_time(next_interest) if next_interest and datetime.now(timezone.utc) < next_interest else "Ready with `.bank interest`"), inline=False)
+        embed.add_field(name="Use", value="`.bank deposit 100k`\n`.bank withdraw 50k`\n`.bank deposit all`\n`.bank interest`", inline=False)
+        return await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+    if action in {"interest", "claim", "collect"}:
+        try:
+            result = await asyncio.to_thread(claim_bank_interest, ctx.author.id)
+        except Exception:
+            return await send_error(ctx, "Database unavailable. Try again shortly.")
+        if not result.get("ok"):
+            return await ctx.send(result["message"], allowed_mentions=discord.AllowedMentions.none())
+        return await ctx.send(
+            f"{Q_BANK} Claimed **{format_balance(result['amount'])}** bank interest.\n"
+            f"Cash: **{format_balance(result['balance'])}**\n"
+            f"Bank: **{format_balance(result['bank'])}**",
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+    if action not in {"deposit", "dep", "withdraw", "with", "take"}:
+        return await ctx.send(f"{Q_DENIED} Use `.bank deposit <amount>`, `.bank withdraw <amount>`, or `.bank interest`.")
+    mode = "deposit" if action in {"deposit", "dep"} else "withdraw"
+    source_balance = int(data["balance"] or 0) if mode == "deposit" else int(data.get("bank_balance") or 0)
+    amount = parse_amount(raw_amount, ctx.author.id, ctx.guild, source_balance)
+    if amount is None or amount <= 0:
+        return await ctx.send(f"{Q_DENIED} Use an amount like `50k`, `1m`, or `all`.")
+    try:
+        result = await asyncio.to_thread(transfer_to_bank, ctx.author.id, amount, mode)
+    except ValueError:
+        return await ctx.send(f"{Q_DENIED} You do not have that much {'cash' if mode == 'deposit' else 'banked money'}.")
+    except Exception:
+        return await send_error(ctx, "Database unavailable. Try again shortly.")
+    verb = "Deposited" if mode == "deposit" else "Withdrew"
+    await ctx.send(
+        f"{Q_BANK} {verb} **{format_balance(result['amount'])}**.\n"
+        f"Cash: **{format_balance(result['old_balance'])}** → **{format_balance(result['balance'])}**\n"
+        f"Bank: **{format_balance(result['old_bank'])}** → **{format_balance(result['bank'])}**",
+        allowed_mentions=discord.AllowedMentions.none(),
+    )
+
+@commands.command(name="tutorial", aliases=["tutorialmode", "tips"])
+async def tutorial(ctx, setting: str = None):
+    if not await ensure_db_ready(ctx):
+        return
+    setting_key = str(setting or "status").casefold()
+    if setting_key in {"off", "end", "stop", "disable"}:
+        updated = await asyncio.to_thread(update_user, ctx.author.id, tutorial_mode=False)
+        return await ctx.send(f"{Q_SUCCESS} Tutorial mode is now **off**.")
+    if setting_key in {"on", "start", "enable"}:
+        updated = await asyncio.to_thread(update_user, ctx.author.id, tutorial_mode=True, tutorial_uses=1)
+        return await ctx.send(f"{Q_TUTORIAL} Tutorial mode is now **on**.")
+    data = await asyncio.to_thread(get_user, ctx.author.id)
+    await ctx.send(
+        f"{Q_TUTORIAL} Tutorial mode is **{'on' if tutorial_enabled(data) else 'off'}**.\n"
+        "Use `.tutorial off` when you do not want starter tips anymore.",
+        view=TutorialEndView(ctx.author.id) if tutorial_enabled(data) else None,
+        allowed_mentions=discord.AllowedMentions.none(),
+    )
+
+@commands.command(name="recommendgame", aliases=["recgame", "whatgame", "suggestgame"])
+async def recommendgame(ctx):
+    if not await ensure_db_ready(ctx):
+        return
+    try:
+        data = await asyncio.to_thread(get_user, ctx.author.id)
+        stats = await asyncio.to_thread(get_game_stats, ctx.author.id)
+    except Exception:
+        return await send_error(ctx, "Database unavailable. Try again shortly.")
+    balance = int(data["balance"] or 0)
+    played = {row["game_key"]: int(row["played"] or 0) for row in stats}
+    profit = {row["game_key"]: int(row["profit"] or 0) for row in stats}
+    if balance < 50_000:
+        pick = "daily"
+        reason = "Build a little cash first. Claim rewards, use `.flagquiz`, or try free `.dungeon`."
+        command = ".daily"
+    elif balance < 250_000:
+        pick = "dungeon"
+        reason = "Free, interactive, and good for learning the bot without risking cash."
+        command = ".dungeon"
+    elif profit.get("memory", 0) >= 0 and played.get("memory", 0) < 20:
+        pick = "memory"
+        reason = "Skill-based, not pure luck, and good if you want thinking without huge swings."
+        command = ".memory 50k"
+    elif balance >= 1_000_000:
+        pick = "tower"
+        reason = "Good control: you can cash out early instead of letting the game decide everything."
+        command = ".tower 100k"
+    else:
+        pick = "cardladder"
+        reason = "Simple skill/luck mix, clear cashout points, and not too chaotic."
+        command = ".cardladder 50k"
+    embed = discord.Embed(
+        title=f"{Q_RECOMMEND} Recommended Game",
+        description=f"Try **{game_display_name(pick)}**\n`{command}`",
+        color=discord.Color.green(),
+    )
+    embed.add_field(name="Why", value=reason, inline=False)
+    embed.add_field(name="Your Cash", value=format_balance(balance), inline=True)
+    embed.add_field(name="Safer Move", value="Bank extra money with `.bank deposit <amount>` before gambling.", inline=False)
+    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
+@commands.command(name="robsettings", aliases=["robbing", "setrob", "robconfig"])
+async def robsettings(ctx, setting: str = None):
+    if not await ensure_db_ready(ctx):
+        return
+    if ctx.guild is None:
+        return await ctx.send(f"{Q_DENIED} Robbing settings only work in servers.")
+    if not has_economy_owner_power(ctx.author.id, ctx.guild):
+        return await ctx.send(f"{Q_DENIED} Server owner or admin only.")
+    setting_key = str(setting or "status").casefold()
+    if setting_key in {"on", "enable", "enabled", "true"}:
+        await asyncio.to_thread(set_robbing_enabled, ctx.guild.id, True)
+        return await ctx.send(f"{Q_ROB} Robbing is now **enabled**. Banked money stays protected.")
+    if setting_key in {"off", "disable", "disabled", "false"}:
+        await asyncio.to_thread(set_robbing_enabled, ctx.guild.id, False)
+        return await ctx.send(f"{Q_ROB} Robbing is now **disabled**.")
+    enabled = await asyncio.to_thread(robbing_enabled, ctx.guild.id)
+    await ctx.send(f"{Q_ROB} Robbing is **{'enabled' if enabled else 'disabled'}**.\nUse `.robsettings on` or `.robsettings off`.")
+
+@commands.command(name="rob", aliases=["stealqs", "mug"])
+async def rob(ctx, member: discord.Member = None):
+    if not await ensure_db_ready(ctx):
+        return
+    if ctx.guild is None:
+        return await ctx.send(f"{Q_DENIED} Robbing only works in servers.")
+    if member is None:
+        return await ctx.send(f"{Q_DENIED} Use `.rob @user`.")
+    try:
+        result = await asyncio.to_thread(rob_user_sync, ctx.guild.id, ctx.author.id, member.id)
+    except Exception:
+        return await send_error(ctx, "Database unavailable. Try again shortly.")
+    if not result.get("ok"):
+        return await ctx.send(result["message"], allowed_mentions=discord.AllowedMentions.none())
+    if result.get("success"):
+        msg = (
+            f"{Q_ROB} {user_mention(ctx.author.id)} robbed **{format_balance(result['amount'])}** from {user_mention(member.id)}.\n"
+            f"Your Cash: **{format_balance(result['robber_balance'])}**\n"
+            f"Their Cash: **{format_balance(result['target_balance'])}**"
+        )
+    else:
+        msg = (
+            f"{Q_DENIED} Rob failed. You paid {user_mention(member.id)} **{format_balance(result['fine'])}**.\n"
+            f"Your Cash: **{format_balance(result['robber_balance'])}**\n"
+            f"Their Cash: **{format_balance(result['target_balance'])}**"
+        )
+    await ctx.send(msg, allowed_mentions=discord.AllowedMentions(users=True))
 
 @commands.command(aliases=["prof", "level", "lvl"])
 async def profile(ctx, member: discord.Member = None):
@@ -4535,6 +4966,10 @@ async def shop(ctx):
     view = ShopView()
     view.message = await ctx.send(embed=catalog_embed(view.selected_item_id), view=view, allowed_mentions=discord.AllowedMentions.none())
     await view.start_live_refresh()
+    try:
+        await maybe_send_tutorial(ctx, get_user(ctx.author.id), "shop")
+    except Exception:
+        pass
 
 @commands.command(aliases=["cd", "cooldown"])
 async def cooldowns(ctx):
@@ -5337,7 +5772,7 @@ async def daily(ctx):
             await reply_to_command(ctx, f"{Q_TIMER} You can claim daily {discord_relative_time(next_claim)}")
             return
 
-    streak = data['daily_streak'] + 1
+    streak, freeze_note = next_claim_streak(user_id, data, "daily_streak", "last_daily", 86400)
     base_reward = random.randint(10_000, 15_000)
     streak_bonus = min(max(streak - 1, 0) * 10, 200)
     reward = base_reward + streak_bonus
@@ -5359,7 +5794,8 @@ async def daily(ctx):
     updated = get_user(user_id)
     achievement_reward = maybe_award_main_quest(user_id, updated, "daily_30")
     extra = f"\n{Q_QUEST} Main quest complete: **{format_balance(achievement_reward)}**!" if achievement_reward else ""
-    await reply_to_command(ctx, f"{QOIN_BAG} You claimed **{format_balance(reward)}**!\nStreak: **{plural_unit(streak, 'day')}** (+{streak_bonus} bonus){extra}")
+    await reply_to_command(ctx, f"{QOIN_BAG} You claimed **{format_balance(reward)}**!\nStreak: **{plural_unit(streak, 'day')}** (+{streak_bonus} bonus){freeze_note}{extra}")
+    await maybe_send_tutorial(ctx, updated, "start")
 
 @commands.command()
 async def weekly(ctx):
@@ -5384,7 +5820,7 @@ async def weekly(ctx):
             await reply_to_command(ctx, f"{Q_TIMER} You can claim weekly {discord_relative_time(next_claim)}")
             return
 
-    streak = data['weekly_streak'] + 1
+    streak, freeze_note = next_claim_streak(user_id, data, "weekly_streak", "last_weekly", 604800)
     base_reward = random.randint(20_000, 30_000)
     streak_bonus = min(max(streak - 1, 0) * 50, 500)
     reward = base_reward + streak_bonus
@@ -5406,7 +5842,7 @@ async def weekly(ctx):
     updated = get_user(user_id)
     achievement_reward = maybe_award_main_quest(user_id, updated, "weekly_8")
     extra = f"\n{Q_QUEST} Main quest complete: **{format_balance(achievement_reward)}**!" if achievement_reward else ""
-    await reply_to_command(ctx, f"{QOIN_BAG} You claimed **{format_balance(reward)}**!\nWeekly streak: **{plural_unit(streak, 'week')}** (+{streak_bonus} bonus){extra}")
+    await reply_to_command(ctx, f"{QOIN_BAG} You claimed **{format_balance(reward)}**!\nWeekly streak: **{plural_unit(streak, 'week')}** (+{streak_bonus} bonus){freeze_note}{extra}")
 
 @commands.command()
 async def monthly(ctx):
@@ -5431,7 +5867,7 @@ async def monthly(ctx):
             await reply_to_command(ctx, f"{Q_TIMER} You can claim monthly {discord_relative_time(next_claim)}")
             return
 
-    streak = data['monthly_streak'] + 1
+    streak, freeze_note = next_claim_streak(user_id, data, "monthly_streak", "last_monthly", 2592000)
     base_reward = random.randint(40_000, 60_000)
     streak_bonus = min(max(streak - 1, 0) * 500, 5000)
     reward = base_reward + streak_bonus
@@ -5453,7 +5889,7 @@ async def monthly(ctx):
     updated = get_user(user_id)
     achievement_reward = maybe_award_main_quest(user_id, updated, "monthly_5")
     extra = f"\n{Q_QUEST} Main quest complete: **{format_balance(achievement_reward)}**!" if achievement_reward else ""
-    await reply_to_command(ctx, f"{QOIN_BAG} You claimed **{format_balance(reward)}**!\nMonthly streak: **{plural_unit(streak, 'month')}** (+{streak_bonus} bonus){extra}")
+    await reply_to_command(ctx, f"{QOIN_BAG} You claimed **{format_balance(reward)}**!\nMonthly streak: **{plural_unit(streak, 'month')}** (+{streak_bonus} bonus){freeze_note}{extra}")
 
 # =====================
 # COIN FLIP
@@ -6438,6 +6874,93 @@ async def qstats(ctx, member: discord.Member = None):
             inline=True
         )
     embed.add_field(name="Messages Tracked", value=f"{stats['messages_sent']:,}", inline=True)
+    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
+@commands.command(name="balancedashboard", aliases=["ecodashboard", "moneydashboard", "sinkdashboard"])
+async def balancedashboard(ctx, days: int = 14):
+    if not await ensure_db_ready(ctx):
+        return
+    if not is_superowner_id(ctx.author.id):
+        await send_owner_only(ctx)
+        return
+    days = max(1, min(int(days or 14), 30))
+    try:
+        stats = await asyncio.to_thread(get_economy_stats)
+        rows = await asyncio.to_thread(get_game_audit_rows, days)
+        games, transactions, losses, lottery_watch = await asyncio.to_thread(get_abuse_audit_rows)
+    except Exception:
+        await send_error(ctx, "Database unavailable. Try again shortly.")
+        return
+
+    tx = stats["transaction_totals"]
+    net_gambling = stats["total_won"] - stats["total_lost"]
+    tracked_flow = abs(tx.get("shop_purchase", 0)) + tx.get("transfer_tax", 0) + tx.get("lottery_house_cut", 0)
+    supply = max(1, int(stats["total_balance"] or 0))
+    embed = discord.Embed(
+        title=f"{Q_BALANCE} Economy Balance Dashboard",
+        description=f"Global money flow, balance signals, and anti-abuse watch for the last **{days} day(s)**.",
+        color=discord.Color.gold(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.add_field(
+        name="Supply",
+        value=(
+            f"Users: **{stats['users']:,}**\n"
+            f"Money: **{format_balance(stats['total_balance'])}**\n"
+            f"Richest: **{format_balance(stats['richest_balance'])}**"
+        ),
+        inline=True,
+    )
+    embed.add_field(
+        name="Flow",
+        value=(
+            f"Net gambling: **{format_balance(net_gambling)}**\n"
+            f"Tracked taxes/payments: **{format_balance(tracked_flow)}**\n"
+            f"Flow vs supply: **{tracked_flow / supply * 100:.1f}%**"
+        ),
+        inline=True,
+    )
+    embed.add_field(
+        name="Lottery",
+        value=(
+            f"Active: **{stats['active_lotteries']:,}**\n"
+            f"Pots: **{format_balance(stats['lottery_pots'])}**\n"
+            f"Tickets: **{stats['lottery_tickets']:,}**"
+        ),
+        inline=True,
+    )
+
+    game_lines = []
+    for row in rows[:8]:
+        plays = int(row["plays"] or 0)
+        wins = int(row["wins"] or 0)
+        losses_count = int(row["losses"] or 0)
+        win_rate = wins / max(1, wins + losses_count) * 100
+        user_profit = int(row["profit"] or 0)
+        verdict = "watch" if plays >= 15 and (win_rate >= 60 or win_rate <= 10 or abs(user_profit) >= 2_000_000) else "ok"
+        game_lines.append(
+            f"{risk_emoji(row['game_key'])} **{game_display_name(row['game_key'])}** - "
+            f"{plays:,} plays, {win_rate:.1f}% win, users {format_balance(user_profit)} | {verdict}"
+        )
+    add_split_embed_field(embed, "Game Balance", game_lines or ["No recent game data."], inline=False)
+
+    watch_lines = []
+    for row in games[:4]:
+        watch_lines.append(f"{Q_WARNING} {user_mention(row['user_id'])}: {int(row['plays']):,} plays, profit {format_balance(int(row['profit'] or 0))}")
+    for row in transactions[:4]:
+        watch_lines.append(f"{Q_AUDIT} {user_mention(row['user_id'])}: {int(row['tx_count']):,} tx, volume {format_balance(int(row['volume'] or 0))}")
+    for row in lottery_watch[:4]:
+        watch_lines.append(f"{Q_TICKET} {user_mention(row['user_id'])}: {int(row['tickets']):,} tickets, spent {format_balance(int(row['spent'] or 0))}")
+    add_split_embed_field(embed, "Watchlist", watch_lines or [f"{Q_SUCCESS} No major watch signals."], inline=False)
+
+    notes = []
+    if tracked_flow / supply < 0.02:
+        notes.append("Tracked sinks are light compared to money supply; watch inflation if balances climb fast.")
+    if net_gambling > 0:
+        notes.append("Users are ahead globally on gambling; review recent payout changes.")
+    if stats["lottery_pots"] > supply * 0.20:
+        notes.append("Lottery pots are large compared to supply; make sure current panels are healthy.")
+    add_split_embed_field(embed, "Tuning Notes", notes or ["Current signals look balanced."], inline=False)
     await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
 @commands.command(name="economyhealth", aliases=["ecohealth", "moneyhealth", "supply"])
@@ -9824,7 +10347,7 @@ async def achievements(ctx, member: discord.Member = None):
         description=user_mention(user.id),
         color=discord.Color.gold(),
     )
-    lines = []
+    grouped_lines = defaultdict(list)
     for achievement_id, achievement in GAME_ACHIEVEMENTS.items():
         if achievement["game"] is None:
             progress = totals.get(achievement["field"], 0)
@@ -9835,11 +10358,16 @@ async def achievements(ctx, member: discord.Member = None):
         status = Q_ACHIEVEMENT_UNLOCKED if achievement_id in owned else Q_ACHIEVEMENT_LOCKED
         if achievement_id not in owned:
             closest.append((progress / target if target else 0, achievement["name"], progress, target, achievement["reward"]))
-        lines.append(
+        tier = achievement.get("tier") or "Standard"
+        grouped_lines[tier].append(
             f"{status} **{achievement['name']}** - {min(progress, target):,}/{target:,} "
             f"({format_balance(achievement['reward'])})"
         )
-    add_split_embed_field(embed, "Game Badges", lines, inline=False)
+    tier_order = ["Bronze", "Standard", "Gold", "Royal"]
+    for tier in tier_order:
+        lines = grouped_lines.get(tier) or []
+        if lines:
+            add_split_embed_field(embed, f"{tier} Badges", lines, inline=False)
     if closest:
         closest.sort(reverse=True)
         close_lines = [
@@ -10329,7 +10857,8 @@ async def gamehistory(ctx, member: discord.Member = None):
         embed.add_field(name="Recent", value="No tracked game history yet.", inline=False)
     else:
         lines = []
-        for row in rows:
+        replay_lines = []
+        for index, row in enumerate(rows, start=1):
             ts = row["created_at"]
             if ts.tzinfo is None:
                 ts = ts.replace(tzinfo=timezone.utc)
@@ -10337,10 +10866,36 @@ async def gamehistory(ctx, member: discord.Member = None):
             net = int(row["net_amount"] or 0)
             sign = "+" if net > 0 else ""
             lines.append(
-                f"**{game_display_name(row['game_key'])}** - {result} `{sign}{net:,}` {CURRENCY_EMOJI} <t:{int(ts.timestamp())}:R>"
+                f"`#{index}` **{game_display_name(row['game_key'])}** - {result} `{sign}{net:,}` {CURRENCY_EMOJI} <t:{int(ts.timestamp())}:R>"
+            )
+            replay_lines.append(
+                f"`#{index}` {game_display_name(row['game_key'])}: {result}, net `{sign}{net:,}`, payout `{int(row['payout'] or 0):,}`"
             )
         add_split_embed_field(embed, "Recent", lines, inline=False)
-    await ctx.reply(embed=embed, mention_author=False, allowed_mentions=discord.AllowedMentions.none())
+
+    class GameHistoryView(discord.ui.View):
+        def __init__(self):
+            super().__init__(timeout=LONG_HELP_VIEW_TIMEOUT)
+
+        async def interaction_check(self, interaction):
+            if interaction.user.id == ctx.author.id:
+                return True
+            await interaction.response.send_message("Open your own game history with `.gamehistory`.", ephemeral=True)
+            return False
+
+        @discord.ui.button(label="Replay", style=discord.ButtonStyle.secondary)
+        async def replay_button(self, interaction, button):
+            if not rows:
+                return await interaction.response.send_message("No game results to replay yet.", ephemeral=True)
+            replay_embed = discord.Embed(
+                title=f"{Q_HISTORY} Result Replay",
+                description="Compact replay of the stored results. Full move replay is shown only for games that save turn-by-turn state.",
+                color=discord.Color.blurple(),
+            )
+            add_split_embed_field(replay_embed, "Timeline", replay_lines, inline=False)
+            await interaction.response.send_message(embed=replay_embed, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+
+    await ctx.reply(embed=embed, view=GameHistoryView(), mention_author=False, allowed_mentions=discord.AllowedMentions.none())
 
 @commands.command(name="economyaudit", aliases=["audit", "qaudit", "econaudit"])
 async def economyaudit(ctx, member: discord.Member = None):
@@ -10599,6 +11154,39 @@ async def season(ctx, season_key: str = None):
         add_split_embed_field(embed, "Leaderboard", lines, inline=False)
     await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
+@commands.command(name="seasonpass", aliases=["monthlychallenges", "pass", "spass"])
+async def seasonpass(ctx):
+    if not await ensure_db_ready(ctx):
+        return
+    try:
+        data = await asyncio.to_thread(get_user, ctx.author.id)
+        rows = await asyncio.to_thread(get_game_stats, ctx.author.id)
+    except Exception:
+        return await send_error(ctx, "Database unavailable. Try again shortly.")
+    played = sum(int(row["played"] or 0) for row in rows)
+    wins = sum(int(row["wins"] or 0) for row in rows)
+    profit = sum(int(row["profit"] or 0) for row in rows)
+    unique_games = len([row for row in rows if int(row["played"] or 0) > 0])
+    goals = [
+        ("Warmup", played, 25, 500_000),
+        ("Winner", wins, 10, 1_000_000),
+        ("Explorer", unique_games, 8, 1_500_000),
+        ("Profit Push", max(0, profit), 2_000_000, 2_500_000),
+        ("Level Grind", int(data.get("level") or 1), 15, 2_000_000),
+    ]
+    embed = discord.Embed(
+        title=f"{Q_SEASON_PASS} Season Pass",
+        description=f"Monthly goals for **{current_season_key()}**. Rewards are claimed automatically through related systems where supported.",
+        color=discord.Color.gold(),
+    )
+    lines = []
+    for name, value, target, reward in goals:
+        status = Q_SUCCESS if value >= target else Q_ACHIEVEMENT_LOCKED
+        lines.append(f"{status} **{name}** - {min(value, target):,}/{target:,} | Reward **{format_balance(reward)}**")
+    embed.add_field(name="Challenges", value="\n".join(lines), inline=False)
+    embed.add_field(name="Tip", value="Use `.season` for ranking rewards and `.achievements` for long-term badges.", inline=False)
+    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
 @commands.command(name="endseason", aliases=["rewardseason"])
 async def endseason(ctx, season_key: str = None):
     if not await ensure_db_ready(ctx):
@@ -10654,9 +11242,19 @@ def get_abuse_audit_rows():
         """
     )
     losses = cur.fetchall()
+    cur.execute(
+        """
+        SELECT user_id, guild_id, tickets, spent
+        FROM lottery_tickets
+        WHERE tickets >= 20 OR spent >= 2000000
+        ORDER BY spent DESC, tickets DESC
+        LIMIT 10
+        """
+    )
+    lottery_watch = cur.fetchall()
     cur.close()
     conn.close()
-    return games, transactions, losses
+    return games, transactions, losses, lottery_watch
 
 @commands.command(name="abuseaudit", aliases=["antiexploit", "riskwatch"])
 async def abuseaudit(ctx):
@@ -10665,7 +11263,7 @@ async def abuseaudit(ctx):
     if not has_economy_owner_power(ctx.author.id, ctx.guild):
         return await ctx.send(f"{Q_DENIED} Server owner or admin only.")
     try:
-        games, transactions, losses = await asyncio.to_thread(get_abuse_audit_rows)
+        games, transactions, losses, lottery_watch = await asyncio.to_thread(get_abuse_audit_rows)
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
@@ -10678,9 +11276,16 @@ async def abuseaudit(ctx):
     game_lines = [f"{user_mention(r['user_id'])} - **{int(r['plays']):,}** plays, profit **{format_balance(int(r['profit'] or 0))}**" for r in games]
     tx_lines = [f"{user_mention(r['user_id'])} - **{int(r['tx_count']):,}** tx, volume **{format_balance(int(r['volume'] or 0))}**" for r in transactions]
     loss_lines = [f"{user_mention(r['user_id'])} - lost today **{format_balance(int(r['amount'] or 0))}**" for r in losses]
+    lottery_lines = [f"{user_mention(r['user_id'])} - **{int(r['tickets']):,}** tickets, spent **{format_balance(int(r['spent'] or 0))}** in `{r['guild_id']}`" for r in lottery_watch]
     add_split_embed_field(embed, "Fast Game Profit / Volume", game_lines or ["No high-risk game signals."], inline=False)
     add_split_embed_field(embed, "Transaction Volume", tx_lines or ["No high-risk transaction signals."], inline=False)
     add_split_embed_field(embed, "Daily Loss Watch", loss_lines or ["No major daily loss signals."], inline=False)
+    add_split_embed_field(embed, "Lottery Spend Watch", lottery_lines or ["No major lottery spend signals."], inline=False)
+    embed.add_field(
+        name="What To Check",
+        value="Look for repeated rapid actions, role/@everyone changes, sudden transfers, and users pushing lottery spend near their safety cap.",
+        inline=False,
+    )
     await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
 @commands.command(name="riskprofile", aliases=["risk", "userrisk", "riskcheck"])
@@ -11255,6 +11860,25 @@ EXPLANATIONS = {
     "bal": "Shows balance, streaks, and total earned/won/lost. Use `.bal` or `.bal @user`.",
     "balance": "Alias for `.bal`. Shows balance, streaks, and total earned/won/lost.",
     "cash": "Alias for `.bal`. Shows balance, streaks, and total earned/won/lost.",
+    "bank": "Shows your protected bank, moves cash into/out of it, or claims small daily bank interest. Banked money cannot be robbed.",
+    "safe": "Alias for `.bank`. Shows or manages protected money.",
+    "vaultcash": "Alias for `.bank`. Shows or manages protected money.",
+    "deposit": "Alias for `.bank deposit`. Moves cash into protected bank storage.",
+    "withdraw": "Alias for `.bank withdraw`. Moves money from bank back to cash.",
+    "tutorial": "Shows or toggles tutorial mode. New users get starter tips until they turn it off.",
+    "tutorialmode": "Alias for `.tutorial`. Shows or toggles tutorial mode.",
+    "tips": "Alias for `.tutorial`. Shows or toggles tutorial mode.",
+    "recommendgame": "Suggests a useful game based on your cash, risk, and recent game stats.",
+    "recgame": "Alias for `.recommendgame`. Suggests a game.",
+    "whatgame": "Alias for `.recommendgame`. Suggests a game.",
+    "suggestgame": "Alias for `.recommendgame`. Suggests a game.",
+    "rob": "Attempts to rob cash from another user if this server has robbing enabled. Banked money is protected.",
+    "stealqs": "Alias for `.rob`. Attempts to rob cash.",
+    "mug": "Alias for `.rob`. Attempts to rob cash.",
+    "robsettings": "Admin command. Enables or disables robbing for this server.",
+    "robbing": "Alias for `.robsettings`. Shows or changes robbing status.",
+    "setrob": "Alias for `.robsettings`. Shows or changes robbing status.",
+    "robconfig": "Alias for `.robsettings`. Shows or changes robbing status.",
     "profile": "Shows level, XP, balance, stats, and owned items. Use `.profile` or `.profile @user`.",
     "level": "Alias for `.profile`. Shows level, XP, balance, stats, and owned items.",
     "lvl": "Alias for `.profile`. Shows level, XP, balance, stats, and owned items.",
@@ -11360,6 +11984,10 @@ EXPLANATIONS = {
     "balaudit": "Alias for `.balanceaudit`. Shows balance tuning signals.",
     "economybalance": "Alias for `.balanceaudit`. Shows balance tuning signals.",
     "balancing": "Alias for `.balanceaudit`. Shows balance tuning signals.",
+    "balancedashboard": f"{QUE_OWNER_DISPLAY} command. Shows global money supply, game balance, lottery, tax/payment flow, and anti-abuse watch signals.",
+    "ecodashboard": "Alias for `.balancedashboard`. Shows the global economy balance dashboard.",
+    "moneydashboard": "Alias for `.balancedashboard`. Shows the global economy balance dashboard.",
+    "sinkdashboard": "Alias for `.balancedashboard`. Shows tracked economy sinks and flow.",
     "riskprofile": "Shows a user's 𝚀𝚞𝚎wo risk profile: daily loss usage, game volume, profit, lottery spend, and recent transaction volume.",
     "risk": "Alias for `.riskprofile`. Shows a user's risk profile.",
     "userrisk": "Alias for `.riskprofile`. Shows a user's risk profile.",
@@ -11392,6 +12020,10 @@ EXPLANATIONS = {
     "season": "Shows the current monthly 𝚀𝚞𝚎wo season leaderboard and rewards.",
     "seasons": "Alias for `.season`. Shows season standings.",
     "seasonlb": "Alias for `.season`. Shows season standings.",
+    "seasonpass": "Shows monthly challenge-style goals for the current season.",
+    "monthlychallenges": "Alias for `.seasonpass`. Shows monthly goals.",
+    "pass": "Alias for `.seasonpass`. Shows monthly goals.",
+    "spass": "Alias for `.seasonpass`. Shows monthly goals.",
     "endseason": "Admin-power command that pays season rewards for a season key.",
     "rewardseason": "Alias for `.endseason`. Pays season rewards.",
     "event": "Server owner/admin command for server 𝚀𝚞𝚎wo events. Use `.event`, `.event start jackpot 1h`, `.event donate 50k`, or `.event stop`.",
@@ -11517,6 +12149,12 @@ EXPLANATIONS = {
     "botdoctor": "Alias for `.aidoctor`. Shows bot health/debug info.",
     "doctorai": "Alias for `.aidoctor`. Shows bot health/debug info.",
     "diagnosebot": "Alias for `.aidoctor`. Shows bot health/debug info.",
+    "styleaudit": f"{QUE_OWNER_DISPLAY} command. Audits output style expectations by command category.",
+    "uiaudit": "Alias for `.styleaudit`. Audits message and UI consistency.",
+    "messageaudit": "Alias for `.styleaudit`. Audits message and UI consistency.",
+    "commandcleanup": f"{QUE_OWNER_DISPLAY} command. Shows command cleanup gaps: categories, examples, generic explain text, and duplicate aliases.",
+    "cleanupcommands": "Alias for `.commandcleanup`. Shows command cleanup gaps.",
+    "cmdcleanup": "Alias for `.commandcleanup`. Shows command cleanup gaps.",
     "translate": "Translates text. Use `.translate hello to Italian`, `.translate it hello`, or reply to a message with `.translate to Spanish`.",
     "econhelp": "Shows 𝚀𝚞𝚎wo commands, aliases, and short explanations.",
     "economyhelp": "Alias for `.econhelp`. Shows 𝚀𝚞𝚎wo commands, aliases, and short explanations.",
@@ -11535,6 +12173,10 @@ EXPLANATIONS = {
 
 DETAILED_EXPLANATIONS = {
     "daily": f"Gives a reward once every 24 hours. Base reward is 10,000-15,000 {CURRENCY_EMOJI}. Your daily streak adds a small bonus after day 1.",
+    "bank": "Protected savings for 𝚀𝚞𝚎wo. Use `.bank` to view cash/bank/total, `.bank deposit 100k` to protect cash, `.bank deposit all` to store all cash, `.bank withdraw 50k` to move money back to spendable cash, or `.bank interest` to claim small daily interest. Robbing can only touch cash, never banked money.",
+    "tutorial": "Tutorial mode is on for new users. After a few starter prompts it shows an End Tutorial button. Use `.tutorial off` to stop starter tips or `.tutorial on` to bring them back.",
+    "recommendgame": "Looks at your cash and recent game stats, then suggests a game that makes sense for your bankroll and risk. It prioritizes safe/free games when you are low on cash and cashout-control games when you have more room.",
+    "rob": "Robbing is server-controlled with `.robsettings on/off`. If enabled, `.rob @user` can steal a small chunk of the target's cash balance, capped at 200k, but it can fail and pay the target a fine. Banked money cannot be robbed.",
     "profile": f"Shows level, current XP toward the next level, balance, net gambling result, and shop items. Chat XP can level you up and level rewards start at {format_balance(LEVEL_REWARD_BASE)}.",
     "level": f"Alias for `.profile`. Shows level, current XP toward the next level, balance, net gambling result, and shop items. Level rewards start at {format_balance(LEVEL_REWARD_BASE)}.",
     "lvl": f"Alias for `.profile`. Shows level, current XP toward the next level, balance, net gambling result, and shop items. Level rewards start at {format_balance(LEVEL_REWARD_BASE)}.",
@@ -11592,8 +12234,12 @@ DETAILED_EXPLANATIONS = {
     "riskprofile": "Shows user-specific safety signals rather than game-wide risk. It combines balance, current daily loss usage, tracked game play/win/profit totals, current lottery spend in this server, recent transaction volume, and plain warning notes.",
     "gameaudit": "Admin-power balancing dashboard. It reads recent tracked game history, then shows plays, win rate, house profit, and signals for games that look too generous or too harsh. Use `.gameaudit` for 7 days or `.gameaudit 30` for up to 30 days.",
     "balanceaudit": "Admin-power economy balancing dashboard. It reads recent tracked game history, compares play count, win rate, house net, and risk labels, then gives tune/watch notes for games that may need odds, payout, or risk-label updates. Use `.balanceaudit` for 14 days or `.balanceaudit 30` for up to 30 days.",
+    "balancedashboard": f"{QUE_OWNER_DISPLAY}-only global economy dashboard. It combines money supply, tracked tax/payment flow, lottery size, recent game balance, and anti-abuse watch signals into one compact view. Use `.balancedashboard` or `.balancedashboard 30`.",
+    "styleaudit": "Checks whether major command categories have clear style expectations: games, 𝚀𝚞𝚎wo, confirmations/admin tools, status messages, AI, and utility commands. Use it after big UI/message changes.",
+    "commandcleanup": "Shows a focused command registry cleanup plan: commands missing help categories, commands with required input but no input UI/example, generic explain text, duplicate aliases, and near-duplicate names.",
     "gamehistory": "Shows your recent tracked game results from the shared game history table. Newer and tracked games appear here with result, net amount, and timestamp.",
     "season": "Monthly 𝚀𝚞𝚎wo season leaderboard. Game results add to the current month automatically. Ranking is by monthly game profit, then wins, then games played. Top rewards are 100m, 80m, and 50m.",
+    "seasonpass": "Monthly challenge-style page that shows broad goals like games played, wins, unique games tried, profit, and level. It points users toward season and achievement progression without replacing `.season` rewards.",
     "endseason": "Admin-power season payout command. Use `.endseason 2026-05` to pay the top 3 for that month once. If no season is passed, it pays the current season.",
     "event": "Server event and sink system. `.event` shows the active event. `.event start jackpot 1h` starts a server event for 1 minute to 14 days. `.event donate 50k` burns the user's quesos into the event pot and records an event_sink transaction. `.event stop` ends the event and shows the final pot.",
     "abuseaudit": "Admin-power watch page for suspicious economy activity. It flags high one-hour game volume/profit, high 24-hour transaction volume, and large daily gambling losses. It is a signal page only; review context before acting.",
@@ -11664,11 +12310,11 @@ DETAILED_EXPLANATIONS = {
 }
 
 ECONHELP_COMMANDS = [
-    ("Core", ["guide", "onboard", "bal", "profile", "inventory", "settheme", "quests", "dailychallenge", "streaks", "shop", "cooldowns", "transactions", "limits", "lb"]),
-    ("Stats", ["gamestats", "achievements", "setbadge", "gamebalance", "gameaudit", "balanceaudit", "gamehistory", "season", "qstats", "economyhealth", "economyaudit", "abuseaudit", "riskprofile"]),
+    ("Core", ["guide", "onboard", "tutorial", "bal", "bank", "profile", "inventory", "settheme", "quests", "dailychallenge", "streaks", "shop", "cooldowns", "transactions", "limits", "lb"]),
+    ("Stats", ["gamestats", "achievements", "setbadge", "gamebalance", "gameaudit", "balanceaudit", "balancedashboard", "gamehistory", "season", "seasonpass", "qstats", "economyhealth", "economyaudit", "abuseaudit", "riskprofile", "recommendgame"]),
     ("Claims", ["daily", "weekly", "monthly"]),
     ("Lottery", ["lottery", "buytick", "lotterystats", "editlottery", "stoplottery"]),
-    ("Gambling", ["cf", "roulette", "slots", "blackjack", "scratch", "tower", "vault", "memory", "cardladder", "lockpick", "heist", "diceduel", "cases", "plinko", "luckynumber", "jackpotspin", "dungeon", "ms", "wheel"]),
+    ("Gambling", ["cf", "roulette", "slots", "blackjack", "scratch", "tower", "vault", "memory", "cardladder", "lockpick", "heist", "diceduel", "cases", "plinko", "luckynumber", "jackpotspin", "dungeon", "ms", "wheel", "rob", "robsettings"]),
     ("Transfers", ["give"]),
     ("Help", ["econhelp", "explain"]),
 ]
@@ -11890,9 +12536,9 @@ async def setup(bot_ref, log_callback=None):
     print(f"𝚀𝚞𝚎wo db_ready = {db_ready}")
 
     economy_commands = [
-        bal, profile, inventory, settheme, quests, dailychallenge, streaks, guide, onboard, shop, cooldowns, transactions, limits, lottery, editlottery, stoplottery, lotterystats, buytick,
+        bal, bank, tutorial, recommendgame, robsettings, rob, profile, inventory, settheme, quests, dailychallenge, streaks, guide, onboard, shop, cooldowns, transactions, limits, lottery, editlottery, stoplottery, lotterystats, buytick,
         daily, weekly, monthly, gamble, roulette, slots, blackjack,
-        scratch, tower, vault, memory_game, card_ladder, lockpick, heist, dice_duel, cases, plinko, lucky_number, jackpot_spin, dungeon, minesweeper, wheel, give, lb, gamestats, achievements, setbadge, gamebalance, gameaudit, balanceaudit, event, gamehistory, season, endseason, qstats, economyhealth, economyaudit, abuseaudit, riskprofile, add, remove, addtick, removetick, settick, setquesos, econhelp, explain
+        scratch, tower, vault, memory_game, card_ladder, lockpick, heist, dice_duel, cases, plinko, lucky_number, jackpot_spin, dungeon, minesweeper, wheel, give, lb, gamestats, achievements, setbadge, gamebalance, gameaudit, balanceaudit, balancedashboard, event, gamehistory, season, seasonpass, endseason, qstats, economyhealth, economyaudit, abuseaudit, riskprofile, add, remove, addtick, removetick, settick, setquesos, econhelp, explain
     ]
     for command in economy_commands:
         if bot.get_command(command.name):

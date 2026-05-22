@@ -60,6 +60,7 @@ from economy import (
     Q_BIRTHDAY as economy_q_birthday,
     Q_BIRTHDAY_BALLOONS as economy_q_birthday_balloons,
     Q_BIRTHDAY_CAKE as economy_q_birthday_cake,
+    Q_BANK as economy_q_bank,
     Q_BOOK as economy_q_book,
     Q_BROOM as economy_q_broom,
     Q_CARDS as economy_q_cards,
@@ -86,10 +87,13 @@ from economy import (
     Q_PERF as economy_q_perf,
     Q_POLL as economy_q_poll,
     Q_REACTION as economy_q_reaction,
+    Q_RECOMMEND as economy_q_recommend,
     Q_REJECT as economy_q_reject,
+    Q_ROB as economy_q_rob,
     Q_ROLES as economy_q_roles,
     Q_SLEEP as economy_q_sleep,
     Q_SETUP as economy_q_setup,
+    Q_SEASON_PASS as economy_q_season_pass,
     Q_THINKING as economy_q_thinking,
     Q_TIMEOUT as economy_q_timeout,
     Q_TIMER as economy_q_timer,
@@ -98,6 +102,7 @@ from economy import (
     Q_USER_EDIT as economy_q_user_edit,
     Q_VOICE as economy_q_voice,
     Q_WARNING as economy_q_warning,
+    Q_TUTORIAL as economy_q_tutorial,
     get_receipt as economy_get_receipt,
     get_receipts_for_user as economy_get_receipts_for_user,
     risk_label as economy_risk_label,
@@ -645,7 +650,20 @@ def bot_saved_user_facts(guild, user_id):
         if data:
             level = int(data.get("level", 1))
             balance = economy_format_balance(int(data.get("balance", 0)))
-            facts.append(f"𝚀𝚞𝚎wo profile: level {level}, balance {balance}.")
+            bank = economy_format_balance(int(data.get("bank_balance", 0) or 0))
+            daily = int(data.get("daily_streak", 0) or 0)
+            weekly = int(data.get("weekly_streak", 0) or 0)
+            monthly = int(data.get("monthly_streak", 0) or 0)
+            facts.append(f"𝚀𝚞𝚎wo profile: level {level}, cash {balance}, bank {bank}, streaks daily {daily}/weekly {weekly}/monthly {monthly}.")
+            try:
+                inventory = economy_module.user_inventory(data)
+                achievements = economy_module.achievement_ids(data)
+                if inventory:
+                    facts.append(f"Inventory count: {len(inventory)} item(s).")
+                if achievements:
+                    facts.append(f"Achievement count: {len(achievements)} badge(s).")
+            except Exception:
+                pass
     except Exception:
         pass
     if guild:
@@ -732,6 +750,18 @@ def command_risk_note(command):
         return "Changes or opens server setup."
     return "Low impact."
 
+def command_safety_label(command):
+    names = {command.name.casefold(), *(alias.casefold() for alias in getattr(command, "aliases", []) or [])}
+    if names & AI_BLOCKED_COMMANDS:
+        return f"{economy_q_reject} AI blocked"
+    if names & AI_SUPEROWNER_ONLY_COMMANDS:
+        return f"{economy_q_warning} {QUE_OWNER_DISPLAY} only + confirmation"
+    if names & AI_CONFIRM_COMMANDS:
+        return f"{economy_q_thinking} Confirmation required"
+    if names & AI_SAFE_COMMANDS:
+        return f"{economy_q_accept} Read-only / low impact"
+    return f"{economy_q_warning} Confirmation required"
+
 def command_plan_embed(message, command, args, display):
     prefix = prefix_for_guild(message.guild)
     embed = discord.Embed(
@@ -747,6 +777,7 @@ def command_plan_embed(message, command, args, display):
     embed.add_field(name="Input", value=f"`{args}`" if args else "No extra input.", inline=False)
     embed.add_field(name="Permission", value=command_permission_note(command), inline=True)
     embed.add_field(name="Impact", value=command_risk_note(command), inline=True)
+    embed.add_field(name="AI Safety", value=command_safety_label(command), inline=True)
     embed.add_field(name="What It Does", value=embed_value(detail, 900), inline=False)
     embed.set_footer(text="Confirm only if this is exactly what you wanted.")
     return embed
@@ -2013,9 +2044,82 @@ STALE_GAME_MARKERS = (
     "MINESWEEPER",
 )
 
-async def cleanup_stale_game_messages():
-    saved_sessions = load_active_game_sessions()
-    for session in saved_sessions:
+async def game_member(guild, user_id):
+    if guild is None:
+        return None
+    member = guild.get_member(int(user_id))
+    if member:
+        return member
+    try:
+        return await guild.fetch_member(int(user_id))
+    except Exception:
+        return None
+
+def ttt_state(game):
+    return {
+        "turn": int(game.get("turn", 0)),
+        "board": game.get("board", []),
+        "bet_amount": int(game.get("bet_amount") or 0),
+    }
+
+def c4_state(game):
+    return {
+        "turn": int(game.get("turn", 0)),
+        "board": game.get("board", []),
+        "bet_amount": int(game.get("bet_amount") or 0),
+    }
+
+def chess_state(game):
+    board = game.get("board")
+    clocks = game.get("clocks") or {}
+    return {
+        "fen": board.fen() if board else None,
+        "bet_amount": int(game.get("bet_amount") or 0),
+        "clocks": {str(key): int(value) for key, value in clocks.items()},
+    }
+
+async def save_runtime_game_state(game, game_key):
+    msg = game.get("msg") or game.get("message")
+    if not msg or not getattr(msg, "guild", None):
+        return
+    if game_key == "ttt":
+        state = ttt_state(game)
+    elif game_key == "c4":
+        state = c4_state(game)
+    elif game_key == "chess":
+        state = chess_state(game)
+    else:
+        state = {}
+    players = game.get("players") or []
+    await asyncio.to_thread(
+        save_active_game_session,
+        msg.guild.id,
+        msg.channel.id,
+        msg.id,
+        game_key,
+        [player.id for player in players if getattr(player, "id", None)],
+        state,
+    )
+
+def apply_ttt_board_to_view(view, board):
+    for item in view.children:
+        if not isinstance(item, TicTacToeButton):
+            continue
+        mark = board[item.row][item.col]
+        if mark == TTT_EMPTY:
+            item.label = "\u200b"
+            item.emoji = None
+            item.disabled = False
+        else:
+            item.label = None
+            item.emoji = custom_emoji(economy_q_game_x if mark == TTT_X else economy_q_game_o)
+            item.disabled = True
+
+async def restore_active_game_sessions():
+    sessions = await asyncio.to_thread(load_active_game_sessions)
+    restored = 0
+    expired = 0
+    for session in sessions:
         guild = bot.get_guild(session["guild_id"])
         channel = guild.get_channel(session["channel_id"]) if guild else bot.get_channel(session["channel_id"])
         if channel is None:
@@ -2025,16 +2129,100 @@ async def cleanup_stale_game_messages():
                 channel = None
         if channel is None:
             await asyncio.to_thread(delete_active_game_session, session["message_id"])
+            expired += 1
             continue
         try:
             message = await channel.fetch_message(session["message_id"])
-            expired = f"\n\n{economy_q_game_timeout} **{session['game_key'].title()} expired after bot restart.** Start a new game."
-            new_content = fit_discord_content((message.content or "") + expired) if message.content else expired.strip()
-            await message.edit(content=new_content, view=None, allowed_mentions=discord.AllowedMentions.none())
         except Exception:
-            pass
-        await asyncio.to_thread(delete_active_game_session, session["message_id"])
+            await asyncio.to_thread(delete_active_game_session, session["message_id"])
+            expired += 1
+            continue
+        state = session.get("state") or {}
+        players = [await game_member(guild, user_id) for user_id in session.get("players", [])]
+        if len(players) < 2 or not all(players):
+            await message.edit(content=fit_discord_content((message.content or "") + f"\n\n{economy_q_game_timeout} Game expired after restart because a player is unavailable."), view=None, allowed_mentions=discord.AllowedMentions.none())
+            await asyncio.to_thread(delete_active_game_session, session["message_id"])
+            expired += 1
+            continue
+        try:
+            if session["game_key"] == "ttt":
+                board = state.get("board") or [[TTT_EMPTY] * 3 for _ in range(3)]
+                view = TicTacToeView()
+                apply_ttt_board_to_view(view, board)
+                game = {
+                    "players": players[:2],
+                    "turn": int(state.get("turn", 0) or 0),
+                    "board": board,
+                    "view": view,
+                    "msg": message,
+                    "timeout_task": None,
+                    "bet_amount": int(state.get("bet_amount") or 0),
+                }
+                ttt_games[channel.id] = game
+                await update_turn(game, channel)
+                restored += 1
+            elif session["game_key"] == "c4":
+                board = state.get("board") or [[" "] * 7 for _ in range(6)]
+                view = Connect4View()
+                game = {
+                    "players": players[:2],
+                    "turn": int(state.get("turn", 0) or 0),
+                    "board": board,
+                    "view": view,
+                    "msg": message,
+                    "timeout_task": None,
+                    "bet_amount": int(state.get("bet_amount") or 0),
+                }
+                c4_games[channel.id] = game
+                await message.edit(content=fit_discord_content(f"{render_board(board, game['turn'])}{game_bet_line(game)}"), view=view, allowed_mentions=discord.AllowedMentions.none())
+                await update_c4_turn(game, channel)
+                restored += 1
+            elif session["game_key"] == "chess" and chess_lib:
+                board = chess_lib.Board(state.get("fen") or chess_lib.STARTING_FEN)
+                clocks = {players[0].id: CHESS_CLOCK_SECONDS, players[1].id: CHESS_CLOCK_SECONDS}
+                for key, value in (state.get("clocks") or {}).items():
+                    try:
+                        clocks[int(key)] = int(value)
+                    except Exception:
+                        pass
+                game = {
+                    "white": players[0],
+                    "black": players[1],
+                    "players": players[:2],
+                    "board": board,
+                    "channel_id": channel.id,
+                    "message": message,
+                    "selected_from": None,
+                    "pending_move": None,
+                    "view": None,
+                    "bet_amount": int(state.get("bet_amount") or 0),
+                    "clocks": clocks,
+                    "last_turn_started": None,
+                    "clock_task": None,
+                    "live_clock_task": None,
+                    "ended": False,
+                }
+                game["view"] = ChessView(game)
+                chess_games[channel.id] = game
+                await message.edit(content=chess_status(game), embed=chess_embed(game), view=game["view"], allowed_mentions=discord.AllowedMentions(users=True))
+                await start_chess_clock(game)
+                await start_chess_live_clock(game)
+                restored += 1
+            else:
+                raise RuntimeError("unsupported session type")
+        except Exception as e:
+            print(f"Could not restore {session['game_key']} session {session['message_id']}: {type(e).__name__} - {e}")
+            expired_note = f"\n\n{economy_q_game_timeout} **{session['game_key'].title()} expired after bot restart.** Start a new game."
+            await message.edit(content=fit_discord_content((message.content or "") + expired_note), view=None, allowed_mentions=discord.AllowedMentions.none())
+            await asyncio.to_thread(delete_active_game_session, session["message_id"])
+            expired += 1
+    if restored or expired:
+        print(f"Game session recovery complete: restored={restored}, expired={expired}")
+    return restored, expired
 
+async def cleanup_stale_game_messages():
+    saved_sessions = await asyncio.to_thread(load_active_game_sessions)
+    saved_ids = {int(session["message_id"]) for session in saved_sessions}
     for guild in bot.guilds:
         for channel in getattr(guild, "text_channels", []):
             permissions = channel.permissions_for(guild.me)
@@ -2042,7 +2230,7 @@ async def cleanup_stale_game_messages():
                 continue
             try:
                 async for message in channel.history(limit=20):
-                    if not bot.user or message.author.id != bot.user.id or not message.components:
+                    if not bot.user or message.author.id != bot.user.id or not message.components or message.id in saved_ids:
                         continue
                     text = " ".join(filter(None, [message.content, *(embed.title or "" for embed in message.embeds)]))
                     if not any(marker in text.upper() for marker in STALE_GAME_MARKERS):
@@ -2071,9 +2259,9 @@ async def on_ready():
     try:
         await economy_setup(bot, send_log)
         economy_command_names = [
-            "bal", "profile", "inventory", "settheme", "quests", "dailychallenge", "streaks", "guide", "onboard", "shop", "cooldowns", "transactions", "limits", "lottery", "editlottery", "stoplottery", "lotterystats", "buytick",
+            "bal", "bank", "tutorial", "recommendgame", "robsettings", "rob", "profile", "inventory", "settheme", "quests", "dailychallenge", "streaks", "guide", "onboard", "shop", "cooldowns", "transactions", "limits", "lottery", "editlottery", "stoplottery", "lotterystats", "buytick",
             "daily", "weekly", "monthly", "cf", "roulette", "slots",
-            "blackjack", "scratch", "tower", "vault", "memory", "cardladder", "lockpick", "heist", "diceduel", "cases", "plinko", "luckynumber", "jackpotspin", "dungeon", "ms", "wheel", "give", "lb", "gamestats", "achievements", "setbadge", "gamebalance", "gamehistory",
+            "blackjack", "scratch", "tower", "vault", "memory", "cardladder", "lockpick", "heist", "diceduel", "cases", "plinko", "luckynumber", "jackpotspin", "dungeon", "ms", "wheel", "give", "lb", "gamestats", "achievements", "setbadge", "gamebalance", "gamehistory", "seasonpass",
             "qstats", "economyaudit", "abuseaudit", "season", "endseason", "add", "remove", "addtick", "removetick", "settick", "setquesos", "econhelp", "explain"
         ]
         loaded_economy_commands = [name for name in economy_command_names if bot.get_command(name)]
@@ -2082,6 +2270,7 @@ async def on_ready():
         print(f"𝚀𝚞𝚎wo system not loaded: {e}")
     if not runtime_state_restored:
         await restore_persistent_runtime_state()
+        await restore_active_game_sessions()
         runtime_state_restored = True
     if not stale_game_messages_cleaned:
         stale_game_messages_cleaned = True
@@ -3373,6 +3562,9 @@ COMMAND_EXAMPLE_OVERRIDES = {
     "aidetect": ".aidetect <essay text>",
     "auditcommands": ".auditcommands",
     "balanceaudit": ".balanceaudit 14",
+    "balancedashboard": ".balancedashboard 14",
+    "styleaudit": ".styleaudit",
+    "commandcleanup": ".commandcleanup",
     "aisettings": ".aisettings",
     "aiignore": ".aiignore @user",
     "aiunignore": ".aiunignore @user",
@@ -3382,6 +3574,7 @@ COMMAND_EXAMPLE_OVERRIDES = {
     "blackjack": ".blackjack 1000",
     "block": ".block @user",
     "buytick": ".buytick 3",
+    "bank": ".bank deposit 100k",
     "c4": ".c4 @user 1000",
     "cardladder": ".cardladder 1000",
     "cf": ".cf 1000 h",
@@ -3420,6 +3613,9 @@ COMMAND_EXAMPLE_OVERRIDES = {
     "dungeon": ".dungeon",
     "gameaudit": ".gameaudit",
     "gamestats": ".gamestats @user",
+    "recommendgame": ".recommendgame",
+    "rob": ".rob @user",
+    "robsettings": ".robsettings on",
     "commandstats": ".commandstats",
     "snipe": ".snipe edited @user 2",
     "dsnipe": ".dsnipe @user 2",
@@ -3451,6 +3647,7 @@ COMMAND_EXAMPLE_OVERRIDES = {
     "rshut": ".rshut @user",
     "scratch": ".scratch 1000",
     "season": ".season",
+    "seasonpass": ".seasonpass",
     "send": ".send #channel message",
     "summarize": ".summarize @user 1h",
     "setbday": ".setbday 25/12",
@@ -3468,6 +3665,7 @@ COMMAND_EXAMPLE_OVERRIDES = {
     "timer": ".timer 10m study",
     "usersettings": ".usersettings compact on",
     "tower": ".tower 1000",
+    "tutorial": ".tutorial off",
     "translate": ".translate hello to Italian",
     "ttt": ".ttt @user 1000",
     "unban": ".unban 885548126365171824",
@@ -3512,6 +3710,9 @@ GENERIC_INPUT_UI_COMMANDS = {
     "reply", "fwd", "forward", "fw", "quote", "archive", "aban", "raban", "summon2", "block", "unblock", "fsleep", "wake",
     "find", "censor", "uncensor", "ask", "generate", "summarize", "summarise", "summary", "aisummary", "tldr", "recap",
     "aidetect", "aicheck", "detectai", "authenticity", "authcheck", "essaycheck",
+    "buytick", "ticket", "tickets", "bank", "safe", "vaultcash", "deposit", "withdraw",
+    "tutorial", "tutorialmode", "tips", "recommendgame", "recgame", "whatgame", "suggestgame",
+    "rob", "stealqs", "mug", "robsettings", "robbing", "setrob", "robconfig",
 }
 
 INPUT_UI_EXCLUDED_COMMANDS = {
@@ -3710,10 +3911,10 @@ async def handle_returning_status(message):
 
 AI_SAFE_COMMANDS = {
     "help", "commands", "cmds", "games", "howtoplay", "how", "rules",
-    "bal", "balance", "cash", "profile", "level", "lvl", "inventory", "inv",
+    "bal", "balance", "cash", "bank", "safe", "vaultcash", "deposit", "withdraw", "tutorial", "tutorialmode", "tips", "recommendgame", "recgame", "whatgame", "suggestgame", "profile", "level", "lvl", "inventory", "inv",
     "shop", "cooldowns", "cds", "quests", "transactions", "tx", "lb",
     "leaderboard", "gamestats", "achievements", "gamebalance", "gamehistory",
-    "season", "limits", "riskprofile", "risk", "userrisk", "riskcheck", "economyhealth", "ecohealth", "moneyhealth", "supply",
+    "season", "seasonpass", "monthlychallenges", "pass", "spass", "limits", "riskprofile", "risk", "userrisk", "riskcheck", "economyhealth", "ecohealth", "moneyhealth", "supply",
     "messages", "msgstats", "messagestats", "mstats",
     "activitystats", "astats", "away", "userinfo", "pfp", "avatar", "calc",
     "define", "timer", "ctimer", "alarm", "find", "econhelp", "quewohelp",
@@ -3725,25 +3926,25 @@ AI_SAFE_COMMANDS = {
     "aiperms", "aipermissions", "aicapabilities", "aiauthority",
     "aihistory", "aiactions", "actionhistory", "aisettings", "aiconfig", "aicontrols", "usersettings", "mysettings", "preferences", "prefs",
     "commandstats", "cmdstats", "usage", "receipt", "txreceipt", "qreceipt",
-    "auditcommands", "cmdaudit", "commandaudit",
+    "auditcommands", "cmdaudit", "commandaudit", "styleaudit", "uiaudit", "messageaudit", "commandcleanup", "cleanupcommands", "cmdcleanup",
     "gameaudit", "gaudit", "auditgames", "event", "qevent", "events", "quote", "archive", "transcript",
     "generate", "analyse", "analyze", "analyseimage", "analyzeimage", "vision",
 }
 
 AI_CONFIRM_COMMANDS = {
-    "poll", "epoll", "giveaway", "setbday", "removebday", "setbdaychannel",
+    "poll", "epoll", "giveaway", "setbday", "removebday", "setbdaychannel", "rob",
     "activity", "settings", "prefix", "preifx", "setprefix",
 }
 
 AI_SUPEROWNER_ONLY_COMMANDS = {
     "add", "remove", "addtick", "removetick", "remtick", "deltick", "settick", "setquesos",
     "disable", "enable", "disableall", "enableall", "prefix", "preifx", "setprefix",
-    "settings", "setup", "config", "setlogs", "slashsync", "auditcommands", "cmdaudit", "commandaudit", "aihistory", "aiactions", "actionhistory",
+    "settings", "setup", "config", "setlogs", "slashsync", "auditcommands", "cmdaudit", "commandaudit", "styleaudit", "uiaudit", "messageaudit", "commandcleanup", "cleanupcommands", "cmdcleanup", "aihistory", "aiactions", "actionhistory",
     "aisettings", "aiconfig", "aicontrols", "aiignore", "ignoreai", "aiunignore", "unignoreai", "aichannel", "aitoggle", "aistyle", "aipersonality",
     "block", "unblock", "shut", "unshut", "rshut", "unrshut", "lockdown", "reopen",
     "rlockdown", "runlock", "lock", "unlock", "ban", "unban", "kick", "addrole",
     "removerole", "deleterole", "send", "reply", "fwd", "forward", "fw", "quote", "archive", "censor", "uncensor", "clearcensors",
-    "editlottery", "stoplottery", "editactivity", "endactivity", "stopactivity",
+    "editlottery", "stoplottery", "editactivity", "endactivity", "stopactivity", "robsettings", "robbing", "setrob", "robconfig", "balancedashboard", "ecodashboard", "moneydashboard", "sinkdashboard",
 }
 
 AI_BLOCKED_COMMANDS = {
@@ -5224,10 +5425,10 @@ async def on_command_error(ctx, error):
 
 HELP_CATEGORIES = {
     "𝚀𝚞𝚎wo (Gambling)": [
-        "guide", "onboard", "bal", "profile", "inventory", "settheme", "quests", "dailychallenge", "streaks", "shop", "cooldowns", "transactions", "lottery", "lotterystats", "buytick",
+        "guide", "onboard", "tutorial", "bal", "bank", "profile", "inventory", "settheme", "quests", "dailychallenge", "streaks", "shop", "cooldowns", "transactions", "lottery", "lotterystats", "buytick",
         "daily", "weekly", "monthly", "cf", "roulette", "slots", "blackjack", "scratch", "tower", "vault", "memory", "cardladder", "lockpick",
         "heist", "diceduel", "cases", "plinko", "luckynumber", "jackpotspin", "dungeon", "ms", "wheel",
-        "give", "lb", "gamestats", "achievements", "setbadge", "gamebalance", "gameaudit", "balanceaudit", "gamehistory", "season", "event", "limits", "qstats", "economyhealth", "economyaudit", "abuseaudit", "riskprofile", "econhelp", "explain",
+        "give", "rob", "robsettings", "recommendgame", "lb", "gamestats", "achievements", "setbadge", "gamebalance", "gameaudit", "balanceaudit", "balancedashboard", "gamehistory", "season", "seasonpass", "event", "limits", "qstats", "economyhealth", "economyaudit", "abuseaudit", "riskprofile", "econhelp", "explain",
     ],
     "Games": ["games", "howtoplay", "ttt", "c4", "chess", "move", "resign", "flagquiz", "flagstats", "q", "picker"],
     "Utility": ["help", "userinfo", "pfp", "calc", "define", "timer", "ctimer", "alarm", "poll", "epoll", "translate", "find"],
@@ -5238,7 +5439,7 @@ HELP_CATEGORIES = {
     ],
     "Status": ["afk", "sleep", "wake", "fsleep", "away", "setbday", "removebday", "setbdaychannel", "activity", "activitystats", "messages"],
     "Admin": [
-        "settings", "slashsync", "health", "perms", "permaudit", "sessions", "auditcommands", "commandstats", "receipt", "receipts", "setlogs", "prefix", "disable", "enable", "disableall", "enableall", "dclist", "perf", "test", "testlog", "testrlog",
+        "settings", "slashsync", "health", "perms", "permaudit", "sessions", "auditcommands", "styleaudit", "commandcleanup", "commandstats", "receipt", "receipts", "setlogs", "prefix", "disable", "enable", "disableall", "enableall", "dclist", "perf", "test", "testlog", "testrlog",
         "endttt", "setnick", "unmute", "kick", "ban", "unban", "addrole", "removerole", "deleterole",
         "lock", "unlock", "lockdown", "reopen", "rlockdown", "runlock", "shut", "unshut", "clearwatchlist", "rshut", "unrshut",
         "send", "reply", "fwd", "aban", "raban", "abanlist", "summon", "summon2", "block", "unblock",
@@ -5250,12 +5451,12 @@ SUPEROWNER_HELP_COMMANDS = [
     "add", "remove", "addtick", "removetick", "settick", "setquesos",
     "send", "reply", "fsleep", "wake",
     "aisettings", "aiignore", "aiunignore", "aichannel", "aistyle",
-    "aihistory", "auditcommands", "permaudit", "receipts",
+    "aihistory", "auditcommands", "styleaudit", "commandcleanup", "balancedashboard", "permaudit", "receipts",
 ]
 SUPEROWNER_HIDDEN_COMMANDS = {
     *SUPEROWNER_HELP_COMMANDS,
     "remtick", "deltick", "ignoreai", "unignoreai", "aitoggle", "aipersonality",
-    "aiactions", "actionhistory", "cmdaudit", "commandaudit", "permsaudit", "permissionaudit", "sensitiveaudit", "receiptlist", "txreceipts",
+    "aiactions", "actionhistory", "cmdaudit", "commandaudit", "uiaudit", "messageaudit", "cleanupcommands", "cmdcleanup", "ecodashboard", "moneydashboard", "sinkdashboard", "permsaudit", "permissionaudit", "sensitiveaudit", "receiptlist", "txreceipts",
 }
 HELP_CATEGORY_ALIASES = {
     "quewo": "𝚀𝚞𝚎wo (Gambling)",
@@ -5769,6 +5970,8 @@ class SettingsView(View):
             f"`{prefix}activity setup` - activity reports\n"
             f"`{prefix}lottery` - lottery panel\n"
             f"`{prefix}editlottery <setting> <value>` - lottery settings\n"
+            f"{economy_q_bank} `{prefix}bank` - protected cash\n"
+            f"{economy_q_rob} `{prefix}robsettings on/off` - server robbing\n"
             f"`{prefix}disable <command>` / `{prefix}enable <command>` - command access\n"
             f"`{prefix}commandstats` - command usage\n"
             f"`{prefix}receipt <id>` - review sensitive action receipts\n"
@@ -5785,9 +5988,21 @@ class SettingsView(View):
             description="Clean setup checklist for this server.",
             color=discord.Color.green(),
         )
-        embed.add_field(name="Core", value=f"`{prefix}prefix <new>`\n`{prefix}setlogs`\n`{prefix}settings`", inline=True)
+        embed.add_field(name="Core", value=f"`{prefix}prefix <new>`\n`{prefix}setlogs`\n`{prefix}settings`\n{economy_q_tutorial} `{prefix}tutorial`", inline=True)
         embed.add_field(name="Community", value=f"`{prefix}setbdaychannel #channel`\n`{prefix}activity setup`\n`{prefix}messages`", inline=True)
-        embed.add_field(name="𝚀𝚞𝚎wo", value=f"`{prefix}lottery`\n`{prefix}editlottery`\n`{prefix}balanceaudit`", inline=True)
+        embed.add_field(
+            name="𝚀𝚞𝚎wo",
+            value=(
+                f"`{prefix}lottery`\n"
+                f"`{prefix}editlottery`\n"
+                f"{economy_q_bank} `{prefix}bank`\n"
+                f"{economy_q_rob} `{prefix}robsettings`\n"
+                f"`{prefix}balanceaudit`\n"
+                f"{economy_q_recommend} `{prefix}recommendgame`\n"
+                f"{economy_q_season_pass} `{prefix}seasonpass`"
+            ),
+            inline=True,
+        )
         embed.add_field(name="Safety", value=f"`{prefix}disable <command>`\n`{prefix}permaudit`\n`{prefix}receipts latest`", inline=True)
         embed.add_field(name="AI", value=f"`{prefix}aiknow <command>`\n`{prefix}aimemory`\n`{prefix}aidoctor`", inline=True)
         await interaction.response.send_message(embed=embed, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
@@ -6124,6 +6339,101 @@ async def auditcommands_command(ctx):
     embed.add_field(name="UI Callback Audit", value=embed_value("\n".join(ui_findings[:12]) or "None", 1000), inline=False)
     embed.add_field(name="Duplicate Aliases", value=embed_value("\n".join(duplicate_alias_lines) or "None", 1000), inline=False)
     embed.add_field(name="Near-Duplicate Commands", value=embed_value("\n".join(near_duplicate_lines) or "None", 1000), inline=False)
+    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
+def command_category_lookup():
+    lookup = {}
+    for category, names in HELP_CATEGORIES.items():
+        for name in names:
+            lookup.setdefault(name.casefold(), set()).add(category)
+    return lookup
+
+def command_style_expectation(category):
+    if "𝚀𝚞𝚎wo" in category:
+        return "Use 𝚀𝚞𝚎wo emojis, risk labels for games, clear balance deltas, and hidden receipt lines for sensitive money movement."
+    if category == "Games":
+        return "Use board/game UI where possible, turn ownership checks, timeouts, and short result text that stays under Discord limits."
+    if category == "AI":
+        return "Reply naturally, include context, avoid oversized prompts, and confirm only when the AI is about to run a bot action."
+    if category in {"Admin", "Server Tools"}:
+        return "Use no-ping mentions, receipts for sensitive actions, concise embeds, and clear permission denial text."
+    if category == "Status":
+        return "Use compact themed embeds, no unwanted everyone pings, and mention summaries with jump links."
+    if category == "Utility":
+        return "Prefer setup/input UI when arguments are missing and keep results readable on mobile."
+    return "Keep copy short, themed, and consistent."
+
+@bot.command(name="styleaudit", aliases=["uiaudit", "messageaudit"])
+async def styleaudit_command(ctx):
+    """Audits output style expectations by command category."""
+    if not has_super_owner_power(ctx.author, ctx.guild):
+        return await ctx.send(denial_message(f"Only {QUE_OWNER_DISPLAY} can audit bot output style."), allowed_mentions=discord.AllowedMentions.none())
+    categories = help_categories_for(ctx.author, ctx.guild)
+    embed = discord.Embed(
+        title=f"{economy_q_filter} Style Audit",
+        description="Category-level checks for message/UI consistency across the bot.",
+        color=discord.Color.blurple(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    total = 0
+    for category, names in categories.items():
+        command_count = len([name for name in names if get_command_case_insensitive(name)])
+        total += command_count
+        embed.add_field(
+            name=f"{category} ({command_count})",
+            value=embed_value(command_style_expectation(category), 900),
+            inline=False,
+        )
+    embed.set_footer(text=f"Audited {total} command entries. Use .auditcommands for missing help/examples and .permaudit for sensitive exposure.")
+    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
+@bot.command(name="commandcleanup", aliases=["cleanupcommands", "cmdcleanup"])
+async def commandcleanup_command(ctx):
+    """Shows a focused cleanup plan for command discoverability and duplicates."""
+    if not has_super_owner_power(ctx.author, ctx.guild):
+        return await ctx.send(denial_message(f"Only {QUE_OWNER_DISPLAY} can audit command cleanup."), allowed_mentions=discord.AllowedMentions.none())
+    category_map = command_category_lookup()
+    missing_category = []
+    missing_example = []
+    generic_explain = []
+    duplicate_aliases = []
+    alias_owner = {}
+    visible_commands = [command for command in bot.commands if not command.hidden]
+    for command in sorted(visible_commands, key=lambda item: item.qualified_name.casefold()):
+        names = {command.name.casefold(), *(alias.casefold() for alias in command.aliases)}
+        if not any(name in category_map for name in names):
+            missing_category.append(f"`{command.name}`")
+        if command.signature and command.name not in COMMAND_EXAMPLE_OVERRIDES and not command_supports_input_ui(command):
+            missing_example.append(f"`{command.name}`")
+        text = economy_explanations.get(command.name, "")
+        if "Runs this Quewo command" in text:
+            generic_explain.append(f"`{command.name}`")
+        for alias in command.aliases:
+            key = alias.casefold()
+            if key in alias_owner and alias_owner[key] != command.name:
+                duplicate_aliases.append(f"`{alias}`: `{alias_owner[key]}` / `{command.name}`")
+            alias_owner[key] = command.name
+    near_duplicates = []
+    command_names = sorted(command.name for command in visible_commands)
+    for idx, left in enumerate(command_names):
+        for right in command_names[idx + 1:]:
+            if abs(len(left) - len(right)) <= 3 and SequenceMatcher(None, left, right).ratio() >= 0.88:
+                near_duplicates.append(f"`{left}` / `{right}`")
+                if len(near_duplicates) >= 12:
+                    break
+        if len(near_duplicates) >= 12:
+            break
+    embed = discord.Embed(
+        title=f"{economy_q_command_check} Command Cleanup",
+        description="Focused list of command polish issues that affect users or AI command knowledge.",
+        color=discord.Color.orange(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.add_field(name="Missing Help Category", value=embed_value(", ".join(missing_category[:40]) or "None", 1000), inline=False)
+    embed.add_field(name="Missing Input UI / Example", value=embed_value(", ".join(missing_example[:40]) or "None", 1000), inline=False)
+    embed.add_field(name="Generic Explain Text", value=embed_value(", ".join(generic_explain[:40]) or "None", 1000), inline=False)
+    embed.add_field(name="Duplicate Aliases", value=embed_value("\n".join(duplicate_aliases[:20]) or "None", 1000), inline=False)
+    embed.add_field(name="Near-Duplicate Names", value=embed_value("\n".join(near_duplicates) or "None", 1000), inline=False)
     await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
 @bot.command(name="permaudit", aliases=["permsaudit", "permissionaudit", "sensitiveaudit"])
@@ -6570,6 +6880,11 @@ async def games_command(ctx):
     """Shows available games and how to start them."""
     prefix = prefix_for_guild(ctx.guild)
     await ctx.send(embed=games_embed(prefix), view=GamesView(ctx.author.id, prefix))
+    try:
+        data = await asyncio.to_thread(economy_get_user, ctx.author.id)
+        await economy_module.maybe_send_tutorial(ctx, data, "games")
+    except Exception:
+        pass
 
 @bot.command(name="howtoplay", aliases=["how", "rules"])
 async def howtoplay_command(ctx, *, game: str = None):
@@ -8801,6 +9116,7 @@ class TicTacToeButton(Button):
             return
 
         game["turn"] = 1 - game["turn"]
+        await save_runtime_game_state(game, "ttt")
         await update_turn(game, interaction.channel)
 
 class TicTacToeView(View):
@@ -9601,6 +9917,7 @@ class ChessView(View):
         new_view = ChessView(self.game)
         self.game["view"] = new_view
         await start_chess_clock(self.game)
+        await save_runtime_game_state(self.game, "chess")
         await interaction.edit_original_response(
             content=chess_status(self.game),
             embed=chess_embed(self.game),
@@ -9660,7 +9977,7 @@ async def chess(ctx, opponent: discord.Member):
     )
     game["message"] = msg
     chess_games[ctx.channel.id] = game
-    await asyncio.to_thread(save_active_game_session, ctx.guild.id, ctx.channel.id, msg.id, "chess", [ctx.author.id, opponent.id])
+    await save_runtime_game_state(game, "chess")
     await start_chess_clock(game)
     await start_chess_live_clock(game)
 
@@ -9718,6 +10035,7 @@ async def chess_move(ctx, *, move: str):
     game["view"] = ChessView(game)
     await start_chess_clock(game)
     await start_chess_live_clock(game)
+    await save_runtime_game_state(game, "chess")
     await game["message"].edit(content=chess_status(game), embed=chess_embed(game), view=game["view"], allowed_mentions=discord.AllowedMentions(users=True))
 
 @bot.command()
@@ -9778,7 +10096,7 @@ async def ttt(ctx, opponent: discord.Member):
         "bet_amount": bet_amount
     }
     ttt_games[ctx.channel.id] = game
-    await asyncio.to_thread(save_active_game_session, ctx.guild.id, ctx.channel.id, msg.id, "ttt", [ctx.author.id, opponent.id])
+    await save_runtime_game_state(game, "ttt")
 
     await update_turn(game, ctx.channel)
 
@@ -9869,6 +10187,7 @@ class Connect4Button(Button):
             game["msg"] = interaction.message
             game["board"] = board
             game["view"] = Connect4View()
+            await save_runtime_game_state(game, "c4")
 
             render = render_board(board, game["turn"])
             await interaction.message.edit(content=fit_discord_content(render), view=game["view"], allowed_mentions=discord.AllowedMentions.none())
@@ -9999,7 +10318,7 @@ async def c4(ctx, opponent: discord.Member):
         "bet_amount": bet_amount
     }
     c4_games[ctx.channel.id] = game
-    await asyncio.to_thread(save_active_game_session, ctx.guild.id, ctx.channel.id, msg.id, "c4", [ctx.author.id, opponent.id])
+    await save_runtime_game_state(game, "c4")
     await update_c4_turn(game, ctx.channel)
 
 @bot.command()

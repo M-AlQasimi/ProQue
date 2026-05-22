@@ -46,6 +46,7 @@ Test these once before role testing.
 - `.explain editactivity`
 - `.explain settings`
 - `.explain games`
+- As superowner: `.explain balancedashboard`, `.explain styleaudit`, `.explain commandcleanup`
 
 Expected: all are current, mention the right aliases/settings, have no duplicate entries, and long panels still work after Refresh.
 
@@ -134,10 +135,14 @@ Run:
 - `.activity`
 - `.activitystats`
 - `.settings`
-- In `.settings`, test Refresh, Prefix, Birthdays Here, Activity Here, and Admin Commands if safe.
+- In `.settings`, test Refresh, Prefix, Birthdays Here, Activity Here, Admin Commands, Setup Guide, and Lottery Panel if safe.
 - `.perf`
 - `.auditcommands`
+- `.styleaudit`
+- `.commandcleanup`
 - `.gamebalance`
+- `.balancedashboard`
+- `.balancedashboard 30`
 - `.find <normal_user_id>`
 - `.listtargets`
 - `.listcensors`
@@ -168,6 +173,14 @@ Run with another test user:
 - `.endttt`
 
 Expected: challenges, accept/decline, bet accept/decline, turns, payouts, and timeouts work.
+
+### Redeploy / Restart Recovery
+
+- Start `.ttt @normal`, make at least one move, then restart the bot.
+- Start `.c4 @normal`, make at least one move, then restart the bot.
+- Start `.chess @normal`, make at least one move, then restart the bot.
+
+Expected: active TTT, C4, and Chess messages are restored with the same players, board state, bet amount, and turn controls. Old unsaved stale game UIs should expire instead of staying clickable.
 
 ### Admin Commands
 
@@ -252,6 +265,10 @@ Run:
 
 - `.bal`
 - `.cash`
+- `.bank`
+- `.bank deposit 10k`
+- `.bank withdraw 5k`
+- `.bank interest`
 - `.profile`
 - `.level`
 - `.lvl`
@@ -264,6 +281,10 @@ Run:
 - `.dailychallenge`
 - `.dailychallenge claim`
 - `.shop`
+- Buy one Streak Freeze from `.shop`, then verify `.inventory` shows it.
+- `.tutorial`
+- `.tutorial off`
+- `.tutorial on`
 - `.cooldowns`
 - `.transactions`
 - `.daily`
@@ -294,6 +315,9 @@ Run:
 - `.setbadge clear`
 - `.gamebalance`
 - `.gamehistory`
+- Press Replay in `.gamehistory`.
+- `.seasonpass`
+- `.recommendgame`
 - `.limits`
 - `.flagstats`
 - `.give @normal 1000` and `.give 1000 @normal`
@@ -317,6 +341,10 @@ Run:
 - `.editlottery duration 12h`
 - `.editlottery cut 10`
 - `.editlottery channel #channel`
+- `.robsettings`
+- `.robsettings on`
+- `.rob @normal`
+- `.robsettings off`
 - `.buytick 1`
 - `.add @normal 1000` and `.add 1000 @normal`
 - `.remove @normal 100` and `.remove 100 @normal`
@@ -332,7 +360,7 @@ Run:
 - `.qstats`
 - `.economyaudit`
 
-Expected: all work. Role/everyone operations affect the expected users. Balances/tickets shown after admin changes match `.bal` and `.lotterystats`. Audit shows game signals without embed errors.
+Expected: all work. Role/everyone operations affect the expected users. Balances/tickets shown after admin changes match `.bal` and `.lotterystats`. Banked money is protected from `.rob`. Audit shows game signals without embed errors.
 
 ### Superowner Permission Checks
 
@@ -623,6 +651,10 @@ Run:
 
 - `.bal`
 - `.cash`
+- `.bank`
+- `.bank deposit 10k`
+- `.bank withdraw 5k`
+- `.bank interest`
 - `.profile`
 - `.level`
 - `.lvl`
@@ -634,6 +666,9 @@ Run:
 - `.quests`
 - `.dailychallenge`
 - `.shop`
+- `.tutorial`
+- `.tutorial off`
+- `.tutorial on`
 - `.cooldowns`
 - `.transactions`
 - `.daily`
@@ -664,18 +699,23 @@ Run:
 - `.setbadge clear`
 - `.gamebalance`
 - `.gamehistory`
+- Press Replay in `.gamehistory`.
+- `.seasonpass`
+- `.recommendgame`
 - `.limits`
 - `.flagstats`
 - `.give @other_user 1000` and `.give 1000 @other_user`
 - `.lottery`
 - `.lotterystats`
 - `.buytick 1`
+- `.rob @other_user` while robbing is off.
+- After an admin enables robbing, try `.rob @other_user`.
 - `.lb`
 - `.econhelp`
 - `.quewohelp`
 - `.explain shop`
 
-Expected: public 𝚀𝚞𝚎wo commands work, balances update correctly, cooldowns apply.
+Expected: public 𝚀𝚞𝚎wo commands work, balances update correctly, cooldowns apply, tutorial tips can be ended, bank cash cannot be robbed, and lottery status shows personal entries/max-buy/win chance.
 
 ### Denial Checks
 
@@ -695,6 +735,7 @@ Run:
 - `.stopactivity`
 - `.editlottery price 200000`
 - `.stoplottery`
+- `.robsettings on`
 - `.add @normal 1000` and `.add 1000 @normal`
 - `.remove @normal 100` and `.remove 100 @normal`
 - `.addtick @normal 1` and `.addtick 1 @normal`
@@ -713,7 +754,11 @@ Run these after role tests because they need multiple users, waiting, or restart
 - New user balance row creation.
 - Balance formatting with Qoins custom emoji.
 - Shop buy flow: buy item, hit item limit, insufficient funds.
+- Streak Freeze purchase: item appears in inventory and can protect one missed claim streak.
 - Fortune Vial purchase: temporary luck boost appears with a live timestamp and expires.
+- Tutorial mode: new users get starter tips, the End Tutorial button appears after a few tips, and `.tutorial off/on` works.
+- Bank: deposits/withdrawals update cash/bank totals, `.bank interest` respects the daily cooldown, and banked money cannot be robbed.
+- Robbing: disabled by default, `.robsettings on/off` works server-wise, failed robs fine the robber, successful robs only touch cash.
 - Shop message updates after purchases and refreshes active effect state while open.
 - Inventory/profile display after buying items.
 - Quest claim and refresh buttons.
@@ -730,6 +775,9 @@ Run these after role tests because they need multiple users, waiting, or restart
 - Mine Sweep: multiplier starts at x2.
 - Leaderboard: local/global switch, ranking type menu, pages, caller rank, user mentions open profiles.
 - Transactions pagination/limits.
+- Game history Replay button shows a compact timeline of stored results.
+- Season pass page shows monthly goals and points users toward season/achievement progression.
+- Recommend Game suggests a bankroll-appropriate next game.
 - Chat XP background award and level-up embed.
 - Admin/superowner amount override behavior.
 
@@ -739,6 +787,7 @@ Run these after role tests because they need multiple users, waiting, or restart
 - Lottery channel permissions are applied.
 - Panel restores after restart.
 - `.lottery` status/check messages include ticket UI and stay synced after restart.
+- Lottery status button shows the user's own entries, win chance, round spend, and max additional tickets.
 - Buy 1/5/10/custom buttons update pot and panel.
 - Buying tickets cannot push a user above 60% lottery spend for the current round; earning or spending quesos changes how many more tickets they can buy.
 - Private ticket confirmation works.
