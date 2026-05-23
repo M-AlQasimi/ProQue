@@ -1272,6 +1272,8 @@ message_history_buffer = []
 active_activity_status_messages = {}
 command_timing_stats = {}
 slow_command_events = deque(maxlen=40)
+command_queue_stats = {}
+recent_queue_events = deque(maxlen=40)
 help_render_cache = {}
 games_render_cache = {}
 ai_knowledge_cache = {}
@@ -3614,6 +3616,7 @@ COMMAND_EXAMPLE_OVERRIDES = {
     "auditcommands": ".auditcommands",
     "balanceaudit": ".balanceaudit 14",
     "balancedashboard": ".balancedashboard 14",
+    "bulkqueue": ".bulkqueue",
     "styleaudit": ".styleaudit",
     "commandcleanup": ".commandcleanup",
     "aisettings": ".aisettings",
@@ -3714,7 +3717,7 @@ COMMAND_EXAMPLE_OVERRIDES = {
     "summon": ".summon @user",
     "summon2": ".summon2 @user",
     "timer": ".timer 10m study",
-    "usersettings": ".usersettings compact on",
+    "usersettings": ".usersettings receipts on",
     "tower": ".tower 1000",
     "tutorial": ".tutorial off",
     "translate": ".translate hello to Italian",
@@ -3976,7 +3979,7 @@ AI_SAFE_COMMANDS = {
     "aidoctor", "botdoctor", "doctorai", "diagnosebot",
     "aiperms", "aipermissions", "aicapabilities", "aiauthority",
     "aihistory", "aiactions", "actionhistory", "aisettings", "aiconfig", "aicontrols", "usersettings", "mysettings", "preferences", "prefs",
-    "commandstats", "cmdstats", "usage", "receipt", "txreceipt", "qreceipt",
+    "commandstats", "cmdstats", "usage", "bulkqueue", "queue", "jobqueue", "receipt", "txreceipt", "qreceipt",
     "auditcommands", "cmdaudit", "commandaudit", "styleaudit", "uiaudit", "messageaudit", "commandcleanup", "cleanupcommands", "cmdcleanup",
     "gameaudit", "gaudit", "auditgames", "event", "qevent", "events", "quote", "archive", "transcript",
     "generate", "analyse", "analyze", "analyseimage", "analyzeimage", "vision",
@@ -5490,7 +5493,7 @@ HELP_CATEGORIES = {
     ],
     "Status": ["afk", "sleep", "wake", "fsleep", "away", "setbday", "removebday", "setbdaychannel", "activity", "activitystats", "messages"],
     "Admin": [
-        "settings", "slashsync", "health", "perms", "permaudit", "sessions", "auditcommands", "styleaudit", "commandcleanup", "commandstats", "receipt", "receipts", "setlogs", "prefix", "disable", "enable", "disableall", "enableall", "dclist", "perf", "test", "testlog", "testrlog",
+        "settings", "slashsync", "health", "perms", "permaudit", "sessions", "auditcommands", "styleaudit", "commandcleanup", "commandstats", "bulkqueue", "receipt", "receipts", "setlogs", "prefix", "disable", "enable", "disableall", "enableall", "dclist", "perf", "test", "testlog", "testrlog",
         "endttt", "setnick", "unmute", "kick", "ban", "unban", "addrole", "removerole", "deleterole",
         "lock", "unlock", "lockdown", "reopen", "rlockdown", "runlock", "shut", "unshut", "clearwatchlist", "rshut", "unrshut",
         "send", "reply", "fwd", "aban", "raban", "abanlist", "summon", "summon2", "block", "unblock",
@@ -6263,6 +6266,9 @@ async def usersettings_command(ctx, key: str = None, *, value: str = None):
     """Shows or changes your personal bot preferences."""
     allowed = {
         "compact": "Compact command results where supported",
+        "receipts": "Show hidden receipt details with copyable receipt IDs",
+        "gamesummary": "Prefer cleaner game result summaries where supported",
+        "shopsummary": "Keep shop purchase follow-ups compact",
         "quiet": "Reduce optional reminder-style text where supported",
     }
     if not key:
@@ -6437,7 +6443,21 @@ async def styleaudit_command(ctx):
             value=embed_value(command_style_expectation(category), 900),
             inline=False,
         )
-    embed.set_footer(text=f"Audited {total} command entries. Use .auditcommands for missing help/examples and .permaudit for sensitive exposure.")
+    long_view_timeout = int(LONG_HELP_VIEW_TIMEOUT / 3600)
+    embed.add_field(
+        name="Long UI Rules",
+        value=(
+            f"Help/setup views stay alive for about **{long_view_timeout}h**.\n"
+            "Interactive game/shop views should defer quickly, keep edits under Discord limits, and show compact summaries when finished."
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Receipts & Summaries",
+        value="Receipts use one shared hidden format with a copyable ID. Long summaries should page results instead of ending with `...and more`.",
+        inline=False,
+    )
+    embed.set_footer(text=f"Audited {total} command entries. Use .auditcommands for missing help/examples, .permaudit for sensitive exposure, and .perf for slow paths.")
     await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
 @bot.command(name="commandcleanup", aliases=["cleanupcommands", "cmdcleanup"])
@@ -6647,8 +6667,6 @@ async def slashsync_command(ctx):
 @is_admin_power()
 async def perf_command(ctx):
     """Shows slow command timing stats since the last restart."""
-    if not command_timing_stats:
-        return await ctx.send("No command timing data yet.")
     rows = []
     for name, stats in sorted(command_timing_stats.items(), key=lambda item: item[1]["max_ms"], reverse=True)[:15]:
         count = max(1, int(stats["count"]))
@@ -6660,7 +6678,7 @@ async def perf_command(ctx):
         color=discord.Color.orange(),
         icon=economy_q_perf,
     )
-    embed.add_field(name="Slowest", value=joined_embed_value(rows), inline=False)
+    embed.add_field(name="Slowest", value=joined_embed_value(rows) if rows else "No command timing data yet.", inline=False)
     if slow_command_events:
         recent = []
         for event in list(slow_command_events)[-8:][::-1]:
@@ -6669,11 +6687,75 @@ async def perf_command(ctx):
             jump_text = f" · [jump]({jump})" if jump else ""
             recent.append(f"`{event['name']}` · **{event['elapsed_ms']:,}ms** · <@{event['user_id']}> · {ts}{jump_text}")
         embed.add_field(name="Recent Slow Runs", value=embed_value("\n".join(recent), 1800), inline=False)
+    queue_rows = []
+    for group, stats in sorted(command_queue_stats.items()):
+        count = max(1, int(stats["count"]))
+        avg = int(stats["total_ms"] / count)
+        queue_rows.append(f"`{group}` · avg wait **{avg:,}ms** · max **{int(stats['max_ms']):,}ms** · waits **{count:,}**")
+    embed.add_field(name="Queue Waits", value=joined_embed_value(queue_rows) if queue_rows else "No queue waits tracked yet.", inline=False)
+    if recent_queue_events:
+        waits = []
+        for event in list(recent_queue_events)[-8:][::-1]:
+            ts = discord.utils.format_dt(event["created_at"], "R")
+            waits.append(f"`{event['name']}` · `{event['group']}` · **{event['waited_ms']:,}ms** · <@{event['user_id']}> · {ts}")
+        embed.add_field(name="Recent Queue Waits", value=embed_value("\n".join(waits), 1800), inline=False)
+    active_global = max(0, COMMAND_CONCURRENCY_LIMIT - getattr(command_semaphore, "_value", COMMAND_CONCURRENCY_LIMIT))
+    active_heavy = max(0, HEAVY_COMMAND_CONCURRENCY_LIMIT - getattr(heavy_command_semaphore, "_value", HEAVY_COMMAND_CONCURRENCY_LIMIT))
+    active_bulk = max(0, BULK_COMMAND_CONCURRENCY_LIMIT - getattr(bulk_command_semaphore, "_value", BULK_COMMAND_CONCURRENCY_LIMIT))
+    active_ai = max(0, AI_COMMAND_CONCURRENCY_LIMIT - getattr(ai_command_semaphore, "_value", AI_COMMAND_CONCURRENCY_LIMIT))
+    embed.add_field(
+        name="Live Capacity",
+        value=(
+            f"Global **{active_global}/{COMMAND_CONCURRENCY_LIMIT}** · "
+            f"Heavy **{active_heavy}/{HEAVY_COMMAND_CONCURRENCY_LIMIT}** · "
+            f"Bulk **{active_bulk}/{BULK_COMMAND_CONCURRENCY_LIMIT}** · "
+            f"AI **{active_ai}/{AI_COMMAND_CONCURRENCY_LIMIT}**"
+        ),
+        inline=False,
+    )
     embed.add_field(
         name="Health",
         value=f"Gateway latency **{round(bot.latency * 1000):,}ms** · Help cache **{len(help_render_cache):,}** pages",
         inline=False,
     )
+    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
+@bot.command(name="bulkqueue", aliases=["queue", "jobqueue"])
+@is_admin_power()
+async def bulkqueue_command(ctx):
+    """Shows current command queue pressure for heavy and bulk commands."""
+    active_global = max(0, COMMAND_CONCURRENCY_LIMIT - getattr(command_semaphore, "_value", COMMAND_CONCURRENCY_LIMIT))
+    active_heavy = max(0, HEAVY_COMMAND_CONCURRENCY_LIMIT - getattr(heavy_command_semaphore, "_value", HEAVY_COMMAND_CONCURRENCY_LIMIT))
+    active_bulk = max(0, BULK_COMMAND_CONCURRENCY_LIMIT - getattr(bulk_command_semaphore, "_value", BULK_COMMAND_CONCURRENCY_LIMIT))
+    active_ai = max(0, AI_COMMAND_CONCURRENCY_LIMIT - getattr(ai_command_semaphore, "_value", AI_COMMAND_CONCURRENCY_LIMIT))
+    embed = standard_embed(
+        "Command Queue",
+        description="Live pressure from command groups that can slow the bot when many requests happen at once.",
+        color=discord.Color.blurple(),
+        icon=economy_q_perf,
+    )
+    embed.add_field(
+        name="Running Now",
+        value=(
+            f"Global **{active_global}/{COMMAND_CONCURRENCY_LIMIT}**\n"
+            f"Bulk **{active_bulk}/{BULK_COMMAND_CONCURRENCY_LIMIT}**\n"
+            f"Heavy **{active_heavy}/{HEAVY_COMMAND_CONCURRENCY_LIMIT}**\n"
+            f"AI **{active_ai}/{AI_COMMAND_CONCURRENCY_LIMIT}**"
+        ),
+        inline=True,
+    )
+    queue_rows = []
+    for group, stats in sorted(command_queue_stats.items()):
+        count = max(1, int(stats["count"]))
+        avg = int(stats["total_ms"] / count)
+        queue_rows.append(f"`{group}` avg **{avg:,}ms**, max **{int(stats['max_ms']):,}ms**")
+    embed.add_field(name="Wait History", value=joined_embed_value(queue_rows) if queue_rows else "No waits recorded this restart.", inline=True)
+    if recent_queue_events:
+        recent = []
+        for event in list(recent_queue_events)[-6:][::-1]:
+            recent.append(f"`{event['name']}` waited **{event['waited_ms']:,}ms** in `{event['group']}`")
+        embed.add_field(name="Recent", value=embed_value("\n".join(recent), 1200), inline=False)
+    embed.set_footer(text="Bulk commands run through a shared queue so they do not block normal commands.")
     await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
 @bot.command(name="perms", aliases=["permissions", "permcheck"])
@@ -8592,6 +8674,7 @@ def command_load_group(ctx):
 
 @bot.before_invoke
 async def limit_command_concurrency(ctx):
+    queue_started = time.perf_counter()
     await command_semaphore.acquire()
     ctx._proque_command_semaphore_acquired = True
     group, semaphore = command_load_group(ctx)
@@ -8600,6 +8683,20 @@ async def limit_command_concurrency(ctx):
     if semaphore is not None:
         await semaphore.acquire()
         ctx._proque_group_semaphore_acquired = True
+    waited_ms = int((time.perf_counter() - queue_started) * 1000)
+    stats = command_queue_stats.setdefault(group, {"count": 0, "total_ms": 0, "max_ms": 0})
+    stats["count"] += 1
+    stats["total_ms"] += waited_ms
+    stats["max_ms"] = max(stats["max_ms"], waited_ms)
+    if waited_ms >= 500:
+        recent_queue_events.append({
+            "name": ctx.command.qualified_name if ctx.command else (ctx.invoked_with or "unknown"),
+            "group": group,
+            "waited_ms": waited_ms,
+            "user_id": ctx.author.id,
+            "guild_id": ctx.guild.id if ctx.guild else None,
+            "created_at": datetime.now(timezone.utc),
+        })
 
 @bot.after_invoke
 async def track_command_usage_after(ctx):
