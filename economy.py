@@ -1357,7 +1357,7 @@ def create_receipt(guild_id, channel_id, actor_id, target_ids, action, amount=No
     return receipt_id
 
 def receipt_line(receipt_id):
-    return f"\n-# {Q_ARCHIVE} ||Receipt `{receipt_id}`||" if receipt_id else ""
+    return f"\n-# {Q_ARCHIVE} ||Receipt|| `{receipt_id}`" if receipt_id else ""
 
 def get_receipt(receipt_id):
     conn = get_db_connection()
@@ -3547,6 +3547,24 @@ def item_display_name(item):
     emoji = (item.get("emoji") or "").strip()
     return f"{emoji} {item['name']}" if emoji else item["name"]
 
+def item_short_description(item):
+    text = str(item.get("description") or "").strip()
+    prefixes = ("Passive: ", "Temporary: ", "Cosmetic: ", "Consumable: ")
+    for prefix in prefixes:
+        if text.startswith(prefix):
+            return text[len(prefix):].strip()
+    return text
+
+def item_type_label(item):
+    if "duration_hours" in item:
+        return "Temporary"
+    description = str(item.get("description") or "")
+    if description.startswith("Cosmetic:"):
+        return "Cosmetic"
+    if description.startswith("Consumable:"):
+        return "Consumable"
+    return "Passive"
+
 def item_select_emoji(item):
     emoji = (item.get("emoji") or "").strip()
     if not emoji:
@@ -3608,7 +3626,7 @@ def inventory_category_lines(data, category, owned_only=False):
         lines.append(
             f"**{item_display_name(item)}** - {item_owned_text(data, item_id, item)}\n"
             f"Rarity: **{item_rarity_label(item)}**\n"
-            f"{item['description']}"
+            f"{item_short_description(item)}"
         )
     return lines
 
@@ -3647,7 +3665,7 @@ def build_inventory_embed(user, data, page="overview"):
             qty = item_count(data, item_id)
             if qty:
                 suffix = f" x{qty}" if item.get("max_qty", 1) > 1 else ""
-                owned_lines.append(f"**{item_display_name(item)}{suffix}**\n{item['description']}")
+                owned_lines.append(f"**{item_display_name(item)}{suffix}**\n{item_short_description(item)}")
         if boost_text:
             owned_lines.insert(0, f"**{item_display_name(SHOP_ITEMS['fortune_vial'])}**\n{boost_text}")
         add_split_embed_field(embed, "Owned Items", owned_lines or ["Nothing owned yet."], inline=False)
@@ -3988,13 +4006,162 @@ def format_bulk_before_after(user_ids, before, after, formatter, label, limit=8)
         f"{user_mention(user_id)}: **{formatter(before.get(user_id, 0))}** → **{formatter(after.get(user_id, 0))}**"
         for user_id in shown
     ]
-    if len(unique_ids) > limit:
-        lines.append(f"...and **{len(unique_ids) - limit:,}** more.")
     before_total = sum(int(before.get(user_id, 0)) for user_id in unique_ids)
     after_total = sum(int(after.get(user_id, 0)) for user_id in unique_ids)
     return (
         f"{label} Total: **{formatter(before_total)}** → **{formatter(after_total)}**\n"
         + "\n".join(lines)
+    )
+
+def format_bulk_before_after_page(user_ids, before, after, formatter, label, page=0, per_page=8):
+    unique_ids = list(dict.fromkeys(int(user_id) for user_id in user_ids))
+    total = len(unique_ids)
+    page_count = max(1, math.ceil(total / per_page)) if total else 1
+    page = max(0, min(int(page or 0), page_count - 1))
+    start = page * per_page
+    shown = unique_ids[start:start + per_page]
+    before_total = sum(int(before.get(user_id, 0)) for user_id in unique_ids)
+    after_total = sum(int(after.get(user_id, 0)) for user_id in unique_ids)
+    lines = [
+        f"{label} Total: **{formatter(before_total)}** → **{formatter(after_total)}**",
+        f"Showing **{start + 1 if total else 0}-{start + len(shown)}** of **{total:,}**.",
+    ]
+    lines.extend(
+        f"{user_mention(user_id)}: **{formatter(before.get(user_id, 0))}** → **{formatter(after.get(user_id, 0))}**"
+        for user_id in shown
+    )
+    return "\n".join(lines)
+
+class BulkBeforeAfterView(discord.ui.View):
+    def __init__(self, author_id, header, user_ids, before, after, formatter, label, *, receipt_id=None, per_page=8):
+        super().__init__(timeout=LONG_HELP_VIEW_TIMEOUT)
+        self.author_id = int(author_id)
+        self.header = str(header)
+        self.user_ids = list(dict.fromkeys(int(user_id) for user_id in user_ids))
+        self.before = dict(before or {})
+        self.after = dict(after or {})
+        self.formatter = formatter
+        self.label = str(label)
+        self.receipt_id = receipt_id
+        self.per_page = int(per_page or 8)
+        self.page = 0
+        self.update_buttons()
+
+    @property
+    def page_count(self):
+        return max(1, math.ceil(len(self.user_ids) / self.per_page)) if self.user_ids else 1
+
+    def update_buttons(self):
+        self.prev_page.disabled = self.page <= 0
+        self.next_page.disabled = self.page >= self.page_count - 1
+
+    def content(self):
+        body = format_bulk_before_after_page(
+            self.user_ids,
+            self.before,
+            self.after,
+            self.formatter,
+            self.label,
+            self.page,
+            self.per_page,
+        )
+        return fit_discord_content(f"{self.header}\n{body}{receipt_line(self.receipt_id)}")
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id == self.author_id:
+            return True
+        await interaction.response.send_message("Open your own bulk receipt panel.", ephemeral=True)
+        return False
+
+    @discord.ui.button(label="Prev", style=discord.ButtonStyle.secondary)
+    async def prev_page(self, interaction, button):
+        self.page = max(0, self.page - 1)
+        self.update_buttons()
+        await interaction.response.edit_message(
+            content=self.content(),
+            view=self,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+    @discord.ui.button(label="Next", style=discord.ButtonStyle.secondary)
+    async def next_page(self, interaction, button):
+        self.page = min(self.page_count - 1, self.page + 1)
+        self.update_buttons()
+        await interaction.response.edit_message(
+            content=self.content(),
+            view=self,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+class LinesPageView(discord.ui.View):
+    def __init__(self, header, lines, *, footer="", per_page=10, author_id=None):
+        super().__init__(timeout=LONG_HELP_VIEW_TIMEOUT)
+        self.header = str(header)
+        self.lines = list(lines or [])
+        self.footer = str(footer or "")
+        self.per_page = int(per_page or 10)
+        self.author_id = int(author_id) if author_id else None
+        self.page = 0
+        self.update_buttons()
+
+    @property
+    def page_count(self):
+        return max(1, math.ceil(len(self.lines) / self.per_page)) if self.lines else 1
+
+    def update_buttons(self):
+        self.prev_page.disabled = self.page <= 0
+        self.next_page.disabled = self.page >= self.page_count - 1
+
+    def content(self):
+        start = self.page * self.per_page
+        page_lines = self.lines[start:start + self.per_page]
+        body = "\n".join(page_lines) if page_lines else "Nothing to show."
+        page_hint = f"Showing **{start + 1 if self.lines else 0}-{start + len(page_lines)}** of **{len(self.lines):,}**."
+        return fit_discord_content("\n".join(part for part in [self.header, page_hint, body, self.footer] if part))
+
+    async def interaction_check(self, interaction):
+        if self.author_id is None or interaction.user.id == self.author_id:
+            return True
+        await interaction.response.send_message("Open your own page panel.", ephemeral=True)
+        return False
+
+    @discord.ui.button(label="Prev", style=discord.ButtonStyle.secondary)
+    async def prev_page(self, interaction, button):
+        self.page = max(0, self.page - 1)
+        self.update_buttons()
+        await interaction.response.edit_message(
+            content=self.content(),
+            view=self,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+    @discord.ui.button(label="Next", style=discord.ButtonStyle.secondary)
+    async def next_page(self, interaction, button):
+        self.page = min(self.page_count - 1, self.page + 1)
+        self.update_buttons()
+        await interaction.response.edit_message(
+            content=self.content(),
+            view=self,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+async def send_bulk_before_after_result(ctx, progress_message, header, user_ids, before, after, formatter, label, *, receipt_id=None, per_page=8):
+    unique_ids = list(dict.fromkeys(int(user_id) for user_id in user_ids))
+    if len(unique_ids) > per_page:
+        view = BulkBeforeAfterView(ctx.author.id, header, unique_ids, before, after, formatter, label, receipt_id=receipt_id, per_page=per_page)
+        await send_or_edit_bulk_result(
+            ctx,
+            progress_message,
+            view.content(),
+            view=view,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+        return
+    await send_or_edit_bulk_result(
+        ctx,
+        progress_message,
+        f"{header}\n{format_bulk_before_after(unique_ids, before, after, formatter, label, limit=per_page)}{receipt_line(receipt_id)}",
+        allowed_mentions=discord.AllowedMentions.none(),
     )
 
 def cooldown_multiplier_for_user(user_id, data=None):
@@ -4143,13 +4310,24 @@ async def send_bulk_progress(ctx, action, count):
         allowed_mentions=discord.AllowedMentions.none(),
     )
 
-async def finish_bulk_progress(message, text):
-    if not message:
-        return
-    try:
-        await message.edit(content=f"{Q_SUCCESS} {text}")
-    except Exception:
-        pass
+async def send_or_edit_bulk_result(ctx, progress_message, content, **kwargs):
+    content = fit_discord_content(content)
+    if progress_message:
+        try:
+            await progress_message.edit(content=content, **kwargs)
+            return
+        except Exception:
+            pass
+    await reply_to_command(ctx, content, **kwargs)
+
+async def send_or_edit_bulk_error(ctx, progress_message, text):
+    if progress_message:
+        try:
+            await progress_message.edit(content=fit_discord_content(f"{Q_DENIED} {text}"))
+            return
+        except Exception:
+            pass
+    await send_error(ctx, text)
 
 def strip_bulk_confirm(args):
     text = str(args or "")
@@ -4794,8 +4972,7 @@ async def shop(ctx):
             description=(
                 f"{user_mention(ctx.author.id)}\n"
                 f"{QASH_EMOJI} Balance: **{format_balance(balance)}**\n"
-                f"Category: **{selected_category}**\n"
-                "Pick a category, choose an item, then press Buy."
+                f"{Q_FILTER} Category: **{selected_category}**"
             ),
             color=discord.Color.gold()
         )
@@ -4813,8 +4990,12 @@ async def shop(ctx):
             owned_text = "active" if "duration_hours" in item and item_id == "fortune_vial" and boost_text else (
                 f"{owned}/{max_qty}" if max_qty > 1 else ("owned" if owned else "not owned")
             )
-            lines.append(f"{marker}**{item_display_name(item)}** - {price_text} | {item_rarity_label(item)} | {owned_text}")
-        add_split_embed_field(embed, "Items", lines or ["No items in this category."], inline=False)
+            lines.append(
+                f"{marker}**{item_display_name(item)}** — **{price_text}**\n"
+                f"{item_short_description(item)}\n"
+                f"`{item_type_label(item)}` • {item_rarity_label(item)} • Owned: **{owned_text}**"
+            )
+        add_split_embed_field(embed, "Catalog", lines or ["No items in this category."], inline=False)
 
         selected_cost = int(selected_item["cost"] * (1 - discount))
         selected_owned = inventory.count(selected_item_id)
@@ -4823,17 +5004,39 @@ async def shop(ctx):
             f"{selected_owned}/{selected_max}" if selected_max > 1 else ("owned" if selected_owned else "not owned")
         )
         embed.add_field(
-            name=f"Selected: {item_display_name(selected_item)}",
+            name=f"{Q_COMMAND_CHECK} Selected Item",
             value=(
+                f"**{item_display_name(selected_item)}**\n"
+                f"{item_short_description(selected_item)}\n\n"
                 f"Price: **{format_balance(selected_cost)}**"
                 + (f" ~~{format_balance(selected_item['cost'])}~~" if discount else "")
-                + f"\nRarity: **{item_rarity_label(selected_item)}**\n"
-                f"Owned: **{selected_owned_text}**\n"
-                f"{selected_item['description']}"
+                + f"\nType: **{item_type_label(selected_item)}**"
+                f"\nRarity: **{item_rarity_label(selected_item)}**"
+                f"\nOwned: **{selected_owned_text}**"
             ),
             inline=False,
         )
-        embed.set_footer(text=f"{categories.index(selected_category) + 1}/{len(categories)} categories")
+        embed.set_footer(text=f"{categories.index(selected_category) + 1}/{len(categories)} categories • Pick an item, then Buy.")
+        return embed
+
+    def purchase_summary_embed(data, purchase, closed=False):
+        item = SHOP_ITEMS[purchase["item_id"]]
+        embed = discord.Embed(
+            title=f"{Q_SHOP} Shop Summary",
+            description=(
+                f"{user_mention(ctx.author.id)}\n"
+                f"{Q_SUCCESS} Bought **{purchase['quantity']}x {item_display_name(item)}**."
+            ),
+            color=discord.Color.green()
+        )
+        embed.add_field(name="Spent", value=format_balance(purchase["total_cost"]), inline=True)
+        embed.add_field(name="Balance", value=format_balance(purchase["new_balance"]), inline=True)
+        embed.add_field(name="Item", value=item_short_description(item), inline=False)
+        if purchase.get("discount"):
+            embed.add_field(name="Discount", value=f"-{int(purchase['discount'] * 100)}%", inline=True)
+        if purchase.get("effect_until"):
+            embed.add_field(name="Effect", value=f"Active until {discord_relative_time(purchase['effect_until'])}", inline=False)
+        embed.set_footer(text="Shopping closed." if closed else "Continue shopping or press Done to keep this compact summary.")
         return embed
 
     def buy_item_sync(user_id, guild_id, item_id, quantity):
@@ -4870,6 +5073,7 @@ async def shop(ctx):
 
         new_balance_value = int(data["balance"] or 0) - total_cost
         effect_text = ""
+        effect_until = None
         if "duration_hours" in item:
             now = datetime.now(timezone.utc)
             current_until = data.get("luck_boost_until") if item_id == "fortune_vial" else None
@@ -4877,6 +5081,7 @@ async def shop(ctx):
                 current_until = current_until.replace(tzinfo=timezone.utc) if current_until.tzinfo is None else current_until
             start = max(now, current_until) if current_until else now
             boost_until = start + timedelta(hours=item["duration_hours"] * quantity)
+            effect_until = boost_until
             new_balance = apply_shop_purchase(
                 user_id,
                 item_id,
@@ -4903,6 +5108,14 @@ async def shop(ctx):
                 f"{Q_SUCCESS} Bought **{quantity}x {item_name}** for **{format_balance(total_cost)}**.\n"
                 f"New Balance: **{format_balance(new_balance)}**{discount_text}{effect_text}"
             ),
+            "purchase": {
+                "item_id": item_id,
+                "quantity": quantity,
+                "total_cost": total_cost,
+                "new_balance": new_balance,
+                "discount": discount,
+                "effect_until": effect_until,
+            },
         }
 
     class ShopQuantityModal(discord.ui.Modal):
@@ -4934,7 +5147,10 @@ async def shop(ctx):
                 return
 
             await interaction.followup.send(result["message"], ephemeral=True)
-            await self.shop_view.refresh_message()
+            if result.get("ok") and result.get("purchase"):
+                await self.shop_view.show_purchase_summary(result["purchase"])
+            else:
+                await self.shop_view.refresh_message()
 
     class ShopView(discord.ui.View):
         def __init__(self):
@@ -4943,10 +5159,20 @@ async def shop(ctx):
             self.selected_item_id = selected_item_for_category(self.selected_category)
             self.message = None
             self.refresh_task = None
+            self.mode = "catalog"
+            self.last_purchase = None
             self.rebuild_components()
 
         def rebuild_components(self):
             self.clear_items()
+            if self.mode == "summary":
+                self.continue_button = discord.ui.Button(label="Continue shopping", style=discord.ButtonStyle.primary, row=0)
+                self.continue_button.callback = self.continue_shopping
+                self.add_item(self.continue_button)
+                self.done_button = discord.ui.Button(label="Done", style=discord.ButtonStyle.secondary, row=0)
+                self.done_button.callback = self.finish_shopping
+                self.add_item(self.done_button)
+                return
             category_options = [
                 discord.SelectOption(
                     label=category,
@@ -5007,11 +5233,18 @@ async def shop(ctx):
                     get_shop_data(ctx.author.id),
                     asyncio.to_thread(event_shop_discount_rate, ctx.guild.id if ctx.guild else None),
                 )
-                await self.message.edit(
-                    embed=catalog_embed(data, self.selected_category, self.selected_item_id, discount),
-                    view=self,
-                    allowed_mentions=discord.AllowedMentions.none()
-                )
+                if self.mode == "summary" and self.last_purchase:
+                    await self.message.edit(
+                        embed=purchase_summary_embed(data, self.last_purchase),
+                        view=self,
+                        allowed_mentions=discord.AllowedMentions.none()
+                    )
+                else:
+                    await self.message.edit(
+                        embed=catalog_embed(data, self.selected_category, self.selected_item_id, discount),
+                        view=self,
+                        allowed_mentions=discord.AllowedMentions.none()
+                    )
             except Exception:
                 self.stop()
 
@@ -5029,6 +5262,7 @@ async def shop(ctx):
             return True
 
         async def select_item(self, interaction):
+            self.mode = "catalog"
             self.selected_item_id = self.item_select.values[0]
             data, discount = await asyncio.gather(
                 get_shop_data(interaction.user.id),
@@ -5041,6 +5275,7 @@ async def shop(ctx):
             )
 
         async def select_category(self, interaction):
+            self.mode = "catalog"
             self.selected_category = self.category_select.values[0]
             self.selected_item_id = selected_item_for_category(self.selected_category, self.selected_item_id)
             self.rebuild_components()
@@ -5056,6 +5291,47 @@ async def shop(ctx):
 
         async def buy_selected(self, interaction):
             await interaction.response.send_modal(ShopQuantityModal(self.selected_item_id, self))
+
+        async def show_purchase_summary(self, purchase):
+            self.mode = "summary"
+            self.last_purchase = purchase
+            self.rebuild_components()
+            if not self.message:
+                return
+            data = await get_shop_data(ctx.author.id)
+            await self.message.edit(
+                embed=purchase_summary_embed(data, purchase),
+                view=self,
+                allowed_mentions=discord.AllowedMentions.none()
+            )
+
+        async def continue_shopping(self, interaction):
+            self.mode = "catalog"
+            self.rebuild_components()
+            data, discount = await asyncio.gather(
+                get_shop_data(interaction.user.id),
+                get_shop_discount(),
+            )
+            await interaction.response.edit_message(
+                embed=catalog_embed(data, self.selected_category, self.selected_item_id, discount),
+                view=self,
+                allowed_mentions=discord.AllowedMentions.none()
+            )
+
+        async def finish_shopping(self, interaction):
+            if not self.last_purchase:
+                await interaction.response.defer()
+                return
+            self.mode = "summary"
+            for item in self.children:
+                item.disabled = True
+            data = await get_shop_data(interaction.user.id)
+            await interaction.response.edit_message(
+                embed=purchase_summary_embed(data, self.last_purchase, closed=True),
+                view=self,
+                allowed_mentions=discord.AllowedMentions.none()
+            )
+            self.stop()
 
     view = ShopView()
     data, discount = await asyncio.gather(
@@ -5511,18 +5787,26 @@ async def process_lottery_draw(config):
         if channel:
             refund_lines = [
                 f"- {user_mention(user_id)} refunded **{format_balance(amount)}**"
-                for user_id, amount in refunds[:10]
+                for user_id, amount in refunds
             ]
-            extra = "\n".join(refund_lines) if refund_lines else "No paid tickets needed a refund."
-            if len(refunds) > 10:
-                extra += f"\n...and **{len(refunds) - 10}** more refunds."
-            await channel.send(
+            header = (
                 f"{QOIN_CHEST} Lottery draw cancelled: **{unique_players}/5** players joined.\n"
-                f"{Q_TICKET} Refunded **{format_balance(refunded_total)}** across **{len(refunds)}** users.\n"
-                f"{extra}\n"
-                "No winner this round. The lottery has restarted with a fresh participant role.",
-                allowed_mentions=discord.AllowedMentions.none()
+                f"{Q_TICKET} Refunded **{format_balance(refunded_total)}** across **{len(refunds)}** users."
             )
+            footer = "No winner this round. The lottery has restarted with a fresh participant role."
+            if len(refund_lines) > 10:
+                view = LinesPageView(header, refund_lines, footer=footer, per_page=10)
+                await channel.send(
+                    view.content(),
+                    view=view,
+                    allowed_mentions=discord.AllowedMentions.none()
+                )
+            else:
+                extra = "\n".join(refund_lines) if refund_lines else "No paid tickets needed a refund."
+                await channel.send(
+                    f"{header}\n{extra}\n{footer}",
+                    allowed_mentions=discord.AllowedMentions.none()
+                )
         return
 
     total_tickets = sum(max(0, int(row["tickets"] or 0)) for row in rows)
@@ -6864,15 +7148,19 @@ async def give(ctx, *, args: str = None):
             await send_error(ctx, "Database unavailable. Try again shortly.")
             return
 
-        await reply_to_command(
+        await send_bulk_before_after_result(
             ctx,
-            f"{QOIN_TRANSFER} You sent **{format_balance(amount)}** each to **{len(recipient_ids)}** users: {multi_targets['label']}\n"
+            None,
+            f"{QOIN_TRANSFER} You sent **{format_balance(amount)}** each to **{len(recipient_ids)}** users.\n"
             f"Tax Burned: **{format_balance(total_tax)}**{' (tax-free event)' if tax_rate == 0 else ''}\n"
             f"Total Received: **{format_balance(total_received)}**\n"
-            f"Your Balance: **{format_balance(old_sender_balance)}** → **{format_balance(new_sender_balance)}**\n"
-            f"{format_bulk_before_after(recipient_ids, before_recipient_balances, after_recipient_balances, format_balance, 'Recipient Balance')}"
-            f"{receipt_line(receipt_id)}",
-            allowed_mentions=discord.AllowedMentions.none()
+            f"Your Balance: **{format_balance(old_sender_balance)}** → **{format_balance(new_sender_balance)}**",
+            recipient_ids,
+            before_recipient_balances,
+            after_recipient_balances,
+            format_balance,
+            "Recipient Balance",
+            receipt_id=receipt_id,
         )
         if has_economy_owner_power(ctx.author.id, ctx.guild):
             await send_economy_log(ctx, "𝚀𝚞𝚎wo Multi Transfer", [
@@ -7148,16 +7436,18 @@ async def add(ctx, *, args: str = None):
                 return before, count, after, receipt
             before_balances, count, after_balances, receipt_id = await asyncio.to_thread(run_bulk_add)
         except Exception:
-            await send_error(ctx, "Database unavailable. Try again shortly.")
+            await send_or_edit_bulk_error(ctx, progress_msg, "Database unavailable. Try again shortly.")
             return
-        await finish_bulk_progress(progress_msg, f"Finished adding {format_balance(amount)} to **{count:,}** member(s).")
-
-        await reply_to_command(
+        await send_bulk_before_after_result(
             ctx,
-            f"{Q_SUCCESS} Added **{format_balance(amount)}** to **{count}** server members.\n"
-            f"{format_bulk_before_after(user_ids, before_balances, after_balances, format_balance, 'Balance')}"
-            f"{receipt_line(receipt_id)}",
-            allowed_mentions=discord.AllowedMentions.none()
+            progress_msg,
+            f"{Q_SUCCESS} Added **{format_balance(amount)}** to **{count}** server members.",
+            user_ids,
+            before_balances,
+            after_balances,
+            format_balance,
+            "Balance",
+            receipt_id=receipt_id,
         )
         await send_economy_log(ctx, "𝚀𝚞𝚎wo Bulk Add", [
             ("Target", "@everyone", False),
@@ -7194,16 +7484,18 @@ async def add(ctx, *, args: str = None):
                 return before, count, after, receipt
             before_balances, count, after_balances, receipt_id = await asyncio.to_thread(run_bulk_add)
         except Exception:
-            await send_error(ctx, "Database unavailable. Try again shortly.")
+            await send_or_edit_bulk_error(ctx, progress_msg, "Database unavailable. Try again shortly.")
             return
-        await finish_bulk_progress(progress_msg, f"Finished adding {format_balance(amount)} to **{count:,}** member(s).")
-
-        await reply_to_command(
+        await send_bulk_before_after_result(
             ctx,
-            f"{Q_SUCCESS} Added **{format_balance(amount)}** to **{count}** members with **{role.name}**.\n"
-            f"{format_bulk_before_after(user_ids, before_balances, after_balances, format_balance, 'Balance')}"
-            f"{receipt_line(receipt_id)}",
-            allowed_mentions=discord.AllowedMentions.none()
+            progress_msg,
+            f"{Q_SUCCESS} Added **{format_balance(amount)}** to **{count}** members with **{role.name}**.",
+            user_ids,
+            before_balances,
+            after_balances,
+            format_balance,
+            "Balance",
+            receipt_id=receipt_id,
         )
         await send_economy_log(ctx, "𝚀𝚞𝚎wo Bulk Add", [
             ("Target", f"{role.mention} ({role.id})", False),
@@ -7235,15 +7527,18 @@ async def add(ctx, *, args: str = None):
                     return before, count, after, receipt
                 before_balances, count, after_balances, receipt_id = await asyncio.to_thread(run_bulk_add)
             except Exception:
-                await send_error(ctx, "Database unavailable. Try again shortly.")
+                await send_or_edit_bulk_error(ctx, progress_msg, "Database unavailable. Try again shortly.")
                 return
-            await finish_bulk_progress(progress_msg, f"Finished adding {format_balance(amount)} to **{count:,}** user(s).")
-            await reply_to_command(
+            await send_bulk_before_after_result(
                 ctx,
-                f"{Q_SUCCESS} Added **{format_balance(amount)}** each to **{count:,}** users: {targets['label']}.\n"
-                f"{format_bulk_before_after(targets['user_ids'], before_balances, after_balances, format_balance, 'Balance')}"
-                f"{receipt_line(receipt_id)}",
-                allowed_mentions=discord.AllowedMentions.none()
+                progress_msg,
+                f"{Q_SUCCESS} Added **{format_balance(amount)}** each to **{count:,}** users.",
+                targets["user_ids"],
+                before_balances,
+                after_balances,
+                format_balance,
+                "Balance",
+                receipt_id=receipt_id,
             )
             await send_economy_log(ctx, "𝚀𝚞𝚎wo Multi Add", [
                 ("Targets", targets["log_label"], False),
@@ -7347,22 +7642,28 @@ async def remove(ctx, *, args: str = None):
                     return local_total, local_changed, local_before, local_after, receipt
                 total_removed, changed, before_balances, after_balances, receipt_id = await asyncio.to_thread(run_multi_remove)
             except ValueError:
-                await ctx.send(f"{Q_DENIED} Use `.remove @user @user 10k` or `.remove @user @user all`.")
+                await send_or_edit_bulk_error(ctx, progress_msg, "Use `.remove @user @user 10k` or `.remove @user @user all`.")
                 return
             except Exception:
-                await send_error(ctx, "Database unavailable. Try again shortly.")
+                await send_or_edit_bulk_error(ctx, progress_msg, "Database unavailable. Try again shortly.")
                 return
-            await finish_bulk_progress(progress_msg, f"Finished removing balances for **{changed:,}** user(s).")
             if changed <= 0:
-                await send_nonpositive_amount_error(ctx, raw_amount)
+                if progress_msg:
+                    await progress_msg.edit(content=f"{Q_DENIED} No balances were changed.")
+                else:
+                    await send_nonpositive_amount_error(ctx, raw_amount)
                 return
-            await reply_to_command(
+            await send_bulk_before_after_result(
                 ctx,
-                f"{Q_SUCCESS} Removed from **{changed:,}** users: {targets['label']}.\n"
-                f"Total Removed: **{format_balance(total_removed)}**\n"
-                f"{format_bulk_before_after(targets['user_ids'], before_balances, after_balances, format_balance, 'Balance')}"
-                f"{receipt_line(receipt_id)}",
-                allowed_mentions=discord.AllowedMentions.none()
+                progress_msg,
+                f"{Q_SUCCESS} Removed from **{changed:,}** users.\n"
+                f"Total Removed: **{format_balance(total_removed)}**",
+                targets["user_ids"],
+                before_balances,
+                after_balances,
+                format_balance,
+                "Balance",
+                receipt_id=receipt_id,
             )
             await send_economy_log(ctx, "𝚀𝚞𝚎wo Multi Remove", [
                 ("Targets", targets["log_label"], False),
@@ -7476,18 +7777,20 @@ async def addtick(ctx, *, args: str = None):
         if count == 1 and targets["member"] is not None:
             await assign_lottery_role(ctx.guild, targets["member"].id, updated.get("role_id") if updated else None)
     except Exception:
-        await send_error(ctx, "Database unavailable. Try again shortly.")
+        await send_or_edit_bulk_error(ctx, progress_msg, "Database unavailable. Try again shortly.")
         return
-    await finish_bulk_progress(progress_msg, f"Finished adding tickets to **{count:,}** target(s).")
-
     total_added = amount * count
-    await reply_to_command(
+    await send_bulk_before_after_result(
         ctx,
-        f"{Q_SUCCESS} Added **{amount:,}** free {Q_TICKET} tickets to **{count:,}** target(s): {targets['label']}.\n"
-        f"Total Entries Added: **{total_added:,}**\n"
-        f"{format_bulk_before_after(targets['user_ids'], before_tickets, after_tickets, lambda value: f'{int(value):,}', 'Entries')}"
-        f"{receipt_line(receipt_id)}",
-        allowed_mentions=discord.AllowedMentions.none()
+        progress_msg,
+        f"{Q_SUCCESS} Added **{amount:,}** free {Q_TICKET} tickets to **{count:,}** target(s).\n"
+        f"Total Entries Added: **{total_added:,}**",
+        targets["user_ids"],
+        before_tickets,
+        after_tickets,
+        lambda value: f"{int(value):,}",
+        "Entries",
+        receipt_id=receipt_id,
     )
     await send_economy_log(ctx, "Lottery Tickets Added", [
         ("Target", targets["log_label"], False),
@@ -7549,17 +7852,19 @@ async def removetick(ctx, *, args: str = None):
         before_tickets, count, after_tickets, updated, total_removed, receipt_id = await asyncio.to_thread(run_ticket_remove)
         schedule_lottery_refresh(ctx.guild, updated)
     except Exception:
-        await send_error(ctx, "Database unavailable. Try again shortly.")
+        await send_or_edit_bulk_error(ctx, progress_msg, "Database unavailable. Try again shortly.")
         return
-    await finish_bulk_progress(progress_msg, f"Finished removing tickets from **{count:,}** target(s).")
-
-    await reply_to_command(
+    await send_bulk_before_after_result(
         ctx,
-        f"{Q_SUCCESS} Removed up to **{amount:,}** {Q_TICKET_MINUS} tickets from **{count:,}** target(s): {targets['label']}.\n"
-        f"Entries Removed: **{total_removed:,}**\n"
-        f"{format_bulk_before_after(targets['user_ids'], before_tickets, after_tickets, lambda value: f'{int(value):,}', 'Entries')}"
-        f"{receipt_line(receipt_id)}",
-        allowed_mentions=discord.AllowedMentions.none()
+        progress_msg,
+        f"{Q_SUCCESS} Removed up to **{amount:,}** {Q_TICKET_MINUS} tickets from **{count:,}** target(s).\n"
+        f"Entries Removed: **{total_removed:,}**",
+        targets["user_ids"],
+        before_tickets,
+        after_tickets,
+        lambda value: f"{int(value):,}",
+        "Entries",
+        receipt_id=receipt_id,
     )
     await send_economy_log(ctx, "Lottery Tickets Removed", [
         ("Target", targets["log_label"], False),
@@ -7622,16 +7927,18 @@ async def settick(ctx, *, args: str = None):
         if count == 1 and amount > 0 and targets["member"] is not None:
             await assign_lottery_role(ctx.guild, targets["member"].id, updated.get("role_id") if updated else None)
     except Exception:
-        await send_error(ctx, "Database unavailable. Try again shortly.")
+        await send_or_edit_bulk_error(ctx, progress_msg, "Database unavailable. Try again shortly.")
         return
-    await finish_bulk_progress(progress_msg, f"Finished setting tickets for **{count:,}** target(s).")
-
-    await reply_to_command(
+    await send_bulk_before_after_result(
         ctx,
-        f"{Q_SUCCESS} Set {Q_TICKET} tickets to **{amount:,}** for **{count:,}** target(s): {targets['label']}.\n"
-        f"{format_bulk_before_after(targets['user_ids'], before_tickets, after_tickets, lambda value: f'{int(value):,}', 'Entries')}"
-        f"{receipt_line(receipt_id)}",
-        allowed_mentions=discord.AllowedMentions.none()
+        progress_msg,
+        f"{Q_SUCCESS} Set {Q_TICKET} tickets to **{amount:,}** for **{count:,}** target(s).",
+        targets["user_ids"],
+        before_tickets,
+        after_tickets,
+        lambda value: f"{int(value):,}",
+        "Entries",
+        receipt_id=receipt_id,
     )
     await send_economy_log(ctx, "Lottery Tickets Set", [
         ("Target", targets["log_label"], False),
@@ -7684,16 +7991,18 @@ async def setquesos(ctx, *, args: str = None):
             return before, count, after, receipt
         before_balances, count, after_balances, receipt_id = await asyncio.to_thread(run_bulk_set)
     except Exception:
-        await send_error(ctx, "Database unavailable. Try again shortly.")
+        await send_or_edit_bulk_error(ctx, progress_msg, "Database unavailable. Try again shortly.")
         return
-    await finish_bulk_progress(progress_msg, f"Finished setting balances for **{count:,}** target(s).")
-
-    await reply_to_command(
+    await send_bulk_before_after_result(
         ctx,
-        f"{Q_SUCCESS} Set balance to **{format_balance(amount)}** for **{count:,}** target(s): {targets['label']}.\n"
-        f"{format_bulk_before_after(targets['user_ids'], before_balances, after_balances, format_balance, 'Balance')}"
-        f"{receipt_line(receipt_id)}",
-        allowed_mentions=discord.AllowedMentions.none()
+        progress_msg,
+        f"{Q_SUCCESS} Set balance to **{format_balance(amount)}** for **{count:,}** target(s).",
+        targets["user_ids"],
+        before_balances,
+        after_balances,
+        format_balance,
+        "Balance",
+        receipt_id=receipt_id,
     )
     await send_economy_log(ctx, "𝚀𝚞𝚎wo Balance Set", [
         ("Target", targets["log_label"], False),
