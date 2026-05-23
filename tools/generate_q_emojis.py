@@ -689,6 +689,105 @@ def qseason_pass():
     return c
 
 
+def arrow_arc(c, cx, cy, r, start, end, color=CYAN, width=5):
+    steps = 18
+    last = None
+    for i in range(steps + 1):
+        t = i / steps
+        a = start + (end - start) * t
+        point = (cx + math.cos(a) * r, cy + math.sin(a) * r)
+        if last is not None:
+            c.line(last[0], last[1], point[0], point[1], color, width)
+        last = point
+    a = end
+    tip = (cx + math.cos(a) * r, cy + math.sin(a) * r)
+    tangent = a + math.pi / 2 if end >= start else a - math.pi / 2
+    c.poly(
+        [
+            tip,
+            (tip[0] - math.cos(tangent - 0.75) * 14, tip[1] - math.sin(tangent - 0.75) * 14),
+            (tip[0] - math.cos(tangent + 0.75) * 14, tip[1] - math.sin(tangent + 0.75) * 14),
+        ],
+        color,
+        outline=BLUE_DARK,
+        width=1.5,
+    )
+
+
+def qrefresh():
+    c = Canvas()
+    coin(c, 64, 64, 31)
+    arrow_arc(c, 64, 64, 47, -math.pi * 0.85, math.pi * 0.35, CYAN, 5)
+    arrow_arc(c, 64, 64, 47, math.pi * 0.15, math.pi * 1.35, ICE, 4)
+    c.sparkle(100, 31, 6)
+    return c
+
+
+def qqueue():
+    c = Canvas()
+    c.rect(27, 29, 74, 74, NAVY, outline=BLUE_DARK, width=5)
+    for i, y in enumerate([45, 63, 81]):
+        c.circle(41, y, 6, [CYAN, SILVER, BLUE][i], outline=BLUE_DARK, width=1.5)
+        c.rect(52, y - 5, 35, 10, [ICE, BLUE, CYAN][i], outline=BLUE_MID, width=1.5)
+    c.line(90, 38, 103, 25, CYAN, 4)
+    c.poly([(103, 25), (91, 27), (101, 38)], CYAN, outline=BLUE_DARK, width=1.5)
+    coin(c, 36, 99, 14)
+    c.sparkle(98, 34, 5)
+    return c
+
+
+def qrecovery():
+    c = Canvas()
+    c.circle(64, 65, 42, NAVY, outline=BLUE_DARK, width=5)
+    arrow_arc(c, 64, 65, 30, math.pi * 0.15, math.pi * 1.65, CYAN, 6)
+    c.line(39, 66, 50, 66, ICE, 4)
+    c.line(50, 66, 56, 53, ICE, 4)
+    c.line(56, 53, 66, 78, ICE, 4)
+    c.line(66, 78, 75, 62, ICE, 4)
+    c.line(75, 62, 89, 62, ICE, 4)
+    c.text_q(64, 66, 20, BLUE_MID)
+    c.sparkle(98, 34, 6)
+    return c
+
+
+def qerror_log():
+    c = Canvas()
+    c.rect(35, 25, 58, 78, ICE, outline=BLUE_DARK, width=4)
+    c.poly([(76, 25), (93, 42), (76, 42)], SILVER, outline=BLUE_MID, width=1.5)
+    c.poly([(64, 45), (88, 88), (40, 88)], RED, outline=BLUE_DARK, width=4)
+    c.line(64, 58, 64, 74, ICE, 5)
+    c.circle(64, 81, 3.5, ICE)
+    c.line(45, 36, 68, 36, BLUE_MID, 2)
+    c.sparkle(99, 31, 5)
+    return c
+
+
+def qdatabase():
+    c = Canvas()
+    c.ellipse(64, 35, 34, 14, ICE, outline=BLUE_DARK, width=4)
+    c.rect(30, 35, 68, 58, BLUE_MID, outline=BLUE_DARK, width=4)
+    c.ellipse(64, 35, 34, 14, ICE, outline=CYAN, width=2)
+    c.ellipse(64, 64, 34, 14, BLUE, outline=CYAN, width=2)
+    c.ellipse(64, 93, 34, 14, SILVER, outline=BLUE_DARK, width=4)
+    c.text_q(64, 64, 28, ICE)
+    c.sparkle(99, 34, 6)
+    return c
+
+
+def qsnipe():
+    c = Canvas()
+    c.circle(64, 64, 43, TRANSPARENT, outline=BLUE_DARK, width=5)
+    c.circle(64, 64, 30, TRANSPARENT, outline=CYAN, width=3)
+    c.circle(64, 64, 12, TRANSPARENT, outline=ICE, width=3)
+    c.line(64, 16, 64, 39, CYAN, 4)
+    c.line(64, 89, 64, 112, CYAN, 4)
+    c.line(16, 64, 39, 64, CYAN, 4)
+    c.line(89, 64, 112, 64, CYAN, 4)
+    coin(c, 64, 64, 13)
+    c.sparkle(98, 34, 6)
+    return c
+
+
 def qmemory():
     c = Canvas()
     c.rect(27, 27, 34, 34, BLUE_MID, outline=BLUE_DARK, width=3)
@@ -1924,6 +2023,12 @@ STATIC = {
     "QTutorial": qtutorial,
     "QRecommend": qrecommend,
     "QSeasonPass": qseason_pass,
+    "QRefresh": qrefresh,
+    "QQueue": qqueue,
+    "QRecovery": qrecovery,
+    "QErrorLog": qerror_log,
+    "QDatabase": qdatabase,
+    "QSnipe": qsnipe,
 }
 
 STATIC_CATEGORIES = {
@@ -1931,7 +2036,7 @@ STATIC_CATEGORIES = {
         "QAccept", "QDenied", "QReject", "QSuccess", "QWarning", "QTimer", "QTimeout",
         "QBell", "QBook", "QGift", "QConfetti", "QThinking", "QTarget", "QBirthday",
         "QBirthdayCake", "QBirthdayBalloons", "QAlarm", "QSleep", "QImage", "QAttachment", "QActivity",
-        "QTutorial", "QRecommend",
+        "QTutorial", "QRecommend", "QRefresh", "QQueue", "QRecovery", "QErrorLog", "QDatabase", "QSnipe",
     },
     "quewo": {
         "QoinBag", "QoinChest", "QoinTransfer", "QXP", "QLevelUp", "QQuest", "QShop",

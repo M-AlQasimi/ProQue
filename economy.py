@@ -171,6 +171,12 @@ Q_COMMAND_CHECK = "<:QCommandCheck:1505602244538536128>"
 Q_BALANCE = "<:QBalance:1505602235080380426>"
 Q_ARCHIVE = "<:QArchive:1505602232085643446>"
 Q_AI_HISTORY = "<:QAIHistory:1505602228466221117>"
+Q_REFRESH = "<:QRefresh:1507831872007180408>"
+Q_QUEUE = "<:QQueue:1507831865334042805>"
+Q_RECOVERY = "<:QRecovery:1507831870056955954>"
+Q_ERROR_LOG = "<:QErrorLog:1507831857948135464>"
+Q_DATABASE = "<:QDatabase:1507831854299090984>"
+Q_SNIPE = "<:QSnipe:1507831878223134742>"
 Q_DUNGEON = "<:QDungeon:1503459478690074644>"
 Q_DUNGEON_HEART = "<:QDungeonHeart:1503459480766255104>"
 Q_DUNGEON_KEY = "<:QDungeonKey:1503459483030917270>"
@@ -12489,8 +12495,14 @@ async def replay_double_or_nothing_game(interaction, game_key, stake):
 # =====================
 EXPLANATIONS = {
     "admin": f"Admin power means {QUE_OWNER_DISPLAY}, actual server owner, or Discord Administrator. Server owner outranks admins, and {QUE_OWNER_DISPLAY} is highest.",
-    "settings": "Admin-power command. Opens a server setup dashboard for prefix, logs, birthdays, activity reports, lottery status, and disabled commands.",
+    "settings": "Admin-power command. Opens the server setup/control panel for prefix, logs, birthdays, activity reports, lottery status, disabled commands, and operations checks.",
     "setup": "Alias for `.settings`. Opens the server setup dashboard.",
+    "controlpanel": "Alias for `.settings`. Opens the server setup/control panel.",
+    "jobs": "Admin-power command. Shows background jobs and longer maintenance work started by Pro𝚀𝚞𝚎.",
+    "recover": "Admin-power command. Manually reruns recovery for persisted timers, polls, game sessions, and lottery panels.",
+    "errors": "Admin-power command. Shows recent command errors and saved error receipts.",
+    "dbaudit": "Admin-power command. Scans for database calls that could block the bot and reports DB worker settings.",
+    "aiguard": f"{QUE_OWNER_DISPLAY}-only command. Shows which commands the AI can run safely, which require confirmation, and which are restricted.",
     "config": "Alias for `.settings`. Opens the server setup dashboard.",
     "games": "Shows the bot's games, short rules, bet support, and how to start each one.",
     "gamelist": "Alias for `.games`. Shows available games.",
@@ -12939,7 +12951,12 @@ DETAILED_EXPLANATIONS = {
     "aiknow": "Debug/helper command that shows exactly what Pro𝚀𝚞𝚎's AI knows about a command from the live command registry, aliases, help text, permission note, and detailed explanation data.",
     "aidoctor": "Admin-power bot doctor panel. Shows task health, 𝚀𝚞𝚎wo DB status, slash sync status, active sessions, disabled commands, and slow command stats. Useful when replying to errors and asking the AI to diagnose them.",
     "translate": "Translates provided text or the message you reply to. Friendly forms work: `.translate hello to Italian`, `.translate to Spanish hello`, `.translate it hello`, or reply to a message with `.translate to Spanish`. If no target is given, it translates to English.",
-    "settings": "Admin-power server setup dashboard. It summarizes prefix, logs, reaction logs, birthday channel, activity reports, lottery, and disabled command count. Buttons let admins refresh the dashboard, change the prefix, rerun log setup, or set birthdays/activity to the current channel.",
+    "settings": "Admin-power server setup/control panel. It summarizes prefix, logs, reaction logs, birthday channel, activity reports, lottery, disabled command count, and operations commands. Buttons let admins refresh the dashboard, change the prefix, set logs, set birthdays/activity to the current channel, open a setup guide, and find recovery/performance tools.",
+    "jobs": "Shows background jobs started by Pro𝚀𝚞𝚎 during this process, including manual recovery and future maintenance jobs. Use `.jobs clear` to remove finished jobs from the panel.",
+    "recover": "Starts a background recovery job. It reruns timer/poll recovery, restores saved Tic Tac Toe, Connect 4, and chess sessions, and refreshes lottery persistent views. Use this after reconnect weirdness or if a panel/game did not restore cleanly.",
+    "errors": "Shows recent command failures from this restart plus saved command-error receipts from the database. Use `.receipt <id>` for a full saved receipt when one exists.",
+    "dbaudit": "Runs a lightweight code scan for direct database calls inside async paths and shows the DB worker setting. Use it with `.perf` to find commands that may block the event loop.",
+    "aiguard": "Shows AI command execution safety: safe/read-only command names, commands that need confirmation, commands only 𝚀𝚞𝚎 can authorize, blocked commands, pending AI actions, and recent AI action count.",
     "explain": "Shows detailed help for a command, including usage, aliases, short explanation, and longer details when available. Example: `.explain slots`.",
     "games": "Shows a central game menu with quick usage for Tic Tac Toe, Connect 4, chess, Tower, Vault, Memory, Minesweeper, and Picker. The select menu gives the start command for each game.",
     "flagquiz": "Starts a photo-based flag quiz. Choose Solo or Public Channel, then choose 10, 20, 50, or all 197 flags. Each flag gives 2 tries, each guess has 30 seconds, small typos are accepted, and correct answers pay 20,000 quesos each. Wrong first guesses can request a hint.",

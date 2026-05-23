@@ -45,6 +45,11 @@ Test these once before role testing.
 - `.explain activity`
 - `.explain editactivity`
 - `.explain settings`
+- `.explain jobs`
+- `.explain recover`
+- `.explain errors`
+- `.explain dbaudit`
+- `.explain aiguard`
 - `.explain games`
 - As superowner: `.explain balancedashboard`, `.explain styleaudit`, `.explain commandcleanup`
 
@@ -135,8 +140,15 @@ Run:
 - `.activity`
 - `.activitystats`
 - `.settings`
-- In `.settings`, test Refresh, Prefix, Birthdays Here, Activity Here, Admin Commands, Setup Guide, and Lottery Panel if safe.
+- `.controlpanel`
+- In `.settings` / `.controlpanel`, test Refresh, Prefix, Birthdays Here, Activity Here, Admin Commands, Setup Guide, and Lottery Panel if safe.
 - `.perf`
+- `.bulkqueue`
+- `.jobs`
+- `.errors`
+- `.dbaudit`
+- `.recover`
+- `.aiguard`
 - `.auditcommands`
 - `.styleaudit`
 - `.commandcleanup`
@@ -181,6 +193,20 @@ Expected: challenges, accept/decline, bet accept/decline, turns, payouts, and ti
 - Start `.chess @normal`, make at least one move, then restart the bot.
 
 Expected: active TTT, C4, and Chess messages are restored with the same players, board state, bet amount, and turn controls. Old unsaved stale game UIs should expire instead of staying clickable.
+
+### Operations / Recovery
+
+- `.health`
+- `.perf`
+- `.bulkqueue`
+- `.jobs`
+- `.recover`
+- `.jobs` again after recovery finishes.
+- `.errors`
+- `.dbaudit`
+- `.aiguard`
+
+Expected: performance panels respond quickly, recovery starts as a background job, `.jobs` shows running/done state, `.errors` is empty unless failures happened, `.dbaudit` lists blocking DB risks or says none, and `.aiguard` shows AI command safety categories.
 
 ### Admin Commands
 

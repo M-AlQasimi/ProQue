@@ -87,15 +87,22 @@ from economy import (
     Q_PERMISSIONS as economy_q_permissions,
     Q_PERF as economy_q_perf,
     Q_POLL as economy_q_poll,
+    Q_DATABASE as economy_q_database,
+    Q_ERROR_LOG as economy_q_error_log,
     Q_REACTION as economy_q_reaction,
     Q_RECOMMEND as economy_q_recommend,
+    Q_RECOVERY as economy_q_recovery,
     Q_REJECT as economy_q_reject,
+    Q_REFRESH as economy_q_refresh,
     Q_ROB as economy_q_rob,
     Q_ROLES as economy_q_roles,
+    Q_QUEUE as economy_q_queue,
     Q_SLEEP as economy_q_sleep,
+    Q_SNIPE as economy_q_snipe,
     Q_SETUP as economy_q_setup,
     Q_SEASON_PASS as economy_q_season_pass,
     Q_THINKING as economy_q_thinking,
+    Q_TICKET as economy_q_ticket,
     Q_TIMEOUT as economy_q_timeout,
     Q_TIMER as economy_q_timer,
     Q_TIMER_TICK as economy_q_timer_tick,
@@ -316,6 +323,9 @@ AI_USER_MEMORY_MAX_FACTS = 24
 ai_conversation_memory = {}
 pending_ai_batch_actions = {}
 ai_action_history = deque(maxlen=80)
+background_jobs = {}
+background_job_counter = 0
+command_error_events = deque(maxlen=80)
 
 TTT_EMPTY = "empty"
 TTT_X = "x"
@@ -740,11 +750,35 @@ async def send_ai_memory_summary(destination, guild, user, *, ephemeral=False):
     return await destination.reply(**kwargs, mention_author=False)
 
 async def notify_superowner_error(ctx, error):
+    command_name = ctx.command.qualified_name if getattr(ctx, "command", None) else "unknown"
+    guild_id = ctx.guild.id if ctx.guild else 0
+    channel_id = getattr(ctx.channel, "id", None)
+    receipt_id = f"QERR-{int(time.time())}-{random.randint(1000, 9999)}"
+    error_summary = f"{type(error).__name__}: {str(error)[:900]}"
+    command_error_events.appendleft({
+        "receipt_id": receipt_id,
+        "command": command_name,
+        "guild_id": guild_id,
+        "channel_id": channel_id,
+        "user_id": ctx.author.id,
+        "error": error_summary,
+        "created_at": datetime.now(timezone.utc),
+    })
+    asyncio.create_task(asyncio.to_thread(
+        save_bot_receipt,
+        receipt_id,
+        guild_id,
+        channel_id,
+        ctx.author.id,
+        [],
+        "command_error",
+        None,
+        error_summary,
+    ))
     try:
         user = bot.get_user(super_owner_id) or await bot.fetch_user(super_owner_id)
     except Exception:
         return
-    command_name = ctx.command.qualified_name if getattr(ctx, "command", None) else "unknown"
     guild_name = ctx.guild.name if ctx.guild else "DM"
     channel_name = getattr(ctx.channel, "name", str(getattr(ctx.channel, "id", "unknown")))
     content = getattr(getattr(ctx, "message", None), "content", "") or ""
@@ -756,7 +790,8 @@ async def notify_superowner_error(ctx, error):
             f"Error: `{type(error).__name__}: {str(error)[:700]}`\n"
             f"User: <@{ctx.author.id}> ({ctx.author.id})\n"
             f"Server: **{guild_name}**\n"
-            f"Channel: `#{channel_name}`"
+            f"Channel: `#{channel_name}`\n"
+            f"Receipt: `{receipt_id}`"
         ),
         color=discord.Color.red(),
         timestamp=datetime.now(timezone.utc),
@@ -3617,6 +3652,11 @@ COMMAND_EXAMPLE_OVERRIDES = {
     "balanceaudit": ".balanceaudit 14",
     "balancedashboard": ".balancedashboard 14",
     "bulkqueue": ".bulkqueue",
+    "jobs": ".jobs",
+    "errors": ".errors",
+    "recover": ".recover",
+    "dbaudit": ".dbaudit",
+    "aiguard": ".aiguard",
     "styleaudit": ".styleaudit",
     "commandcleanup": ".commandcleanup",
     "aisettings": ".aisettings",
@@ -3977,10 +4017,10 @@ AI_SAFE_COMMANDS = {
     "aidetect", "aicheck", "detectai", "authenticity", "authcheck", "essaycheck",
     "aimemory", "aime", "memoryai", "whatyouknow", "aiknow", "aiknowledge", "knowcmd", "aicmd",
     "aidoctor", "botdoctor", "doctorai", "diagnosebot",
-    "aiperms", "aipermissions", "aicapabilities", "aiauthority",
+    "aiperms", "aipermissions", "aicapabilities", "aiauthority", "aiguard", "aicommandsafety",
     "aihistory", "aiactions", "actionhistory", "aisettings", "aiconfig", "aicontrols", "usersettings", "mysettings", "preferences", "prefs",
-    "commandstats", "cmdstats", "usage", "bulkqueue", "queue", "jobqueue", "receipt", "txreceipt", "qreceipt",
-    "auditcommands", "cmdaudit", "commandaudit", "styleaudit", "uiaudit", "messageaudit", "commandcleanup", "cleanupcommands", "cmdcleanup",
+    "commandstats", "cmdstats", "usage", "bulkqueue", "queue", "jobqueue", "jobs", "backgroundjobs", "tasks", "errors", "errorlog", "receipt", "txreceipt", "qreceipt",
+    "auditcommands", "cmdaudit", "commandaudit", "styleaudit", "uiaudit", "messageaudit", "commandcleanup", "cleanupcommands", "cmdcleanup", "dbaudit", "databaseaudit",
     "gameaudit", "gaudit", "auditgames", "event", "qevent", "events", "quote", "archive", "transcript",
     "generate", "analyse", "analyze", "analyseimage", "analyzeimage", "vision",
 }
@@ -3988,12 +4028,13 @@ AI_SAFE_COMMANDS = {
 AI_CONFIRM_COMMANDS = {
     "poll", "epoll", "giveaway", "setbday", "removebday", "setbdaychannel", "rob",
     "activity", "settings", "prefix", "preifx", "setprefix",
+    "recover",
 }
 
 AI_SUPEROWNER_ONLY_COMMANDS = {
     "add", "remove", "addtick", "removetick", "remtick", "deltick", "settick", "setquesos",
     "disable", "enable", "disableall", "enableall", "prefix", "preifx", "setprefix",
-    "settings", "setup", "config", "setlogs", "slashsync", "auditcommands", "cmdaudit", "commandaudit", "styleaudit", "uiaudit", "messageaudit", "commandcleanup", "cleanupcommands", "cmdcleanup", "aihistory", "aiactions", "actionhistory",
+    "settings", "setup", "setupbot", "config", "controlpanel", "panel", "setlogs", "slashsync", "auditcommands", "cmdaudit", "commandaudit", "styleaudit", "uiaudit", "messageaudit", "commandcleanup", "cleanupcommands", "cmdcleanup", "dbaudit", "databaseaudit", "jobs", "backgroundjobs", "tasks", "errors", "errorlog", "recover", "restorestate", "recovery", "aihistory", "aiactions", "actionhistory",
     "aisettings", "aiconfig", "aicontrols", "aiignore", "ignoreai", "aiunignore", "unignoreai", "aichannel", "aitoggle", "aistyle", "aipersonality",
     "block", "unblock", "shut", "unshut", "rshut", "unrshut", "lockdown", "reopen",
     "rlockdown", "runlock", "lock", "unlock", "ban", "unban", "kick", "addrole",
@@ -4300,6 +4341,52 @@ async def ai_settings_for(scope, scope_id):
 def user_setting_value(settings, key):
     defaults = {"aifriendly": "on"}
     return settings.get(key, defaults.get(key, "off"))
+
+def next_background_job_id():
+    global background_job_counter
+    background_job_counter += 1
+    return f"JOB-{int(time.time())}-{background_job_counter}"
+
+def public_job_snapshot(job):
+    started = job.get("started_at")
+    finished = job.get("finished_at")
+    started_text = discord.utils.format_dt(started, "R") if started else "unknown"
+    finished_text = f" · finished {discord.utils.format_dt(finished, 'R')}" if finished else ""
+    result_text = f"\n{embed_value(job.get('result') or '', 220)}" if job.get("result") else ""
+    return (
+        f"`{job['id']}` **{job['label']}** · {job['status']} · started {started_text}{finished_text}\n"
+        f"By <@{job['user_id']}> in <#{job['channel_id']}>{result_text}"
+    )
+
+async def run_background_job(job_id, coro_factory):
+    job = background_jobs[job_id]
+    try:
+        result = await coro_factory()
+        job["status"] = "done"
+        job["result"] = str(result or "Done.")[:800]
+    except Exception as exc:
+        job["status"] = "failed"
+        job["result"] = clean_user_error(exc)
+        print(f"Background job {job_id} failed: {type(exc).__name__} - {exc}")
+    finally:
+        job["finished_at"] = datetime.now(timezone.utc)
+
+def schedule_background_job(label, ctx, coro_factory):
+    job_id = next_background_job_id()
+    background_jobs[job_id] = {
+        "id": job_id,
+        "label": str(label or "job")[:80],
+        "status": "running",
+        "result": "",
+        "user_id": ctx.author.id,
+        "guild_id": ctx.guild.id if ctx.guild else 0,
+        "channel_id": ctx.channel.id,
+        "started_at": datetime.now(timezone.utc),
+        "finished_at": None,
+    }
+    task = asyncio.create_task(run_background_job(job_id, coro_factory))
+    background_jobs[job_id]["task"] = task
+    return job_id
 
 SYNC_DB_AUDIT_PATTERNS = (
     "get_user(",
@@ -5486,14 +5573,14 @@ HELP_CATEGORIES = {
     ],
     "Games": ["games", "howtoplay", "ttt", "c4", "chess", "move", "resign", "flagquiz", "flagstats", "q", "picker"],
     "Utility": ["help", "userinfo", "pfp", "calc", "define", "timer", "ctimer", "alarm", "poll", "epoll", "translate", "find"],
-    "AI": ["ask", "generate", "analyse", "summarize", "aidetect", "aimemory", "aiknow", "aihistory", "aiperms", "aisettings", "aiignore", "aiunignore", "aichannel", "aistyle", "usersettings", "aidoctor"],
+    "AI": ["ask", "generate", "analyse", "summarize", "aidetect", "aimemory", "aiknow", "aihistory", "aiperms", "aiguard", "aisettings", "aiignore", "aiunignore", "aichannel", "aistyle", "usersettings", "aidoctor"],
     "Server Tools": [
         "snipe", "dsnipe", "esnipe", "rsnipe", "rolesinfo", "roleinfo", "purge", "rpurge", "steal", "fwd", "quote", "archive",
         "giveaway", "listbans", "listblocks", "listtargets", "listcensors", "lists",
     ],
     "Status": ["afk", "sleep", "wake", "fsleep", "away", "setbday", "removebday", "setbdaychannel", "activity", "activitystats", "messages"],
     "Admin": [
-        "settings", "slashsync", "health", "perms", "permaudit", "sessions", "auditcommands", "styleaudit", "commandcleanup", "commandstats", "bulkqueue", "receipt", "receipts", "setlogs", "prefix", "disable", "enable", "disableall", "enableall", "dclist", "perf", "test", "testlog", "testrlog",
+        "settings", "slashsync", "health", "perms", "permaudit", "sessions", "recover", "jobs", "errors", "dbaudit", "auditcommands", "styleaudit", "commandcleanup", "commandstats", "bulkqueue", "receipt", "receipts", "setlogs", "prefix", "disable", "enable", "disableall", "enableall", "dclist", "perf", "test", "testlog", "testrlog",
         "endttt", "setnick", "unmute", "kick", "ban", "unban", "addrole", "removerole", "deleterole",
         "lock", "unlock", "lockdown", "reopen", "rlockdown", "runlock", "shut", "unshut", "clearwatchlist", "rshut", "unrshut",
         "send", "reply", "fwd", "aban", "raban", "abanlist", "summon", "summon2", "block", "unblock",
@@ -5505,12 +5592,12 @@ SUPEROWNER_HELP_COMMANDS = [
     "add", "remove", "addtick", "removetick", "settick", "setquesos",
     "send", "reply", "fsleep", "wake",
     "aisettings", "aiignore", "aiunignore", "aichannel", "aistyle",
-    "aihistory", "auditcommands", "styleaudit", "commandcleanup", "balancedashboard", "permaudit", "receipts",
+    "aihistory", "auditcommands", "styleaudit", "commandcleanup", "balancedashboard", "permaudit", "receipts", "aiguard",
 ]
 SUPEROWNER_HIDDEN_COMMANDS = {
     *SUPEROWNER_HELP_COMMANDS,
     "remtick", "deltick", "ignoreai", "unignoreai", "aitoggle", "aipersonality",
-    "aiactions", "actionhistory", "cmdaudit", "commandaudit", "uiaudit", "messageaudit", "cleanupcommands", "cmdcleanup", "ecodashboard", "moneydashboard", "sinkdashboard", "permsaudit", "permissionaudit", "sensitiveaudit", "receiptlist", "txreceipts",
+    "aiactions", "actionhistory", "cmdaudit", "commandaudit", "uiaudit", "messageaudit", "cleanupcommands", "cmdcleanup", "ecodashboard", "moneydashboard", "sinkdashboard", "permsaudit", "permissionaudit", "sensitiveaudit", "receiptlist", "txreceipts", "aicommandsafety",
 }
 HELP_CATEGORY_ALIASES = {
     "quewo": "𝚀𝚞𝚎wo (Gambling)",
@@ -5739,7 +5826,7 @@ class HelpPageButton(Button):
 
 class HelpRefreshButton(Button):
     def __init__(self):
-        super().__init__(label="Refresh", emoji=reaction_emoji(economy_q_refresh if "economy_q_refresh" in globals() else economy_q_timer), style=discord.ButtonStyle.secondary)
+        super().__init__(label="Refresh", emoji=reaction_emoji(economy_q_refresh), style=discord.ButtonStyle.secondary)
 
     async def callback(self, interaction: discord.Interaction):
         view = self.view
@@ -5856,20 +5943,20 @@ async def build_settings_embed(guild):
     disabled = sorted(guild_disabled_commands(guild)) if guild else []
 
     embed = discord.Embed(
-        title=f"{economy_q_permissions} Server Settings",
+        title=f"{economy_q_setup} Server Settings",
         description="Current bot setup for this server.",
         color=discord.Color.blurple(),
         timestamp=datetime.now(timezone.utc)
     )
-    embed.add_field(name="Prefix", value=f"`{prefix}`", inline=True)
-    embed.add_field(name="Disabled Commands", value=f"{len(disabled)} disabled" if disabled else "None", inline=True)
-    embed.add_field(name="Logs", value=channel_status(guild, log_config.get("log_channel_id")), inline=True)
-    embed.add_field(name="Reaction Logs", value=channel_status(guild, log_config.get("reaction_log_channel_id")), inline=True)
-    embed.add_field(name="Birthdays", value=channel_status(guild, birthday_config.get("channel_id")), inline=True)
+    embed.add_field(name=f"{economy_q_edit} Prefix", value=f"`{prefix}`", inline=True)
+    embed.add_field(name=f"{economy_q_lock} Disabled Commands", value=f"{len(disabled)} disabled" if disabled else "None", inline=True)
+    embed.add_field(name=f"{economy_q_archive} Logs", value=channel_status(guild, log_config.get("log_channel_id")), inline=True)
+    embed.add_field(name=f"{economy_q_reaction} Reaction Logs", value=channel_status(guild, log_config.get("reaction_log_channel_id")), inline=True)
+    embed.add_field(name=f"{economy_q_birthday} Birthdays", value=channel_status(guild, birthday_config.get("channel_id")), inline=True)
     activity_value = channel_status(guild, activity_config.get("channel_id"))
     if activity_config.get("next_report"):
         activity_value += f"\nNext: {discord.utils.format_dt(activity_config['next_report'], 'R')}"
-    embed.add_field(name="Activity", value=activity_value, inline=True)
+    embed.add_field(name=f"{economy_q_activity} Activity", value=activity_value, inline=True)
     if lottery_config:
         next_draw = lottery_config.get("next_draw")
         lottery_value = (
@@ -5880,7 +5967,16 @@ async def build_settings_embed(guild):
             lottery_value += f"\nNext: {discord.utils.format_dt(next_draw, 'R')}"
     else:
         lottery_value = "Not set"
-    embed.add_field(name="Lottery", value=lottery_value, inline=True)
+    embed.add_field(name=f"{economy_q_ticket} Lottery", value=lottery_value, inline=True)
+    embed.add_field(
+        name=f"{economy_q_perf} Ops",
+        value=(
+            f"`{prefix}health` · `{prefix}perf`\n"
+            f"`{prefix}jobs` · `{prefix}errors`\n"
+            f"`{prefix}recover` · `{prefix}dbaudit`"
+        ),
+        inline=True,
+    )
     checklist = [
         f"{economy_q_accept if log_config.get('log_channel_id') else economy_q_warning} Normal logs",
         f"{economy_q_accept if log_config.get('reaction_log_channel_id') else economy_q_warning} Reaction logs",
@@ -5888,7 +5984,7 @@ async def build_settings_embed(guild):
         f"{economy_q_accept if activity_config.get('channel_id') else economy_q_warning} Activity",
         f"{economy_q_accept if lottery_config else economy_q_warning} Lottery",
     ]
-    embed.add_field(name="Setup Checklist", value="\n".join(checklist), inline=False)
+    embed.add_field(name=f"{economy_q_command_check} Setup Checklist", value="\n".join(checklist), inline=False)
     embed.set_footer(text="Use the buttons below for quick setup actions.")
     return embed
 
@@ -5926,16 +6022,16 @@ class SettingsView(View):
         await interaction.response.send_message("Use your own settings panel.", ephemeral=True)
         return False
 
-    @discord.ui.button(label="Refresh", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="Refresh", emoji=economy_q_refresh, style=discord.ButtonStyle.secondary)
     async def refresh(self, interaction, button):
         await interaction.response.edit_message(embed=await build_settings_embed(interaction.guild), view=self)
 
-    @discord.ui.button(label="Prefix", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="Prefix", emoji=economy_q_edit, style=discord.ButtonStyle.primary)
     async def prefix_button(self, interaction, button):
         current_prefix = prefix_for_guild(interaction.guild)
         await interaction.response.send_modal(PrefixSettingsModal(self.author_id, current_prefix))
 
-    @discord.ui.button(label="Logs", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="Logs", emoji=economy_q_archive, style=discord.ButtonStyle.secondary)
     async def logs_button(self, interaction, button):
         if not has_owner_power(interaction.user, interaction.guild):
             return await interaction.response.send_message(denial_message(f"Only admins, the server owner, or {QUE_OWNER_DISPLAY} can use this."), ephemeral=True)
@@ -5948,7 +6044,7 @@ class SettingsView(View):
         }
         await interaction.response.edit_message(embed=await build_settings_embed(interaction.guild), view=self)
 
-    @discord.ui.button(label="Reaction Logs Here", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="Reaction Logs Here", emoji=economy_q_reaction, style=discord.ButtonStyle.secondary)
     async def reaction_logs_button(self, interaction, button):
         if not has_owner_power(interaction.user, interaction.guild):
             return await interaction.response.send_message(denial_message(f"Only admins, the server owner, or {QUE_OWNER_DISPLAY} can use this."), ephemeral=True)
@@ -5961,7 +6057,7 @@ class SettingsView(View):
         }
         await interaction.response.edit_message(embed=await build_settings_embed(interaction.guild), view=self)
 
-    @discord.ui.button(label="Birthdays Here", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="Birthdays Here", emoji=economy_q_birthday, style=discord.ButtonStyle.secondary)
     async def birthday_button(self, interaction, button):
         if not await can_manage_birthday_channel(interaction.user, interaction.guild):
             return await interaction.response.send_message("You can't change the birthday channel here.", ephemeral=True)
@@ -5971,7 +6067,7 @@ class SettingsView(View):
         guild_birthday_channels[interaction.guild.id] = {"channel_id": interaction.channel.id, "set_by_user_id": interaction.user.id}
         await interaction.response.edit_message(embed=await build_settings_embed(interaction.guild), view=self)
 
-    @discord.ui.button(label="Clear Birthdays", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="Clear Birthdays", emoji=economy_q_trash, style=discord.ButtonStyle.secondary)
     async def birthday_clear_button(self, interaction, button):
         if not await can_manage_birthday_channel(interaction.user, interaction.guild):
             return await interaction.response.send_message("You can't change the birthday channel here.", ephemeral=True)
@@ -5981,7 +6077,7 @@ class SettingsView(View):
         guild_birthday_channels.pop(interaction.guild.id, None)
         await interaction.response.edit_message(embed=await build_settings_embed(interaction.guild), view=self)
 
-    @discord.ui.button(label="Activity Here", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="Activity Here", emoji=economy_q_activity, style=discord.ButtonStyle.secondary)
     async def activity_button(self, interaction, button):
         if not await can_manage_activity_channel(interaction.user, interaction.guild):
             return await interaction.response.send_message("You can't change activity reports here.", ephemeral=True)
@@ -5991,7 +6087,7 @@ class SettingsView(View):
         schedule_activity_live_refresh(interaction.guild.id, guild_activity_channels[interaction.guild.id])
         await interaction.response.edit_message(embed=await build_settings_embed(interaction.guild), view=self)
 
-    @discord.ui.button(label="Stop Activity", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="Stop Activity", emoji=economy_q_timeout, style=discord.ButtonStyle.secondary)
     async def activity_stop_button(self, interaction, button):
         if not await can_manage_activity_channel(interaction.user, interaction.guild):
             return await interaction.response.send_message("You can't change activity reports here.", ephemeral=True)
@@ -6003,7 +6099,7 @@ class SettingsView(View):
         await asyncio.to_thread(clear_guild_activity_counts, interaction.guild.id)
         await interaction.response.edit_message(embed=await build_settings_embed(interaction.guild), view=self)
 
-    @discord.ui.button(label="Lottery Panel", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="Lottery Panel", emoji=economy_q_ticket, style=discord.ButtonStyle.secondary)
     async def lottery_button(self, interaction, button):
         prefix = prefix_for_guild(interaction.guild)
         await interaction.response.send_message(
@@ -6013,7 +6109,7 @@ class SettingsView(View):
             allowed_mentions=discord.AllowedMentions.none(),
         )
 
-    @discord.ui.button(label="Admin Commands", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="Admin Commands", emoji=economy_q_command_check, style=discord.ButtonStyle.secondary)
     async def admin_commands_button(self, interaction, button):
         prefix = prefix_for_guild(interaction.guild)
         await interaction.response.send_message(
@@ -6028,13 +6124,14 @@ class SettingsView(View):
             f"{economy_q_rob} `{prefix}robsettings on/off` - server robbing\n"
             f"`{prefix}disable <command>` / `{prefix}enable <command>` - command access\n"
             f"`{prefix}commandstats` - command usage\n"
+            f"`{prefix}jobs` / `{prefix}errors` - operations checks\n"
             f"`{prefix}receipt <id>` - review sensitive action receipts\n"
             f"`{prefix}economyaudit` - economy audit\n"
             f"`{prefix}aisettings` - AI controls for {QUE_OWNER_DISPLAY}",
             ephemeral=True,
         )
 
-    @discord.ui.button(label="Setup Guide", style=discord.ButtonStyle.success)
+    @discord.ui.button(label="Setup Guide", emoji=economy_q_setup, style=discord.ButtonStyle.success)
     async def setup_guide_button(self, interaction, button):
         prefix = prefix_for_guild(interaction.guild)
         embed = discord.Embed(
@@ -6057,11 +6154,12 @@ class SettingsView(View):
             ),
             inline=True,
         )
-        embed.add_field(name="Safety", value=f"`{prefix}disable <command>`\n`{prefix}permaudit`\n`{prefix}receipts latest`", inline=True)
-        embed.add_field(name="AI", value=f"`{prefix}aiknow <command>`\n`{prefix}aimemory`\n`{prefix}aidoctor`", inline=True)
+        embed.add_field(name="Safety", value=f"`{prefix}disable <command>`\n`{prefix}permaudit`\n`{prefix}receipts latest`\n`{prefix}errors`", inline=True)
+        embed.add_field(name="AI", value=f"`{prefix}aiknow <command>`\n`{prefix}aimemory`\n`{prefix}aidoctor`\n`{prefix}aiguard`", inline=True)
+        embed.add_field(name="Recovery", value=f"`{prefix}health`\n`{prefix}jobs`\n`{prefix}recover`\n`{prefix}dbaudit`", inline=True)
         await interaction.response.send_message(embed=embed, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
 
-@bot.command(name="settings", aliases=["setup", "setupbot", "config"])
+@bot.command(name="settings", aliases=["setup", "setupbot", "config", "controlpanel", "panel"])
 @is_admin_power()
 async def settings_command(ctx):
     """Shows the server settings dashboard."""
@@ -6676,7 +6774,7 @@ async def perf_command(ctx):
         "Command Performance",
         description="Tracked since this bot process started.",
         color=discord.Color.orange(),
-        icon=economy_q_perf,
+        icon=economy_q_history,
     )
     embed.add_field(name="Slowest", value=joined_embed_value(rows) if rows else "No command timing data yet.", inline=False)
     if slow_command_events:
@@ -6732,7 +6830,7 @@ async def bulkqueue_command(ctx):
         "Command Queue",
         description="Live pressure from command groups that can slow the bot when many requests happen at once.",
         color=discord.Color.blurple(),
-        icon=economy_q_perf,
+        icon=economy_q_queue,
     )
     embed.add_field(
         name="Running Now",
@@ -6756,6 +6854,120 @@ async def bulkqueue_command(ctx):
             recent.append(f"`{event['name']}` waited **{event['waited_ms']:,}ms** in `{event['group']}`")
         embed.add_field(name="Recent", value=embed_value("\n".join(recent), 1200), inline=False)
     embed.set_footer(text="Bulk commands run through a shared queue so they do not block normal commands.")
+    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
+@bot.command(name="jobs", aliases=["backgroundjobs", "tasks"])
+@is_admin_power()
+async def jobs_command(ctx, action: str = None):
+    """Shows background jobs started by Pro𝚀𝚞𝚎."""
+    if action and action.casefold() in {"clear", "clean"}:
+        for job_id, job in list(background_jobs.items()):
+            if job.get("status") in {"done", "failed"}:
+                background_jobs.pop(job_id, None)
+        return await ctx.send(f"{economy_q_accept} Finished jobs cleared.")
+    rows = sorted(background_jobs.values(), key=lambda job: job.get("started_at") or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+    embed = standard_embed(
+        "Background Jobs",
+        description="Longer maintenance work runs here so normal commands can keep responding.",
+        color=discord.Color.blurple(),
+        icon=economy_q_history,
+    )
+    embed.add_field(name="Jobs", value=joined_embed_value([public_job_snapshot(job) for job in rows[:12]], empty="No jobs tracked this restart.", limit=2500), inline=False)
+    embed.set_footer(text=f"Use {prefix_for_guild(ctx.guild)}jobs clear to remove finished jobs from this view.")
+    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
+@bot.command(name="recover", aliases=["restorestate", "recovery"])
+@is_admin_power()
+async def recover_command(ctx):
+    """Manually reruns persistent state recovery for games, timers, polls, and lottery panels."""
+    async def recover_job():
+        await restore_persistent_runtime_state()
+        restored, expired = await restore_active_game_sessions()
+        try:
+            await economy_module.restore_lottery_panels()
+            lottery_text = "lottery panels refreshed"
+        except Exception as exc:
+            lottery_text = f"lottery refresh skipped: {clean_user_error(exc)}"
+        return f"Recovered games: {restored} restored, {expired} expired; {lottery_text}."
+
+    job_id = schedule_background_job("Manual recovery", ctx, recover_job)
+    await ctx.send(
+        f"{economy_q_recovery} Recovery started as `{job_id}`. Use `{prefix_for_guild(ctx.guild)}jobs` to check it.",
+        allowed_mentions=discord.AllowedMentions.none(),
+    )
+
+@bot.command(name="errors", aliases=["errorlog"])
+@is_admin_power()
+async def errors_command(ctx):
+    """Shows recent command errors and saved error receipts."""
+    guild_id = ctx.guild.id if ctx.guild else None
+    rows = []
+    try:
+        receipt_rows = await asyncio.to_thread(economy_get_receipts_for_user, None, guild_id, 25)
+        rows = [row for row in receipt_rows if row.get("action") == "command_error"]
+    except Exception:
+        rows = []
+    live_lines = []
+    for event in list(command_error_events)[:6]:
+        if guild_id is not None and event.get("guild_id") != guild_id:
+            continue
+        ts = discord.utils.format_dt(event["created_at"], "R")
+        live_lines.append(f"`{event['receipt_id']}` `{event['command']}` · <@{event['user_id']}> · {ts}\n{embed_value(event['error'], 180)}")
+    receipt_lines = []
+    for row in rows[:8]:
+        created = row.get("created_at")
+        ts = discord.utils.format_dt(created.replace(tzinfo=timezone.utc), "R") if created else "unknown"
+        receipt_lines.append(f"`{row['receipt_id']}` <@{row['actor_id']}> · {ts}\n{embed_value(row.get('details') or 'No details.', 180)}")
+    embed = standard_embed(
+        "Error Log",
+        description="Recent command failures with clean receipt IDs for follow-up.",
+        color=discord.Color.red(),
+        icon=economy_q_error_log,
+    )
+    embed.add_field(name="This Restart", value=joined_embed_value(live_lines, empty="No live errors tracked.", limit=1700), inline=False)
+    embed.add_field(name="Saved Receipts", value=joined_embed_value(receipt_lines, empty="No saved error receipts found.", limit=1700), inline=False)
+    embed.set_footer(text=f"Use {prefix_for_guild(ctx.guild)}receipt <id> to inspect a saved receipt.")
+    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
+@bot.command(name="dbaudit", aliases=["databaseaudit"])
+@is_admin_power()
+async def dbaudit_command(ctx):
+    """Checks for blocking database patterns and DB worker pressure."""
+    sync_findings = await asyncio.to_thread(sync_db_audit, 20)
+    embed = standard_embed(
+        "Database Audit",
+        description="Static scan for DB calls that can block the event loop, plus current worker settings.",
+        color=discord.Color.orange(),
+        icon=economy_q_database,
+    )
+    embed.add_field(name="DB Workers", value=f"`PROQUE_DB_WORKERS` = **{DB_WORKER_LIMIT}**", inline=True)
+    embed.add_field(name="Finding Count", value=f"**{len(sync_findings):,}**", inline=True)
+    embed.add_field(
+        name="Blocking Risk",
+        value=joined_embed_value(sync_findings, empty=f"{economy_q_accept} No obvious direct DB calls in async hot paths.", limit=2500),
+        inline=False,
+    )
+    embed.set_footer(text="This is a code scan, not a live database benchmark. Pair it with .perf for runtime behavior.")
+    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
+@bot.command(name="aiguard", aliases=["aicommandsafety"])
+async def aiguard_command(ctx):
+    """Shows how AI command execution is guarded."""
+    if not has_super_owner_power(ctx.author, ctx.guild):
+        return await ctx.send(denial_message(f"Only {QUE_OWNER_DISPLAY} can inspect AI command guards."), allowed_mentions=discord.AllowedMentions.none())
+    embed = standard_embed(
+        "AI Command Guard",
+        description="How Pro𝚀𝚞𝚎 decides whether the AI can run, preview, or refuse bot actions.",
+        color=discord.Color.blurple(),
+        icon=economy_q_trust,
+    )
+    embed.add_field(name="Safe / Readable", value=f"**{len(AI_SAFE_COMMANDS):,}** command names and aliases", inline=True)
+    embed.add_field(name="Needs Confirmation", value=f"**{len(AI_CONFIRM_COMMANDS):,}** command names", inline=True)
+    embed.add_field(name=f"{QUE_OWNER_DISPLAY} Only", value=f"**{len(AI_SUPEROWNER_ONLY_COMMANDS):,}** command names", inline=True)
+    embed.add_field(name="Blocked", value=joined_embed_value(sorted(f"`{name}`" for name in AI_BLOCKED_COMMANDS), limit=800), inline=False)
+    embed.add_field(name="Pending AI Actions", value=f"**{len(pending_ai_batch_actions):,}** waiting for confirmation", inline=True)
+    embed.add_field(name="Recent AI Actions", value=f"**{len(ai_action_history):,}** kept in memory", inline=True)
+    embed.set_footer(text="Meaning matters first; vague requests ask for clarification instead of guessing sensitive actions.")
     await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
 @bot.command(name="perms", aliases=["permissions", "permcheck"])
@@ -6837,6 +7049,10 @@ async def health_command(ctx):
     embed.add_field(name="Slash Sync", value="Synced" if slash_commands_synced else "Not synced", inline=True)
     embed.add_field(name="Active Sessions", value=f"{len(sessions):,}", inline=True)
     embed.add_field(name="Activity Reports", value=f"{len(guild_activity_channels):,}", inline=True)
+    running_jobs = len([job for job in background_jobs.values() if job.get("status") == "running"])
+    failed_jobs = len([job for job in background_jobs.values() if job.get("status") == "failed"])
+    embed.add_field(name="Background Jobs", value=f"{running_jobs:,} running · {failed_jobs:,} failed", inline=True)
+    embed.add_field(name="Recent Errors", value=f"{len(command_error_events):,}", inline=True)
     try:
         lottery_configs = await asyncio.to_thread(lambda: len([g for g in bot.guilds if economy_get_lottery_config(g.id)]))
     except Exception:
@@ -6924,7 +7140,7 @@ class GamesFilterButton(Button):
 
 class GamesRefreshButton(Button):
     def __init__(self):
-        super().__init__(label="Refresh", emoji=reaction_emoji(economy_q_timer), style=discord.ButtonStyle.secondary)
+        super().__init__(label="Refresh", emoji=reaction_emoji(economy_q_refresh), style=discord.ButtonStyle.secondary)
 
     async def callback(self, interaction):
         view = self.view
@@ -6968,7 +7184,7 @@ class GamesView(View):
         self.selected_game = selected
         await interaction.response.send_message(f"Start with {usage}", ephemeral=True)
 
-    @discord.ui.button(label="How To Play", style=discord.ButtonStyle.success)
+    @discord.ui.button(label="How To Play", emoji=economy_q_book, style=discord.ButtonStyle.success)
     async def how_to_play_button(self, interaction, button):
         selected = getattr(self, "selected_game", None)
         row = next((item for item in GAME_MENU if item[1] == selected), None) if selected else None
@@ -6987,7 +7203,7 @@ class GamesView(View):
             embed.add_field(name="Risk", value=f"**{economy_risk_label(game_key)}**", inline=True)
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @discord.ui.button(label="Risk / Payouts", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="Risk / Payouts", emoji=economy_q_game_audit, style=discord.ButtonStyle.secondary)
     async def risk_payout_button(self, interaction, button):
         selected = getattr(self, "selected_game", None)
         row = next((item for item in GAME_MENU if item[1] == selected), None) if selected else None
@@ -7005,7 +7221,7 @@ class GamesView(View):
         embed.add_field(name="Start", value=usage.replace("`.", f"`{self.prefix}"), inline=True)
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @discord.ui.button(label="Refresh", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="Refresh", emoji=economy_q_refresh, style=discord.ButtonStyle.secondary)
     async def refresh_button(self, interaction, button):
         games_render_cache.clear()
         await interaction.response.edit_message(embed=games_embed(self.prefix, self.selected_filter), view=self)
@@ -8874,7 +9090,7 @@ def snipe_empty_embed(ctx, snipe_type, user_id=None, show_guide=False):
     info = SNIPE_TYPES[snipe_type]
     target_text = f" for <@{user_id}>" if user_id else ""
     embed = discord.Embed(
-        title=f"{info['emoji']} {info['label']} Snipe",
+        title=f"{economy_q_snipe} {info['label']} Snipe",
         description=f"Nothing saved for this channel{target_text} yet.",
         color=discord.Color.dark_grey(),
     )
@@ -8899,7 +9115,7 @@ def build_snipe_embed(ctx, snipe_type, index, user_id=None, show_guide=False):
         return snipe_empty_embed(ctx, snipe_type, user_id, show_guide)
     index = max(0, min(index, len(entries) - 1))
     embed = discord.Embed(
-        title=f"{info['emoji']} {info['label']} Snipe",
+        title=f"{economy_q_snipe} {info['emoji']} {info['label']} Snipe",
         color=discord.Color.blurple(),
         timestamp=datetime.now(timezone.utc),
     )
