@@ -788,7 +788,7 @@ Run these after role tests because they need multiple users, waiting, or restart
 - Panel restores after restart.
 - `.lottery` status/check messages include ticket UI and stay synced after restart.
 - Lottery status button shows the user's own entries, win chance, round spend, and max additional tickets.
-- Buy 1/5/10/custom buttons update pot and panel.
+- Buy 10/20/30/custom buttons update pot and panel.
 - Buying tickets cannot push a user above 60% lottery spend for the current round; earning or spending quesos changes how many more tickets they can buy.
 - Private ticket confirmation works.
 - Ticket role assignment works.

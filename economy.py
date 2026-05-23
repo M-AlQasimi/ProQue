@@ -2472,17 +2472,17 @@ class LotteryPanelView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="Buy 1", emoji=Q_TICKET, style=discord.ButtonStyle.green, custom_id="lottery:buy:1")
-    async def buy_one(self, interaction, button):
-        await handle_lottery_purchase(interaction, 1)
-
-    @discord.ui.button(label="Buy 5", emoji=Q_TICKET, style=discord.ButtonStyle.green, custom_id="lottery:buy:5")
-    async def buy_five(self, interaction, button):
-        await handle_lottery_purchase(interaction, 5)
-
     @discord.ui.button(label="Buy 10", emoji=Q_TICKET, style=discord.ButtonStyle.green, custom_id="lottery:buy:10")
     async def buy_ten(self, interaction, button):
         await handle_lottery_purchase(interaction, 10)
+
+    @discord.ui.button(label="Buy 20", emoji=Q_TICKET, style=discord.ButtonStyle.green, custom_id="lottery:buy:20")
+    async def buy_twenty(self, interaction, button):
+        await handle_lottery_purchase(interaction, 20)
+
+    @discord.ui.button(label="Buy 30", emoji=Q_TICKET, style=discord.ButtonStyle.green, custom_id="lottery:buy:30")
+    async def buy_thirty(self, interaction, button):
+        await handle_lottery_purchase(interaction, 30)
 
     @discord.ui.button(label="Custom", emoji=Q_EDIT, style=discord.ButtonStyle.blurple, custom_id="lottery:buy:custom")
     async def buy_custom(self, interaction, button):
@@ -3701,7 +3701,6 @@ def build_profile_embed(user, data):
     level = data.get("level") or 1
     xp = data.get("xp") or 0
     needed = xp_needed_for_level(level)
-    items = owned_item_lines(data)
     theme_id, theme = equipped_profile_theme(data)
     title = "Royal High Roller" if has_item(data, "royal_crown") else ("High Roller" if has_item(data, "high_roller") else "Queso Collector")
     if has_item(data, "velvet_frame"):
@@ -3720,6 +3719,8 @@ def build_profile_embed(user, data):
     embed.add_field(name=f"{Q_XP} XP", value=f"{xp:,}/{needed:,}", inline=True)
     embed.add_field(name="Net Gambling", value=format_balance(net), inline=True)
     embed.add_field(name="Theme", value=theme["label"], inline=True)
+    inventory = user_inventory(data)
+    embed.add_field(name=f"{QOIN_BAG} Items", value=f"{len(inventory):,} total\n{len(set(inventory)):,} unique", inline=True)
     boost_text = luck_boost_text(data)
     if boost_text:
         embed.add_field(name="Luck Boost", value=boost_text, inline=False)
@@ -3727,7 +3728,7 @@ def build_profile_embed(user, data):
     if badges:
         badge_text = " | ".join(f"{Q_BADGE} {achievement_display(badge)}" for badge in badges[:3])
         embed.add_field(name="Profile Badges", value=badge_text, inline=False)
-    embed.add_field(name="Items", value=", ".join(items) if items else "None", inline=False)
+    embed.set_footer(text="Use .inventory for full item details.")
     return embed
 
 def build_level_up_embed(user, data, xp_result):
@@ -3745,7 +3746,8 @@ def build_level_up_embed(user, data, xp_result):
     embed.add_field(name=f"{QASH_EMOJI} Balance", value=format_balance(data["balance"]), inline=True)
     return embed
 
-def build_quests_embed(user, data):
+def build_quests_embed(user, data, page="daily"):
+    page = str(page or "daily").casefold()
     embed = discord.Embed(
         title=f"{Q_QUEST} Quests",
         description=f"{user_mention(user.id)}\nClaim completed quests with the button below.",
@@ -3762,21 +3764,25 @@ def build_quests_embed(user, data):
             f"{quest['description']}\n"
             f"Reward: **{format_balance(quest['reward'])}**"
         )
-    add_split_embed_field(embed, "Main Quests", main_lines, inline=False)
+    if page == "main":
+        add_split_embed_field(embed, "Main Quests", main_lines, inline=False)
+        embed.set_footer(text="Quest page: Main")
+        return embed
 
     claims = quest_claim_ids(data)
-    for period in ["daily", "weekly", "monthly"]:
-        lines = []
-        for quest_name, description, metric, target, reward in selected_period_quests(user.id, period):
-            progress = min(quest_progress(data, metric), target)
-            claim_id = quest_claim_id(period, quest_name)
-            status = "Claimed" if claim_id in claims else f"{progress}/{target}"
-            lines.append(
-                f"**{quest_name}** - {status}\n"
-                f"{description}\n"
-                f"Reward: **{format_balance(reward)}**"
-            )
-        add_split_embed_field(embed, f"{period.title()} Quests", lines, inline=False)
+    period = page if page in {"daily", "weekly", "monthly"} else "daily"
+    lines = []
+    for quest_name, description, metric, target, reward in selected_period_quests(user.id, period):
+        progress = min(quest_progress(data, metric), target)
+        claim_id = quest_claim_id(period, quest_name)
+        status = "Claimed" if claim_id in claims else f"{progress}/{target}"
+        lines.append(
+            f"**{quest_name}** - {status}\n"
+            f"{description}\n"
+            f"Reward: **{format_balance(reward)}**"
+        )
+    add_split_embed_field(embed, f"{period.title()} Quests", lines, inline=False)
+    embed.set_footer(text=f"Quest page: {period.title()}")
     return embed
 
 def format_duration(seconds):
@@ -4886,6 +4892,21 @@ async def quests(ctx):
     class QuestView(discord.ui.View):
         def __init__(self):
             super().__init__(timeout=LONG_HELP_VIEW_TIMEOUT)
+            self.page = "daily"
+            self.page_select = discord.ui.Select(
+                placeholder="Quest page",
+                options=[
+                    discord.SelectOption(label="Daily", value="daily", description="Today's rotating quests", default=True),
+                    discord.SelectOption(label="Weekly", value="weekly", description="This week's rotating quests"),
+                    discord.SelectOption(label="Monthly", value="monthly", description="This month's rotating quests"),
+                    discord.SelectOption(label="Main", value="main", description="Long-term main quests"),
+                ],
+                min_values=1,
+                max_values=1,
+                row=0,
+            )
+            self.page_select.callback = self.select_page
+            self.add_item(self.page_select)
 
         async def interaction_check(self, interaction):
             if interaction.user.id != ctx.author.id:
@@ -4893,7 +4914,22 @@ async def quests(ctx):
                 return False
             return True
 
-        @discord.ui.button(label="Claim Completed", style=discord.ButtonStyle.success)
+        def update_select_defaults(self):
+            for option in self.page_select.options:
+                option.default = option.value == self.page
+
+        async def select_page(self, interaction):
+            self.page = self.page_select.values[0]
+            self.update_select_defaults()
+            updated = await asyncio.to_thread(get_user, interaction.user.id)
+            await interaction.response.edit_message(
+                content=None,
+                embed=build_quests_embed(interaction.user, updated, self.page),
+                view=self,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+
+        @discord.ui.button(label="Claim Completed", style=discord.ButtonStyle.success, row=1)
         async def claim_completed(self, interaction, button):
             await interaction.response.defer()
             try:
@@ -4909,12 +4945,12 @@ async def quests(ctx):
 
             await interaction.edit_original_response(
                 content=f"{Q_SUCCESS} Claimed **{format_balance(total_reward)}** in quest rewards.",
-                embed=build_quests_embed(interaction.user, updated),
+                embed=build_quests_embed(interaction.user, updated, self.page),
                 view=self,
                 allowed_mentions=discord.AllowedMentions.none()
             )
 
-        @discord.ui.button(label="Refresh", style=discord.ButtonStyle.secondary)
+        @discord.ui.button(label="Refresh", style=discord.ButtonStyle.secondary, row=1)
         async def refresh(self, interaction, button):
             await interaction.response.defer()
             try:
@@ -4924,7 +4960,8 @@ async def quests(ctx):
                 await interaction.followup.send(f"{Q_DENIED} Database unavailable. Try again shortly.", ephemeral=True)
                 return
             await interaction.edit_original_response(
-                embed=build_quests_embed(interaction.user, updated),
+                content=None,
+                embed=build_quests_embed(interaction.user, updated, self.page),
                 view=self,
                 allowed_mentions=discord.AllowedMentions.none()
             )
@@ -5350,19 +5387,44 @@ async def cooldowns(ctx):
     if not await ensure_db_ready(ctx):
         return
 
-    def build_embed(data):
+    cooldown_pages = {
+        "claims": ["Daily", "Weekly", "Monthly"],
+        "games_1": ["cf", "roulette", "slots", "blackjack", "scratch", "tower", "vault", "memory", "cardladder"],
+        "games_2": ["lockpick", "heist", "diceduel", "cases", "plinko", "luckynumber", "jackpotspin", "ms", "wheel"],
+    }
+
+    def build_embed(data, page="claims"):
+        page = page if page in cooldown_pages else "claims"
         embed = discord.Embed(title=f"{Q_TIMER} Cooldowns", color=discord.Color.blurple())
-        embed.add_field(name="Daily", value=claim_cooldown_text(data.get("last_daily"), 86400), inline=True)
-        embed.add_field(name="Weekly", value=claim_cooldown_text(data.get("last_weekly"), 604800), inline=True)
-        embed.add_field(name="Monthly", value=claim_cooldown_text(data.get("last_monthly"), 2592000), inline=True)
-        for command in ["cf", "roulette", "slots", "blackjack", "scratch", "tower", "vault", "memory", "cardladder", "lockpick", "heist", "diceduel", "cases", "plinko", "luckynumber", "jackpotspin", "ms", "wheel"]:
-            embed.add_field(name=command, value=command_cooldown_text(ctx.author.id, command), inline=True)
+        if page == "claims":
+            embed.description = "Claim timers."
+            embed.add_field(name="Daily", value=claim_cooldown_text(data.get("last_daily"), 86400), inline=True)
+            embed.add_field(name="Weekly", value=claim_cooldown_text(data.get("last_weekly"), 604800), inline=True)
+            embed.add_field(name="Monthly", value=claim_cooldown_text(data.get("last_monthly"), 2592000), inline=True)
+        else:
+            embed.description = "Gambling commands use one shared cooldown."
+            for command in cooldown_pages[page]:
+                embed.add_field(name=command, value=command_cooldown_text(ctx.author.id, command), inline=True)
         embed.set_footer(text="Refresh updates live timestamps. Gambling uses one shared 𝚀𝚞𝚎wo cooldown.")
         return embed
 
     class CooldownsView(discord.ui.View):
         def __init__(self):
             super().__init__(timeout=LONG_HELP_VIEW_TIMEOUT)
+            self.page = "claims"
+            self.page_select = discord.ui.Select(
+                placeholder="Cooldown page",
+                options=[
+                    discord.SelectOption(label="Claims", value="claims", description="Daily, weekly, monthly", default=True),
+                    discord.SelectOption(label="Games 1", value="games_1", description="First group of gambling commands"),
+                    discord.SelectOption(label="Games 2", value="games_2", description="Second group of gambling commands"),
+                ],
+                min_values=1,
+                max_values=1,
+                row=0,
+            )
+            self.page_select.callback = self.select_page
+            self.add_item(self.page_select)
 
         async def interaction_check(self, interaction):
             if interaction.user.id == ctx.author.id:
@@ -5370,16 +5432,30 @@ async def cooldowns(ctx):
             await interaction.response.send_message("Open your own cooldowns with `.cooldowns`.", ephemeral=True)
             return False
 
-        @discord.ui.button(label="Refresh", style=discord.ButtonStyle.primary)
+        def update_select_defaults(self):
+            for option in self.page_select.options:
+                option.default = option.value == self.page
+
+        async def select_page(self, interaction):
+            self.page = self.page_select.values[0]
+            self.update_select_defaults()
+            updated = await asyncio.to_thread(get_user, interaction.user.id)
+            await interaction.response.edit_message(
+                embed=build_embed(updated, self.page),
+                view=self,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+
+        @discord.ui.button(label="Refresh", style=discord.ButtonStyle.primary, row=1)
         async def refresh_button(self, interaction, button):
             await interaction.response.defer()
             try:
                 updated = await asyncio.to_thread(get_user, interaction.user.id)
             except Exception:
                 return await interaction.followup.send(f"{Q_DENIED} Database unavailable. Try again shortly.", ephemeral=True)
-            await interaction.edit_original_response(embed=build_embed(updated), view=self, allowed_mentions=discord.AllowedMentions.none())
+            await interaction.edit_original_response(embed=build_embed(updated, self.page), view=self, allowed_mentions=discord.AllowedMentions.none())
 
-        @discord.ui.button(label="Guide", style=discord.ButtonStyle.secondary)
+        @discord.ui.button(label="Guide", style=discord.ButtonStyle.secondary, row=1)
         async def guide_button(self, interaction, button):
             await interaction.response.send_message(
                 f"{Q_BOOK} Daily, weekly, and monthly have separate claim timers. Gambling commands share one universal cooldown, so any gambling game starts the same timer.",
@@ -5411,25 +5487,65 @@ async def transactions(ctx, member: discord.Member = None):
             if row["kind"] not in INTERNAL_SUPEROWNER_TRANSACTION_KINDS
         ]
 
-    embed = discord.Embed(
-        title=f"{QOIN_TRANSFER} Transactions",
-        description=user_mention(user.id),
-        color=discord.Color.blurple()
-    )
-    if not rows:
-        embed.add_field(name="Recent", value="No transactions yet.", inline=False)
-    for row in rows:
-        amount = row["amount"]
-        sign = "+" if amount >= 0 else ""
-        ts = row["created_at"]
-        if ts.tzinfo is None:
-            ts = ts.replace(tzinfo=timezone.utc)
-        embed.add_field(
-            name=f"{row['kind']} | <t:{int(ts.timestamp())}:R>",
-            value=f"`{sign}{amount:,}` {CURRENCY_EMOJI}\n{row['note'] or ''}",
-            inline=False
+    def transaction_embed(page=0, per_page=6):
+        page_count = max(1, math.ceil(len(rows) / per_page)) if rows else 1
+        page = max(0, min(int(page or 0), page_count - 1))
+        start = page * per_page
+        page_rows = rows[start:start + per_page]
+        embed = discord.Embed(
+            title=f"{QOIN_TRANSFER} Transactions",
+            description=f"{user_mention(user.id)}\nShowing **{start + 1 if rows else 0}-{start + len(page_rows)}** of **{len(rows):,}** recent entries.",
+            color=discord.Color.blurple()
         )
-    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+        if not page_rows:
+            embed.add_field(name="Recent", value="No transactions yet.", inline=False)
+        for row in page_rows:
+            amount = row["amount"]
+            sign = "+" if amount >= 0 else ""
+            ts = row["created_at"]
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            note = str(row["note"] or "").strip() or "No note."
+            embed.add_field(
+                name=f"{row['kind']} | <t:{int(ts.timestamp())}:R>",
+                value=f"`{sign}{amount:,}` {CURRENCY_EMOJI}\n{fit_discord_content(note, 180)}",
+                inline=False
+            )
+        embed.set_footer(text=f"Page {page + 1}/{page_count}")
+        return embed
+
+    class TransactionView(discord.ui.View):
+        def __init__(self):
+            super().__init__(timeout=LONG_HELP_VIEW_TIMEOUT)
+            self.page = 0
+            self.per_page = 6
+            self.update_buttons()
+
+        def update_buttons(self):
+            max_page = max(0, (len(rows) - 1) // self.per_page)
+            self.prev_page.disabled = self.page <= 0
+            self.next_page.disabled = self.page >= max_page
+
+        async def interaction_check(self, interaction):
+            if interaction.user.id == ctx.author.id:
+                return True
+            await interaction.response.send_message("Open your own transactions with `.transactions`.", ephemeral=True)
+            return False
+
+        @discord.ui.button(label="Prev", style=discord.ButtonStyle.secondary)
+        async def prev_page(self, interaction, button):
+            self.page = max(0, self.page - 1)
+            self.update_buttons()
+            await interaction.response.edit_message(embed=transaction_embed(self.page, self.per_page), view=self, allowed_mentions=discord.AllowedMentions.none())
+
+        @discord.ui.button(label="Next", style=discord.ButtonStyle.secondary)
+        async def next_page(self, interaction, button):
+            self.page = min(max(0, (len(rows) - 1) // self.per_page), self.page + 1)
+            self.update_buttons()
+            await interaction.response.edit_message(embed=transaction_embed(self.page, self.per_page), view=self, allowed_mentions=discord.AllowedMentions.none())
+
+    view = TransactionView()
+    await ctx.send(embed=transaction_embed(), view=view if len(rows) > view.per_page else None, allowed_mentions=discord.AllowedMentions.none())
 
 @commands.command()
 async def lottery(ctx, action: str = None, amount: str = None):
@@ -10746,32 +10862,74 @@ async def gamestats(ctx, member: discord.Member = None):
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
-    embed = discord.Embed(
-        title=f"{Q_GAME_STATS} Game Stats",
-        description=user_mention(user.id),
-        color=discord.Color.green()
-    )
-    if not rows:
-        embed.add_field(name="Games", value="No tracked game stats yet.", inline=False)
-    else:
-        total_played = sum(int(row["played"] or 0) for row in rows)
-        total_wins = sum(int(row["wins"] or 0) for row in rows)
-        total_profit = sum(int(row["profit"] or 0) for row in rows)
-        embed.add_field(name="Total", value=f"Played: **{total_played:,}**\nWins: **{total_wins:,}**\nProfit: **{format_balance(total_profit)}**", inline=False)
-        lines = []
-        for row in rows[:12]:
-            played = int(row["played"] or 0)
-            wins = int(row["wins"] or 0)
-            losses = int(row["losses"] or 0)
-            win_rate = (wins / played * 100) if played else 0
-            lines.append(
-                f"**{game_display_name(row['game_key'])}** - {wins:,}W/{losses:,}L, {win_rate:.1f}% win, {format_balance(int(row['profit'] or 0))}"
-            )
-        add_split_embed_field(embed, "By Game", lines, inline=False)
     achievements = achievement_ids(data)
     game_badges = [GAME_ACHIEVEMENTS[achievement_id]["name"] for achievement_id in achievements if achievement_id in GAME_ACHIEVEMENTS]
-    add_split_embed_field(embed, "Badges", [", ".join(game_badges[:20])] if game_badges else ["No game badges yet."], inline=False)
-    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+    total_played = sum(int(row["played"] or 0) for row in rows)
+    total_wins = sum(int(row["wins"] or 0) for row in rows)
+    total_profit = sum(int(row["profit"] or 0) for row in rows)
+
+    def game_stats_embed(page=0, per_page=8):
+        page_count = max(1, math.ceil(len(rows) / per_page)) if rows else 1
+        page = max(0, min(int(page or 0), page_count - 1))
+        start = page * per_page
+        page_rows = rows[start:start + per_page]
+        embed = discord.Embed(
+            title=f"{Q_GAME_STATS} Game Stats",
+            description=user_mention(user.id),
+            color=discord.Color.green()
+        )
+        embed.add_field(name="Summary", value=f"Played: **{total_played:,}**\nWins: **{total_wins:,}**\nProfit: **{format_balance(total_profit)}**", inline=False)
+        if not page_rows:
+            embed.add_field(name="Games", value="No tracked game stats yet.", inline=False)
+        else:
+            lines = []
+            for row in page_rows:
+                played = int(row["played"] or 0)
+                wins = int(row["wins"] or 0)
+                losses = int(row["losses"] or 0)
+                win_rate = (wins / played * 100) if played else 0
+                lines.append(
+                    f"**{game_display_name(row['game_key'])}**\n"
+                    f"{wins:,}W/{losses:,}L • {win_rate:.1f}% win • {format_balance(int(row['profit'] or 0))}"
+                )
+            add_split_embed_field(embed, f"Games #{start + 1}-{start + len(page_rows)}", lines, inline=False)
+        badges = ", ".join(game_badges[:10]) if game_badges else "No game badges yet."
+        embed.add_field(name="Badges", value=fit_discord_content(badges, 1024), inline=False)
+        embed.set_footer(text=f"Page {page + 1}/{page_count}")
+        return embed
+
+    class GameStatsView(discord.ui.View):
+        def __init__(self):
+            super().__init__(timeout=LONG_HELP_VIEW_TIMEOUT)
+            self.page = 0
+            self.per_page = 8
+            self.update_buttons()
+
+        def update_buttons(self):
+            max_page = max(0, (len(rows) - 1) // self.per_page)
+            self.prev_page.disabled = self.page <= 0
+            self.next_page.disabled = self.page >= max_page
+
+        async def interaction_check(self, interaction):
+            if interaction.user.id == ctx.author.id:
+                return True
+            await interaction.response.send_message("Open your own game stats with `.gamestats`.", ephemeral=True)
+            return False
+
+        @discord.ui.button(label="Prev", style=discord.ButtonStyle.secondary)
+        async def prev_page(self, interaction, button):
+            self.page = max(0, self.page - 1)
+            self.update_buttons()
+            await interaction.response.edit_message(embed=game_stats_embed(self.page, self.per_page), view=self, allowed_mentions=discord.AllowedMentions.none())
+
+        @discord.ui.button(label="Next", style=discord.ButtonStyle.secondary)
+        async def next_page(self, interaction, button):
+            self.page = min(max(0, (len(rows) - 1) // self.per_page), self.page + 1)
+            self.update_buttons()
+            await interaction.response.edit_message(embed=game_stats_embed(self.page, self.per_page), view=self, allowed_mentions=discord.AllowedMentions.none())
+
+    view = GameStatsView()
+    await ctx.send(embed=game_stats_embed(), view=view if len(rows) > view.per_page else None, allowed_mentions=discord.AllowedMentions.none())
 
 @commands.command(name="achievements", aliases=["achievement", "badges", "achs"])
 async def achievements(ctx, member: discord.Member = None):
@@ -10794,11 +10952,6 @@ async def achievements(ctx, member: discord.Member = None):
         "losses": sum(int(row["losses"] or 0) for row in rows),
     }
     closest = []
-    embed = discord.Embed(
-        title=f"{Q_ACHIEVEMENT_UNLOCKED} Achievements",
-        description=user_mention(user.id),
-        color=discord.Color.gold(),
-    )
     grouped_lines = defaultdict(list)
     for achievement_id, achievement in GAME_ACHIEVEMENTS.items():
         if achievement["game"] is None:
@@ -10816,21 +10969,42 @@ async def achievements(ctx, member: discord.Member = None):
             f"({format_balance(achievement['reward'])})"
         )
     tier_order = ["Bronze", "Standard", "Gold", "Royal"]
-    for tier in tier_order:
+    closest.sort(reverse=True)
+
+    def achievements_embed(tier="Bronze"):
+        tier = tier if tier in tier_order else "Bronze"
         lines = grouped_lines.get(tier) or []
-        if lines:
-            add_split_embed_field(embed, f"{tier} Badges", lines, inline=False)
-    if closest:
-        closest.sort(reverse=True)
-        close_lines = [
-            f"**{name}** - {progress:,}/{target:,} ({format_balance(reward)})"
-            for _, name, progress, target, reward in closest[:3]
-        ]
-        embed.add_field(name="Closest", value="\n".join(close_lines), inline=False)
+        embed = discord.Embed(
+            title=f"{Q_ACHIEVEMENT_UNLOCKED} Achievements",
+            description=f"{user_mention(user.id)}\nTier: **{tier}**",
+            color=discord.Color.gold(),
+        )
+        add_split_embed_field(embed, f"{tier} Badges", lines or ["No badges in this tier."], inline=False)
+        if closest:
+            close_lines = [
+                f"**{name}** - {progress:,}/{target:,} ({format_balance(reward)})"
+                for _, name, progress, target, reward in closest[:3]
+            ]
+            embed.add_field(name="Closest", value="\n".join(close_lines), inline=False)
+        embed.set_footer(text="Use the menu to switch achievement tiers.")
+        return embed
 
     class AchievementView(discord.ui.View):
         def __init__(self):
             super().__init__(timeout=LONG_HELP_VIEW_TIMEOUT)
+            self.tier = "Bronze"
+            self.tier_select = discord.ui.Select(
+                placeholder="Achievement tier",
+                options=[
+                    discord.SelectOption(label=tier, value=tier, description=f"{len(grouped_lines.get(tier) or []):,} badge(s)", default=tier == "Bronze")
+                    for tier in tier_order
+                ],
+                min_values=1,
+                max_values=1,
+                row=0,
+            )
+            self.tier_select.callback = self.select_tier
+            self.add_item(self.tier_select)
 
         async def interaction_check(self, interaction):
             if interaction.user.id == ctx.author.id:
@@ -10838,18 +11012,31 @@ async def achievements(ctx, member: discord.Member = None):
             await interaction.response.send_message("Open your own achievements with `.achievements`.", ephemeral=True)
             return False
 
-        @discord.ui.button(label="Guide", style=discord.ButtonStyle.secondary)
+        def update_select_defaults(self):
+            for option in self.tier_select.options:
+                option.default = option.value == self.tier
+
+        async def select_tier(self, interaction):
+            self.tier = self.tier_select.values[0]
+            self.update_select_defaults()
+            await interaction.response.edit_message(
+                embed=achievements_embed(self.tier),
+                view=self,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+
+        @discord.ui.button(label="Guide", style=discord.ButtonStyle.secondary, row=1)
         async def guide_button(self, interaction, button):
             await interaction.response.send_message(
                 f"{Q_BADGE} Achievements are long-term badges. Win games, build play counts, and rewards pay automatically when a game result unlocks one. Use `.setbadge` to show up to 3 earned badges on your profile.",
                 ephemeral=True,
             )
 
-        @discord.ui.button(label="Profile Badges", style=discord.ButtonStyle.primary)
+        @discord.ui.button(label="Profile Badges", style=discord.ButtonStyle.primary, row=1)
         async def badge_button(self, interaction, button):
             await interaction.response.send_message("Use `.setbadge` to choose which earned badges show on your profile.", ephemeral=True)
 
-    await ctx.send(embed=embed, view=AchievementView(), allowed_mentions=discord.AllowedMentions.none())
+    await ctx.send(embed=achievements_embed(), view=AchievementView(), allowed_mentions=discord.AllowedMentions.none())
 
 @commands.command(name="setbadge", aliases=["badge", "equipbadge", "profilebadge"])
 async def setbadge(ctx, *, badge_ids: str = None):
