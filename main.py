@@ -108,7 +108,6 @@ from economy import (
     Q_TIMER as economy_q_timer,
     Q_TIMER_TICK as economy_q_timer_tick,
     Q_TRASH as economy_q_trash,
-    Q_TRUST as economy_q_trust,
     Q_USER_EDIT as economy_q_user_edit,
     Q_VOICE as economy_q_voice,
     Q_WARNING as economy_q_warning,
@@ -9092,7 +9091,7 @@ def snipe_empty_embed(ctx, snipe_type, user_id=None, show_guide=False):
     info = SNIPE_TYPES[snipe_type]
     target_text = f" for <@{user_id}>" if user_id else ""
     embed = discord.Embed(
-        title=f"{economy_q_snipe} {info['label']} Snipe",
+        title=f"{info['emoji']} {info['label']} Snipe",
         description=f"Nothing saved for this channel{target_text} yet.",
         color=discord.Color.dark_grey(),
     )
@@ -9117,7 +9116,7 @@ def build_snipe_embed(ctx, snipe_type, index, user_id=None, show_guide=False):
         return snipe_empty_embed(ctx, snipe_type, user_id, show_guide)
     index = max(0, min(index, len(entries) - 1))
     embed = discord.Embed(
-        title=f"{economy_q_snipe} {info['emoji']} {info['label']} Snipe",
+        title=f"{info['emoji']} {info['label']} Snipe",
         color=discord.Color.blurple(),
         timestamp=datetime.now(timezone.utc),
     )
