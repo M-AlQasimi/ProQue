@@ -2363,14 +2363,20 @@ async def clear_lottery_channel(channel):
     if channel is None:
         return 0
     try:
-        deleted = await channel.purge(limit=None, reason="Lottery round finished")
-        return len(deleted)
+        deleted_count = 0
+        while True:
+            deleted = await channel.purge(limit=100, reason="Lottery round finished")
+            deleted_count += len(deleted)
+            if len(deleted) < 100:
+                break
+            await asyncio.sleep(1)
+        return deleted_count
     except Exception as e:
         print(f"Lottery channel purge failed, trying manual delete: {type(e).__name__} - {e}")
 
     deleted_count = 0
     try:
-        async for message in channel.history(limit=None):
+        async for message in channel.history(limit=500):
             try:
                 await message.delete()
                 deleted_count += 1
@@ -3999,7 +4005,7 @@ def cooldown_multiplier_for_user(user_id, data=None):
         if cached and cached[0] > now:
             return cached[1]
     try:
-        latest = data if data is not None else (get_user(user_id) if db_ready else None)
+        latest = data
         multiplier = max(0.5, 1 - item_bonus(latest, "cooldown_clock", 0.04, 5)) if latest else 1
     except Exception:
         multiplier = 1
@@ -4010,7 +4016,7 @@ def check_cooldown(user_id, command, data=None):
     if is_super_owner(user_id):
         return 0
     try:
-        latest = data if data is not None else (get_user(user_id) if db_ready else None)
+        latest = data
         pause_until = latest.get("gambling_pause_until") if latest else None
         if pause_until:
             if pause_until.tzinfo is None:
@@ -4033,7 +4039,7 @@ def check_cooldown(user_id, command, data=None):
 def parse_amount(raw, user_id=None, guild=None, balance=None):
     raw_text = str(raw).strip().lower().replace(",", "").replace("_", "")
     personal_limit = None
-    if user_id is not None and not has_economy_owner_power(user_id, guild) and db_ready:
+    if user_id is not None and balance is None and not has_economy_owner_power(user_id, guild) and db_ready:
         try:
             data = get_user(user_id)
             stored_limit = data.get("personal_bet_limit")
@@ -4283,7 +4289,7 @@ async def bal(ctx, member: discord.Member = None):
 
     user = ctx.author if not member else member
     try:
-        data = get_user(user.id)
+        data = await asyncio.to_thread(get_user, user.id)
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
@@ -4494,14 +4500,14 @@ async def profile(ctx, member: discord.Member = None):
 
     user = member or ctx.author
     try:
-        data = get_user(user.id)
+        data = await asyncio.to_thread(get_user, user.id)
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
 
     embed = build_profile_embed(user, data)
     try:
-        rows = get_game_stats(user.id)
+        rows = await asyncio.to_thread(get_game_stats, user.id)
     except Exception:
         rows = []
     if rows:
@@ -4522,7 +4528,11 @@ async def settheme(ctx, theme: str = None):
     """Equips a profile theme from owned decorative shop items."""
     if not await ensure_db_ready(ctx):
         return
-    data = get_user(ctx.author.id)
+    try:
+        data = await asyncio.to_thread(get_user, ctx.author.id)
+    except Exception:
+        await send_error(ctx, "Database unavailable. Try again shortly.")
+        return
     if theme is None:
         lines = []
         for theme_id, info in PROFILE_THEMES.items():
@@ -4538,7 +4548,7 @@ async def settheme(ctx, theme: str = None):
     item_id = PROFILE_THEMES[theme_id].get("item")
     if item_id and not has_item(data, item_id):
         return await ctx.send(f"{Q_DENIED} You need **{item_display_name(SHOP_ITEMS[item_id])}** to use that theme.")
-    update_user(ctx.author.id, profile_theme=theme_id)
+    await asyncio.to_thread(update_user, ctx.author.id, profile_theme=theme_id)
     await ctx.send(f"{Q_SUCCESS} Profile theme equipped: **{PROFILE_THEMES[theme_id]['label']}**")
 
 @commands.command(name="inventory", aliases=["inv", "items"])
@@ -4548,7 +4558,7 @@ async def inventory(ctx, member: discord.Member = None):
 
     user = member or ctx.author
     try:
-        data = get_user(user.id)
+        data = await asyncio.to_thread(get_user, user.id)
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
@@ -4690,7 +4700,7 @@ async def quests(ctx):
         return
 
     try:
-        data = get_user(ctx.author.id)
+        data = await asyncio.to_thread(get_user, ctx.author.id)
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
@@ -4748,46 +4758,152 @@ async def shop(ctx):
     if not await ensure_db_ready(ctx):
         return
 
-    def catalog_embed(selected_item_id=None):
+    categories = sorted({item["category"] for item in SHOP_ITEMS.values()})
+
+    def items_for_category(category):
+        return [(item_id, item) for item_id, item in SHOP_ITEMS.items() if item["category"] == category]
+
+    def selected_item_for_category(category, current=None):
+        item_ids = [item_id for item_id, _ in items_for_category(category)]
+        return current if current in item_ids else (item_ids[0] if item_ids else next(iter(SHOP_ITEMS)))
+
+    async def get_shop_data(user_id):
         try:
-            data = get_user(ctx.author.id)
+            return await asyncio.to_thread(get_user, user_id)
         except Exception:
-            data = {"balance": 0, "inventory": []}
+            return {"balance": 0, "inventory": []}
+
+    async def get_shop_discount():
+        return await asyncio.to_thread(event_shop_discount_rate, ctx.guild.id if ctx.guild else None)
+
+    def catalog_embed(data, selected_category, selected_item_id, discount=0.0):
+        selected_category = selected_category if selected_category in categories else categories[0]
+        selected_item_id = selected_item_for_category(selected_category, selected_item_id)
+        discount = float(discount or 0.0)
+        category_items = items_for_category(selected_category)
+        selected_item = SHOP_ITEMS[selected_item_id]
+        balance = int(data.get("balance", 0) or 0)
+        boost_text = luck_boost_text(data)
+        try:
+            inventory = user_inventory(data)
+        except Exception:
+            inventory = []
 
         embed = discord.Embed(
             title=f"{Q_SHOP} 𝚀𝚞𝚎wo Shop",
             description=(
                 f"{user_mention(ctx.author.id)}\n"
-                f"Balance: **{format_balance(data['balance'])}**\n"
-                "Select an item below, then press Buy."
+                f"{QASH_EMOJI} Balance: **{format_balance(balance)}**\n"
+                f"Category: **{selected_category}**\n"
+                "Pick a category, choose an item, then press Buy."
             ),
             color=discord.Color.gold()
         )
-        for category in sorted({item["category"] for item in SHOP_ITEMS.values()}):
-            lines = []
-            for item_id, item in SHOP_ITEMS.items():
-                if item["category"] != category:
-                    continue
-                if "duration_hours" in item:
-                    owned_text = luck_boost_text(data) or "not active"
-                else:
-                    owned = item_count(data, item_id)
-                    max_qty = item.get("max_qty", 1)
-                    owned_text = f"{owned}/{max_qty}" if max_qty > 1 else ("owned" if owned else "not owned")
-                marker = "→ " if item_id == selected_item_id else ""
-                discount = event_shop_discount_rate(ctx.guild.id if ctx.guild else None)
-                display_cost = int(item["cost"] * (1 - discount))
-                price_text = format_balance(display_cost)
-                if discount:
-                    price_text += f" ~~{format_balance(item['cost'])}~~"
-                lines.append(
-                    f"{marker}**{item_display_name(item)}** - {price_text}\n"
-                    f"Rarity: **{item_rarity_label(item)}**\n"
-                    f"{item['description']}\n"
-                    f"Owned: **{owned_text}**"
-                )
-            add_split_embed_field(embed, category, lines, inline=False)
+        if boost_text:
+            embed.add_field(name="Active Effect", value=boost_text, inline=False)
+        lines = []
+        for item_id, item in category_items:
+            marker = "→ " if item_id == selected_item_id else ""
+            display_cost = int(item["cost"] * (1 - discount))
+            price_text = format_balance(display_cost)
+            if discount:
+                price_text += f" ~~{format_balance(item['cost'])}~~"
+            owned = inventory.count(item_id)
+            max_qty = item.get("max_qty", 1)
+            owned_text = "active" if "duration_hours" in item and item_id == "fortune_vial" and boost_text else (
+                f"{owned}/{max_qty}" if max_qty > 1 else ("owned" if owned else "not owned")
+            )
+            lines.append(f"{marker}**{item_display_name(item)}** - {price_text} | {item_rarity_label(item)} | {owned_text}")
+        add_split_embed_field(embed, "Items", lines or ["No items in this category."], inline=False)
+
+        selected_cost = int(selected_item["cost"] * (1 - discount))
+        selected_owned = inventory.count(selected_item_id)
+        selected_max = selected_item.get("max_qty", 1)
+        selected_owned_text = "active" if "duration_hours" in selected_item and selected_item_id == "fortune_vial" and boost_text else (
+            f"{selected_owned}/{selected_max}" if selected_max > 1 else ("owned" if selected_owned else "not owned")
+        )
+        embed.add_field(
+            name=f"Selected: {item_display_name(selected_item)}",
+            value=(
+                f"Price: **{format_balance(selected_cost)}**"
+                + (f" ~~{format_balance(selected_item['cost'])}~~" if discount else "")
+                + f"\nRarity: **{item_rarity_label(selected_item)}**\n"
+                f"Owned: **{selected_owned_text}**\n"
+                f"{selected_item['description']}"
+            ),
+            inline=False,
+        )
+        embed.set_footer(text=f"{categories.index(selected_category) + 1}/{len(categories)} categories")
         return embed
+
+    def buy_item_sync(user_id, guild_id, item_id, quantity):
+        if not str(quantity).isdigit():
+            return {"ok": False, "message": f"{Q_DENIED} Quantity must be a positive whole number."}
+
+        quantity = int(quantity)
+        if quantity <= 0:
+            return {"ok": False, "message": f"{Q_DENIED} Quantity must be positive."}
+
+        item = SHOP_ITEMS[item_id]
+        item_name = item_display_name(item)
+        data = get_user(user_id)
+        inventory = user_inventory(data)
+        if "duration_hours" in item:
+            max_qty = item.get("max_qty", 99)
+            if quantity > max_qty:
+                return {"ok": False, "message": f"{Q_DENIED} You can buy at most **{max_qty}** **{item_name}** at once."}
+        else:
+            owned = inventory.count(item_id)
+            max_qty = item.get("max_qty", 1)
+            remaining_allowed = max_qty - owned
+            if remaining_allowed <= 0:
+                return {"ok": False, "message": f"{Q_DENIED} You already own the max amount of **{item_name}**."}
+            if quantity > remaining_allowed:
+                return {"ok": False, "message": f"{Q_DENIED} You can only buy **{remaining_allowed}** more **{item_name}**."}
+
+        discount = event_shop_discount_rate(guild_id)
+        unit_cost = int(item["cost"] * (1 - discount))
+        total_cost = unit_cost * quantity
+        if int(data["balance"] or 0) < total_cost:
+            affordable = int(data["balance"] or 0) // max(1, unit_cost)
+            return {"ok": False, "message": f"{Q_DENIED} That costs **{format_balance(total_cost)}**. You can afford **{affordable}**."}
+
+        new_balance_value = int(data["balance"] or 0) - total_cost
+        effect_text = ""
+        if "duration_hours" in item:
+            now = datetime.now(timezone.utc)
+            current_until = data.get("luck_boost_until") if item_id == "fortune_vial" else None
+            if current_until:
+                current_until = current_until.replace(tzinfo=timezone.utc) if current_until.tzinfo is None else current_until
+            start = max(now, current_until) if current_until else now
+            boost_until = start + timedelta(hours=item["duration_hours"] * quantity)
+            new_balance = apply_shop_purchase(
+                user_id,
+                item_id,
+                total_cost,
+                new_balance_value,
+                luck_boost_until=boost_until,
+                note=f"{quantity}x {item['name']}",
+            )
+            effect_text = f"\nEffect active until **{discord_relative_time(boost_until)}**."
+        else:
+            inventory.extend([item_id] * quantity)
+            new_balance = apply_shop_purchase(
+                user_id,
+                item_id,
+                total_cost,
+                new_balance_value,
+                inventory=inventory,
+                note=f"{quantity}x {item['name']}",
+            )
+        discount_text = f"\n{Q_EVENT} Shop Discount: **-{int(discount * 100)}%**" if discount else ""
+        return {
+            "ok": True,
+            "message": (
+                f"{Q_SUCCESS} Bought **{quantity}x {item_name}** for **{format_balance(total_cost)}**.\n"
+                f"New Balance: **{format_balance(new_balance)}**{discount_text}{effect_text}"
+            ),
+        }
 
     class ShopQuantityModal(discord.ui.Modal):
         def __init__(self, item_id, shop_view):
@@ -4805,117 +4921,74 @@ async def shop(ctx):
 
         async def on_submit(self, interaction):
             await interaction.response.defer(ephemeral=True, thinking=True)
-            raw_quantity = str(self.quantity.value).strip()
-            if not raw_quantity.isdigit():
-                await interaction.followup.send(f"{Q_DENIED} Quantity must be a positive whole number.", ephemeral=True)
-                return
-
-            quantity = int(raw_quantity)
-            if quantity <= 0:
-                await interaction.followup.send(f"{Q_DENIED} Quantity must be positive.", ephemeral=True)
-                return
-
-            item = SHOP_ITEMS[self.item_id]
-            item_name = item_display_name(item)
             try:
-                data = get_user(interaction.user.id)
-                inventory = user_inventory(data)
-                if "duration_hours" in item:
-                    max_qty = item.get("max_qty", 99)
-                    if quantity > max_qty:
-                        await interaction.followup.send(
-                            f"{Q_DENIED} You can buy at most **{max_qty}** **{item_name}** at once.",
-                            ephemeral=True
-                        )
-                        return
-                else:
-                    owned = inventory.count(self.item_id)
-                    max_qty = item.get("max_qty", 1)
-                    remaining_allowed = max_qty - owned
-                    if remaining_allowed <= 0:
-                        await interaction.followup.send(f"{Q_DENIED} You already own the max amount of **{item_name}**.", ephemeral=True)
-                        return
-                    if quantity > remaining_allowed:
-                        await interaction.followup.send(
-                            f"{Q_DENIED} You can only buy **{remaining_allowed}** more **{item_name}**.",
-                            ephemeral=True
-                        )
-                        return
-
-                discount = event_shop_discount_rate(interaction.guild.id if interaction.guild else None)
-                unit_cost = int(item["cost"] * (1 - discount))
-                total_cost = unit_cost * quantity
-                if data["balance"] < total_cost:
-                    affordable = data["balance"] // max(1, unit_cost)
-                    await interaction.followup.send(
-                        f"{Q_DENIED} That costs **{format_balance(total_cost)}**. You can afford **{affordable}**.",
-                        ephemeral=True
-                    )
-                    return
-
-                new_balance = data["balance"] - total_cost
-                effect_text = ""
-                if "duration_hours" in item:
-                    now = datetime.now(timezone.utc)
-                    current_until = data.get("luck_boost_until") if self.item_id == "fortune_vial" else None
-                    if current_until:
-                        current_until = current_until.replace(tzinfo=timezone.utc) if current_until.tzinfo is None else current_until
-                    start = max(now, current_until) if current_until else now
-                    boost_until = start + timedelta(hours=item["duration_hours"] * quantity)
-                    new_balance = apply_shop_purchase(
-                        interaction.user.id,
-                        self.item_id,
-                        total_cost,
-                        new_balance,
-                        luck_boost_until=boost_until,
-                        note=f"{quantity}x {item['name']}",
-                    )
-                    effect_text = f"\nEffect active until **{discord_relative_time(boost_until)}**."
-                else:
-                    inventory.extend([self.item_id] * quantity)
-                    new_balance = apply_shop_purchase(
-                        interaction.user.id,
-                        self.item_id,
-                        total_cost,
-                        new_balance,
-                        inventory=inventory,
-                        note=f"{quantity}x {item['name']}",
-                    )
+                result = await asyncio.to_thread(
+                    buy_item_sync,
+                    interaction.user.id,
+                    interaction.guild.id if interaction.guild else None,
+                    self.item_id,
+                    str(self.quantity.value).strip(),
+                )
             except Exception:
                 await interaction.followup.send(f"{Q_DENIED} Database unavailable. Try again shortly.", ephemeral=True)
                 return
 
-            discount_text = f"\n{Q_EVENT} Shop Discount: **-{int(discount * 100)}%**" if discount else ""
-            await interaction.followup.send(
-                f"{Q_SUCCESS} Bought **{quantity}x {item_name}** for **{format_balance(total_cost)}**.\n"
-                f"New Balance: **{format_balance(new_balance)}**{discount_text}{effect_text}",
-                ephemeral=True
-            )
+            await interaction.followup.send(result["message"], ephemeral=True)
             await self.shop_view.refresh_message()
 
     class ShopView(discord.ui.View):
         def __init__(self):
             super().__init__(timeout=LONG_HELP_VIEW_TIMEOUT)
-            self.selected_item_id = next(iter(SHOP_ITEMS))
+            self.selected_category = categories[0]
+            self.selected_item_id = selected_item_for_category(self.selected_category)
             self.message = None
             self.refresh_task = None
-            options = [
+            self.rebuild_components()
+
+        def rebuild_components(self):
+            self.clear_items()
+            category_options = [
                 discord.SelectOption(
-                    label=item["name"],
-                    value=item_id,
-                    description=f"{item['category']} | {format_balance(item['cost'])} | max {item.get('max_qty', 1)}",
-                    emoji=item_select_emoji(item)
+                    label=category,
+                    value=category,
+                    description=f"{len(items_for_category(category))} item(s)",
+                    default=category == self.selected_category,
                 )
-                for item_id, item in SHOP_ITEMS.items()
+                for category in categories
             ]
+            self.category_select = discord.ui.Select(
+                placeholder="Choose a category",
+                options=category_options,
+                min_values=1,
+                max_values=1,
+                row=0,
+            )
+            self.category_select.callback = self.select_category
+            self.add_item(self.category_select)
+
+            item_options = []
+            for item_id, item in items_for_category(self.selected_category):
+                item_options.append(
+                    discord.SelectOption(
+                        label=item["name"],
+                        value=item_id,
+                        description=f"{format_balance(item['cost'])} | {item_rarity_label(item)} | max {item.get('max_qty', 1)}",
+                        emoji=item_select_emoji(item),
+                        default=item_id == self.selected_item_id,
+                    )
+                )
             self.item_select = discord.ui.Select(
                 placeholder="Choose an item",
-                options=options,
+                options=item_options,
                 min_values=1,
-                max_values=1
+                max_values=1,
+                row=1,
             )
             self.item_select.callback = self.select_item
             self.add_item(self.item_select)
+            self.buy_button = discord.ui.Button(label="Buy", style=discord.ButtonStyle.success, row=2)
+            self.buy_button.callback = self.buy_selected
+            self.add_item(self.buy_button)
 
         async def start_live_refresh(self):
             if self.refresh_task is None or self.refresh_task.done():
@@ -4930,8 +5003,12 @@ async def shop(ctx):
             if not self.message:
                 return
             try:
+                data, discount = await asyncio.gather(
+                    get_shop_data(ctx.author.id),
+                    asyncio.to_thread(event_shop_discount_rate, ctx.guild.id if ctx.guild else None),
+                )
                 await self.message.edit(
-                    embed=catalog_embed(self.selected_item_id),
+                    embed=catalog_embed(data, self.selected_category, self.selected_item_id, discount),
                     view=self,
                     allowed_mentions=discord.AllowedMentions.none()
                 )
@@ -4953,21 +5030,42 @@ async def shop(ctx):
 
         async def select_item(self, interaction):
             self.selected_item_id = self.item_select.values[0]
+            data, discount = await asyncio.gather(
+                get_shop_data(interaction.user.id),
+                get_shop_discount(),
+            )
             await interaction.response.edit_message(
-                embed=catalog_embed(self.selected_item_id),
+                embed=catalog_embed(data, self.selected_category, self.selected_item_id, discount),
                 view=self,
                 allowed_mentions=discord.AllowedMentions.none()
             )
 
-        @discord.ui.button(label="Buy", style=discord.ButtonStyle.success)
-        async def buy_button(self, interaction, button):
+        async def select_category(self, interaction):
+            self.selected_category = self.category_select.values[0]
+            self.selected_item_id = selected_item_for_category(self.selected_category, self.selected_item_id)
+            self.rebuild_components()
+            data, discount = await asyncio.gather(
+                get_shop_data(interaction.user.id),
+                get_shop_discount(),
+            )
+            await interaction.response.edit_message(
+                embed=catalog_embed(data, self.selected_category, self.selected_item_id, discount),
+                view=self,
+                allowed_mentions=discord.AllowedMentions.none()
+            )
+
+        async def buy_selected(self, interaction):
             await interaction.response.send_modal(ShopQuantityModal(self.selected_item_id, self))
 
     view = ShopView()
-    view.message = await ctx.send(embed=catalog_embed(view.selected_item_id), view=view, allowed_mentions=discord.AllowedMentions.none())
+    data, discount = await asyncio.gather(
+        get_shop_data(ctx.author.id),
+        get_shop_discount(),
+    )
+    view.message = await ctx.send(embed=catalog_embed(data, view.selected_category, view.selected_item_id, discount), view=view, allowed_mentions=discord.AllowedMentions.none())
     await view.start_live_refresh()
     try:
-        await maybe_send_tutorial(ctx, get_user(ctx.author.id), "shop")
+        await maybe_send_tutorial(ctx, await asyncio.to_thread(get_user, ctx.author.id), "shop")
     except Exception:
         pass
 
@@ -5013,7 +5111,7 @@ async def cooldowns(ctx):
             )
 
     try:
-        data = get_user(ctx.author.id)
+        data = await asyncio.to_thread(get_user, ctx.author.id)
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
@@ -5027,7 +5125,7 @@ async def transactions(ctx, member: discord.Member = None):
 
     user = member or ctx.author
     try:
-        rows = get_recent_transactions(user.id, 12)
+        rows = await asyncio.to_thread(get_recent_transactions, user.id, 12)
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
@@ -5180,12 +5278,12 @@ async def stoplottery(ctx):
         await send_owner_only(ctx)
         return
 
-    config = get_lottery_config(ctx.guild.id)
+    config = await asyncio.to_thread(get_lottery_config, ctx.guild.id)
     if config is None:
         await ctx.send("Lottery is not set up in this server.")
         return
 
-    rows = lottery_ticket_rows(ctx.guild.id)
+    rows = await asyncio.to_thread(lottery_ticket_rows, ctx.guild.id)
     total_tickets = sum(row["tickets"] for row in rows)
     pot = int(config.get("pot") or 0)
     role_deleted = False
@@ -5328,7 +5426,7 @@ async def lotterystats(ctx):
     if not await ensure_db_ready(ctx):
         return
 
-    config = get_lottery_config(ctx.guild.id)
+    config = await asyncio.to_thread(get_lottery_config, ctx.guild.id)
     if config is None:
         await ctx.send("Lottery is not set up yet.")
         return
@@ -5389,7 +5487,7 @@ async def process_lottery_draw(config):
         return
 
     next_draw = datetime.now(timezone.utc) + timedelta(seconds=int(config["period_seconds"]))
-    rows = lottery_ticket_rows(guild.id)
+    rows = await asyncio.to_thread(lottery_ticket_rows, guild.id)
     channel = guild.get_channel(config["channel_id"])
     if channel is None:
         try:
@@ -5400,11 +5498,14 @@ async def process_lottery_draw(config):
     unique_players = len(rows)
     if unique_players < 5:
         ticket_cost = lottery_ticket_cost(config)
-        refunds = refund_lottery_round(guild.id, rows, ticket_cost)
+        def cancel_lottery_sync():
+            refunds = refund_lottery_round(guild.id, rows, ticket_cost)
+            reset_lottery_round(guild.id, next_draw)
+            return refunds
+        refunds = await asyncio.to_thread(cancel_lottery_sync)
         refunded_total = sum(amount for _, amount in refunds)
-        reset_lottery_round(guild.id, next_draw)
         role = await recreate_lottery_role(guild, config.get("role_id"))
-        set_lottery_role(guild.id, role.id if role else None)
+        await asyncio.to_thread(set_lottery_role, guild.id, role.id if role else None)
         updated_config = await asyncio.to_thread(get_lottery_config, guild.id)
         await refresh_lottery_message(guild, updated_config)
         if channel:
@@ -5424,18 +5525,30 @@ async def process_lottery_draw(config):
             )
         return
 
-    weighted = []
+    total_tickets = sum(max(0, int(row["tickets"] or 0)) for row in rows)
+    if total_tickets <= 0:
+        await asyncio.to_thread(reset_lottery_round, guild.id, next_draw)
+        await refresh_lottery_message(guild, await asyncio.to_thread(get_lottery_config, guild.id))
+        return
+    pick = random.randint(1, total_tickets)
+    running = 0
+    winner_id = int(rows[-1]["user_id"])
     for row in rows:
-        weighted.extend([row["user_id"]] * int(row["tickets"]))
-    winner_id = random.choice(weighted)
+        running += max(0, int(row["tickets"] or 0))
+        if running >= pick:
+            winner_id = int(row["user_id"])
+            break
     pot = int(config["pot"])
     try:
-        data = get_user(winner_id)
-        update_user(winner_id, balance=data["balance"] + pot, total_earned=data["total_earned"] + pot)
-        log_transaction(winner_id, "lottery_win", pot, f"Guild {guild.id}")
-        reset_lottery_round(guild.id, next_draw)
+        def pay_lottery_winner_sync():
+            data = get_user(winner_id)
+            update_user(winner_id, balance=data["balance"] + pot, total_earned=data["total_earned"] + pot)
+            log_transaction(winner_id, "lottery_win", pot, f"Guild {guild.id}")
+            reset_lottery_round(guild.id, next_draw)
+
+        await asyncio.to_thread(pay_lottery_winner_sync)
         role = await recreate_lottery_role(guild, config.get("role_id"))
-        set_lottery_role(guild.id, role.id if role else None)
+        await asyncio.to_thread(set_lottery_role, guild.id, role.id if role else None)
         updated_config = await asyncio.to_thread(get_lottery_config, guild.id)
     except Exception as e:
         print(f"Lottery draw failed: {type(e).__name__} - {e}")
@@ -5756,7 +5869,7 @@ async def daily(ctx):
 
     user_id = ctx.author.id
     try:
-        data = get_user(user_id)
+        data = await asyncio.to_thread(get_user, user_id)
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
@@ -5779,20 +5892,23 @@ async def daily(ctx):
     reward = int(reward * claim_reward_multiplier(data))
 
     try:
-        update_user(
-            user_id,
-            balance=data['balance'] + reward,
-            daily_streak=streak,
-            last_daily=now,
-            total_earned=data['total_earned'] + reward
-        )
-        log_transaction(user_id, "daily", reward, f"Streak {streak}")
+        def claim_daily_sync():
+            update_user(
+                user_id,
+                balance=data['balance'] + reward,
+                daily_streak=streak,
+                last_daily=now,
+                total_earned=data['total_earned'] + reward
+            )
+            log_transaction(user_id, "daily", reward, f"Streak {streak}")
+            updated_user = get_user(user_id)
+            achievement = maybe_award_main_quest(user_id, updated_user, "daily_30")
+            return updated_user, achievement
+        updated, achievement_reward = await asyncio.to_thread(claim_daily_sync)
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
 
-    updated = get_user(user_id)
-    achievement_reward = maybe_award_main_quest(user_id, updated, "daily_30")
     extra = f"\n{Q_QUEST} Main quest complete: **{format_balance(achievement_reward)}**!" if achievement_reward else ""
     await reply_to_command(ctx, f"{QOIN_BAG} You claimed **{format_balance(reward)}**!\nStreak: **{plural_unit(streak, 'day')}** (+{streak_bonus} bonus){freeze_note}{extra}")
     await maybe_send_tutorial(ctx, updated, "start")
@@ -5804,7 +5920,7 @@ async def weekly(ctx):
 
     user_id = ctx.author.id
     try:
-        data = get_user(user_id)
+        data = await asyncio.to_thread(get_user, user_id)
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
@@ -5827,20 +5943,23 @@ async def weekly(ctx):
     reward = int(reward * claim_reward_multiplier(data))
 
     try:
-        update_user(
-            user_id,
-            balance=data['balance'] + reward,
-            weekly_streak=streak,
-            last_weekly=now,
-            total_earned=data['total_earned'] + reward
-        )
-        log_transaction(user_id, "weekly", reward, f"Streak {streak}")
+        def claim_weekly_sync():
+            update_user(
+                user_id,
+                balance=data['balance'] + reward,
+                weekly_streak=streak,
+                last_weekly=now,
+                total_earned=data['total_earned'] + reward
+            )
+            log_transaction(user_id, "weekly", reward, f"Streak {streak}")
+            updated_user = get_user(user_id)
+            achievement = maybe_award_main_quest(user_id, updated_user, "weekly_8")
+            return updated_user, achievement
+        updated, achievement_reward = await asyncio.to_thread(claim_weekly_sync)
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
 
-    updated = get_user(user_id)
-    achievement_reward = maybe_award_main_quest(user_id, updated, "weekly_8")
     extra = f"\n{Q_QUEST} Main quest complete: **{format_balance(achievement_reward)}**!" if achievement_reward else ""
     await reply_to_command(ctx, f"{QOIN_BAG} You claimed **{format_balance(reward)}**!\nWeekly streak: **{plural_unit(streak, 'week')}** (+{streak_bonus} bonus){freeze_note}{extra}")
 
@@ -5851,7 +5970,7 @@ async def monthly(ctx):
 
     user_id = ctx.author.id
     try:
-        data = get_user(user_id)
+        data = await asyncio.to_thread(get_user, user_id)
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
@@ -5874,20 +5993,23 @@ async def monthly(ctx):
     reward = int(reward * claim_reward_multiplier(data))
 
     try:
-        update_user(
-            user_id,
-            balance=data['balance'] + reward,
-            monthly_streak=streak,
-            last_monthly=now,
-            total_earned=data['total_earned'] + reward
-        )
-        log_transaction(user_id, "monthly", reward, f"Streak {streak}")
+        def claim_monthly_sync():
+            update_user(
+                user_id,
+                balance=data['balance'] + reward,
+                monthly_streak=streak,
+                last_monthly=now,
+                total_earned=data['total_earned'] + reward
+            )
+            log_transaction(user_id, "monthly", reward, f"Streak {streak}")
+            updated_user = get_user(user_id)
+            achievement = maybe_award_main_quest(user_id, updated_user, "monthly_5")
+            return updated_user, achievement
+        updated, achievement_reward = await asyncio.to_thread(claim_monthly_sync)
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
 
-    updated = get_user(user_id)
-    achievement_reward = maybe_award_main_quest(user_id, updated, "monthly_5")
     extra = f"\n{Q_QUEST} Main quest complete: **{format_balance(achievement_reward)}**!" if achievement_reward else ""
     await reply_to_command(ctx, f"{QOIN_BAG} You claimed **{format_balance(reward)}**!\nMonthly streak: **{plural_unit(streak, 'month')}** (+{streak_bonus} bonus){freeze_note}{extra}")
 
@@ -5908,7 +6030,7 @@ async def gamble(ctx, amount: str, choice: str = None):
     user_id = ctx.author.id
 
     try:
-        data = get_user(user_id)
+        data = await asyncio.to_thread(get_user, user_id)
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
@@ -6003,13 +6125,13 @@ async def gamble(ctx, amount: str, choice: str = None):
         )
 
     try:
-        data = get_user(user_id)
+        data = await asyncio.to_thread(get_user, user_id)
         if win:
             new_streak = next_gambling_streak(data)
             mult = payout_multiplier(data, new_streak)
             winnings = int(amount * mult * 2)
             new_balance = data['balance'] + winnings - amount
-            update_user(
+            await asyncio.to_thread(update_user,
                 user_id,
                 balance=new_balance,
                 gamble_streak=new_streak,
@@ -6034,7 +6156,7 @@ async def gamble(ctx, amount: str, choice: str = None):
             )
         else:
             new_balance = max(0, data['balance'] - amount)
-            update_user(
+            await asyncio.to_thread(update_user,
                 user_id,
                 balance=new_balance,
                 gamble_streak=0,
@@ -6074,7 +6196,7 @@ async def roulette(ctx, amount: str, color: str = None):
 
     user_id = ctx.author.id
     try:
-        data = get_user(user_id)
+        data = await asyncio.to_thread(get_user, user_id)
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
@@ -6179,13 +6301,13 @@ async def roulette(ctx, amount: str, color: str = None):
         )
 
     try:
-        data = get_user(user_id)
+        data = await asyncio.to_thread(get_user, user_id)
         if result == color:
             new_streak = next_gambling_streak(data)
             mult = payout_multiplier(data, new_streak)
             winnings = int(amount * mult * multipliers[color])
             new_balance = data['balance'] + winnings - amount
-            update_user(
+            await asyncio.to_thread(update_user,
                 user_id,
                 balance=new_balance,
                 gamble_streak=new_streak,
@@ -6211,7 +6333,7 @@ async def roulette(ctx, amount: str, color: str = None):
             )
         else:
             new_balance = max(0, data['balance'] - amount)
-            update_user(
+            await asyncio.to_thread(update_user,
                 user_id,
                 balance=new_balance,
                 gamble_streak=0,
@@ -6253,7 +6375,7 @@ async def slots(ctx, amount: str):
     user_id = ctx.author.id
 
     try:
-        data = get_user(user_id)
+        data = await asyncio.to_thread(get_user, user_id)
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
@@ -6322,13 +6444,13 @@ async def slots(ctx, amount: str):
     r3 = final_reels[2]
 
     try:
-        data = get_user(user_id)
+        data = await asyncio.to_thread(get_user, user_id)
         if result_multiplier > 0:
             new_streak = next_gambling_streak(data)
             mult = payout_multiplier(data, new_streak)
             winnings = int(amount * mult * result_multiplier)
             new_balance = data['balance'] + winnings - amount
-            update_user(
+            await asyncio.to_thread(update_user,
                 user_id,
                 balance=new_balance,
                 gamble_streak=new_streak,
@@ -6354,7 +6476,7 @@ async def slots(ctx, amount: str):
             )
         else:
             new_balance = max(0, data['balance'] - amount)
-            update_user(
+            await asyncio.to_thread(update_user,
                 user_id,
                 balance=new_balance,
                 gamble_streak=0,
@@ -6429,7 +6551,7 @@ async def blackjack(ctx, amount: str):
     user_id = ctx.author.id
 
     try:
-        data = get_user(user_id)
+        data = await asyncio.to_thread(get_user, user_id)
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
@@ -6473,7 +6595,7 @@ async def blackjack(ctx, amount: str):
                 mult = payout_multiplier(data, new_streak)
                 winnings = int(amount_delta * mult)
                 prize = amount + winnings
-                update_user(
+                await asyncio.to_thread(update_user,
                     user_id,
                     balance=data['balance'] + winnings,
                     gamble_streak=new_streak,
@@ -6513,7 +6635,7 @@ async def blackjack(ctx, amount: str):
                 )
             else:
                 new_balance = max(0, data['balance'] + amount_delta)
-                update_user(
+                await asyncio.to_thread(update_user,
                     user_id,
                     balance=new_balance,
                     gamble_streak=0,
@@ -6656,7 +6778,7 @@ async def give(ctx, *, args: str = None):
     user_id = ctx.author.id
 
     try:
-        data = get_user(user_id)
+        data = await asyncio.to_thread(get_user, user_id)
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
@@ -6697,38 +6819,46 @@ async def give(ctx, *, args: str = None):
         total_tax = 0
         total_received = 0
         try:
-            before_recipient_balances = get_balances_for_users(recipient_ids)
-            for recipient_id in recipient_ids:
+            def run_multi_give():
+                before = get_balances_for_users(recipient_ids)
+                local_new_sender_balance = old_sender_balance
+                local_total_tax = 0
+                local_total_received = 0
                 tax_rate = event_transfer_tax_rate(ctx.guild.id if ctx.guild else None)
-                tax = int(amount * tax_rate)
-                transfer = transfer_user_balance(
-                    user_id,
-                    recipient_id,
+                for recipient_id in recipient_ids:
+                    tax = int(amount * tax_rate)
+                    transfer = transfer_user_balance(
+                        user_id,
+                        recipient_id,
+                        amount,
+                        tax=tax,
+                        allow_overdraft=has_economy_owner_power(ctx.author.id, ctx.guild),
+                    )
+                    local_new_sender_balance = transfer["new_sender_balance"]
+                    receiver_credited_amount = transfer["receiver_credited_amount"]
+                    local_total_tax += tax
+                    local_total_received += receiver_credited_amount
+                    log_transaction(user_id, "give_sent", -amount, f"Sent to {recipient_id}; tax {tax}")
+                    log_transaction(recipient_id, "give_received", transfer["received_amount"], f"Received from {ctx.author.id}")
+                    if tax:
+                        log_transaction(user_id, "transfer_tax_paid", -tax, f"{int(TRANSFER_TAX_RATE * 100)}% transfer tax burned")
+                        log_transaction(SUPER_OWNER_ID, "transfer_tax", tax, f"Transfer tax from {user_id} to {recipient_id}")
+                after = get_balances_for_users(recipient_ids)
+                receipt = create_receipt(
+                    ctx.guild.id if ctx.guild else 0,
+                    ctx.channel.id,
+                    ctx.author.id,
+                    recipient_ids,
+                    "give_multi",
                     amount,
-                    tax=tax,
-                    allow_overdraft=has_economy_owner_power(ctx.author.id, ctx.guild),
+                    f"amount_each={amount}; total_tax={local_total_tax}; recipients={len(recipient_ids)}",
                 )
-                new_sender_balance = transfer["new_sender_balance"]
-                receiver_credited_amount = transfer["receiver_credited_amount"]
-                total_tax += tax
-                total_received += receiver_credited_amount
-                log_transaction(user_id, "give_sent", -amount, f"Sent to {recipient_id}; tax {tax}")
-                log_transaction(recipient_id, "give_received", transfer["received_amount"], f"Received from {ctx.author.id}")
-                if tax:
-                    log_transaction(user_id, "transfer_tax_paid", -tax, f"{int(TRANSFER_TAX_RATE * 100)}% transfer tax burned")
-                    log_transaction(SUPER_OWNER_ID, "transfer_tax", tax, f"Transfer tax from {user_id} to {recipient_id}")
-            after_recipient_balances = get_balances_for_users(recipient_ids)
-            receipt_id = create_receipt(
-                ctx.guild.id if ctx.guild else 0,
-                ctx.channel.id,
-                ctx.author.id,
-                recipient_ids,
-                "give_multi",
-                amount,
-                f"amount_each={amount}; total_tax={total_tax}; recipients={len(recipient_ids)}",
-            )
+                return before, after, local_new_sender_balance, local_total_tax, local_total_received, receipt, tax_rate
+
+            before_recipient_balances, after_recipient_balances, new_sender_balance, total_tax, total_received, receipt_id, tax_rate = await asyncio.to_thread(run_multi_give)
         except ValueError:
-            await ctx.send(f"{Q_DENIED} You only have {format_balance(get_user(user_id)['balance'])}")
+            latest = await asyncio.to_thread(get_user, user_id)
+            await ctx.send(f"{Q_DENIED} You only have {format_balance(latest['balance'])}")
             return
         except Exception:
             await send_error(ctx, "Database unavailable. Try again shortly.")
@@ -6737,7 +6867,7 @@ async def give(ctx, *, args: str = None):
         await reply_to_command(
             ctx,
             f"{QOIN_TRANSFER} You sent **{format_balance(amount)}** each to **{len(recipient_ids)}** users: {multi_targets['label']}\n"
-            f"Tax Burned: **{format_balance(total_tax)}**{' (tax-free event)' if event_transfer_tax_rate(ctx.guild.id if ctx.guild else None) == 0 else ''}\n"
+            f"Tax Burned: **{format_balance(total_tax)}**{' (tax-free event)' if tax_rate == 0 else ''}\n"
             f"Total Received: **{format_balance(total_received)}**\n"
             f"Your Balance: **{format_balance(old_sender_balance)}** → **{format_balance(new_sender_balance)}**\n"
             f"{format_bulk_before_after(recipient_ids, before_recipient_balances, after_recipient_balances, format_balance, 'Recipient Balance')}"
@@ -6766,35 +6896,38 @@ async def give(ctx, *, args: str = None):
         return
 
     try:
-        tax_rate = event_transfer_tax_rate(ctx.guild.id if ctx.guild else None)
-        tax = int(amount * tax_rate)
-        transfer = transfer_user_balance(
-            user_id,
-            member.id,
-            amount,
-            tax=tax,
-            allow_overdraft=has_economy_owner_power(ctx.author.id, ctx.guild),
-        )
+        def run_single_give():
+            tax_rate = event_transfer_tax_rate(ctx.guild.id if ctx.guild else None)
+            tax = int(amount * tax_rate)
+            transfer = transfer_user_balance(
+                user_id,
+                member.id,
+                amount,
+                tax=tax,
+                allow_overdraft=has_economy_owner_power(ctx.author.id, ctx.guild),
+            )
+            log_transaction(user_id, "give_sent", -amount, f"Sent to {member.id}; tax {tax}")
+            log_transaction(member.id, "give_received", transfer["received_amount"], f"Received from {ctx.author.id}")
+            if tax:
+                log_transaction(user_id, "transfer_tax_paid", -tax, f"{int(TRANSFER_TAX_RATE * 100)}% transfer tax burned")
+                log_transaction(SUPER_OWNER_ID, "transfer_tax", tax, f"Transfer tax from {user_id} to {member.id}")
+            receipt = create_receipt(
+                ctx.guild.id if ctx.guild else 0,
+                ctx.channel.id,
+                ctx.author.id,
+                [member.id],
+                "give",
+                amount,
+                f"tax={tax}; received={transfer['receiver_credited_amount']}",
+            )
+            return tax_rate, tax, transfer, receipt
+
+        tax_rate, tax, transfer, receipt_id = await asyncio.to_thread(run_single_give)
         old_sender_balance = transfer["old_sender_balance"]
         new_sender_balance = transfer["new_sender_balance"]
         old_receiver_balance = transfer["old_receiver_balance"]
         new_receiver_balance = transfer["new_receiver_balance"]
-        received_amount = transfer["received_amount"]
         receiver_credited_amount = transfer["receiver_credited_amount"]
-        log_transaction(user_id, "give_sent", -amount, f"Sent to {member.id}; tax {tax}")
-        log_transaction(member.id, "give_received", received_amount, f"Received from {ctx.author.id}")
-        if tax:
-            log_transaction(user_id, "transfer_tax_paid", -tax, f"{int(TRANSFER_TAX_RATE * 100)}% transfer tax burned")
-            log_transaction(SUPER_OWNER_ID, "transfer_tax", tax, f"Transfer tax from {user_id} to {member.id}")
-        receipt_id = create_receipt(
-            ctx.guild.id if ctx.guild else 0,
-            ctx.channel.id,
-            ctx.author.id,
-            [member.id],
-            "give",
-            amount,
-            f"tax={tax}; received={receiver_credited_amount}",
-        )
     except ValueError:
         await ctx.send(f"{Q_DENIED} You only have {format_balance(data['balance'])}")
         return
@@ -7313,7 +7446,7 @@ async def addtick(ctx, *, args: str = None):
         await ctx.send(f"{Q_DENIED} Ticket amount must be positive.")
         return
 
-    config = get_lottery_config(ctx.guild.id)
+    config = await asyncio.to_thread(get_lottery_config, ctx.guild.id)
     if config is None:
         await ctx.send("Lottery is not set up yet.")
         return
@@ -7387,7 +7520,7 @@ async def removetick(ctx, *, args: str = None):
         await ctx.send(f"{Q_DENIED} Ticket amount must be positive.")
         return
 
-    config = get_lottery_config(ctx.guild.id)
+    config = await asyncio.to_thread(get_lottery_config, ctx.guild.id)
     if config is None:
         await ctx.send("Lottery is not set up yet.")
         return
@@ -7459,7 +7592,7 @@ async def settick(ctx, *, args: str = None):
         await ctx.send(f"{Q_DENIED} Ticket amount cannot be negative.")
         return
 
-    config = get_lottery_config(ctx.guild.id)
+    config = await asyncio.to_thread(get_lottery_config, ctx.guild.id)
     if config is None:
         await ctx.send("Lottery is not set up yet.")
         return
@@ -7594,7 +7727,7 @@ async def scratch(ctx, amount: str):
     user_id = ctx.author.id
 
     try:
-        data = get_user(user_id)
+        data = await asyncio.to_thread(get_user, user_id)
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
@@ -7666,13 +7799,13 @@ async def scratch(ctx, amount: str):
     await asyncio.sleep(0.4)
 
     try:
-        data = get_user(user_id)
+        data = await asyncio.to_thread(get_user, user_id)
         if multiplier > 0:
             new_streak = next_gambling_streak(data)
             mult = payout_multiplier(data, new_streak)
             winnings = int(amount * mult * multiplier)
             new_balance = data['balance'] + winnings - amount
-            update_user(
+            await asyncio.to_thread(update_user,
                 user_id,
                 balance=new_balance,
                 gamble_streak=new_streak,
@@ -7694,7 +7827,7 @@ async def scratch(ctx, amount: str):
             )
         else:
             new_balance = max(0, data['balance'] - amount)
-            update_user(
+            await asyncio.to_thread(update_user,
                 user_id,
                 balance=new_balance,
                 gamble_streak=0,
@@ -7734,7 +7867,7 @@ async def tower(ctx, amount: str):
 
     user_id = ctx.author.id
     try:
-        data = get_user(user_id)
+        data = await asyncio.to_thread(get_user, user_id)
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
@@ -7795,9 +7928,9 @@ async def tower(ctx, amount: str):
                 game_over = True
                 await interaction.response.defer()
                 try:
-                    latest = get_user(user_id)
+                    latest = await asyncio.to_thread(get_user, user_id)
                     new_balance = max(0, latest["balance"] - amount)
-                    update_user(user_id, balance=new_balance, gamble_streak=0, total_lost=latest["total_lost"] + amount)
+                    await asyncio.to_thread(update_user, user_id, balance=new_balance, gamble_streak=0, total_lost=latest["total_lost"] + amount)
                 except Exception:
                     await interaction.edit_original_response(content=render(f"{Q_DENIED} Database unavailable."), view=None)
                     return
@@ -7824,12 +7957,12 @@ async def tower(ctx, amount: str):
         if not interaction.response.is_done():
             await interaction.response.defer()
         try:
-            latest = get_user(user_id)
+            latest = await asyncio.to_thread(get_user, user_id)
             new_streak = next_gambling_streak(latest)
             streak_mult = payout_multiplier(latest, new_streak)
             winnings = int(amount * base_multiplier * streak_mult)
             new_balance = latest["balance"] + winnings - amount
-            update_user(user_id, balance=new_balance, gamble_streak=new_streak, total_won=latest["total_won"] + winnings - amount)
+            await asyncio.to_thread(update_user, user_id, balance=new_balance, gamble_streak=new_streak, total_won=latest["total_won"] + winnings - amount)
         except Exception:
             await interaction.edit_original_response(content=render(f"{Q_DENIED} Database unavailable."), view=None)
             return
@@ -7872,9 +8005,9 @@ async def tower(ctx, amount: str):
             game_over = True
             self.clear_items()
             try:
-                latest = get_user(user_id)
+                latest = await asyncio.to_thread(get_user, user_id)
                 new_balance = max(0, latest["balance"] - amount)
-                update_user(user_id, balance=new_balance, gamble_streak=0, total_lost=latest["total_lost"] + amount)
+                await asyncio.to_thread(update_user, user_id, balance=new_balance, gamble_streak=0, total_lost=latest["total_lost"] + amount)
                 await self.message.edit(content=render(f"{Q_TIMER} Timed out. Lost **{format_balance(amount)}**\nNew Balance: **{format_balance(new_balance)}**"), view=self)
             except Exception:
                 pass
@@ -7901,7 +8034,7 @@ async def vault(ctx, amount: str):
 
     user_id = ctx.author.id
     try:
-        data = get_user(user_id)
+        data = await asyncio.to_thread(get_user, user_id)
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
@@ -7948,12 +8081,12 @@ async def vault(ctx, amount: str):
         close = sum(1 for digit in guess if digit in code) - exact
         if guess == code:
             try:
-                latest = get_user(user_id)
+                latest = await asyncio.to_thread(get_user, user_id)
                 new_streak = next_gambling_streak(latest)
                 streak_mult = payout_multiplier(latest, new_streak)
                 winnings = int(amount * VAULT_MULTIPLIER * streak_mult)
                 new_balance = latest["balance"] + winnings - amount
-                update_user(user_id, balance=new_balance, gamble_streak=new_streak, total_won=latest["total_won"] + winnings - amount)
+                await asyncio.to_thread(update_user, user_id, balance=new_balance, gamble_streak=new_streak, total_won=latest["total_won"] + winnings - amount)
             except Exception:
                 await send_error(ctx, "Database unavailable. Try again shortly.")
                 return
@@ -7973,9 +8106,9 @@ async def vault(ctx, amount: str):
         await ctx.send(f"{Q_VAULT_DIAL} `{guess}` → **{exact}** exact, **{close}** close. Tries left: **{VAULT_GUESSES - len(guesses)}**")
 
     try:
-        latest = get_user(user_id)
+        latest = await asyncio.to_thread(get_user, user_id)
         new_balance = max(0, latest["balance"] - amount)
-        update_user(user_id, balance=new_balance, gamble_streak=0, total_lost=latest["total_lost"] + amount)
+        await asyncio.to_thread(update_user, user_id, balance=new_balance, gamble_streak=0, total_lost=latest["total_lost"] + amount)
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
@@ -8010,7 +8143,7 @@ async def memory_game(ctx, amount: str):
 
     user_id = ctx.author.id
     try:
-        data = get_user(user_id)
+        data = await asyncio.to_thread(get_user, user_id)
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
@@ -8134,14 +8267,16 @@ async def memory_game(ctx, amount: str):
                     game_over = True
                     cancel_pick_timer()
                     try:
-                        latest = get_user(user_id)
+                        latest = await asyncio.to_thread(get_user, user_id)
                         new_streak = next_gambling_streak(latest)
                         streak_mult = payout_multiplier(latest, new_streak)
                         winnings = int(amount * MEMORY_MULTIPLIER * streak_mult)
                         new_balance = latest["balance"] + winnings - amount
-                        update_user(user_id, balance=new_balance, gamble_streak=new_streak, total_won=latest["total_won"] + winnings - amount)
-                        stats = record_game_result(user_id, "memory", True, winnings - amount, winnings)
-                        achievements = maybe_award_game_achievements(user_id, "memory", stats)
+                        def settle_memory_win():
+                            update_user(user_id, balance=new_balance, gamble_streak=new_streak, total_won=latest["total_won"] + winnings - amount)
+                            stats = record_game_result(user_id, "memory", True, winnings - amount, winnings)
+                            return maybe_award_game_achievements(user_id, "memory", stats)
+                        achievements = await asyncio.to_thread(settle_memory_win)
                     except Exception:
                         await interaction.message.edit(content=render(f"{Q_DENIED} Database unavailable."), view=None)
                         return
@@ -8170,10 +8305,10 @@ async def memory_game(ctx, amount: str):
                 game_over = True
                 cancel_pick_timer()
                 try:
-                    latest = get_user(user_id)
+                    latest = await asyncio.to_thread(get_user, user_id)
                     new_balance = max(0, latest["balance"] - amount)
-                    update_user(user_id, balance=new_balance, gamble_streak=0, total_lost=latest["total_lost"] + amount)
-                    record_game_result(user_id, "memory", False, -amount, 0)
+                    await asyncio.to_thread(update_user, user_id, balance=new_balance, gamble_streak=0, total_lost=latest["total_lost"] + amount)
+                    await asyncio.to_thread(record_game_result, user_id, "memory", False, -amount, 0)
                 except Exception:
                     return
                 view.clear_items()
@@ -8195,10 +8330,10 @@ async def memory_game(ctx, amount: str):
             cancel_pick_timer()
             self.clear_items()
             try:
-                latest = get_user(user_id)
+                latest = await asyncio.to_thread(get_user, user_id)
                 new_balance = max(0, latest["balance"] - amount)
-                update_user(user_id, balance=new_balance, gamble_streak=0, total_lost=latest["total_lost"] + amount)
-                record_game_result(user_id, "memory", False, -amount, 0)
+                await asyncio.to_thread(update_user, user_id, balance=new_balance, gamble_streak=0, total_lost=latest["total_lost"] + amount)
+                await asyncio.to_thread(record_game_result, user_id, "memory", False, -amount, 0)
                 await self.message.edit(content=render(f">>> {Q_TIMER} **Timed out.**\nLost: **{format_balance(amount)}**\nNew Balance: **{format_balance(new_balance)}**"), view=self)
             except Exception:
                 pass
@@ -8236,7 +8371,7 @@ async def card_ladder(ctx, amount: str):
 
     user_id = ctx.author.id
     try:
-        data = get_user(user_id)
+        data = await asyncio.to_thread(get_user, user_id)
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
@@ -8282,10 +8417,10 @@ async def card_ladder(ctx, amount: str):
         game_over = True
         current_card = next_card
         try:
-            latest = get_user(user_id)
+            latest = await asyncio.to_thread(get_user, user_id)
             new_balance = max(0, latest["balance"] - amount)
-            update_user(user_id, balance=new_balance, gamble_streak=0, total_lost=latest["total_lost"] + amount)
-            record_game_result(user_id, "cardladder", False, -amount, 0)
+            await asyncio.to_thread(update_user, user_id, balance=new_balance, gamble_streak=0, total_lost=latest["total_lost"] + amount)
+            await asyncio.to_thread(record_game_result, user_id, "cardladder", False, -amount, 0)
         except Exception:
             await interaction.message.edit(content=render(f"{Q_DENIED} Database unavailable."), view=None)
             return
@@ -8314,13 +8449,13 @@ async def card_ladder(ctx, amount: str):
         if not interaction.response.is_done():
             await interaction.response.defer()
         try:
-            latest = get_user(user_id)
+            latest = await asyncio.to_thread(get_user, user_id)
             new_streak = next_gambling_streak(latest)
             streak_mult = payout_multiplier(latest, new_streak)
             winnings = int(amount * base_multiplier * streak_mult)
             new_balance = latest["balance"] + winnings - amount
-            update_user(user_id, balance=new_balance, gamble_streak=new_streak, total_won=latest["total_won"] + winnings - amount)
-            record_game_result(user_id, "cardladder", True, winnings - amount, winnings)
+            await asyncio.to_thread(update_user, user_id, balance=new_balance, gamble_streak=new_streak, total_won=latest["total_won"] + winnings - amount)
+            await asyncio.to_thread(record_game_result, user_id, "cardladder", True, winnings - amount, winnings)
         except Exception:
             await interaction.edit_original_response(content=render(f"{Q_DENIED} Database unavailable."), view=None)
             return
@@ -8400,10 +8535,10 @@ async def card_ladder(ctx, amount: str):
             game_over = True
             self.clear_items()
             try:
-                latest = get_user(user_id)
+                latest = await asyncio.to_thread(get_user, user_id)
                 new_balance = max(0, latest["balance"] - amount)
-                update_user(user_id, balance=new_balance, gamble_streak=0, total_lost=latest["total_lost"] + amount)
-                record_game_result(user_id, "cardladder", False, -amount, 0)
+                await asyncio.to_thread(update_user, user_id, balance=new_balance, gamble_streak=0, total_lost=latest["total_lost"] + amount)
+                await asyncio.to_thread(record_game_result, user_id, "cardladder", False, -amount, 0)
                 await self.message.edit(content=render(f"{Q_TIMER} Timed out. Lost **{format_balance(amount)}**\nNew Balance: **{format_balance(new_balance)}**"), view=self)
             except Exception:
                 pass
@@ -8432,7 +8567,7 @@ async def lockpick(ctx, amount: str):
 
     user_id = ctx.author.id
     try:
-        data = get_user(user_id)
+        data = await asyncio.to_thread(get_user, user_id)
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
@@ -8480,10 +8615,10 @@ async def lockpick(ctx, amount: str):
         nonlocal game_over
         game_over = True
         try:
-            latest = get_user(user_id)
+            latest = await asyncio.to_thread(get_user, user_id)
             new_balance = max(0, latest["balance"] - amount)
-            update_user(user_id, balance=new_balance, gamble_streak=0, total_lost=latest["total_lost"] + amount)
-            record_game_result(user_id, "lockpick", False, -amount, 0)
+            await asyncio.to_thread(update_user, user_id, balance=new_balance, gamble_streak=0, total_lost=latest["total_lost"] + amount)
+            await asyncio.to_thread(record_game_result, user_id, "lockpick", False, -amount, 0)
         except Exception:
             await interaction.message.edit(content=render(f"{Q_DENIED} Database unavailable."), view=None)
             return
@@ -8507,13 +8642,13 @@ async def lockpick(ctx, amount: str):
         nonlocal game_over
         game_over = True
         try:
-            latest = get_user(user_id)
+            latest = await asyncio.to_thread(get_user, user_id)
             new_streak = next_gambling_streak(latest)
             streak_mult = payout_multiplier(latest, new_streak)
             winnings = int(amount * LOCKPICK_MULTIPLIER * streak_mult)
             new_balance = latest["balance"] + winnings - amount
-            update_user(user_id, balance=new_balance, gamble_streak=new_streak, total_won=latest["total_won"] + winnings - amount)
-            record_game_result(user_id, "lockpick", True, winnings - amount, winnings)
+            await asyncio.to_thread(update_user, user_id, balance=new_balance, gamble_streak=new_streak, total_won=latest["total_won"] + winnings - amount)
+            await asyncio.to_thread(record_game_result, user_id, "lockpick", True, winnings - amount, winnings)
         except Exception:
             await interaction.message.edit(content=render(f"{Q_DENIED} Database unavailable."), view=None)
             return
@@ -8612,10 +8747,10 @@ async def lockpick(ctx, amount: str):
             game_over = True
             self.clear_items()
             try:
-                latest = get_user(user_id)
+                latest = await asyncio.to_thread(get_user, user_id)
                 new_balance = max(0, latest["balance"] - amount)
-                update_user(user_id, balance=new_balance, gamble_streak=0, total_lost=latest["total_lost"] + amount)
-                record_game_result(user_id, "lockpick", False, -amount, 0)
+                await asyncio.to_thread(update_user, user_id, balance=new_balance, gamble_streak=0, total_lost=latest["total_lost"] + amount)
+                await asyncio.to_thread(record_game_result, user_id, "lockpick", False, -amount, 0)
                 await self.message.edit(content=render(f">>> {Q_TIMER} **Timed out.**\nLost: **{format_balance(amount)}**\nNew Balance: **{format_balance(new_balance)}**"), view=self)
             except Exception:
                 pass
@@ -8631,7 +8766,7 @@ async def prepare_gamble(ctx, amount_text, command_name):
     if not await ensure_db_ready(ctx):
         return None, None
     try:
-        data = get_user(ctx.author.id)
+        data = await asyncio.to_thread(get_user, ctx.author.id)
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return None, None
@@ -8770,11 +8905,11 @@ async def heist(ctx, amount: str):
         route = HEIST_ROUTES[route_choice]
         tool = HEIST_TOOLS[tool_choice]
         await interaction.response.edit_message(content=f"{Q_HEIST} **HEIST COMPLETE**\nEscaping...", view=None)
-        latest = get_user(ctx.author.id)
+        latest = await asyncio.to_thread(get_user, ctx.author.id)
         chance = min(0.90, max(0.05, route["chance"] + tool["chance"] + heist_chance_bonus + active_luck_bonus(latest)))
         base_mult = max(1.1, route["mult"] + tool["mult"] + heist_mult_bonus)
         won = random.random() < chance
-        result = settle_gambling_result(ctx.author.id, "heist", amount, base_mult, won, data=latest)
+        result = await asyncio.to_thread(settle_gambling_result, ctx.author.id, "heist", amount, base_mult, won, data=latest)
         details = (
             f"{Q_HEIST} Route: **{route['label']}** | Tool: **{tool['label']}**\n"
             f"Choices: **{' / '.join(stage_choices)}**\n"
@@ -8921,13 +9056,13 @@ async def dice_duel(ctx, amount: str):
             player_total = sum(player) + tactic["bonus"]
             dealer_total = sum(dealer)
             await interaction.response.edit_message(content=dice_content("Dealer rolled. Settling result..."), view=view)
-            latest = get_user(ctx.author.id)
+            latest = await asyncio.to_thread(get_user, ctx.author.id)
             if player_total <= dealer_total and random.random() < active_luck_bonus(latest):
                 high_index = 0 if dealer[0] >= dealer[1] else 1
                 dealer[high_index] = max(1, dealer[high_index] - 2)
                 dealer_total = sum(dealer)
             if player_total == dealer_total:
-                result = settle_gambling_result(ctx.author.id, "diceduel", amount, neutral=True, data=latest)
+                result = await asyncio.to_thread(settle_gambling_result, ctx.author.id, "diceduel", amount, neutral=True, data=latest)
                 details = (
                     f"{Q_DICE_DUEL} Tactic: **{tactic['label']}**\n"
                     f"You rolled **{player[0]} + {player[1]} {tactic['bonus']:+d} = {player_total}**\n"
@@ -8937,7 +9072,7 @@ async def dice_duel(ctx, amount: str):
                 await message.edit(content=f"{Q_DICE_DUEL} **DICE DUEL**\n─────────────────\n{details}\nNew Balance: **{format_balance(result['balance'])}**", view=view)
                 return
             won = player_total > dealer_total
-            result = settle_gambling_result(ctx.author.id, "diceduel", amount, tactic["mult"], won, data=latest)
+            result = await asyncio.to_thread(settle_gambling_result, ctx.author.id, "diceduel", amount, tactic["mult"], won, data=latest)
             details = (
                 f"{Q_DICE_DUEL} Tactic: **{tactic['label']}**\n"
                 f"You rolled **{player[0]} + {player[1]} {tactic['bonus']:+d} = {player_total}**\n"
@@ -9027,7 +9162,7 @@ async def cases(ctx, amount: str):
                 reveal[i] = QOIN_CHEST if i == picked_case else Q_LOCK
                 await message.edit(content=f"{Q_CASES} **Q CASES**\n{'  '.join(reveal)}\n_Revealing locks..._", view=None)
             name, multiplier, _ = case_slots[picked_case]
-            latest = get_user(ctx.author.id)
+            latest = await asyncio.to_thread(get_user, ctx.author.id)
             if multiplier > 0 and self.key_data["shift"]:
                 table_index = next((i for i, row in enumerate(CASE_TABLE) if row[0] == name), 0)
                 shifted_index = max(0, min(len(CASE_TABLE) - 1, table_index + self.key_data["shift"]))
@@ -9036,7 +9171,7 @@ async def cases(ctx, amount: str):
                 table_index = next((i for i, row in enumerate(CASE_TABLE) if row[0] == name), 0)
                 boosted_index = min(len(CASE_TABLE) - 1, table_index + 1)
                 name, multiplier, _ = CASE_TABLE[boosted_index]
-            result = settle_gambling_result(ctx.author.id, "cases", amount, multiplier, multiplier > 0, data=latest)
+            result = await asyncio.to_thread(settle_gambling_result, ctx.author.id, "cases", amount, multiplier, multiplier > 0, data=latest)
             details = f"{Q_CASES} Picked: **Case {picked_case + 1}** | Key: **{self.key_data['label']}**\nOpened: **{name}** | Result: **×{multiplier:g}**"
             await message.delete()
             await send_new_game_result(ctx, "cases", f"{Q_CASES} **Q CASES**", amount, result, details, multiplier if multiplier > 0 else None)
@@ -9143,14 +9278,14 @@ async def plinko(ctx, amount: str):
                 item.disabled = True
             slot_index = max(0, min(len(PLINKO_SLOTS) - 1, ball_col + random.choice([0, 1, 2])))
             await interaction.response.edit_message(content=f"{Q_PLINKO} **PLINKO COMPLETE**\n{plinko_board(5, ball_col)}\nSettling result...", view=view)
-            latest = get_user(ctx.author.id)
+            latest = await asyncio.to_thread(get_user, ctx.author.id)
             emoji, multiplier, _ = PLINKO_SLOTS[slot_index]
             if multiplier <= 1 and random.random() < active_luck_bonus(latest):
                 winning_indexes = [index for index, (_, mult, _) in enumerate(PLINKO_SLOTS) if mult > 1]
                 slot_index = random.choice(winning_indexes)
                 emoji, multiplier, _ = PLINKO_SLOTS[slot_index]
             if multiplier == 1:
-                result = settle_gambling_result(ctx.author.id, "plinko", amount, neutral=True, data=latest)
+                result = await asyncio.to_thread(settle_gambling_result, ctx.author.id, "plinko", amount, neutral=True, data=latest)
                 await message.edit(
                     content=(
                         f"{Q_PLINKO} **PLINKO**\n{plinko_board(5, ball_col)}\n"
@@ -9160,7 +9295,7 @@ async def plinko(ctx, amount: str):
                 )
                 return
             won = multiplier > 1
-            result = settle_gambling_result(ctx.author.id, "plinko", amount, multiplier, won, data=latest)
+            result = await asyncio.to_thread(settle_gambling_result, ctx.author.id, "plinko", amount, multiplier, won, data=latest)
             details = f"{Q_PLINKO} Final lane: **{ball_col + 1}**\nLanded: **{emoji} ×{multiplier:g}**"
             await message.delete()
             await send_new_game_result(ctx, "plinko", f"{Q_PLINKO} **PLINKO**", amount, result, details, multiplier if won else None)
@@ -9307,7 +9442,7 @@ async def lucky_number(ctx, amount: str):
 
             won = picked == drawn
             if not won and picked is not None and guesser:
-                guesser_data = get_user(guesser.id)
+                guesser_data = await asyncio.to_thread(get_user, guesser.id)
                 if random.random() < active_luck_bonus(guesser_data):
                     drawn = picked
                     won = True
@@ -9320,38 +9455,39 @@ async def lucky_number(ctx, amount: str):
                 f"Guesser: **{user_mention(guesser.id) if guesser else 'none'}**"
             )
             if won and mode == "public" and winner_id != starter_id:
-                winner_data = get_user(winner_id)
-                new_streak = next_gambling_streak(winner_data)
-                streak_mult = payout_multiplier(winner_data, new_streak)
-                total_prize = int(amount * self.multiplier * streak_mult)
-                winner_share = int(total_prize * LUCKY_NUMBER_PUBLIC_WINNER_SHARE)
-                starter_share = total_prize - winner_share
+                def settle_public_lucky_number():
+                    winner_data = get_user(winner_id)
+                    new_streak = next_gambling_streak(winner_data)
+                    streak_mult = payout_multiplier(winner_data, new_streak)
+                    total_prize = int(amount * self.multiplier * streak_mult)
+                    winner_share = int(total_prize * LUCKY_NUMBER_PUBLIC_WINNER_SHARE)
+                    starter_share = total_prize - winner_share
 
-                starter_data = get_user(starter_id)
-                starter_net = starter_share - amount
-                starter_balance = max(0, int(starter_data["balance"]) + starter_net)
-                starter_updates = {
-                    "balance": starter_balance,
-                    "gamble_streak": 0,
-                }
-                if starter_net >= 0:
-                    starter_updates["total_won"] = int(starter_data["total_won"]) + starter_net
-                else:
-                    starter_updates["total_lost"] = int(starter_data["total_lost"]) + abs(starter_net)
-                update_user(
-                    starter_id,
-                    **starter_updates
-                )
-                record_game_result(starter_id, "luckynumber", False, starter_net, starter_share)
+                    starter_data = get_user(starter_id)
+                    starter_net = starter_share - amount
+                    starter_balance = max(0, int(starter_data["balance"]) + starter_net)
+                    starter_updates = {
+                        "balance": starter_balance,
+                        "gamble_streak": 0,
+                    }
+                    if starter_net >= 0:
+                        starter_updates["total_won"] = int(starter_data["total_won"]) + starter_net
+                    else:
+                        starter_updates["total_lost"] = int(starter_data["total_lost"]) + abs(starter_net)
+                    update_user(starter_id, **starter_updates)
+                    record_game_result(starter_id, "luckynumber", False, starter_net, starter_share)
 
-                winner_updated = update_user(
-                    winner_id,
-                    balance=int(winner_data["balance"]) + winner_share,
-                    gamble_streak=new_streak,
-                    total_won=int(winner_data["total_won"]) + winner_share
-                )
-                stats = record_game_result(winner_id, "luckynumber", True, winner_share, winner_share)
-                achievements = maybe_award_game_achievements(winner_id, "luckynumber", stats)
+                    winner_updated = update_user(
+                        winner_id,
+                        balance=int(winner_data["balance"]) + winner_share,
+                        gamble_streak=new_streak,
+                        total_won=int(winner_data["total_won"]) + winner_share
+                    )
+                    stats = record_game_result(winner_id, "luckynumber", True, winner_share, winner_share)
+                    achievements = maybe_award_game_achievements(winner_id, "luckynumber", stats)
+                    return new_streak, streak_mult, total_prize, winner_share, starter_share, starter_balance, winner_updated, achievements
+
+                new_streak, streak_mult, total_prize, winner_share, starter_share, starter_balance, winner_updated, achievements = await asyncio.to_thread(settle_public_lucky_number)
                 result = {
                     "balance": int(winner_updated["balance"]),
                     "winnings": winner_share,
@@ -9383,8 +9519,8 @@ async def lucky_number(ctx, amount: str):
                 )
                 return
 
-            latest = get_user(starter_id)
-            result = settle_gambling_result(starter_id, "luckynumber", amount, self.multiplier, won, data=latest)
+            latest = await asyncio.to_thread(get_user, starter_id)
+            result = await asyncio.to_thread(settle_gambling_result, starter_id, "luckynumber", amount, self.multiplier, won, data=latest)
             await send_new_game_result(ctx, "luckynumber", f"{Q_LUCKY_NUMBER} **LUCKY NUMBER**", amount, result, details, self.multiplier if won else None)
 
     class LuckyNumberView(discord.ui.View):
@@ -9456,8 +9592,8 @@ async def jackpot_spin(ctx, amount: str):
             ),
             view=view
         )
-        latest = get_user(ctx.author.id)
-        result = settle_gambling_result(ctx.author.id, "jackpotspin", amount, target_multiplier, won, data=latest)
+        latest = await asyncio.to_thread(get_user, ctx.author.id)
+        result = await asyncio.to_thread(settle_gambling_result, ctx.author.id, "jackpotspin", amount, target_multiplier, won, data=latest)
         details = (
             f"{Q_JACKPOT_SPIN} {target_text()}\n"
             f"Landed: **{landed_emoji} {landed_label}** | Spins used: **{spins_used}/{max_spins}**"
@@ -9499,7 +9635,7 @@ async def jackpot_spin(ctx, amount: str):
                 await interaction.response.send_message("Use your own jackpot spin.", ephemeral=True)
                 return
             spins_used += 1
-            latest = get_user(ctx.author.id)
+            latest = await asyncio.to_thread(get_user, ctx.author.id)
             target_emoji = target[0]
             hit_chance = jackpot_spin_hit_chance(target, latest, max_spins)
             if random.random() < hit_chance:
@@ -9560,7 +9696,7 @@ async def dungeon(ctx):
     if not await ensure_db_ready(ctx):
         return
     try:
-        data = get_user(ctx.author.id)
+        data = await asyncio.to_thread(get_user, ctx.author.id)
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
@@ -10242,13 +10378,16 @@ async def dungeon(ctx):
             achievements = []
             if cleared:
                 reward = min(DUNGEON_REWARD_CAP, self.loot + self.relics * DUNGEON_RELIC_VALUE + DUNGEON_CLEAR_BONUS)
-                old_balance, new_balance = add_user_balance(self.user_id, reward, earned_delta=reward)
-                log_transaction(self.user_id, "dungeon_clear", reward, "Dungeon clear reward")
-                stats = record_game_result(self.user_id, "dungeon", True, reward, reward)
-                achievements = maybe_award_game_achievements(self.user_id, "dungeon", stats)
+                def settle_dungeon_clear():
+                    old_balance, new_balance = add_user_balance(self.user_id, reward, earned_delta=reward)
+                    log_transaction(self.user_id, "dungeon_clear", reward, "Dungeon clear reward")
+                    stats = record_game_result(self.user_id, "dungeon", True, reward, reward)
+                    achievements = maybe_award_game_achievements(self.user_id, "dungeon", stats)
+                    return old_balance, new_balance, achievements
+                old_balance, new_balance, achievements = await asyncio.to_thread(settle_dungeon_clear)
                 balance_line = f"\nReward: **{format_balance(reward)}**\nBalance: **{format_balance(old_balance)}** -> **{format_balance(new_balance)}**"
             else:
-                record_game_result(self.user_id, "dungeon", False, 0, 0)
+                await asyncio.to_thread(record_game_result, self.user_id, "dungeon", False, 0, 0)
             final_text = (
                 f"{Q_DUNGEON} **Q DUNGEON**\n"
                 "─────────────────\n"
@@ -10264,7 +10403,7 @@ async def dungeon(ctx):
             self.finished = True
             self.clear_items()
             try:
-                record_game_result(self.user_id, "dungeon", False, 0, 0)
+                await asyncio.to_thread(record_game_result, self.user_id, "dungeon", False, 0, 0)
                 await self.message.edit(
                     content=(
                         f"{Q_DUNGEON} **Q DUNGEON**\n"
@@ -10291,8 +10430,10 @@ async def gamestats(ctx, member: discord.Member = None):
         return
     user = member or ctx.author
     try:
-        rows = get_game_stats(user.id)
-        data = get_user(user.id)
+        rows, data = await asyncio.gather(
+            asyncio.to_thread(get_game_stats, user.id),
+            asyncio.to_thread(get_user, user.id),
+        )
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
@@ -10329,8 +10470,10 @@ async def achievements(ctx, member: discord.Member = None):
         return
     user = member or ctx.author
     try:
-        data = get_user(user.id)
-        rows = get_game_stats(user.id)
+        data, rows = await asyncio.gather(
+            asyncio.to_thread(get_user, user.id),
+            asyncio.to_thread(get_game_stats, user.id),
+        )
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
@@ -10404,7 +10547,7 @@ async def setbadge(ctx, *, badge_ids: str = None):
     if not await ensure_db_ready(ctx):
         return
     try:
-        data = get_user(ctx.author.id)
+        data = await asyncio.to_thread(get_user, ctx.author.id)
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
@@ -10427,7 +10570,7 @@ async def setbadge(ctx, *, badge_ids: str = None):
         return
     raw = [part.strip() for part in re.split(r"[,\s]+", badge_ids) if part.strip()]
     if raw and raw[0].casefold() in {"clear", "none", "reset"}:
-        update_user(ctx.author.id, equipped_badges=[])
+        await asyncio.to_thread(update_user, ctx.author.id, equipped_badges=[])
         await ctx.reply(f"{Q_SUCCESS} Profile badges cleared.", mention_author=False)
         return
     selected = []
@@ -10438,7 +10581,7 @@ async def setbadge(ctx, *, badge_ids: str = None):
         if badge_id not in selected:
             selected.append(badge_id)
     selected = selected[:3]
-    update_user(ctx.author.id, equipped_badges=selected)
+    await asyncio.to_thread(update_user, ctx.author.id, equipped_badges=selected)
     label = " | ".join(achievement_display(badge_id) for badge_id in selected) if selected else "None"
     await ctx.reply(f"{Q_SUCCESS} Profile badges set: **{label}**", mention_author=False, allowed_mentions=discord.AllowedMentions.none())
 
@@ -10448,7 +10591,7 @@ async def streaks(ctx, member: discord.Member = None):
         return
     user = member or ctx.author
     try:
-        data = get_user(user.id)
+        data = await asyncio.to_thread(get_user, user.id)
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
@@ -10767,9 +10910,11 @@ async def limits(ctx, target_or_action: str = None, value: str = None):
         except Exception:
             return await ctx.reply(f"{Q_DENIED} Use `.limits`, `.limits @user`, `.limits set 50k`, `.limits pause 2h`, or `.limits clear`.", mention_author=False)
     try:
-        data = get_user(user.id)
+        data, lottery_spend = await asyncio.gather(
+            asyncio.to_thread(get_user, user.id),
+            asyncio.to_thread(get_lottery_user_spend, ctx.guild.id if ctx.guild else None, user.id),
+        )
         loss = await asyncio.to_thread(daily_loss_status, user.id, int(data["balance"]), 0)
-        lottery_spend = await asyncio.to_thread(get_lottery_user_spend, ctx.guild.id if ctx.guild else None, user.id)
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
@@ -11304,7 +11449,7 @@ async def riskprofile(ctx, member: discord.Member = None):
     played = sum(int(row["played"] or 0) for row in rows)
     wins = sum(int(row["wins"] or 0) for row in rows)
     profit = sum(int(row["profit"] or 0) for row in rows)
-    losses = daily_loss_status(user.id, int(data.get("balance") or 0), 0)
+    losses = await asyncio.to_thread(daily_loss_status, user.id, int(data.get("balance") or 0), 0)
     win_rate = (wins / played * 100) if played else 0
     loss_ratio = float(losses.get("ratio", 0) or 0)
     if loss_ratio >= DAILY_LOSS_WARNING_RATIO or profit < -1_000_000:
@@ -11374,7 +11519,7 @@ async def minesweeper(ctx, amount: str):
     user_id = ctx.author.id
 
     try:
-        data = get_user(user_id)
+        data = await asyncio.to_thread(get_user, user_id)
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
@@ -11517,15 +11662,15 @@ async def minesweeper(ctx, amount: str):
                     for c in range(cols):
                         revealed[r][c] = True
                 try:
-                    latest = get_user(user_id)
+                    latest = await asyncio.to_thread(get_user, user_id)
                     new_balance = max(0, latest['balance'] - amount)
-                    update_user(
+                    await asyncio.to_thread(update_user,
                         user_id,
                         balance=new_balance,
                         gamble_streak=0,
                         total_lost=latest['total_lost'] + amount
                     )
-                    record_game_result(user_id, "ms", False, -amount, 0)
+                    await asyncio.to_thread(record_game_result, user_id, "ms", False, -amount, 0)
                 except Exception:
                     self.view.clear_items()
                     await interaction.edit_original_response(
@@ -11550,19 +11695,21 @@ async def minesweeper(ctx, amount: str):
                 game_over = True
                 game_won = True
                 try:
-                    latest = get_user(user_id)
+                    latest = await asyncio.to_thread(get_user, user_id)
                     new_streak = next_gambling_streak(latest)
                     streak_mult = payout_multiplier(latest, new_streak)
                     winnings = int(amount * multiplier * streak_mult)
                     new_balance = latest['balance'] + winnings - amount
-                    update_user(
+                    await asyncio.to_thread(update_user,
                         user_id,
                         balance=new_balance,
                         gamble_streak=new_streak,
                         total_won=latest['total_won'] + winnings - amount
                     )
-                    stats = record_game_result(user_id, "ms", True, winnings - amount, winnings)
-                    achievements = maybe_award_game_achievements(user_id, "ms", stats)
+                    def finish_ms_achievements():
+                        stats = record_game_result(user_id, "ms", True, winnings - amount, winnings)
+                        return maybe_award_game_achievements(user_id, "ms", stats)
+                    achievements = await asyncio.to_thread(finish_ms_achievements)
                 except Exception:
                     self.view.clear_items()
                     await interaction.edit_original_response(
@@ -11606,10 +11753,10 @@ async def minesweeper(ctx, amount: str):
                 game_won = False
                 self.clear_items()
                 try:
-                    latest = get_user(user_id)
+                    latest = await asyncio.to_thread(get_user, user_id)
                     new_balance = max(0, latest['balance'] - amount)
-                    update_user(user_id, balance=new_balance, gamble_streak=0, total_lost=latest['total_lost'] + amount)
-                    record_game_result(user_id, "ms", False, -amount, 0)
+                    await asyncio.to_thread(update_user, user_id, balance=new_balance, gamble_streak=0, total_lost=latest['total_lost'] + amount)
+                    await asyncio.to_thread(record_game_result, user_id, "ms", False, -amount, 0)
                     content = (
                         render_board() +
                         f"\n> {Q_TIMER} Timed out! Lost **{format_balance(amount)}**\n"
@@ -11671,7 +11818,7 @@ async def wheel(ctx, amount: str):
     user_id = ctx.author.id
 
     try:
-        data = get_user(user_id)
+        data = await asyncio.to_thread(get_user, user_id)
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
@@ -11753,7 +11900,7 @@ async def wheel(ctx, amount: str):
             if winnings > amount or (mult_val > 1 and winnings > 0):
                 # Win
                 new_balance = data['balance'] + winnings - amount
-                update_user(
+                await asyncio.to_thread(update_user,
                     user_id,
                     balance=new_balance,
                     gamble_streak=new_streak,
@@ -11774,7 +11921,7 @@ async def wheel(ctx, amount: str):
             else:
                 loss_amount = amount - winnings
                 new_balance = max(0, data['balance'] - loss_amount)
-                update_user(
+                await asyncio.to_thread(update_user,
                     user_id,
                     balance=new_balance,
                     gamble_streak=0,

@@ -1,5 +1,6 @@
 import asyncio
 import ast
+import concurrent.futures
 import json
 import logging
 import math
@@ -196,6 +197,30 @@ AI_REQUEST_MAX_CHARS = 6500
 AI_SYSTEM_CONTEXT_MAX_CHARS = 2500
 AI_MESSAGE_CONTEXT_MAX_CHARS = 2200
 AI_DETECT_MAX_CHARS = 9000
+COMMAND_CONCURRENCY_LIMIT = int(os.getenv("PROQUE_COMMAND_CONCURRENCY", "48"))
+HEAVY_COMMAND_CONCURRENCY_LIMIT = int(os.getenv("PROQUE_HEAVY_COMMAND_CONCURRENCY", "8"))
+BULK_COMMAND_CONCURRENCY_LIMIT = int(os.getenv("PROQUE_BULK_COMMAND_CONCURRENCY", "2"))
+AI_COMMAND_CONCURRENCY_LIMIT = int(os.getenv("PROQUE_AI_COMMAND_CONCURRENCY", "4"))
+DB_WORKER_LIMIT = int(os.getenv("PROQUE_DB_WORKERS", "24"))
+
+command_semaphore = asyncio.Semaphore(COMMAND_CONCURRENCY_LIMIT)
+heavy_command_semaphore = asyncio.Semaphore(HEAVY_COMMAND_CONCURRENCY_LIMIT)
+bulk_command_semaphore = asyncio.Semaphore(BULK_COMMAND_CONCURRENCY_LIMIT)
+ai_command_semaphore = asyncio.Semaphore(AI_COMMAND_CONCURRENCY_LIMIT)
+AI_COMMAND_NAMES = {
+    "ask", "generate", "analyse", "analyze", "summarize", "summarise", "summary",
+    "aisummary", "tldr", "recap", "aidetect", "aicheck", "detectai",
+    "authenticity", "authcheck", "essaycheck",
+}
+BULK_COMMAND_NAMES = {
+    "add", "remove", "setquesos", "addtick", "removetick", "settick", "purge",
+    "rpurge", "archive", "fwd", "forward", "send", "reply",
+}
+HEAVY_COMMAND_NAMES = {
+    "shop", "help", "econhelp", "quewohelp", "lb", "leaderboard", "activity",
+    "messages", "economyaudit", "abuseaudit", "gameaudit", "balancedashboard",
+    "flagquiz", "giveaway", "steal", "lottery", "lotterystats",
+}
 
 # PostgreSQL is the single source of truth
 pg_init()
@@ -211,7 +236,14 @@ sleeping_users = pg_load_sleeping_users() or {}
 
 class MyBot(commands.Bot):
     async def setup_hook(self):
-        pass
+        loop = asyncio.get_running_loop()
+        loop.set_default_executor(concurrent.futures.ThreadPoolExecutor(max_workers=DB_WORKER_LIMIT))
+
+    async def close(self):
+        session = getattr(self, "proque_http_session", None)
+        if session and not session.closed:
+            await session.close()
+        await super().close()
         
 DEFAULT_PREFIX = "."
 
@@ -224,6 +256,15 @@ def get_prefix(bot, message):
 bot = MyBot(command_prefix=get_prefix, intents=intents, case_insensitive=True)
 bot.remove_command("help")
 print(f"Bot is starting with intents: {bot.intents}")
+
+async def get_http_session():
+    session = getattr(bot, "proque_http_session", None)
+    if session is None or session.closed:
+        timeout = aiohttp.ClientTimeout(total=max(15, AI_MODEL_TIMEOUT_SECONDS + 5))
+        connector = aiohttp.TCPConnector(limit=64, limit_per_host=12, ttl_dns_cache=300)
+        session = aiohttp.ClientSession(timeout=timeout, connector=connector)
+        bot.proque_http_session = session
+    return session
 
 async def polished_view_error(self, interaction: discord.Interaction, error: Exception, item):
     text = clean_user_error(error, "That panel had a problem. Run the command again for a fresh one.")
@@ -608,7 +649,7 @@ def is_ai_memory_query(text):
         "what have you saved about me",
     ))
 
-def ai_user_memory_text(message, referenced_message=None, limit_users=6, limit_facts=8):
+async def ai_user_memory_text(message, referenced_message=None, limit_users=6, limit_facts=8):
     if not message.guild:
         return ""
     user_ids = []
@@ -621,8 +662,10 @@ def ai_user_memory_text(message, referenced_message=None, limit_users=6, limit_f
 
     lines = []
     for user_id in user_ids[:limit_users]:
-        facts = load_ai_user_memory(message.guild.id, user_id, limit_facts)
-        bot_facts = bot_saved_user_facts(message.guild, user_id)
+        facts, bot_facts = await asyncio.gather(
+            asyncio.to_thread(load_ai_user_memory, message.guild.id, user_id, limit_facts),
+            asyncio.to_thread(bot_saved_user_facts, message.guild, user_id),
+        )
         if not facts:
             facts = []
         member = message.guild.get_member(user_id)
@@ -673,8 +716,10 @@ def bot_saved_user_facts(guild, user_id):
     return facts[:6]
 
 async def send_ai_memory_summary(destination, guild, user, *, ephemeral=False):
-    facts = await asyncio.to_thread(load_ai_user_memory, guild.id if guild else 0, user.id, AI_USER_MEMORY_MAX_FACTS)
-    bot_facts = bot_saved_user_facts(guild, user.id)
+    facts, bot_facts = await asyncio.gather(
+        asyncio.to_thread(load_ai_user_memory, guild.id if guild else 0, user.id, AI_USER_MEMORY_MAX_FACTS),
+        asyncio.to_thread(bot_saved_user_facts, guild, user.id),
+    )
     lines = [str(item.get("fact", "")).strip() for item in facts if item.get("fact")]
     lines.extend(bot_facts)
     embed = discord.Embed(
@@ -782,18 +827,15 @@ def command_plan_embed(message, command, args, display):
     embed.set_footer(text="Confirm only if this is exactly what you wanted.")
     return embed
 
-def bot_doctor_context(guild):
+def bot_doctor_context(guild, active_sessions=None):
     guild_id = guild.id if guild else 0
     slow = []
     for name, stats in sorted(command_timing_stats.items(), key=lambda item: item[1]["max_ms"], reverse=True)[:6]:
         count = max(1, int(stats.get("count", 1)))
         avg = int(stats.get("total_ms", 0) / count)
         slow.append(f"{name}: avg {avg}ms, max {int(stats.get('max_ms', 0))}ms, runs {count}")
-    active_sessions = 0
-    try:
-        active_sessions = len([session for session in load_active_game_sessions() if not guild or session.get("guild_id") == guild.id])
-    except Exception:
-        active_sessions = -1
+    if active_sessions is None:
+        active_sessions = "not checked"
     return (
         f"Bot doctor snapshot: config DB ready=yes; 𝚀𝚞𝚎wo DB ready={getattr(economy_module, 'db_ready', False)}; "
         f"birthday task={'running' if birthday_task and not birthday_task.done() else 'stopped'}; "
@@ -803,6 +845,14 @@ def bot_doctor_context(guild):
         f"guild disabled commands={len(guild_disabled_commands(guild)) if guild else 0}; "
         f"slow commands={'; '.join(slow) if slow else 'none tracked yet'}."
     )
+
+async def bot_doctor_context_async(guild):
+    try:
+        sessions = await asyncio.to_thread(load_active_game_sessions)
+        active_sessions = len([session for session in sessions if not guild or session.get("guild_id") == guild.id])
+    except Exception:
+        active_sessions = -1
+    return bot_doctor_context(guild, active_sessions=active_sessions)
 
 def compact_ai_text(text, limit=220):
     text = re.sub(r"\s+", " ", str(text or "")).strip()
@@ -981,12 +1031,12 @@ async def run_ai_likelihood_check(text):
         "temperature": 0.1,
         "max_tokens": 420,
     }
-    async with aiohttp.ClientSession() as session:
-        async with session.post("https://api.groq.com/openai/v1/chat/completions", json=payload, headers=headers, timeout=AI_MODEL_TIMEOUT_SECONDS) as resp:
-            if resp.status != 200:
-                body = await resp.text()
-                raise RuntimeError(ai_http_error_message(resp.status, body))
-            data = await resp.json(content_type=None)
+    session = await get_http_session()
+    async with session.post("https://api.groq.com/openai/v1/chat/completions", json=payload, headers=headers, timeout=AI_MODEL_TIMEOUT_SECONDS) as resp:
+        if resp.status != 200:
+            body = await resp.text()
+            raise RuntimeError(ai_http_error_message(resp.status, body))
+        data = await resp.json(content_type=None)
     return parse_ai_detection_json(data["choices"][0]["message"]["content"])
 
 def ai_likelihood_embed(result, text):
@@ -1832,7 +1882,7 @@ async def prompt_log_setup(guild):
         if reaction_channel_id is None:
             return
 
-    save_guild_log_config(guild.id, normal_channel_id, reaction_channel_id)
+    await asyncio.to_thread(save_guild_log_config, guild.id, normal_channel_id, reaction_channel_id)
     guild_log_configs[guild.id] = {
         "log_channel_id": int(normal_channel_id),
         "reaction_log_channel_id": int(reaction_channel_id),
@@ -1918,7 +1968,7 @@ async def prompt_birthday_setup(guild):
 
 async def send_user_update_log(embed, user_id):
     for guild in bot.guilds:
-        if guild.get_member(user_id) and load_guild_log_config(guild.id):
+        if guild.get_member(user_id) and await asyncio.to_thread(load_guild_log_config, guild.id):
             await send_log(embed.copy(), guild)
 
 async def safe_send(destination, *args, **kwargs):
@@ -3530,7 +3580,8 @@ async def award_chat_xp_background(message):
     try:
         event_multiplier = 1
         try:
-            if message.guild and economy_module.active_event_key(message.guild.id) == "doublexp":
+            active_key = await asyncio.to_thread(economy_module.active_event_key, message.guild.id) if message.guild else None
+            if active_key == "doublexp":
                 event_multiplier = 2
         except Exception:
             event_multiplier = 1
@@ -3867,7 +3918,7 @@ def add_mentions_to_status_embed(embed, mentions_list):
 async def handle_returning_status(message):
     if message.author.id in sleeping_users:
         start = sleeping_users.pop(message.author.id)
-        remove_sleeping_user(message.author.id)
+        await asyncio.to_thread(remove_sleeping_user, message.author.id)
         duration = datetime.now(timezone.utc) - start
         formatted = short_status_duration(duration)
 
@@ -3887,7 +3938,7 @@ async def handle_returning_status(message):
 
     if message.author.id in afk_users:
         afk_data = afk_users.pop(message.author.id)
-        remove_afk_user(message.author.id)
+        await asyncio.to_thread(remove_afk_user, message.author.id)
 
         duration = datetime.now(timezone.utc) - afk_data["since"]
         formatted = short_status_duration(duration)
@@ -4115,12 +4166,12 @@ async def semantic_ai_command_request(question, guild, viewer=None):
         "max_tokens": 220,
     }
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post("https://api.groq.com/openai/v1/chat/completions", json=payload, headers=headers, timeout=AI_MODEL_TIMEOUT_SECONDS) as resp:
-                if resp.status != 200:
-                    guessed = fuzzy_command_guess(question, viewer, guild)
-                    return (guessed, "", False) if guessed else None
-                data = await resp.json(content_type=None)
+        session = await get_http_session()
+        async with session.post("https://api.groq.com/openai/v1/chat/completions", json=payload, headers=headers, timeout=AI_MODEL_TIMEOUT_SECONDS) as resp:
+            if resp.status != 200:
+                guessed = fuzzy_command_guess(question, viewer, guild)
+                return (guessed, "", False) if guessed else None
+            data = await resp.json(content_type=None)
         raw = data["choices"][0]["message"]["content"].strip()
         raw = raw.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
         parsed = json.loads(raw)
@@ -4679,12 +4730,12 @@ async def summarize_messages_with_ai(messages, *, prompt, target_user=None, chan
         "temperature": 0.2,
         "max_tokens": 500,
     }
-    async with aiohttp.ClientSession() as session:
-        async with session.post("https://api.groq.com/openai/v1/chat/completions", json=payload, headers=headers, timeout=AI_MODEL_TIMEOUT_SECONDS) as resp:
-            if resp.status != 200:
-                body = await resp.text()
-                return ai_http_error_message(resp.status, body)
-            data = await resp.json(content_type=None)
+    session = await get_http_session()
+    async with session.post("https://api.groq.com/openai/v1/chat/completions", json=payload, headers=headers, timeout=AI_MODEL_TIMEOUT_SECONDS) as resp:
+        if resp.status != 200:
+            body = await resp.text()
+            return ai_http_error_message(resp.status, body)
+        data = await resp.json(content_type=None)
     return data["choices"][0]["message"]["content"].strip()
 
 async def send_chat_summary(destination, *, prompt="", target_user=None, channel=None, limit=AI_SUMMARY_DEFAULT_MESSAGES, duration=None):
@@ -4820,11 +4871,11 @@ async def semantic_ai_batch_action(question, guild, draft=None):
         "max_tokens": 220,
     }
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post("https://api.groq.com/openai/v1/chat/completions", json=payload, headers=headers, timeout=AI_MODEL_TIMEOUT_SECONDS) as resp:
-                if resp.status != 200:
-                    return None
-                data = await resp.json(content_type=None)
+        session = await get_http_session()
+        async with session.post("https://api.groq.com/openai/v1/chat/completions", json=payload, headers=headers, timeout=AI_MODEL_TIMEOUT_SECONDS) as resp:
+            if resp.status != 200:
+                return None
+            data = await resp.json(content_type=None)
         raw = data["choices"][0]["message"]["content"].strip()
         raw = raw.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
         parsed = json.loads(raw)
@@ -4986,7 +5037,7 @@ async def maybe_run_ai_batch_action(message, question):
 
     try:
         if action["reward_type"] == "tickets":
-            config = economy_get_lottery_config(message.guild.id)
+            config = await asyncio.to_thread(economy_get_lottery_config, message.guild.id)
             if config is None:
                 clear_ai_batch_draft(message)
                 await message.reply("Lottery is not set up in this server yet.", mention_author=False)
@@ -4999,7 +5050,7 @@ async def maybe_run_ai_batch_action(message, question):
                 "add",
                 message.author.id,
             )
-            updated = economy_get_lottery_config(message.guild.id)
+            updated = await asyncio.to_thread(economy_get_lottery_config, message.guild.id)
             economy_module.schedule_lottery_refresh(message.guild, updated)
             for user_id in target_ids:
                 member = message.guild.get_member(user_id)
@@ -5200,7 +5251,7 @@ async def on_message(message):
             remember_user_facts_from_message(message)
             memory_key = ai_memory_key(message)
             recent_context = ai_channel_context_text(memory_key)
-            user_memory = ai_user_memory_text(message, referenced_message)
+            user_memory = await ai_user_memory_text(message, referenced_message)
             use_full_bot_context = should_use_full_bot_context(question)
             if use_full_bot_context:
                 messages = [
@@ -5247,7 +5298,7 @@ async def on_message(message):
                     ),
                 })
                 if use_full_bot_context:
-                    messages.append({"role": "system", "content": bot_doctor_context(message.guild)})
+                    messages.append({"role": "system", "content": await bot_doctor_context_async(message.guild)})
             if recent_context:
                 messages.append({"role": "system", "content": f"Recent channel context:\n{recent_context}"})
             if user_memory:
@@ -5279,17 +5330,17 @@ async def on_message(message):
             }
             try:
                 async with message.channel.typing():
-                    async with aiohttp.ClientSession() as session:
-                        async with session.post("https://api.groq.com/openai/v1/chat/completions", json=payload, headers=headers, timeout=AI_MODEL_TIMEOUT_SECONDS) as resp:
-                            if resp.status == 200:
-                                data = await resp.json()
-                                answer = data["choices"][0]["message"]["content"].strip()
-                                sent = await safe_ai_reply(message, answer or "I could not come up with an answer.")
-                                remember_ai_message(memory_key, "user", question)
-                                remember_ai_message(memory_key, "assistant", sent.content or answer)
-                            else:
-                                body = await resp.text()
-                                await safe_ai_reply(message, ai_http_error_message(resp.status, body))
+                    session = await get_http_session()
+                    async with session.post("https://api.groq.com/openai/v1/chat/completions", json=payload, headers=headers, timeout=AI_MODEL_TIMEOUT_SECONDS) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            answer = data["choices"][0]["message"]["content"].strip()
+                            sent = await safe_ai_reply(message, answer or "I could not come up with an answer.")
+                            remember_ai_message(memory_key, "user", question)
+                            remember_ai_message(memory_key, "assistant", sent.content or answer)
+                        else:
+                            body = await resp.text()
+                            await safe_ai_reply(message, ai_http_error_message(resp.status, body))
             except Exception as e:
                 try:
                     await safe_ai_reply(message, ai_exception_message(e))
@@ -6280,8 +6331,10 @@ async def auditcommands_command(ctx):
             if key in seen_aliases and seen_aliases[key] != command.name:
                 duplicate_alias_lines.append(f"`{alias}`: `{seen_aliases[key]}` and `{command.name}`")
             seen_aliases[key] = command.name
-    sync_db_findings = sync_db_audit()
-    ui_findings = ui_callback_audit()
+    sync_db_findings, ui_findings = await asyncio.gather(
+        asyncio.to_thread(sync_db_audit),
+        asyncio.to_thread(ui_callback_audit),
+    )
     command_names = sorted({command.name for command in bot.commands if not command.hidden})
     for index, left in enumerate(command_names):
         for right in command_names[index + 1:]:
@@ -6567,7 +6620,7 @@ async def aidoctor_command(ctx):
     """Shows AI doctor status for bot health and debugging."""
     embed = discord.Embed(
         title=f"{economy_q_activity} Pro𝚀𝚞𝚎 Doctor",
-        description=bot_doctor_context(ctx.guild),
+        description=await bot_doctor_context_async(ctx.guild),
         color=discord.Color.teal(),
         timestamp=datetime.now(timezone.utc),
     )
@@ -8039,7 +8092,7 @@ async def send_poll_message(channel, guild, author, question, options=None, delt
         "end_task": None,
         "ended": False
     }
-    save_active_poll(msg.id, active_polls[msg.id])
+    await asyncio.to_thread(save_active_poll, msg.id, active_polls[msg.id])
 
     if end_time:
         async def end_poll_task():
@@ -8048,7 +8101,7 @@ async def send_poll_message(channel, guild, author, question, options=None, delt
             if not poll_data or poll_data.get("ended"):
                 return
             poll_data["ended"] = True
-            save_active_poll(msg.id, poll_data)
+            await asyncio.to_thread(save_active_poll, msg.id, poll_data)
             await finalize_poll(msg, poll_data)
 
         task = asyncio.create_task(end_poll_task())
@@ -8108,7 +8161,7 @@ async def finalize_poll(msg, poll_data):
         poll_msg = await bot.get_channel(poll_data["channel_id"]).fetch_message(msg.id)
     except:
         active_polls.pop(msg.id, None)
-        remove_active_poll(msg.id)
+        await asyncio.to_thread(remove_active_poll, msg.id)
         return
 
     try:
@@ -8131,7 +8184,7 @@ async def finalize_poll(msg, poll_data):
         print(f"Poll finalize warning: {type(e).__name__} - {e}")
     finally:
         active_polls.pop(msg.id, None)
-        remove_active_poll(msg.id)
+        await asyncio.to_thread(remove_active_poll, msg.id)
 
 async def restore_persistent_runtime_state():
     now = datetime.now(timezone.utc)
@@ -8143,13 +8196,13 @@ async def restore_persistent_runtime_state():
                 channel = await bot.fetch_channel(poll_data["channel_id"])
             except Exception:
                 active_polls.pop(poll_id, None)
-                remove_active_poll(poll_id)
+                await asyncio.to_thread(remove_active_poll, poll_id)
                 continue
         try:
             message = await channel.fetch_message(poll_id)
         except Exception:
             active_polls.pop(poll_id, None)
-            remove_active_poll(poll_id)
+            await asyncio.to_thread(remove_active_poll, poll_id)
             continue
 
         end_time = poll_data.get("end_time")
@@ -8187,13 +8240,13 @@ async def restore_persistent_runtime_state():
                 channel = await bot.fetch_channel(timer_data["channel_id"])
             except Exception:
                 active_timers.pop(timer_id, None)
-                remove_active_timer(timer_id)
+                await asyncio.to_thread(remove_active_timer, timer_id)
                 continue
         try:
             message = await channel.fetch_message(timer_id)
         except Exception:
             active_timers.pop(timer_id, None)
-            remove_active_timer(timer_id)
+            await asyncio.to_thread(remove_active_timer, timer_id)
             continue
 
         end_time = timer_data["end_time"]
@@ -8525,12 +8578,43 @@ async def block_blacklisted(ctx):
         return False
     return True
 
+def command_load_group(ctx):
+    command_name = (getattr(getattr(ctx, "command", None), "name", "") or "").casefold()
+    invoked = (getattr(ctx, "invoked_with", "") or "").casefold()
+    names = {command_name, invoked}
+    if names & AI_COMMAND_NAMES:
+        return "ai", ai_command_semaphore
+    if names & BULK_COMMAND_NAMES:
+        return "bulk", bulk_command_semaphore
+    if names & HEAVY_COMMAND_NAMES:
+        return "heavy", heavy_command_semaphore
+    return "normal", None
+
+@bot.before_invoke
+async def limit_command_concurrency(ctx):
+    await command_semaphore.acquire()
+    ctx._proque_command_semaphore_acquired = True
+    group, semaphore = command_load_group(ctx)
+    ctx._proque_command_load_group = group
+    ctx._proque_group_semaphore = semaphore
+    if semaphore is not None:
+        await semaphore.acquire()
+        ctx._proque_group_semaphore_acquired = True
+
 @bot.after_invoke
 async def track_command_usage_after(ctx):
-    if not getattr(ctx, "command", None) or getattr(ctx.author, "bot", False):
-        return
-    guild_id = ctx.guild.id if ctx.guild else 0
-    asyncio.create_task(asyncio.to_thread(record_command_usage, guild_id, ctx.command.name, ctx.author.id))
+    try:
+        if getattr(ctx, "command", None) and not getattr(ctx.author, "bot", False):
+            guild_id = ctx.guild.id if ctx.guild else 0
+            asyncio.create_task(asyncio.to_thread(record_command_usage, guild_id, ctx.command.name, ctx.author.id))
+    finally:
+        semaphore = getattr(ctx, "_proque_group_semaphore", None)
+        if semaphore is not None and getattr(ctx, "_proque_group_semaphore_acquired", False):
+            semaphore.release()
+            ctx._proque_group_semaphore_acquired = False
+        if getattr(ctx, "_proque_command_semaphore_acquired", False):
+            command_semaphore.release()
+            ctx._proque_command_semaphore_acquired = False
 
 @bot.command(name="prefix", aliases=["preifx", "setprefix"])
 async def prefix_command(ctx, new_prefix: str = None):
@@ -8579,7 +8663,7 @@ async def disable(ctx, cmd: str):
 
     commands_for_guild = guild_disabled_commands(ctx.guild)
     commands_for_guild.add(command.name)
-    save_disabled_commands(scoped_id(ctx.guild), commands_for_guild)
+    await asyncio.to_thread(save_disabled_commands, scoped_id(ctx.guild), commands_for_guild)
     await ctx.send(f"Disabled **{command.name}**")
     
 @bot.command()
@@ -8596,7 +8680,7 @@ async def enable(ctx, cmd: str):
     commands_for_guild = guild_disabled_commands(ctx.guild)
     if command.name in commands_for_guild:
         commands_for_guild.remove(command.name)
-        save_disabled_commands(scoped_id(ctx.guild), commands_for_guild)
+        await asyncio.to_thread(save_disabled_commands, scoped_id(ctx.guild), commands_for_guild)
         await ctx.send(f"Enabled **{command.name}**")
     else:
         await ctx.send(f"**{command.name}** is not disabled.")
@@ -8613,7 +8697,7 @@ async def disableall(ctx):
     for command in bot.commands:
         if command.name != "enableall":
             guild_disabled_commands(ctx.guild).add(command.name)
-    save_disabled_commands(scoped_id(ctx.guild), guild_disabled_commands(ctx.guild))
+    await asyncio.to_thread(save_disabled_commands, scoped_id(ctx.guild), guild_disabled_commands(ctx.guild))
     await ctx.send("Disabled **all commands**")
 
 @bot.command()
@@ -8623,7 +8707,7 @@ async def enableall(ctx):
         return
 
     guild_disabled_commands(ctx.guild).clear()
-    save_disabled_commands(scoped_id(ctx.guild), guild_disabled_commands(ctx.guild))
+    await asyncio.to_thread(save_disabled_commands, scoped_id(ctx.guild), guild_disabled_commands(ctx.guild))
     await ctx.send("Enabled **all commands**")
 
 @bot.command()
@@ -9204,8 +9288,10 @@ async def ask_game_bet(ctx, opponent, game_name):
         return None
 
     try:
-        author_data = economy_get_user(ctx.author.id)
-        opponent_data = economy_get_user(opponent.id)
+        author_data, opponent_data = await asyncio.gather(
+            asyncio.to_thread(economy_get_user, ctx.author.id),
+            asyncio.to_thread(economy_get_user, opponent.id),
+        )
     except Exception:
         await ctx.send("Database unavailable. Try again shortly.")
         return None
@@ -9363,6 +9449,57 @@ if not getattr(discord.Webhook.send, "_proque_safe_content", False):
     _safe_webhook_send._proque_safe_content = True
     discord.Webhook.send = _safe_webhook_send
 
+if not getattr(discord.abc.Messageable.send, "_proque_safe_content", False):
+    _original_messageable_send = discord.abc.Messageable.send
+
+    async def _safe_messageable_send(self, *args, **kwargs):
+        if args and isinstance(args[0], str):
+            args = (fit_discord_content(args[0]),) + args[1:]
+        if isinstance(kwargs.get("content"), str):
+            kwargs["content"] = fit_discord_content(kwargs["content"])
+        if kwargs.get("embed") is not None:
+            kwargs["embed"] = fit_discord_embed(kwargs["embed"])
+        if kwargs.get("embeds") is not None:
+            kwargs["embeds"] = fit_discord_embeds(kwargs["embeds"])
+        return await _original_messageable_send(self, *args, **kwargs)
+
+    _safe_messageable_send._proque_safe_content = True
+    discord.abc.Messageable.send = _safe_messageable_send
+
+if not getattr(discord.Message.edit, "_proque_safe_content", False):
+    _original_message_edit = discord.Message.edit
+
+    async def _safe_message_edit(self, *args, **kwargs):
+        if args and isinstance(args[0], str):
+            args = (fit_discord_content(args[0]),) + args[1:]
+        if isinstance(kwargs.get("content"), str):
+            kwargs["content"] = fit_discord_content(kwargs["content"])
+        if kwargs.get("embed") is not None:
+            kwargs["embed"] = fit_discord_embed(kwargs["embed"])
+        if kwargs.get("embeds") is not None:
+            kwargs["embeds"] = fit_discord_embeds(kwargs["embeds"])
+        return await _original_message_edit(self, *args, **kwargs)
+
+    _safe_message_edit._proque_safe_content = True
+    discord.Message.edit = _safe_message_edit
+
+if not getattr(discord.Interaction.edit_original_response, "_proque_safe_content", False):
+    _original_interaction_edit_original_response = discord.Interaction.edit_original_response
+
+    async def _safe_interaction_edit_original_response(self, *args, **kwargs):
+        if args and isinstance(args[0], str):
+            args = (fit_discord_content(args[0]),) + args[1:]
+        if isinstance(kwargs.get("content"), str):
+            kwargs["content"] = fit_discord_content(kwargs["content"])
+        if kwargs.get("embed") is not None:
+            kwargs["embed"] = fit_discord_embed(kwargs["embed"])
+        if kwargs.get("embeds") is not None:
+            kwargs["embeds"] = fit_discord_embeds(kwargs["embeds"])
+        return await _original_interaction_edit_original_response(self, *args, **kwargs)
+
+    _safe_interaction_edit_original_response._proque_safe_content = True
+    discord.Interaction.edit_original_response = _safe_interaction_edit_original_response
+
 def c4_result_content(board, turn, result_text, payout_text=""):
     board_text = render_board(board, turn)
     full = f"{board_text}\n\n{result_text}{payout_text}"
@@ -9396,11 +9533,15 @@ async def settle_game_bet(game, winner):
 
     loser = game["players"][1] if winner.id == game["players"][0].id else game["players"][0]
     try:
-        winner_data = economy_get_user(winner.id)
-        loser_data = economy_get_user(loser.id)
-        payout = min(amount, loser_data["balance"])
-        economy_update_user(winner.id, balance=winner_data["balance"] + payout)
-        economy_update_user(loser.id, balance=max(0, loser_data["balance"] - payout))
+        def settle_bet_sync():
+            winner_data = economy_get_user(winner.id)
+            loser_data = economy_get_user(loser.id)
+            payout_amount = min(amount, loser_data["balance"])
+            economy_update_user(winner.id, balance=winner_data["balance"] + payout_amount)
+            economy_update_user(loser.id, balance=max(0, loser_data["balance"] - payout_amount))
+            return payout_amount
+
+        payout = await asyncio.to_thread(settle_bet_sync)
     except Exception:
         return "\nBet payout failed: database unavailable."
 
@@ -10371,7 +10512,7 @@ async def shut(ctx, members: commands.Greedy[discord.Member]):
             return await ctx.send("You can't silence one or more of those users.")
         targets[member.id] = ctx.author.id
         changed.append(f"<@{member.id}>")
-    save_watchlist(scoped_id(ctx.guild), targets)
+    await asyncio.to_thread(save_watchlist, scoped_id(ctx.guild), targets)
     await ctx.send(f"Silenced **{len(changed)}** user(s): {', '.join(changed)}.", allowed_mentions=discord.AllowedMentions.none())
 
 @bot.command()
@@ -10386,7 +10527,7 @@ async def unshut(ctx, members: commands.Greedy[discord.Member]):
             return await ctx.send("You can't unshut one or more of those users.")
         targets.pop(member.id, None)
         changed.append(f"<@{member.id}>")
-    save_watchlist(scoped_id(ctx.guild), targets)
+    await asyncio.to_thread(save_watchlist, scoped_id(ctx.guild), targets)
     await ctx.send(f"Unsilenced **{len(changed)}** user(s): {', '.join(changed)}.", allowed_mentions=discord.AllowedMentions.none())
 
 @bot.command()
@@ -10395,7 +10536,7 @@ async def clearwatchlist(ctx):
     if not has_super_owner_power(ctx.author, ctx.guild):
         return await ctx.send("Only 𝚀𝚞𝚎 can clear the watchlist.")
     guild_watchlist(ctx.guild).clear()
-    save_watchlist(scoped_id(ctx.guild), guild_watchlist(ctx.guild))
+    await asyncio.to_thread(save_watchlist, scoped_id(ctx.guild), guild_watchlist(ctx.guild))
     await ctx.send("Watchlist cleared.")
 
 @bot.command()
@@ -10411,7 +10552,7 @@ async def rshut(ctx, members: commands.Greedy[discord.Member]):
             return await ctx.send("You can't silence one or more of those users' reactions.")
         targets[member.id] = ctx.author.id
         changed.append(f"<@{member.id}>")
-    save_reaction_watchlist(scoped_id(ctx.guild), targets)
+    await asyncio.to_thread(save_reaction_watchlist, scoped_id(ctx.guild), targets)
     await ctx.send(f"Reaction-silenced **{len(changed)}** user(s): {', '.join(changed)}.", allowed_mentions=discord.AllowedMentions.none())
 
 @bot.command()
@@ -10427,7 +10568,7 @@ async def unrshut(ctx, members: commands.Greedy[discord.Member]):
             return await ctx.send("You can't unshut one or more of those users.")
         targets.pop(member.id, None)
         changed.append(f"<@{member.id}>")
-    save_reaction_watchlist(scoped_id(ctx.guild), targets)
+    await asyncio.to_thread(save_reaction_watchlist, scoped_id(ctx.guild), targets)
     await ctx.send(f"Allowed reactions again for **{len(changed)}** user(s): {', '.join(changed)}.", allowed_mentions=discord.AllowedMentions.none())
 
 @bot.command()
@@ -10436,7 +10577,7 @@ async def lockdown(ctx):
     """Bot-level channel lockdown. Non-admin messages are deleted."""
     channels = guild_shutdown_channels(ctx.guild)
     channels.add(ctx.channel.id)
-    save_shutdown_channels(scoped_id(ctx.guild), channels)
+    await asyncio.to_thread(save_shutdown_channels, scoped_id(ctx.guild), channels)
     await ctx.send("This channel is now in lockdown mode. Only admins can speak.")
 
 @bot.command(name="reopen")
@@ -10445,7 +10586,7 @@ async def reopen(ctx):
     """Reopen a bot-level locked-down channel."""
     channels = guild_shutdown_channels(ctx.guild)
     channels.discard(ctx.channel.id)
-    save_shutdown_channels(scoped_id(ctx.guild), channels)
+    await asyncio.to_thread(save_shutdown_channels, scoped_id(ctx.guild), channels)
     await ctx.send("This channel has been reopened. All users may speak now.")
 
 @bot.command()
@@ -10453,7 +10594,7 @@ async def reopen(ctx):
 async def rlockdown(ctx):
     channels = guild_reaction_shutdown_channels(ctx.guild)
     channels.add(ctx.channel.id)
-    save_reaction_shutdown_channels(scoped_id(ctx.guild), channels)
+    await asyncio.to_thread(save_reaction_shutdown_channels, scoped_id(ctx.guild), channels)
     await ctx.send("Reactions are now disabled in this channel.", delete_after=5)
 
 @bot.command()
@@ -10461,7 +10602,7 @@ async def rlockdown(ctx):
 async def runlock(ctx):
     channels = guild_reaction_shutdown_channels(ctx.guild)
     channels.discard(ctx.channel.id)
-    save_reaction_shutdown_channels(scoped_id(ctx.guild), channels)
+    await asyncio.to_thread(save_reaction_shutdown_channels, scoped_id(ctx.guild), channels)
     await ctx.send("Reactions are now enabled in this channel.", delete_after=5)
 
 from collections import Counter
@@ -10946,9 +11087,9 @@ async def steal(ctx):
         if content_type.startswith("image/"):
             try:
                 buffer = BytesIO()
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(first.url) as resp:
-                        buffer.write(await resp.read())
+                session = await get_http_session()
+                async with session.get(first.url) as resp:
+                    buffer.write(await resp.read())
                 buffer.seek(0)
                 
                 embed = discord.Embed(title="Image Detected", color=discord.Color.blurple())
@@ -10971,9 +11112,9 @@ async def steal(ctx):
         if emoji_obj and emoji_obj.animated:
             try:
                 buffer = BytesIO()
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(str(emoji_obj.url)) as resp:
-                        buffer.write(await resp.read())
+                session = await get_http_session()
+                async with session.get(str(emoji_obj.url)) as resp:
+                    buffer.write(await resp.read())
                 buffer.seek(0)
                 
                 embed = discord.Embed(title="Animated Emoji Detected", color=discord.Color.blurple())
@@ -10995,9 +11136,9 @@ async def steal(ctx):
         if emoji_obj:
             try:
                 buffer = BytesIO()
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(str(emoji_obj.url)) as resp:
-                        buffer.write(await resp.read())
+                session = await get_http_session()
+                async with session.get(str(emoji_obj.url)) as resp:
+                    buffer.write(await resp.read())
                 buffer.seek(0)
                 
                 embed = discord.Embed(title="Emoji Detected", color=discord.Color.blurple())
@@ -11431,7 +11572,7 @@ class ConfirmEndPollView(View):
         if not poll_data:
             await interaction.edit_original_response(content="Poll no longer exists.", view=None)
             return
-        remove_active_poll(poll_id)
+        await asyncio.to_thread(remove_active_poll, poll_id)
         end_task = poll_data.get("end_task")
         if end_task and not end_task.done():
             end_task.cancel()
@@ -11681,13 +11822,13 @@ async def aban(ctx, target):
     try:
         user = await commands.UserConverter().convert(ctx, target)
         ids.add(user.id)
-        save_autoban_ids(scoped_id(ctx.guild), ids)
+        await asyncio.to_thread(save_autoban_ids, scoped_id(ctx.guild), ids)
         await ctx.send(f"<@{user.id}> added to the autoban list.", allowed_mentions=discord.AllowedMentions.none())
     except:
         try:
             user_id = int(target)
             ids.add(user_id)
-            save_autoban_ids(scoped_id(ctx.guild), ids)
+            await asyncio.to_thread(save_autoban_ids, scoped_id(ctx.guild), ids)
             await ctx.send(f"User ID `{user_id}` added to the autoban list.")
         except:
             await ctx.send("Invalid user or ID.")
@@ -11699,7 +11840,7 @@ async def raban(ctx, target):
     try:
         user = await commands.UserConverter().convert(ctx, target)
         ids.discard(user.id)
-        save_autoban_ids(scoped_id(ctx.guild), ids)
+        await asyncio.to_thread(save_autoban_ids, scoped_id(ctx.guild), ids)
         await ctx.send(
            f"<@{user.id}> removed from autoban list.",
             allowed_mentions=discord.AllowedMentions.none()
@@ -11708,7 +11849,7 @@ async def raban(ctx, target):
         try:
             user_id = int(target)
             ids.discard(user_id)
-            save_autoban_ids(scoped_id(ctx.guild), ids)
+            await asyncio.to_thread(save_autoban_ids, scoped_id(ctx.guild), ids)
             await ctx.send(f"User ID `{user_id}` removed from autoban list.")
         except:
             await ctx.send("Invalid user or ID.")
@@ -11726,7 +11867,7 @@ async def abanlist(ctx):
             results.append(f"<@{uid}>")
         else:
             results.append(f"<@{uid}>")
-    await ctx.send("Autoban List:\n" + "\n".join(results), allowed_mentions=discord.AllowedMentions.none())
+    await send_paginated_lines(ctx, "Autoban List", results)
 
 def parse_time_string(time_str: str) -> int:
     pattern = r'(\d+)\s*([smhd])'
@@ -11824,6 +11965,7 @@ def format_remaining(seconds: int) -> str:
     return " ".join(parts)
 
 async def timer_countdown_message(channel, guild, message, end_time, time_str, title, owner_id):
+    last_bucket = None
     while True:
         now = datetime.now(timezone.utc)
         remaining = int((end_time - now).total_seconds())
@@ -11831,14 +11973,21 @@ async def timer_countdown_message(channel, guild, message, end_time, time_str, t
             break
 
         time_left = format_remaining(remaining)
-        description = f"{economy_q_timer_tick} Time remaining:\n```{time_left}```"
-        embed = message.embeds[0]
-        embed.description = description
-        try:
-            await message.edit(embed=embed)
-        except Exception:
-            break
-        await asyncio.sleep(1)
+        bucket = (
+            remaining // 60 if remaining > 300 else
+            remaining // 15 if remaining > 60 else
+            remaining // 5
+        )
+        if bucket != last_bucket:
+            last_bucket = bucket
+            description = f"{economy_q_timer_tick} Time remaining: **{time_left}**\nEnds {discord_relative_time(end_time)}"
+            embed = message.embeds[0]
+            embed.description = description
+            try:
+                await message.edit(embed=embed)
+            except Exception:
+                break
+        await asyncio.sleep(60 if remaining > 300 else 15 if remaining > 60 else 5)
 
     embed = message.embeds[0]
     if title and title != "Timer":
@@ -11854,7 +12003,7 @@ async def timer_countdown_message(channel, guild, message, end_time, time_str, t
         pass
 
     active_timers.pop(message.id, None)
-    remove_active_timer(message.id)
+    await asyncio.to_thread(remove_active_timer, message.id)
 
     user = guild.get_member(owner_id) if guild else None
     if user is None:
@@ -11902,7 +12051,7 @@ async def start_timer_for_user(channel, guild, author, time_str, title):
         "end_time": end_time,
         "task": task
     }
-    save_active_timer(message.id, active_timers[message.id])
+    await asyncio.to_thread(save_active_timer, message.id, active_timers[message.id])
     return message
 
 class TimerSetupModal(Modal):
@@ -12006,7 +12155,7 @@ class CancelConfirmView(View):
             pass
 
         active_timers.pop(self.timer_id, None)
-        remove_active_timer(self.timer_id)
+        await asyncio.to_thread(remove_active_timer, self.timer_id)
 
         if self.parent_view and self.parent_view.message:
             try:
@@ -12389,12 +12538,12 @@ async def calc(ctx, *, expression: str = None):
         await ctx.send(clean_user_error(e))
 
 async def define_word_text(word):
-    async with aiohttp.ClientSession() as session:
-        url = f"https://api.dictionaryapi.dev/api/v2/entries/en/{word}"
-        async with session.get(url) as resp:
-            if resp.status != 200:
-                return None
-            data = await resp.json()
+    session = await get_http_session()
+    url = f"https://api.dictionaryapi.dev/api/v2/entries/en/{word}"
+    async with session.get(url) as resp:
+        if resp.status != 200:
+            return None
+        data = await resp.json()
     definitions = []
     for meaning in data[0]["meanings"]:
         part_of_speech = meaning["partOfSpeech"]
@@ -12469,7 +12618,7 @@ async def block(ctx, members: commands.Greedy[discord.Member]):
             return await ctx.send("You can't block one or more of those members.")
         blocked.add(member.id)
         changed.append(f"<@{member.id}>")
-    save_blacklisted_users(scoped_id(ctx.guild), blocked)
+    await asyncio.to_thread(save_blacklisted_users, scoped_id(ctx.guild), blocked)
     await ctx.send(
         f"Blocked **{len(changed)}** user(s) from using commands: {', '.join(changed)}.",
         allowed_mentions=discord.AllowedMentions.none()
@@ -12487,7 +12636,7 @@ async def unblock(ctx, members: commands.Greedy[discord.Member]):
             return await ctx.send("You can't unblock one or more of those members.")
         blocked.discard(member.id)
         changed.append(f"<@{member.id}>")
-    save_blacklisted_users(scoped_id(ctx.guild), blocked)
+    await asyncio.to_thread(save_blacklisted_users, scoped_id(ctx.guild), blocked)
     await ctx.send(
         f"Unblocked **{len(changed)}** user(s): {', '.join(changed)}.",
         allowed_mentions=discord.AllowedMentions.none()
@@ -12496,7 +12645,7 @@ async def unblock(ctx, members: commands.Greedy[discord.Member]):
 @bot.command()
 async def sleep(ctx):
     sleeping_users[ctx.author.id] = datetime.now(timezone.utc)
-    save_sleeping_user(ctx.author.id, sleeping_users[ctx.author.id])
+    await asyncio.to_thread(save_sleeping_user, ctx.author.id, sleeping_users[ctx.author.id])
     embed = standard_embed(
         "Sleep mode",
         description=f"<@{ctx.author.id}> clocked out. Messages are being saved for the comeback.",
@@ -12540,11 +12689,11 @@ async def fsleep(ctx, members: commands.Greedy[discord.Member], *, time: str = N
                 start_time -= timedelta(seconds=total_seconds)
 
         sleeping_users[member.id] = start_time
-        save_sleeping_user(member.id, start_time)
+        await asyncio.to_thread(save_sleeping_user, member.id, start_time)
         results.append(f"{economy_q_sleep} <@{member.id}> asleep since <t:{int(start_time.timestamp())}:R>")
 
     if results:
-        await ctx.send("\n".join(results), allowed_mentions=discord.AllowedMentions.none())
+        await send_paginated_lines(ctx, "Forced Sleep", results)
 
 @bot.command()
 async def wake(ctx, members: commands.Greedy[discord.Member]):
@@ -12555,7 +12704,7 @@ async def wake(ctx, members: commands.Greedy[discord.Member]):
 
     for member in members:
         sleeping_users.pop(member.id, None)
-        remove_sleeping_user(member.id)
+        await asyncio.to_thread(remove_sleeping_user, member.id)
     await ctx.send(
         f"{economy_q_bell} Woke **{len(members):,}** user(s): " + ", ".join(f"<@{member.id}>" for member in members),
         allowed_mentions=discord.AllowedMentions.none()
@@ -12568,7 +12717,7 @@ async def afk(ctx, *, reason="AFK"):
         "reason": reason,
         "since": now
     }
-    save_afk_user(ctx.author.id, reason, afk_users[ctx.author.id]["since"])
+    await asyncio.to_thread(save_afk_user, ctx.author.id, reason, afk_users[ctx.author.id]["since"])
 
     embed = standard_embed(
         "AFK mode",
@@ -12631,7 +12780,7 @@ async def removebday(ctx):
     user_id = str(ctx.author.id)
     if user_id in birthdays:
         del birthdays[user_id]
-        remove_birthday(ctx.author.id)
+        await asyncio.to_thread(remove_birthday, ctx.author.id)
         await ctx.send("Birthday removed.")
     else:
         await ctx.send("You haven’t set a birthday.")
@@ -12720,7 +12869,7 @@ async def censor(ctx, *, phrase: str):
         return await ctx.send(f"'{phrase}' is already being censored.")
     
     phrases.append(phrase)
-    save_censored_phrases(scoped_id(ctx.guild), phrases)
+    await asyncio.to_thread(save_censored_phrases, scoped_id(ctx.guild), phrases)
     await ctx.send(f"Now censoring messages containing: `{phrase}`")
 
 @bot.command()
@@ -12732,40 +12881,83 @@ async def uncensor(ctx, *, phrase: str):
         return await ctx.send(f"'{phrase}' is not currently censored.")
     
     phrases.remove(phrase)
-    save_censored_phrases(scoped_id(ctx.guild), phrases)
+    await asyncio.to_thread(save_censored_phrases, scoped_id(ctx.guild), phrases)
     await ctx.send(f"Stopped censoring: `{phrase}`")
 
 @bot.command()
 @is_admin_power()
 async def clearcensors(ctx):
     guild_censored_phrases(ctx.guild).clear()
-    save_censored_phrases(scoped_id(ctx.guild), guild_censored_phrases(ctx.guild))
+    await asyncio.to_thread(save_censored_phrases, scoped_id(ctx.guild), guild_censored_phrases(ctx.guild))
     await ctx.send("All censors have been cleared.")
 
-def generate_list_embed(title, user_ids, guild=None, show_names=False):
-    embed = discord.Embed(title=title, color=0x3498db, timestamp=datetime.now(timezone.utc))
-    if not user_ids:
-        embed.description = "None."
-        return embed
-
+def generate_list_lines(user_ids, guild=None):
     lines = []
     for uid in user_ids:
         if guild:
             member = guild.get_member(uid)
-            if member:
-                mention = f"<@{member.id}>"
-                lines.append(mention)
-            else:
-                lines.append(f"<@{uid}>")
+            lines.append(f"<@{member.id}>" if member else f"<@{uid}>")
         else:
             lines.append(f"<@{uid}>")
-    embed.description = "\n".join(lines)
+    return lines
+
+def paginated_lines_embed(title, lines, page=0, per_page=20, empty="None."):
+    page_count = max(1, math.ceil(len(lines) / per_page)) if lines else 1
+    page = max(0, min(page, page_count - 1))
+    start = page * per_page
+    page_lines = lines[start:start + per_page]
+    embed = discord.Embed(title=title, color=0x3498db, timestamp=datetime.now(timezone.utc))
+    embed.description = "\n".join(page_lines) if page_lines else empty
+    embed.set_footer(text=f"Page {page + 1}/{page_count} • {len(lines):,} total")
     return embed
+
+class PaginatedLinesView(discord.ui.View):
+    def __init__(self, author_id, title, lines, *, per_page=20, empty="None."):
+        super().__init__(timeout=LONG_HELP_VIEW_TIMEOUT)
+        self.author_id = author_id
+        self.title = title
+        self.lines = list(lines)
+        self.per_page = per_page
+        self.empty = empty
+        self.page = 0
+        self.refresh_buttons()
+
+    def refresh_buttons(self):
+        page_count = max(1, math.ceil(len(self.lines) / self.per_page)) if self.lines else 1
+        for item in self.children:
+            if isinstance(item, discord.ui.Button):
+                item.disabled = page_count <= 1
+
+    def embed(self):
+        return paginated_lines_embed(self.title, self.lines, self.page, self.per_page, self.empty)
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id == self.author_id:
+            return True
+        await interaction.response.send_message("Open your own list panel.", ephemeral=True)
+        return False
+
+    @discord.ui.button(label="Prev", style=discord.ButtonStyle.secondary)
+    async def prev_button(self, interaction, button):
+        page_count = max(1, math.ceil(len(self.lines) / self.per_page)) if self.lines else 1
+        self.page = (self.page - 1) % page_count
+        await interaction.response.edit_message(embed=self.embed(), view=self)
+
+    @discord.ui.button(label="Next", style=discord.ButtonStyle.secondary)
+    async def next_button(self, interaction, button):
+        page_count = max(1, math.ceil(len(self.lines) / self.per_page)) if self.lines else 1
+        self.page = (self.page + 1) % page_count
+        await interaction.response.edit_message(embed=self.embed(), view=self)
+
+async def send_paginated_lines(ctx, title, lines, *, per_page=20, empty="None."):
+    view = PaginatedLinesView(ctx.author.id, title, lines, per_page=per_page, empty=empty)
+    if len(lines) <= per_page:
+        view = None
+    await ctx.send(embed=paginated_lines_embed(title, lines, 0, per_page, empty), view=view, allowed_mentions=discord.AllowedMentions.none())
 
 @bot.command()
 async def listtargets(ctx):
-    embed = generate_list_embed("Watched Targets", guild_watchlist(ctx.guild), guild=ctx.guild)
-    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+    await send_paginated_lines(ctx, "Watched Targets", generate_list_lines(guild_watchlist(ctx.guild), guild=ctx.guild))
 
 @bot.command(name="listbans")
 @is_admin_power()
@@ -12776,8 +12968,7 @@ async def listbans(ctx):
             return await ctx.send("No banned users in this server.")
 
         user_ids = [ban.user.id for ban in bans]
-        embed = generate_list_embed(f"Banned Users ({len(bans)})", user_ids, guild=ctx.guild)
-        await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+        await send_paginated_lines(ctx, f"Banned Users ({len(bans)})", generate_list_lines(user_ids, guild=ctx.guild))
 
     except discord.Forbidden:
         await ctx.send("I don’t have permission to view bans.")
@@ -12787,17 +12978,14 @@ async def listbans(ctx):
 @bot.command()
 @is_admin_power()
 async def listblocks(ctx):
-    embed = generate_list_embed("Blocked Users", guild_blacklisted_users(ctx.guild), guild=ctx.guild)
-    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+    await send_paginated_lines(ctx, "Blocked Users", generate_list_lines(guild_blacklisted_users(ctx.guild), guild=ctx.guild))
 
 @bot.command()
 async def listcensors(ctx):
     phrases = guild_censored_phrases(ctx.guild)
     if not phrases:
         return await ctx.send("No censors are active.")
-    
-    formatted = "\n".join(f"- {p}" for p in phrases)
-    await ctx.send(f"Active censors:\n{formatted}")
+    await send_paginated_lines(ctx, "Active Censors", [f"- `{p}`" for p in phrases], per_page=18, empty="No censors are active.")
 
 @bot.command()
 @is_admin_power()
@@ -12904,21 +13092,21 @@ async def ask_command(ctx, *, question: str):
     }
 
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post("https://api.groq.com/openai/v1/chat/completions", json=payload, headers=headers, timeout=AI_MODEL_TIMEOUT_SECONDS) as resp:
-                if resp.status != 200:
-                    body = await resp.text()
-                    await safe_remove_reaction(ctx.message, economy_q_timer_tick, bot.user)
-                    return await ctx.send(ai_http_error_message(resp.status, body))
-
-                data = await resp.json(content_type=None)
-                answer = data["choices"][0]["message"]["content"]
-
-                if len(answer) > 1900:
-                    answer = answer[:1897] + "..."
-
+        session = await get_http_session()
+        async with session.post("https://api.groq.com/openai/v1/chat/completions", json=payload, headers=headers, timeout=AI_MODEL_TIMEOUT_SECONDS) as resp:
+            if resp.status != 200:
+                body = await resp.text()
                 await safe_remove_reaction(ctx.message, economy_q_timer_tick, bot.user)
-                await ctx.send(answer)
+                return await ctx.send(ai_http_error_message(resp.status, body))
+
+            data = await resp.json(content_type=None)
+            answer = data["choices"][0]["message"]["content"]
+
+            if len(answer) > 1900:
+                answer = answer[:1897] + "..."
+
+            await safe_remove_reaction(ctx.message, economy_q_timer_tick, bot.user)
+            await ctx.send(answer)
 
     except Exception as e:
         await safe_remove_reaction(ctx.message, economy_q_timer_tick, bot.user)
@@ -13001,23 +13189,23 @@ async def generate_command(ctx, *, prompt: str):
     }
 
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=payload, headers=headers) as resp:
-                if resp.status != 200:
-                    body = await resp.text()
-                    await safe_remove_reaction(ctx.message, economy_q_timer_tick, bot.user)
-                    return await ctx.send(ai_http_error_message(resp.status, body))
-
-                data = await resp.json()
-                image_data = data["result"]["image"]
-
-                import base64
-                from io import BytesIO
-                image_bytes = base64.b64decode(image_data)
-                file = discord.File(BytesIO(image_bytes), filename="generated.png")
-
+        session = await get_http_session()
+        async with session.post(url, json=payload, headers=headers) as resp:
+            if resp.status != 200:
+                body = await resp.text()
                 await safe_remove_reaction(ctx.message, economy_q_timer_tick, bot.user)
-                await ctx.send(file=file)
+                return await ctx.send(ai_http_error_message(resp.status, body))
+
+            data = await resp.json()
+            image_data = data["result"]["image"]
+
+            import base64
+            from io import BytesIO
+            image_bytes = base64.b64decode(image_data)
+            file = discord.File(BytesIO(image_bytes), filename="generated.png")
+
+            await safe_remove_reaction(ctx.message, economy_q_timer_tick, bot.user)
+            await ctx.send(file=file)
 
     except Exception as e:
         await safe_remove_reaction(ctx.message, economy_q_timer_tick, bot.user)
@@ -13077,41 +13265,41 @@ async def analyse_command(ctx):
     headers = {"Authorization": f"Bearer {CLOUDFLARE_API_KEY}"}
     
     try:
-        async with aiohttp.ClientSession() as session:
-            try:
-                image_data_uri = await image_url_to_data_uri(session, image_url)
-            except ValueError as e:
-                await safe_remove_reaction(ctx.message, economy_q_timer_tick, bot.user)
-                return await ctx.send(f"Could not read image: {clean_user_error(e)}")
+        session = await get_http_session()
+        try:
+            image_data_uri = await image_url_to_data_uri(session, image_url)
+        except ValueError as e:
+            await safe_remove_reaction(ctx.message, economy_q_timer_tick, bot.user)
+            return await ctx.send(f"Could not read image: {clean_user_error(e)}")
 
-            payload = {
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": "Describe this image in detail."},
-                            {"type": "image_url", "image_url": {"url": image_data_uri}}
-                        ]
-                    }
-                ],
-                "max_tokens": 500
-            }
-            async with session.post(url, json=payload, headers=headers) as resp:
-                if resp.status != 200:
-                    error_text = await resp.text()
-                    await safe_remove_reaction(ctx.message, economy_q_timer_tick, bot.user)
-                    if resp.status == 400 and "agree" in error_text.lower():
-                        return await ctx.send("Cloudflare needs the Meta vision model license accepted first.")
-                    return await ctx.send(ai_http_error_message(resp.status, error_text))
-                
-                data = await resp.json(content_type=None)
-                result = data["result"]["response"]
-                
-                if len(result) > 1900:
-                    result = result[:1897] + "..."
-                
+        payload = {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "Describe this image in detail."},
+                        {"type": "image_url", "image_url": {"url": image_data_uri}}
+                    ]
+                }
+            ],
+            "max_tokens": 500
+        }
+        async with session.post(url, json=payload, headers=headers) as resp:
+            if resp.status != 200:
+                error_text = await resp.text()
                 await safe_remove_reaction(ctx.message, economy_q_timer_tick, bot.user)
-                await ctx.send(result)
+                if resp.status == 400 and "agree" in error_text.lower():
+                    return await ctx.send("Cloudflare needs the Meta vision model license accepted first.")
+                return await ctx.send(ai_http_error_message(resp.status, error_text))
+
+            data = await resp.json(content_type=None)
+            result = data["result"]["response"]
+
+            if len(result) > 1900:
+                result = result[:1897] + "..."
+
+            await safe_remove_reaction(ctx.message, economy_q_timer_tick, bot.user)
+            await ctx.send(result)
     except Exception as e:
         await safe_remove_reaction(ctx.message, economy_q_timer_tick, bot.user)
         await ctx.send(ai_exception_message(e))
@@ -13178,18 +13366,18 @@ def parse_translate_args(raw):
     return "auto", "en", text
 
 async def translate_text_api(source_lang, target_lang, text):
-    async with aiohttp.ClientSession() as session:
-        params = {
-            "client": "gtx",
-            "sl": source_lang,
-            "tl": target_lang,
-            "dt": "t",
-            "q": text,
-        }
-        async with session.get("https://translate.googleapis.com/translate_a/single", params=params) as resp:
-            if resp.status != 200:
-                raise RuntimeError(f"Error: {resp.status}")
-            data = await resp.json()
+    session = await get_http_session()
+    params = {
+        "client": "gtx",
+        "sl": source_lang,
+        "tl": target_lang,
+        "dt": "t",
+        "q": text,
+    }
+    async with session.get("https://translate.googleapis.com/translate_a/single", params=params) as resp:
+        if resp.status != 200:
+            raise RuntimeError(f"Error: {resp.status}")
+        data = await resp.json()
     result = "".join(part[0] for part in data[0] if part and part[0])
     detected_lang = data[2] if len(data) > 2 and data[2] else source_lang
     response = f"**Detected: {detected_lang.upper()} → {target_lang.upper()}**\n{result}"
