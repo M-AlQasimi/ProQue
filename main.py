@@ -1314,6 +1314,8 @@ activity_buffer = Counter()
 message_history_buffer = []
 active_activity_status_messages = {}
 message_event_tasks = {}
+active_message_event_cache = {}
+message_event_count_buffer = Counter()
 command_timing_stats = {}
 slow_command_events = deque(maxlen=40)
 command_queue_stats = {}
@@ -1330,6 +1332,7 @@ activity_recent_messages = {}
 ACTIVITY_DUPLICATE_WINDOW_SECONDS = 10 * 60
 ACTIVITY_NEAR_DUPLICATE_RATIO = 0.88
 ACTIVITY_RECENT_MESSAGE_LIMIT = 8
+UTC_TIME_NOTE = "Absolute dates/times use UTC."
 
 def clear_help_cache():
     help_render_cache.clear()
@@ -2425,12 +2428,14 @@ async def birthday_check_loop():
         await asyncio.sleep(60)
 
 async def flush_activity_buffer():
-    if not activity_buffer and not message_history_buffer:
+    if not activity_buffer and not message_history_buffer and not message_event_count_buffer:
         return
     pending = dict(activity_buffer)
     pending_events = list(message_history_buffer)
+    pending_event_counts = dict(message_event_count_buffer)
     activity_buffer.clear()
     message_history_buffer.clear()
+    message_event_count_buffer.clear()
     ok_counts = True
     ok_events = True
     if pending:
@@ -2439,8 +2444,9 @@ async def flush_activity_buffer():
         ok_events = await asyncio.to_thread(add_message_activity_events, pending_events)
     if not ok_counts:
         activity_buffer.update(pending)
-    if not ok_events:
+    if not ok_events or (pending_event_counts and not pending_events):
         message_history_buffer.extend(pending_events)
+        message_event_count_buffer.update(pending_event_counts)
 
 def track_message_activity(message):
     if not message.guild or message.author.bot:
@@ -2451,9 +2457,12 @@ def track_message_activity(message):
         return
     if message.guild.id in guild_activity_channels:
         activity_buffer[(message.guild.id, message.author.id, "messages")] += 1
-    created_at = message.created_at
-    if created_at.tzinfo is not None:
-        created_at = created_at.astimezone(timezone.utc).replace(tzinfo=None)
+    created_at_aware = message.created_at
+    if created_at_aware.tzinfo is None:
+        created_at_aware = created_at_aware.replace(tzinfo=timezone.utc)
+    else:
+        created_at_aware = created_at_aware.astimezone(timezone.utc)
+    created_at = created_at_aware.replace(tzinfo=None)
     message_history_buffer.append({
         "guild_id": message.guild.id,
         "channel_id": message.channel.id,
@@ -2461,6 +2470,12 @@ def track_message_activity(message):
         "message_id": message.id,
         "created_at": created_at,
     })
+    event_row = active_message_event_cache.get(message.guild.id)
+    if event_row:
+        starts_at = normalize_event_datetime(event_row.get("starts_at"))
+        ends_at = normalize_event_datetime(event_row.get("ends_at"))
+        if starts_at and ends_at and starts_at <= created_at_aware <= ends_at:
+            message_event_count_buffer[(message.guild.id, message.author.id)] += 1
     if len(message_history_buffer) >= 200:
         asyncio.create_task(flush_activity_buffer())
 
@@ -3204,6 +3219,14 @@ def message_event_rows_text(rows):
         lines.append(f"{rank} <@{int(row['user_id'])}> — **{int(row['messages']):,}** messages")
     return "\n".join(lines)
 
+def merge_pending_message_event_counts(guild_id, rows, limit=10):
+    totals = Counter({int(row["user_id"]): int(row["messages"]) for row in rows or []})
+    for (buffer_guild_id, user_id), count in message_event_count_buffer.items():
+        if int(buffer_guild_id) == int(guild_id):
+            totals[int(user_id)] += int(count)
+    ranked = sorted(totals.items(), key=lambda item: (-item[1], item[0]))[:int(limit)]
+    return [{"user_id": user_id, "messages": messages} for user_id, messages in ranked]
+
 def message_event_embed(guild, row, rows=None, *, ended=False, cancelled=False):
     starts_at = normalize_event_datetime(row["starts_at"])
     ends_at = normalize_event_datetime(row["ends_at"])
@@ -3227,37 +3250,46 @@ def message_event_embed(guild, row, rows=None, *, ended=False, cancelled=False):
     if not cancelled:
         embed.add_field(name="Top Messages", value=message_event_rows_text(rows or []), inline=False)
     embed.add_field(name="Started By", value=f"<@{int(row['started_by'])}>", inline=True)
-    embed.set_footer(text="Only messages sent after the event starts count.")
+    embed.set_footer(text=f"Only messages sent after the event starts count. {UTC_TIME_NOTE}")
     return embed
 
 async def message_event_current_rows(guild_id, row, limit=10):
     await flush_activity_buffer()
     starts_at = db_event_datetime(row["starts_at"])
     end_limit = min(normalize_event_datetime(row["ends_at"]), datetime.now(timezone.utc))
-    return await asyncio.to_thread(
+    rows = await asyncio.to_thread(
         get_message_activity_top_between,
         int(guild_id),
         starts_at,
         db_event_datetime(end_limit),
         limit,
     )
+    return merge_pending_message_event_counts(guild_id, rows, limit)
 
 async def finalize_message_event(guild_id, *, cancelled=False):
     row = await asyncio.to_thread(get_message_event, int(guild_id))
+    if not row:
+        row = active_message_event_cache.get(int(guild_id))
     if not row:
         return False
     guild = bot.get_guild(int(guild_id))
     if guild is None:
         await asyncio.to_thread(delete_message_event, int(guild_id))
+        active_message_event_cache.pop(int(guild_id), None)
         return False
     channel = guild.get_channel(int(row["channel_id"])) or bot.get_channel(int(row["channel_id"]))
-    rows = [] if cancelled else await asyncio.to_thread(
-        get_message_activity_top_between,
-        int(guild_id),
-        db_event_datetime(row["starts_at"]),
-        db_event_datetime(row["ends_at"]),
-        10,
-    )
+    if cancelled:
+        rows = []
+    else:
+        await flush_activity_buffer()
+        rows = await asyncio.to_thread(
+            get_message_activity_top_between,
+            int(guild_id),
+            db_event_datetime(row["starts_at"]),
+            db_event_datetime(row["ends_at"]),
+            10,
+        )
+        rows = merge_pending_message_event_counts(guild_id, rows, 10)
     embed = message_event_embed(guild, row, rows, ended=not cancelled, cancelled=cancelled)
     message = None
     if channel and row.get("message_id"):
@@ -3272,6 +3304,7 @@ async def finalize_message_event(guild_id, *, cancelled=False):
         except Exception as e:
             print(f"Message event result send failed for guild {guild_id}: {type(e).__name__} - {e}")
     await asyncio.to_thread(delete_message_event, int(guild_id))
+    active_message_event_cache.pop(int(guild_id), None)
     task = message_event_tasks.pop(int(guild_id), None)
     if task and not task.done() and task is not asyncio.current_task():
         task.cancel()
@@ -3279,6 +3312,7 @@ async def finalize_message_event(guild_id, *, cancelled=False):
 
 def schedule_message_event_finish(guild_id, row):
     guild_id = int(guild_id)
+    active_message_event_cache[guild_id] = dict(row)
     old_task = message_event_tasks.get(guild_id)
     if old_task and not old_task.done():
         old_task.cancel()
@@ -3299,6 +3333,7 @@ async def restore_message_events():
     rows = await asyncio.to_thread(load_message_events)
     now = datetime.now(timezone.utc)
     for row in rows:
+        active_message_event_cache[int(row["guild_id"])] = dict(row)
         end_time = normalize_event_datetime(row["ends_at"])
         if end_time <= now:
             await finalize_message_event(int(row["guild_id"]))
@@ -3309,7 +3344,7 @@ class MessageEventSetupModal(Modal):
     def __init__(self, author_id):
         super().__init__(title="Start Message Event")
         self.author_id = author_id
-        self.duration = TextInput(label="Ends In / Date", placeholder="2h, 3d, or 25/12/2026 18:30", max_length=60)
+        self.duration = TextInput(label="Ends In / Date (UTC)", placeholder="2h, 3d, or 25/12/2026 18:30 UTC", max_length=60)
         self.title_input = TextInput(label="Title", placeholder="Optional: Weekend chat race", required=False, max_length=80)
         self.add_item(self.duration)
         self.add_item(self.title_input)
@@ -3338,7 +3373,7 @@ async def start_message_event(channel, guild, author, end_time, title):
     if guild is None:
         return False, "Message events only work in servers."
     if end_time is None:
-        return False, f"{economy_q_warning} Use a duration like `2h`, `3d`, or a date like `25/12/2026 18:30`."
+        return False, f"{economy_q_warning} Use a duration like `2h`, `3d`, or a date like `25/12/2026 18:30`.\n{UTC_TIME_NOTE}"
     now = datetime.now(timezone.utc)
     end_time = normalize_event_datetime(end_time)
     if end_time <= now + timedelta(minutes=1):
@@ -3346,6 +3381,8 @@ async def start_message_event(channel, guild, author, end_time, title):
     if end_time > now + timedelta(days=60):
         return False, f"{economy_q_warning} Message events can run up to 60 days."
     existing = await asyncio.to_thread(get_message_event, guild.id)
+    if not existing:
+        existing = active_message_event_cache.get(guild.id)
     if existing:
         return False, f"{economy_q_warning} A message event is already running. Use `.messageevent status`, `.messageevent end`, or `.messageevent cancel`."
 
@@ -3377,6 +3414,7 @@ async def start_message_event(channel, guild, author, end_time, title):
         except Exception:
             pass
         return False, f"{economy_q_warning} Could not save this message event. Database unavailable."
+    active_message_event_cache[guild.id] = dict(row)
     schedule_message_event_finish(guild.id, row)
     return True, f"{economy_q_event} Message event started: {message.jump_url}"
 
@@ -3402,12 +3440,14 @@ async def messageevent(ctx, action: str = None, *, raw: str = None):
 
     if action_key in {"status", "show", "current"} or not action:
         row = await asyncio.to_thread(get_message_event, ctx.guild.id)
+        if not row:
+            row = active_message_event_cache.get(ctx.guild.id)
         if row:
             rows = await message_event_current_rows(ctx.guild.id, row)
             return await ctx.send(embed=message_event_embed(ctx.guild, row, rows), allowed_mentions=discord.AllowedMentions.none())
         if not action:
             return await ctx.send(
-                f"{economy_q_event} Start a timed message event here, or type `.messageevent start 2h Weekend chat race`.",
+                f"{economy_q_event} Start a timed message event here, or type `.messageevent start 2h Weekend chat race`.\n{UTC_TIME_NOTE}",
                 view=SingleUserSetupView(ctx.author.id, OpenMessageEventSetupButton()),
                 allowed_mentions=discord.AllowedMentions.none()
             )
@@ -12888,7 +12928,7 @@ async def alarm_wait_and_send(channel, user_id, alarm_time, title):
 async def schedule_alarm_for_user(channel, author, raw):
     raw = (raw or "").strip()
     if not raw:
-        raise ValueError("Use a time like `1h`, `30m`, `25/12`, or `25/12/2026 18:30`.")
+        raise ValueError(f"Use a time like `1h`, `30m`, `25/12`, or `25/12/2026 18:30`.\n{UTC_TIME_NOTE}")
 
     tokens = split_friendly_words(raw)
     title = None
@@ -12909,7 +12949,7 @@ async def schedule_alarm_for_user(channel, author, raw):
             alarm_time = parsed
             title = raw[:raw.rfind(candidate)].strip() or None
     if alarm_time is None:
-        raise ValueError("Use a time like `1h`, `30m`, `25/12`, or `25/12/2026 18:30`.")
+        raise ValueError(f"Use a time like `1h`, `30m`, `25/12`, or `25/12/2026 18:30`.\n{UTC_TIME_NOTE}")
     if alarm_time <= datetime.now(timezone.utc):
         raise ValueError("Alarm time must be in the future.")
 
@@ -12920,7 +12960,7 @@ class AlarmSetupModal(Modal):
     def __init__(self, author_id):
         super().__init__(title="Create Alarm")
         self.author_id = author_id
-        self.when = TextInput(label="When", placeholder="1h, 30m, 25/12 18:00", max_length=60)
+        self.when = TextInput(label="When (UTC for dates)", placeholder="1h, 30m, 25/12 18:00 UTC", max_length=60)
         self.title_input = TextInput(label="Reminder", placeholder="Optional: check oven", required=False, max_length=140)
         self.add_item(self.when)
         self.add_item(self.title_input)
@@ -12935,7 +12975,7 @@ class AlarmSetupModal(Modal):
             return await interaction.response.send_message(clean_user_error(e), ephemeral=True)
         title_text = f" for **{title}**" if title else ""
         await interaction.response.send_message(
-            f"{economy_q_alarm} Alarm set{title_text}: {discord.utils.format_dt(alarm_time, 'R')} ({discord.utils.format_dt(alarm_time, 'f')}).",
+            f"{economy_q_alarm} Alarm set{title_text}: {discord.utils.format_dt(alarm_time, 'R')} ({discord.utils.format_dt(alarm_time, 'f')}).\n{UTC_TIME_NOTE}",
             ephemeral=True
         )
 
@@ -12954,7 +12994,7 @@ async def alarm(ctx, *, args: str = None):
     raw = (args or "").strip()
     if not raw:
         return await ctx.send(
-            "Set up your alarm here, or type `.alarm 1h reminder`.",
+            f"Set up your alarm here, or type `.alarm 1h reminder`.\n{UTC_TIME_NOTE}",
             view=SingleUserSetupView(ctx.author.id, OpenAlarmSetupButton())
         )
     try:
@@ -12963,7 +13003,7 @@ async def alarm(ctx, *, args: str = None):
         return await ctx.send(clean_user_error(e))
     title_text = f" for **{title}**" if title else ""
     await ctx.send(
-        f"{economy_q_alarm} Alarm set{title_text}: {discord.utils.format_dt(alarm_time, 'R')} ({discord.utils.format_dt(alarm_time, 'f')}).",
+        f"{economy_q_alarm} Alarm set{title_text}: {discord.utils.format_dt(alarm_time, 'R')} ({discord.utils.format_dt(alarm_time, 'f')}).\n{UTC_TIME_NOTE}",
         allowed_mentions=discord.AllowedMentions.none()
     )
 
