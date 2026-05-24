@@ -43,6 +43,7 @@ Test these once before role testing.
 - `.quewohelp`
 - `.explain lottery`
 - `.explain activity`
+- `.explain messageevent`
 - `.explain editactivity`
 - `.explain settings`
 - `.explain jobs`
@@ -139,6 +140,11 @@ Run:
 - `.setbdaychannel <channel id>`
 - `.activity`
 - `.activitystats`
+- `.messageevent`
+- `.messageevent start 2m Test message event`
+- Send messages from at least two users.
+- `.messageevent status`
+- `.messageevent end`
 - `.settings`
 - `.controlpanel`
 - In `.settings` / `.controlpanel`, test Refresh, Prefix, Birthdays Here, Activity Here, Admin Commands, Setup Guide, and Lottery Panel if safe.

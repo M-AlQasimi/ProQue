@@ -112,6 +112,19 @@ def _create_tables(cur):
     cur.execute("CREATE INDEX IF NOT EXISTS idx_message_activity_events_user_time ON message_activity_events (guild_id, user_id, created_at DESC)")
 
     cur.execute("""
+        CREATE TABLE IF NOT EXISTS active_message_events (
+            guild_id BIGINT PRIMARY KEY,
+            channel_id BIGINT NOT NULL,
+            message_id BIGINT,
+            title TEXT,
+            started_by BIGINT NOT NULL,
+            starts_at TIMESTAMP NOT NULL,
+            ends_at TIMESTAMP NOT NULL
+        )
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_active_message_events_ends ON active_message_events (ends_at)")
+
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS birthdays (
             user_id BIGINT PRIMARY KEY,
             date TEXT NOT NULL
@@ -1697,6 +1710,156 @@ def get_message_activity_count(guild_id, user_id, since):
         return int(row[0] or 0)
     except Exception:
         return 0
+
+def get_message_activity_top_between(guild_id, starts_at, ends_at, limit=10):
+    _ensure_ready()
+    if not pg_ready:
+        return []
+    try:
+        conn = pg_conn()
+        if conn is None:
+            return []
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT user_id, COUNT(*) AS messages
+            FROM message_activity_events
+            WHERE guild_id = %s AND created_at >= %s AND created_at <= %s
+            GROUP BY user_id
+            ORDER BY messages DESC, user_id ASC
+            LIMIT %s
+            """,
+            (int(guild_id), starts_at, ends_at, int(limit))
+        )
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        return [{"user_id": int(user_id), "messages": int(messages)} for user_id, messages in rows]
+    except Exception:
+        return []
+
+def save_message_event(guild_id, channel_id, message_id, title, started_by, starts_at, ends_at):
+    _ensure_ready()
+    if not pg_ready:
+        return False
+    try:
+        conn = pg_conn()
+        if conn is None:
+            return False
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO active_message_events
+                (guild_id, channel_id, message_id, title, started_by, starts_at, ends_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (guild_id) DO UPDATE SET
+                channel_id = EXCLUDED.channel_id,
+                message_id = EXCLUDED.message_id,
+                title = EXCLUDED.title,
+                started_by = EXCLUDED.started_by,
+                starts_at = EXCLUDED.starts_at,
+                ends_at = EXCLUDED.ends_at
+            """,
+            (
+                int(guild_id),
+                int(channel_id),
+                int(message_id) if message_id else None,
+                title,
+                int(started_by),
+                starts_at,
+                ends_at,
+            )
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+        return True
+    except Exception:
+        return False
+
+def get_message_event(guild_id):
+    _ensure_ready()
+    if not pg_ready:
+        return None
+    try:
+        conn = pg_conn()
+        if conn is None:
+            return None
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT guild_id, channel_id, message_id, title, started_by, starts_at, ends_at
+            FROM active_message_events
+            WHERE guild_id = %s
+            """,
+            (int(guild_id),)
+        )
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        if not row:
+            return None
+        guild_id, channel_id, message_id, title, started_by, starts_at, ends_at = row
+        return {
+            "guild_id": int(guild_id),
+            "channel_id": int(channel_id),
+            "message_id": int(message_id) if message_id else None,
+            "title": title,
+            "started_by": int(started_by),
+            "starts_at": starts_at,
+            "ends_at": ends_at,
+        }
+    except Exception:
+        return None
+
+def load_message_events():
+    _ensure_ready()
+    if not pg_ready:
+        return []
+    try:
+        conn = pg_conn()
+        if conn is None:
+            return []
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT guild_id, channel_id, message_id, title, started_by, starts_at, ends_at
+            FROM active_message_events
+        """)
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        return [
+            {
+                "guild_id": int(guild_id),
+                "channel_id": int(channel_id),
+                "message_id": int(message_id) if message_id else None,
+                "title": title,
+                "started_by": int(started_by),
+                "starts_at": starts_at,
+                "ends_at": ends_at,
+            }
+            for guild_id, channel_id, message_id, title, started_by, starts_at, ends_at in rows
+        ]
+    except Exception:
+        return []
+
+def delete_message_event(guild_id):
+    _ensure_ready()
+    if not pg_ready:
+        return False
+    try:
+        conn = pg_conn()
+        if conn is None:
+            return False
+        cur = conn.cursor()
+        cur.execute("DELETE FROM active_message_events WHERE guild_id = %s", (int(guild_id),))
+        conn.commit()
+        deleted = cur.rowcount > 0
+        cur.close()
+        conn.close()
+        return deleted
+    except Exception:
+        return False
 
 # === BIRTHDAYS ===
 

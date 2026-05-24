@@ -70,6 +70,7 @@ from economy import (
     Q_CONNECT_WHITE as economy_q_connect_white,
     Q_DENIED as economy_q_denied,
     Q_EDIT as economy_q_edit,
+    Q_EVENT as economy_q_event,
     Q_FILTER as economy_q_filter,
     Q_GAME_AUDIT as economy_q_game_audit,
     Q_GAME_O as economy_q_game_o,
@@ -108,6 +109,7 @@ from economy import (
     Q_TIMER as economy_q_timer,
     Q_TIMER_TICK as economy_q_timer_tick,
     Q_TRASH as economy_q_trash,
+    Q_TRUST as economy_q_trust,
     Q_USER_EDIT as economy_q_user_edit,
     Q_VOICE as economy_q_voice,
     Q_WARNING as economy_q_warning,
@@ -134,6 +136,8 @@ from pgdata import (
     get_command_usage_stats,
     get_message_activity_count,
     get_message_activity_top,
+    get_message_activity_top_between,
+    get_message_event,
     load_afk_users as pg_load_afk_users,
     load_active_polls,
     load_active_timers,
@@ -149,6 +153,7 @@ from pgdata import (
     load_guild_birthday_channels,
     load_guild_prefixes,
     load_guild_log_config,
+    load_message_events,
     load_reaction_shutdown_channels,
     load_reaction_watchlist,
     load_shutdown_channels,
@@ -161,6 +166,7 @@ from pgdata import (
     remove_active_timer,
     remove_birthday,
     remove_sleeping_user,
+    delete_message_event,
     save_afk_user,
     save_active_poll,
     save_active_timer,
@@ -176,6 +182,7 @@ from pgdata import (
     save_guild_birthday_channel,
     save_guild_prefix,
     save_guild_log_config,
+    save_message_event,
     save_bot_receipt,
     set_ai_control_setting,
     delete_ai_control_setting,
@@ -1306,6 +1313,7 @@ user_mentions = {}
 activity_buffer = Counter()
 message_history_buffer = []
 active_activity_status_messages = {}
+message_event_tasks = {}
 command_timing_stats = {}
 slow_command_events = deque(maxlen=40)
 command_queue_stats = {}
@@ -2358,6 +2366,7 @@ async def on_ready():
         print(f"𝚀𝚞𝚎wo system not loaded: {e}")
     if not runtime_state_restored:
         await restore_persistent_runtime_state()
+        await restore_message_events()
         await restore_active_game_sessions()
         runtime_state_restored = True
     if not stale_game_messages_cleaned:
@@ -3148,6 +3157,270 @@ def message_tracker_embed(guild, label, rows=None, user=None, count=None):
     embed.set_footer(text=f"{guild.name} message activity")
     return embed
 
+def normalize_event_datetime(value):
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+def db_event_datetime(value):
+    value = normalize_event_datetime(value)
+    return value.replace(tzinfo=None) if value else None
+
+def parse_message_event_window(raw):
+    text = (raw or "").strip()
+    if not text:
+        return None, None
+    tokens = split_friendly_words(text)
+    duration_tokens = []
+    for token in tokens:
+        if not is_duration_piece(token):
+            break
+        duration_tokens.append(token)
+    if duration_tokens:
+        duration_raw = " ".join(duration_tokens)
+        delta = parse_poll_duration(duration_raw)
+        title = text[len(duration_raw):].strip(" -:") or None
+        if delta:
+            return datetime.now(timezone.utc) + delta, title
+
+    for span in (3, 2, 1):
+        if len(tokens) < span:
+            continue
+        candidate = " ".join(tokens[:span])
+        parsed = parse_alarm_datetime(candidate)
+        if parsed:
+            title = text[len(candidate):].strip(" -:") or None
+            return parsed, title
+    return None, None
+
+def message_event_rows_text(rows):
+    if not rows:
+        return "No messages counted in this event window yet."
+    lines = []
+    for index, row in enumerate(rows[:10], 1):
+        rank = POLL_NUMBER_EMOJIS[index - 1] if index <= len(POLL_NUMBER_EMOJIS) else f"**{index}.**"
+        lines.append(f"{rank} <@{int(row['user_id'])}> — **{int(row['messages']):,}** messages")
+    return "\n".join(lines)
+
+def message_event_embed(guild, row, rows=None, *, ended=False, cancelled=False):
+    starts_at = normalize_event_datetime(row["starts_at"])
+    ends_at = normalize_event_datetime(row["ends_at"])
+    title = row.get("title") or "Message Event"
+    state = "Cancelled" if cancelled else "Final Results" if ended else "Live Tracker"
+    embed = discord.Embed(
+        title=f"{economy_q_event} {title}",
+        description=(
+            f"**{state}**\n"
+            f"Started {discord.utils.format_dt(starts_at, 'R')} · "
+            f"Ends {discord.utils.format_dt(ends_at, 'R') if not ended else discord.utils.format_dt(ends_at, 'F')}"
+        ),
+        color=discord.Color.orange() if cancelled else discord.Color.green() if ended else discord.Color.blurple(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.add_field(
+        name="Window",
+        value=f"{discord.utils.format_dt(starts_at, 'F')}\n→ {discord.utils.format_dt(ends_at, 'F')}",
+        inline=False,
+    )
+    if not cancelled:
+        embed.add_field(name="Top Messages", value=message_event_rows_text(rows or []), inline=False)
+    embed.add_field(name="Started By", value=f"<@{int(row['started_by'])}>", inline=True)
+    embed.set_footer(text="Only messages sent after the event starts count.")
+    return embed
+
+async def message_event_current_rows(guild_id, row, limit=10):
+    await flush_activity_buffer()
+    starts_at = db_event_datetime(row["starts_at"])
+    end_limit = min(normalize_event_datetime(row["ends_at"]), datetime.now(timezone.utc))
+    return await asyncio.to_thread(
+        get_message_activity_top_between,
+        int(guild_id),
+        starts_at,
+        db_event_datetime(end_limit),
+        limit,
+    )
+
+async def finalize_message_event(guild_id, *, cancelled=False):
+    row = await asyncio.to_thread(get_message_event, int(guild_id))
+    if not row:
+        return False
+    guild = bot.get_guild(int(guild_id))
+    if guild is None:
+        await asyncio.to_thread(delete_message_event, int(guild_id))
+        return False
+    channel = guild.get_channel(int(row["channel_id"])) or bot.get_channel(int(row["channel_id"]))
+    rows = [] if cancelled else await asyncio.to_thread(
+        get_message_activity_top_between,
+        int(guild_id),
+        db_event_datetime(row["starts_at"]),
+        db_event_datetime(row["ends_at"]),
+        10,
+    )
+    embed = message_event_embed(guild, row, rows, ended=not cancelled, cancelled=cancelled)
+    message = None
+    if channel and row.get("message_id"):
+        try:
+            message = await channel.fetch_message(int(row["message_id"]))
+            await message.edit(embed=embed, view=None, allowed_mentions=discord.AllowedMentions.none())
+        except Exception:
+            message = None
+    if channel and message is None:
+        try:
+            await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+        except Exception as e:
+            print(f"Message event result send failed for guild {guild_id}: {type(e).__name__} - {e}")
+    await asyncio.to_thread(delete_message_event, int(guild_id))
+    task = message_event_tasks.pop(int(guild_id), None)
+    if task and not task.done() and task is not asyncio.current_task():
+        task.cancel()
+    return True
+
+def schedule_message_event_finish(guild_id, row):
+    guild_id = int(guild_id)
+    old_task = message_event_tasks.get(guild_id)
+    if old_task and not old_task.done():
+        old_task.cancel()
+
+    async def runner():
+        try:
+            end_time = normalize_event_datetime(row["ends_at"])
+            await asyncio.sleep(max(0, (end_time - datetime.now(timezone.utc)).total_seconds()))
+            await finalize_message_event(guild_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            print(f"Message event finish failed for guild {guild_id}: {type(e).__name__} - {e}")
+
+    message_event_tasks[guild_id] = asyncio.create_task(runner())
+
+async def restore_message_events():
+    rows = await asyncio.to_thread(load_message_events)
+    now = datetime.now(timezone.utc)
+    for row in rows:
+        end_time = normalize_event_datetime(row["ends_at"])
+        if end_time <= now:
+            await finalize_message_event(int(row["guild_id"]))
+        else:
+            schedule_message_event_finish(int(row["guild_id"]), row)
+
+class MessageEventSetupModal(Modal):
+    def __init__(self, author_id):
+        super().__init__(title="Start Message Event")
+        self.author_id = author_id
+        self.duration = TextInput(label="Ends In / Date", placeholder="2h, 3d, or 25/12/2026 18:30", max_length=60)
+        self.title_input = TextInput(label="Title", placeholder="Optional: Weekend chat race", required=False, max_length=80)
+        self.add_item(self.duration)
+        self.add_item(self.title_input)
+
+    async def on_submit(self, interaction):
+        if interaction.user.id != self.author_id:
+            return await interaction.response.send_message("Use your own setup UI.", ephemeral=True)
+        if not has_owner_power(interaction.user, interaction.guild):
+            return await interaction.response.send_message("Only admins can start message events.", ephemeral=True)
+        await interaction.response.defer(thinking=True, ephemeral=True)
+        end_time, parsed_title = parse_message_event_window(str(self.duration.value).strip())
+        title = str(self.title_input.value).strip() or parsed_title or "Message Event"
+        ok, message = await start_message_event(interaction.channel, interaction.guild, interaction.user, end_time, title)
+        await interaction.followup.send(message, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+
+class OpenMessageEventSetupButton(Button):
+    def __init__(self):
+        super().__init__(label="Start Event", style=discord.ButtonStyle.primary, emoji=reaction_emoji(economy_q_event))
+
+    async def callback(self, interaction):
+        if interaction.user.id != self.view.author_id:
+            return await interaction.response.send_message("Use your own setup UI.", ephemeral=True)
+        await interaction.response.send_modal(MessageEventSetupModal(self.view.author_id))
+
+async def start_message_event(channel, guild, author, end_time, title):
+    if guild is None:
+        return False, "Message events only work in servers."
+    if end_time is None:
+        return False, f"{economy_q_warning} Use a duration like `2h`, `3d`, or a date like `25/12/2026 18:30`."
+    now = datetime.now(timezone.utc)
+    end_time = normalize_event_datetime(end_time)
+    if end_time <= now + timedelta(minutes=1):
+        return False, f"{economy_q_warning} Message events must run for at least 1 minute."
+    if end_time > now + timedelta(days=60):
+        return False, f"{economy_q_warning} Message events can run up to 60 days."
+    existing = await asyncio.to_thread(get_message_event, guild.id)
+    if existing:
+        return False, f"{economy_q_warning} A message event is already running. Use `.messageevent status`, `.messageevent end`, or `.messageevent cancel`."
+
+    row = {
+        "guild_id": guild.id,
+        "channel_id": channel.id,
+        "message_id": None,
+        "title": title or "Message Event",
+        "started_by": author.id,
+        "starts_at": now,
+        "ends_at": end_time,
+    }
+    embed = message_event_embed(guild, row, rows=[])
+    message = await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+    row["message_id"] = message.id
+    saved = await asyncio.to_thread(
+        save_message_event,
+        guild.id,
+        channel.id,
+        message.id,
+        row["title"],
+        author.id,
+        db_event_datetime(now),
+        db_event_datetime(end_time),
+    )
+    if not saved:
+        try:
+            await message.edit(content=f"{economy_q_warning} Could not save this message event. Database unavailable.", embed=None)
+        except Exception:
+            pass
+        return False, f"{economy_q_warning} Could not save this message event. Database unavailable."
+    schedule_message_event_finish(guild.id, row)
+    return True, f"{economy_q_event} Message event started: {message.jump_url}"
+
+@bot.command(name="messageevent", aliases=["msgevent", "chatevent", "messagecontest", "chatcontest"])
+@is_admin_power()
+async def messageevent(ctx, action: str = None, *, raw: str = None):
+    """Starts or manages a timed message-count event."""
+    if ctx.guild is None:
+        return await ctx.send("Message events only work in servers.")
+
+    action_key = str(action or "").casefold()
+    if action_key in {"stop", "end", "finish", "results"}:
+        ended = await finalize_message_event(ctx.guild.id)
+        if not ended:
+            return await ctx.send(f"{economy_q_warning} No message event is running.")
+        return await ctx.send(f"{economy_q_event} Message event ended and results were posted.", allowed_mentions=discord.AllowedMentions.none())
+
+    if action_key in {"cancel", "delete"}:
+        ended = await finalize_message_event(ctx.guild.id, cancelled=True)
+        if not ended:
+            return await ctx.send(f"{economy_q_warning} No message event is running.")
+        return await ctx.send(f"{economy_q_event} Message event cancelled.", allowed_mentions=discord.AllowedMentions.none())
+
+    if action_key in {"status", "show", "current"} or not action:
+        row = await asyncio.to_thread(get_message_event, ctx.guild.id)
+        if row:
+            rows = await message_event_current_rows(ctx.guild.id, row)
+            return await ctx.send(embed=message_event_embed(ctx.guild, row, rows), allowed_mentions=discord.AllowedMentions.none())
+        if not action:
+            return await ctx.send(
+                f"{economy_q_event} Start a timed message event here, or type `.messageevent start 2h Weekend chat race`.",
+                view=SingleUserSetupView(ctx.author.id, OpenMessageEventSetupButton()),
+                allowed_mentions=discord.AllowedMentions.none()
+            )
+
+    if action_key == "start":
+        setup_raw = raw
+    else:
+        setup_raw = " ".join(part for part in [action or "", raw or ""] if part).strip()
+
+    end_time, title = parse_message_event_window(setup_raw)
+    ok, message = await start_message_event(ctx.channel, ctx.guild, ctx.author, end_time, title or "Message Event")
+    await ctx.send(message, allowed_mentions=discord.AllowedMentions.none())
+
 class MessageDurationSelect(Select):
     def __init__(self):
         options = [
@@ -3718,6 +3991,7 @@ COMMAND_EXAMPLE_OVERRIDES = {
     "rsnipe": ".rsnipe @user 2",
     "memory": ".memory 1000",
     "messages": ".messages",
+    "messageevent": ".messageevent start 2h Weekend chat race",
     "onboard": ".onboard",
     "health": ".health",
     "permaudit": ".permaudit",
@@ -4028,7 +4302,7 @@ AI_SAFE_COMMANDS = {
 
 AI_CONFIRM_COMMANDS = {
     "poll", "epoll", "giveaway", "setbday", "removebday", "setbdaychannel", "rob",
-    "activity", "settings", "prefix", "preifx", "setprefix",
+    "activity", "messageevent", "msgevent", "chatevent", "messagecontest", "chatcontest", "settings", "prefix", "preifx", "setprefix",
     "recover",
 }
 
@@ -5585,7 +5859,7 @@ HELP_CATEGORIES = {
         "endttt", "setnick", "unmute", "kick", "ban", "unban", "addrole", "removerole", "deleterole",
         "lock", "unlock", "lockdown", "reopen", "rlockdown", "runlock", "shut", "unshut", "clearwatchlist", "rshut", "unrshut",
         "send", "reply", "fwd", "aban", "raban", "abanlist", "summon", "summon2", "block", "unblock",
-        "censor", "uncensor", "clearcensors", "editlottery", "stoplottery", "editactivity", "endactivity", "stopactivity",
+        "censor", "uncensor", "clearcensors", "editlottery", "stoplottery", "editactivity", "endactivity", "stopactivity", "messageevent",
         "add", "remove", "addtick", "removetick", "settick", "setquesos",
     ],
 }
@@ -13766,7 +14040,7 @@ class OpenGenericCommandInputButton(Button):
             return await interaction.response.send_message("Use your own setup UI.", ephemeral=True)
         await interaction.response.send_modal(GenericCommandInputModal(self.view.author_id, self.command_name))
 
-SPECIALIZED_SETUP_UI_COMMANDS = {"poll", "timer", "alarm", "picker", "giveaway", "calc", "define", "setbday", "translate"}
+SPECIALIZED_SETUP_UI_COMMANDS = {"poll", "timer", "alarm", "picker", "giveaway", "calc", "define", "setbday", "translate", "messageevent"}
 SETUP_UI_COMMANDS = SPECIALIZED_SETUP_UI_COMMANDS | GENERIC_INPUT_UI_COMMANDS
 
 def command_setup_view(author_id, command_name):
@@ -13780,6 +14054,7 @@ def command_setup_view(author_id, command_name):
         "define": OpenDefineSetupButton,
         "setbday": OpenBirthdaySetupButton,
         "translate": OpenTranslateSetupButton,
+        "messageevent": OpenMessageEventSetupButton,
     }
     button_cls = buttons.get(command_name)
     if button_cls:
