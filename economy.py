@@ -1815,6 +1815,34 @@ def update_lottery_config(guild_id, **kwargs):
     cur.close()
     conn.close()
 
+def adjust_lottery_pot(guild_id, mode, amount):
+    mode = str(mode or "").casefold()
+    amount = int(amount)
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT pot FROM lottery_config WHERE guild_id = %s FOR UPDATE", (guild_id,))
+    row = cur.fetchone()
+    if not row:
+        cur.close()
+        conn.close()
+        return None
+    old_pot = int(row["pot"] or 0)
+    if mode in {"add", "increase", "plus"}:
+        new_pot = old_pot + amount
+    elif mode in {"remove", "subtract", "minus", "take"}:
+        new_pot = max(0, old_pot - amount)
+    elif mode in {"set", "exact"}:
+        new_pot = amount
+    else:
+        cur.close()
+        conn.close()
+        raise ValueError("invalid_mode")
+    cur.execute("UPDATE lottery_config SET pot = %s WHERE guild_id = %s", (new_pot, guild_id))
+    conn.commit()
+    cur.close()
+    conn.close()
+    return old_pot, new_pot
+
 def save_lottery_status_message(guild_id, channel_id, message_id):
     conn = get_db_connection()
     cur = conn.cursor()
@@ -5714,6 +5742,79 @@ async def stoplottery(ctx):
         "The lottery channel/panel messages were left in place.",
         allowed_mentions=discord.AllowedMentions.none()
     )
+
+@commands.command(name="lotterypot", aliases=["lotteryprize", "prizepool", "setpot", "addpot", "removepot"])
+async def lotterypot(ctx, action: str = None, amount: str = None):
+    """𝚀𝚞𝚎 owner only. Adds, removes, or sets the current lottery prize pool."""
+    if ctx.guild is None:
+        await ctx.send(f"{Q_DENIED} Lottery pot editing only works in servers.")
+        return
+    if not await ensure_db_ready(ctx):
+        return
+    if not is_superowner_id(ctx.author.id):
+        await send_owner_only(ctx)
+        return
+
+    invoked = str(getattr(ctx, "invoked_with", "") or "").casefold()
+    if invoked == "addpot":
+        action, amount = "add", action
+    elif invoked == "removepot":
+        action, amount = "remove", action
+    elif invoked == "setpot":
+        action, amount = "set", action
+
+    mode = str(action or "").casefold()
+    if mode in {"sub", "subtract", "minus"}:
+        mode = "remove"
+    if mode not in {"add", "increase", "plus", "remove", "subtract", "minus", "take", "set", "exact"}:
+        await ctx.send(f"{Q_DENIED} Use `.lotterypot add <amount>`, `.lotterypot remove <amount>`, or `.lotterypot set <amount>`.")
+        return
+
+    parsed_amount = parse_whole_number(amount)
+    if parsed_amount is None:
+        await ctx.send(f"{Q_DENIED} Use an amount like `500k`, `1m`, or `250000`.")
+        return
+    if parsed_amount < 0:
+        await ctx.send(f"{Q_DENIED} Amount cannot be negative.")
+        return
+    if parsed_amount == 0 and mode != "set":
+        await ctx.send(f"{Q_DENIED} Amount must be greater than 0.")
+        return
+
+    try:
+        result = await asyncio.to_thread(adjust_lottery_pot, ctx.guild.id, mode, parsed_amount)
+        if result is None:
+            await ctx.send("Lottery is not set up yet. Run `.lottery` first.")
+            return
+        old_pot, new_pot = result
+        updated = await asyncio.to_thread(get_lottery_config, ctx.guild.id)
+        receipt_id = await asyncio.to_thread(
+            create_receipt,
+            ctx.guild.id,
+            ctx.channel.id,
+            ctx.author.id,
+            [],
+            f"lotterypot_{mode}",
+            parsed_amount,
+            f"pot {old_pot}->{new_pot}",
+        )
+    except Exception:
+        await send_error(ctx, "Database unavailable. Try again shortly.")
+        return
+
+    schedule_lottery_refresh(ctx.guild, updated)
+    action_word = "Added to" if mode in {"add", "increase", "plus"} else "Removed from" if mode in {"remove", "subtract", "minus", "take"} else "Set"
+    await ctx.send(
+        f"{Q_SUCCESS} {action_word} lottery prize pool: **{format_balance(parsed_amount)}**\n"
+        f"Prize Pool: **{format_balance(old_pot)}** → **{format_balance(new_pot)}**"
+        f"{receipt_line(receipt_id)}",
+        allowed_mentions=discord.AllowedMentions.none(),
+    )
+    await send_economy_log(ctx, "Lottery Prize Pool Edited", [
+        ("Action", mode, True),
+        ("Amount", format_balance(parsed_amount), True),
+        ("Prize Pool", f"{format_balance(old_pot)} → {format_balance(new_pot)}", False),
+    ], color=discord.Color.gold())
 
 def build_lottery_stats_embed(ctx, config, rows, panel_value, page=0, per_page=10):
     total_tickets = sum(row["tickets"] for row in rows)
@@ -12691,6 +12792,12 @@ EXPLANATIONS = {
     "remtick": "Alias for `.removetick`. Removes lottery tickets.",
     "deltick": "Alias for `.removetick`. Removes lottery tickets.",
     "settick": f"{QUE_OWNER_DISPLAY} command. Sets lottery tickets. Target and tickets can be in either order.",
+    "lotterypot": f"{QUE_OWNER_DISPLAY} command. Adds, removes, or sets the current lottery prize pool.",
+    "lotteryprize": "Alias for `.lotterypot`. Edits the lottery prize pool.",
+    "prizepool": "Alias for `.lotterypot`. Edits the lottery prize pool.",
+    "setpot": "Alias for `.lotterypot set`. Sets the lottery prize pool.",
+    "addpot": "Alias for `.lotterypot add`. Adds to the lottery prize pool.",
+    "removepot": "Alias for `.lotterypot remove`. Removes from the lottery prize pool.",
     "setquesos": f"{QUE_OWNER_DISPLAY} command. Sets balances. Target and amount can be in either order.",
     "disable": f"Admin-power command. Disables one bot command. {QUE_OWNER_DISPLAY} can still bypass disabled commands.",
     "enable": "Admin-power command. Enables one disabled command.",
@@ -12929,6 +13036,7 @@ DETAILED_EXPLANATIONS = {
     "addtick": f"{QUE_OWNER_DISPLAY}-only lottery admin command. Adds free entries to the current lottery. `.addtick @user <tickets>` and `.addtick <tickets> @user` both work, including roles and @everyone.",
     "removetick": f"{QUE_OWNER_DISPLAY}-only lottery admin command. Removes entries from the current lottery. `.removetick @user <tickets>` and `.removetick <tickets> @user` both work, including roles and @everyone. Tickets never go below 0.",
     "settick": f"{QUE_OWNER_DISPLAY}-only lottery admin command. Sets current lottery entries to an exact number. `.settick @user <tickets>` and `.settick <tickets> @user` both work, including roles and @everyone.",
+    "lotterypot": f"{QUE_OWNER_DISPLAY}-only lottery admin command. Edits the current lottery prize pool directly without changing tickets. Use `.lotterypot add 1m`, `.lotterypot remove 500k`, or `.lotterypot set 10m`. Aliases also work: `.addpot 1m`, `.removepot 500k`, `.setpot 10m`. The lottery panel and status messages refresh after the change.",
     "setquesos": f"{QUE_OWNER_DISPLAY}-only 𝚀𝚞𝚎wo admin command. Sets balances directly. `.setquesos @user <amount>` and `.setquesos <amount> @user` both work, including roles and @everyone.",
     "prefix": f"Changes the command prefix for this server. Use `.prefix !` or `.preifx !`. If {QUE_OWNER_DISPLAY} is in the server, only {QUE_OWNER_DISPLAY} can change it. If not, the server owner or admins can change it.",
     "preifx": "Typo alias for `.prefix`. Changes the command prefix for this server.",
@@ -12984,8 +13092,32 @@ ECONHELP_COMMANDS = [
     ("Transfers", ["give"]),
     ("Help", ["econhelp", "explain"]),
 ]
-ECONHELP_SUPEROWNER_COMMANDS = ["add", "remove", "addtick", "removetick", "settick", "setquesos"]
-ECONHELP_SUPEROWNER_HIDDEN = {*ECONHELP_SUPEROWNER_COMMANDS, "remtick", "deltick"}
+ECONHELP_SUPEROWNER_COMMANDS = [
+    "add", "remove", "addtick", "removetick", "settick", "lotterypot", "setquesos",
+    "editlottery", "stoplottery", "qstats", "economyhealth", "balancedashboard", "endseason",
+]
+ECONHELP_SUPEROWNER_HIDDEN = {
+    *ECONHELP_SUPEROWNER_COMMANDS,
+    "remtick", "deltick", "lotteryprize", "prizepool", "setpot", "addpot", "removepot",
+    "economystats", "qstatus", "ecohealth", "moneyhealth", "supply", "ecodashboard", "moneydashboard", "sinkdashboard", "rewardseason",
+    "send", "reply", "fsleep", "wake", "clearwatchlist",
+    "aisettings", "aiconfig", "aicontrols", "aiperms", "aipermissions", "aicapabilities", "aiauthority",
+    "aiignore", "ignoreai", "aiunignore", "unignoreai", "aichannel", "aitoggle", "aistyle", "aipersonality",
+    "aihistory", "aiactions", "actionhistory", "auditcommands", "cmdaudit", "commandaudit",
+    "styleaudit", "uiaudit", "messageaudit", "commandcleanup", "cleanupcommands", "cmdcleanup",
+    "permaudit", "permsaudit", "permissionaudit", "sensitiveaudit", "receipts", "receiptlist", "txreceipts",
+    "aiguard", "aicommandsafety",
+}
+
+def is_econ_superowner_hidden(command_or_name):
+    names = {str(command_or_name).casefold()}
+    if hasattr(command_or_name, "name"):
+        names = {
+            command_or_name.name.casefold(),
+            command_or_name.qualified_name.casefold(),
+            *(alias.casefold() for alias in getattr(command_or_name, "aliases", []) or []),
+        }
+    return bool(names & {name.casefold() for name in ECONHELP_SUPEROWNER_HIDDEN})
 
 def apply_prefix_to_help_text(text, prefix):
     return text.replace("`.", f"`{prefix}")
@@ -13029,8 +13161,13 @@ def add_split_embed_field(embed, name, lines, inline=False, limit=1024):
 async def econhelp(ctx):
     """Shows 𝚀𝚞𝚎wo commands, aliases, and short explanations."""
     prefix = getattr(ctx, "prefix", ".")
-    visible_econhelp_commands = list(ECONHELP_COMMANDS)
-    if is_superowner_id(ctx.author.id):
+    is_que = is_superowner_id(ctx.author.id)
+    visible_econhelp_commands = []
+    for category, command_names in ECONHELP_COMMANDS:
+        filtered = [name for name in command_names if is_que or not is_econ_superowner_hidden(name)]
+        if filtered:
+            visible_econhelp_commands.append((category, filtered))
+    if is_que:
         visible_econhelp_commands.append(("Superowner", ECONHELP_SUPEROWNER_COMMANDS))
 
     def build_embed(category_name="Core", page=0):
@@ -13142,14 +13279,17 @@ async def explain(ctx, command_name: str = None):
     """Shows detailed help for one command."""
     prefix = getattr(ctx, "prefix", ".")
     if not command_name:
-        hidden = set(ECONHELP_SUPEROWNER_HIDDEN) if not is_superowner_id(ctx.author.id) else set()
-        command_names = sorted({command.name for command in bot.commands if command.name not in hidden})
+        command_names = sorted({
+            command.name for command in bot.commands
+            if not getattr(command, "hidden", False)
+            and (is_superowner_id(ctx.author.id) or not is_econ_superowner_hidden(command))
+        })
         names = ", ".join(command_names)
         await ctx.send(f"Use `{prefix}explain <command>`. Commands: {names}, admin")
         return
 
     key = command_name.casefold().removeprefix(prefix.casefold()).lstrip(".")
-    if key in ECONHELP_SUPEROWNER_HIDDEN and not is_superowner_id(ctx.author.id):
+    if is_econ_superowner_hidden(key) and not is_superowner_id(ctx.author.id):
         await ctx.send("I don't have a short explanation for that command.", delete_after=30)
         return
     text = EXPLANATIONS.get(key)
@@ -13163,6 +13303,9 @@ async def explain(ctx, command_name: str = None):
         ),
         None
     ) if bot else None
+    if command and is_econ_superowner_hidden(command) and not is_superowner_id(ctx.author.id):
+        await ctx.send("I don't have a short explanation for that command.", delete_after=30)
+        return
     if command and not text:
         text = EXPLANATIONS.get(command.name)
     if command and not text:
@@ -13204,7 +13347,7 @@ async def setup(bot_ref, log_callback=None):
     economy_commands = [
         bal, bank, tutorial, recommendgame, robsettings, rob, profile, inventory, settheme, quests, dailychallenge, streaks, guide, onboard, shop, cooldowns, transactions, limits, lottery, editlottery, stoplottery, lotterystats, buytick,
         daily, weekly, monthly, gamble, roulette, slots, blackjack,
-        scratch, tower, vault, memory_game, card_ladder, lockpick, heist, dice_duel, cases, plinko, lucky_number, jackpot_spin, dungeon, minesweeper, wheel, give, lb, gamestats, achievements, setbadge, gamebalance, gameaudit, balanceaudit, balancedashboard, event, gamehistory, season, seasonpass, endseason, qstats, economyhealth, economyaudit, abuseaudit, riskprofile, add, remove, addtick, removetick, settick, setquesos, econhelp, explain
+        scratch, tower, vault, memory_game, card_ladder, lockpick, heist, dice_duel, cases, plinko, lucky_number, jackpot_spin, dungeon, minesweeper, wheel, give, lb, gamestats, achievements, setbadge, gamebalance, gameaudit, balanceaudit, balancedashboard, event, gamehistory, season, seasonpass, endseason, qstats, economyhealth, economyaudit, abuseaudit, riskprofile, add, remove, addtick, removetick, settick, lotterypot, setquesos, econhelp, explain
     ]
     for command in economy_commands:
         if bot.get_command(command.name):

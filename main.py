@@ -830,7 +830,7 @@ def command_risk_note(command):
     names = {command.name.casefold(), *(alias.casefold() for alias in getattr(command, "aliases", []) or [])}
     if names & {"ban", "kick", "purge", "rpurge", "lock", "unlock", "lockdown", "reopen", "block", "unblock", "send", "reply"}:
         return "High impact moderation/server action."
-    if names & {"add", "remove", "give", "addtick", "removetick", "settick", "setquesos"}:
+    if names & {"add", "remove", "give", "addtick", "removetick", "settick", "lotterypot", "lotteryprize", "prizepool", "setpot", "addpot", "removepot", "setquesos"}:
         return "Changes 𝚀𝚞𝚎wo money or lottery entries."
     if names & GAMBLING_AMOUNT_COMMANDS:
         return "Gambling/game action; may spend 𝚀𝚞𝚎wo balance."
@@ -1222,9 +1222,10 @@ def command_ai_summary(command, prefix):
     bits.append(compact_ai_text(explanation, 260))
     return " - ".join(bits)
 
-def bot_command_knowledge_index(guild, max_chars=3200):
+def bot_command_knowledge_index(guild, viewer=None, max_chars=3200):
     prefix = prefix_for_guild(guild)
-    key = (getattr(guild, "id", 0), prefix, int(max_chars), len(bot.commands))
+    viewer_key = getattr(viewer, "id", 0) if can_see_superowner_help(viewer, guild) else 0
+    key = (getattr(guild, "id", 0), prefix, int(max_chars), len(bot.commands), viewer_key)
     now = time.monotonic()
     cached = ai_knowledge_cache.get(key)
     if cached and now - cached[0] < HELP_RENDER_CACHE_TTL:
@@ -1236,7 +1237,7 @@ def bot_command_knowledge_index(guild, max_chars=3200):
         lines = []
         for name in names:
             command = get_command_case_insensitive(name)
-            if not command or getattr(command, "hidden", False):
+            if not command_is_visible_to(command, viewer, guild):
                 continue
             command_key = command.qualified_name.casefold()
             if command_key in seen:
@@ -1248,7 +1249,7 @@ def bot_command_knowledge_index(guild, max_chars=3200):
 
     other_lines = []
     for command in sorted(bot.commands, key=lambda cmd: cmd.qualified_name.casefold()):
-        if getattr(command, "hidden", False):
+        if not command_is_visible_to(command, viewer, guild):
             continue
         command_key = command.qualified_name.casefold()
         if command_key in seen:
@@ -1260,7 +1261,10 @@ def bot_command_knowledge_index(guild, max_chars=3200):
 
     details = []
     for key in sorted(economy_detailed_explanations):
-        if key in economy_explanations or get_command_case_insensitive(key):
+        command = get_command_case_insensitive(key)
+        if command and not command_is_visible_to(command, viewer, guild):
+            continue
+        if key in economy_explanations or command:
             details.append(f"{key}: {compact_ai_text(economy_detailed_explanations[key], 180)}")
     if details:
         sections.append("Detailed mechanics snippets:\n" + "\n".join(details))
@@ -1271,8 +1275,13 @@ def bot_command_knowledge_index(guild, max_chars=3200):
     ai_knowledge_cache[key] = (now, index)
     return index
 
-def bot_capabilities_summary(guild):
+def bot_capabilities_summary(guild, viewer=None):
     prefix = prefix_for_guild(guild)
+    owner_action_note = (
+        "When 𝚀𝚞𝚎 asks clearly, you can confirm and run batch rewards for supported leaderboards such as activity, messages, lottery holders, and 𝚀𝚞𝚎wo rankings. "
+        if can_see_superowner_help(viewer, guild)
+        else ""
+    )
     return (
         f"You are Pro𝚀𝚞𝚎, a Discord bot. The command prefix in this server is `{prefix}`. "
         "AI/chatbot is one of your main bot features. You are mainly a fun, casual, normal-feeling Discord AI: answer general chat with personality, banter, and warmth, but you also know the bot deeply and should help users use it. "
@@ -1284,9 +1293,9 @@ def bot_capabilities_summary(guild):
         "For economy/game advice, compare risk, max bet, payout, cooldown, and fun factor when useful. "
         "For errors/logs, act like the bot doctor: use reply context and the doctor snapshot to identify the likely broken command or subsystem and suggest the next test/fix. "
         "If you are not certain about an exact mechanic, say what you know and suggest `.explain <command>` or the matching help page. "
-        "When 𝚀𝚞𝚎 asks clearly, you can confirm and run batch rewards for supported leaderboards such as activity, messages, lottery holders, and 𝚀𝚞𝚎wo rankings. "
+        f"{owner_action_note}"
         f"Useful help commands: `{prefix}help`, `{prefix}games`, `{prefix}econhelp`, `{prefix}explain <command>`, `{prefix}setup`, and `{prefix}messages`.\n\n"
-        f"Live bot command/capability index:\n{bot_command_knowledge_index(guild)}"
+        f"Live bot command/capability index:\n{bot_command_knowledge_index(guild, viewer)}"
     )
 
 def denial_message(detail=None):
@@ -1297,8 +1306,11 @@ def denial_message(detail=None):
 def command_denial_detail(ctx, error=None):
     command_name = ctx.command.qualified_name if getattr(ctx, "command", None) else ""
     que_only = {
-        "add", "remove", "addtick", "removetick", "settick", "setquesos", "send", "reply", "fsleep", "wake",
-        "aisettings", "aiignore", "aiunignore", "aichannel", "aistyle",
+        "add", "remove", "addtick", "removetick", "settick", "lotterypot", "setquesos",
+        "editlottery", "stoplottery", "qstats", "economyhealth", "balancedashboard", "endseason",
+        "send", "reply", "fsleep", "wake", "clearwatchlist",
+        "aisettings", "aiperms", "aiignore", "aiunignore", "aichannel", "aistyle",
+        "aihistory", "auditcommands", "styleaudit", "commandcleanup", "permaudit", "receipts", "aiguard",
     }
     if command_name in que_only:
         return f"Only {QUE_OWNER_DISPLAY} can use this."
@@ -1392,9 +1404,9 @@ def slash_runnable_commands(viewer=None, guild=None):
     commands_ = []
     seen = set()
     for command in bot.walk_commands():
-        if command.hidden or getattr(command, "parent", None):
+        if getattr(command, "parent", None):
             continue
-        if is_superowner_help_command(command) and not can_see_superowner_help(viewer, guild):
+        if not command_is_visible_to(command, viewer, guild):
             continue
         if command.name in seen:
             continue
@@ -1427,9 +1439,9 @@ async def invoke_prefix_command_from_interaction(interaction, command_name, args
             ephemeral=True
         )
         return
-    if is_superowner_help_command(command) and not can_see_superowner_help(interaction.user, interaction.guild):
+    if not command_is_visible_to(command, interaction.user, interaction.guild):
         await interaction.followup.send(
-            f"Only {QUE_OWNER_DISPLAY} can use that.",
+            f"Command `{command_name}` was not found. Try `/commands`.",
             ephemeral=True,
             allowed_mentions=discord.AllowedMentions.none(),
         )
@@ -2364,7 +2376,7 @@ async def on_ready():
             "bal", "bank", "tutorial", "recommendgame", "robsettings", "rob", "profile", "inventory", "settheme", "quests", "dailychallenge", "streaks", "guide", "onboard", "shop", "cooldowns", "transactions", "limits", "lottery", "editlottery", "stoplottery", "lotterystats", "buytick",
             "daily", "weekly", "monthly", "cf", "roulette", "slots",
             "blackjack", "scratch", "tower", "vault", "memory", "cardladder", "lockpick", "heist", "diceduel", "cases", "plinko", "luckynumber", "jackpotspin", "dungeon", "ms", "wheel", "give", "lb", "gamestats", "achievements", "setbadge", "gamebalance", "gamehistory", "seasonpass",
-            "qstats", "economyaudit", "abuseaudit", "season", "endseason", "add", "remove", "addtick", "removetick", "settick", "setquesos", "econhelp", "explain"
+            "qstats", "economyaudit", "abuseaudit", "season", "endseason", "add", "remove", "addtick", "removetick", "settick", "lotterypot", "setquesos", "econhelp", "explain"
         ]
         loaded_economy_commands = [name for name in economy_command_names if bot.get_command(name)]
         print(f"𝚀𝚞𝚎wo system loaded ({len(loaded_economy_commands)}/{len(economy_command_names)} commands)")
@@ -4129,6 +4141,7 @@ COMMAND_EXAMPLE_OVERRIDES = {
     "memory": ".memory 1000",
     "messages": ".messages",
     "messageevent": ".messageevent start 2h Weekend chat race",
+    "lotterypot": ".lotterypot add 1m",
     "onboard": ".onboard",
     "health": ".health",
     "permaudit": ".permaudit",
@@ -4444,12 +4457,13 @@ AI_CONFIRM_COMMANDS = {
 }
 
 AI_SUPEROWNER_ONLY_COMMANDS = {
-    "add", "remove", "addtick", "removetick", "remtick", "deltick", "settick", "setquesos",
+    "add", "remove", "addtick", "removetick", "remtick", "deltick", "settick", "lotterypot", "lotteryprize", "prizepool", "setpot", "addpot", "removepot", "setquesos",
+    "editlottery", "stoplottery", "qstats", "economystats", "qstatus", "economyhealth", "ecohealth", "moneyhealth", "supply", "balancedashboard", "ecodashboard", "moneydashboard", "sinkdashboard", "endseason", "rewardseason",
     "disable", "enable", "disableall", "enableall", "prefix", "preifx", "setprefix",
     "settings", "setup", "setupbot", "config", "controlpanel", "panel", "setlogs", "slashsync", "auditcommands", "cmdaudit", "commandaudit", "styleaudit", "uiaudit", "messageaudit", "commandcleanup", "cleanupcommands", "cmdcleanup", "dbaudit", "databaseaudit", "jobs", "backgroundjobs", "tasks", "errors", "errorlog", "recover", "restorestate", "recovery", "aihistory", "aiactions", "actionhistory",
-    "aisettings", "aiconfig", "aicontrols", "aiignore", "ignoreai", "aiunignore", "unignoreai", "aichannel", "aitoggle", "aistyle", "aipersonality",
+    "aisettings", "aiconfig", "aicontrols", "aiperms", "aipermissions", "aicapabilities", "aiauthority", "aiguard", "aicommandsafety", "aiignore", "ignoreai", "aiunignore", "unignoreai", "aichannel", "aitoggle", "aistyle", "aipersonality",
     "block", "unblock", "shut", "unshut", "rshut", "unrshut", "lockdown", "reopen",
-    "rlockdown", "runlock", "lock", "unlock", "ban", "unban", "kick", "addrole",
+    "rlockdown", "runlock", "lock", "unlock", "clearwatchlist", "ban", "unban", "kick", "addrole",
     "removerole", "deleterole", "send", "reply", "fwd", "forward", "fw", "quote", "archive", "censor", "uncensor", "clearcensors",
     "editlottery", "stoplottery", "editactivity", "endactivity", "stopactivity", "robsettings", "robbing", "setrob", "robconfig", "balancedashboard", "ecodashboard", "moneydashboard", "sinkdashboard",
 }
@@ -4566,9 +4580,7 @@ def fuzzy_command_guess(text, viewer=None, guild=None):
     lowered = str(text or "").casefold()
     candidates = []
     for command in bot.commands:
-        if getattr(command, "hidden", False):
-            continue
-        if is_superowner_help_command(command) and not can_see_superowner_help(viewer, guild):
+        if not command_is_visible_to(command, viewer, guild):
             continue
         names = {command.name.casefold(), *(alias.casefold() for alias in getattr(command, "aliases", []) or [])}
         score = 0
@@ -4593,9 +4605,7 @@ async def semantic_ai_command_request(question, guild, viewer=None):
     prefix = prefix_for_guild(guild)
     command_lines = []
     for command in sorted(bot.commands, key=lambda cmd: cmd.qualified_name.casefold()):
-        if getattr(command, "hidden", False):
-            continue
-        if is_superowner_help_command(command) and not can_see_superowner_help(viewer, guild):
+        if not command_is_visible_to(command, viewer, guild):
             continue
         command_lines.append(command_ai_summary(command, prefix))
     prompt = {
@@ -4660,6 +4670,8 @@ async def maybe_run_ai_command(message, question):
     command_name, args, explicit = request
     command = get_command_case_insensitive(command_name)
     if not command:
+        return False
+    if not command_is_visible_to(command, message.author, message.guild):
         return False
     command_keys = {command.name.casefold(), *(alias.casefold() for alias in getattr(command, "aliases", []) or [])}
     if command_keys & AI_SUPEROWNER_ONLY_COMMANDS and not has_super_owner_power(message.author, message.guild):
@@ -5762,7 +5774,7 @@ async def on_message(message):
                 messages = [
                     {
                         "role": "system",
-                        "content": bot_capabilities_summary(message.guild),
+                        "content": bot_capabilities_summary(message.guild, message.author),
                     }
                 ]
             else:
@@ -6000,18 +6012,21 @@ HELP_CATEGORIES = {
         "lock", "unlock", "lockdown", "reopen", "rlockdown", "runlock", "shut", "unshut", "clearwatchlist", "rshut", "unrshut",
         "send", "reply", "fwd", "aban", "raban", "abanlist", "summon", "summon2", "block", "unblock",
         "censor", "uncensor", "clearcensors", "editlottery", "stoplottery", "editactivity", "endactivity", "stopactivity", "messageevent",
-        "add", "remove", "addtick", "removetick", "settick", "setquesos",
+        "add", "remove", "addtick", "removetick", "settick", "lotterypot", "setquesos",
     ],
 }
 SUPEROWNER_HELP_COMMANDS = [
-    "add", "remove", "addtick", "removetick", "settick", "setquesos",
-    "send", "reply", "fsleep", "wake",
-    "aisettings", "aiignore", "aiunignore", "aichannel", "aistyle",
-    "aihistory", "auditcommands", "styleaudit", "commandcleanup", "balancedashboard", "permaudit", "receipts", "aiguard",
+    "add", "remove", "addtick", "removetick", "settick", "lotterypot", "setquesos",
+    "editlottery", "stoplottery", "qstats", "economyhealth", "balancedashboard", "endseason",
+    "send", "reply", "fsleep", "wake", "clearwatchlist",
+    "aisettings", "aiperms", "aiignore", "aiunignore", "aichannel", "aistyle",
+    "aihistory", "auditcommands", "styleaudit", "commandcleanup", "permaudit", "receipts", "aiguard",
 ]
 SUPEROWNER_HIDDEN_COMMANDS = {
     *SUPEROWNER_HELP_COMMANDS,
-    "remtick", "deltick", "ignoreai", "unignoreai", "aitoggle", "aipersonality",
+    "remtick", "deltick", "lotteryprize", "prizepool", "setpot", "addpot", "removepot",
+    "economystats", "qstatus", "ecohealth", "moneyhealth", "supply", "rewardseason",
+    "ignoreai", "unignoreai", "aipermissions", "aicapabilities", "aiauthority", "aitoggle", "aipersonality",
     "aiactions", "actionhistory", "cmdaudit", "commandaudit", "uiaudit", "messageaudit", "cleanupcommands", "cmdcleanup", "ecodashboard", "moneydashboard", "sinkdashboard", "permsaudit", "permissionaudit", "sensitiveaudit", "receiptlist", "txreceipts", "aicommandsafety",
 }
 HELP_CATEGORY_ALIASES = {
@@ -6029,12 +6044,22 @@ def is_superowner_help_command(command_or_name):
 def can_see_superowner_help(user, guild):
     return has_super_owner_power(user, guild)
 
+def command_is_visible_to(command, user=None, guild=None):
+    if not command or getattr(command, "hidden", False):
+        return False
+    if is_superowner_help_command(command) and not can_see_superowner_help(user, guild):
+        return False
+    return True
+
 def help_categories_for(user=None, guild=None):
     visible = {}
     for category, names in HELP_CATEGORIES.items():
         filtered = []
         for name in names:
-            if is_superowner_help_command(name):
+            command = get_command_case_insensitive(name)
+            if command and not command_is_visible_to(command, user, guild):
+                continue
+            if not command and is_superowner_help_command(name) and not can_see_superowner_help(user, guild):
                 continue
             filtered.append(name)
         if filtered:
@@ -6063,7 +6088,7 @@ def _render_help_embed_uncached(guild=None, category_name=None, page=0, per_page
         seen_commands = set()
         for name in names:
             command = get_command_case_insensitive(name)
-            if command and not command.hidden:
+            if command_is_visible_to(command, viewer, guild):
                 if command.name in seen_commands:
                     continue
                 seen_commands.add(command.name)
@@ -6102,7 +6127,7 @@ def _render_help_embed_uncached(guild=None, category_name=None, page=0, per_page
         loaded = {
             command.name
             for name in names
-            if (command := get_command_case_insensitive(name)) and not command.hidden
+            if (command := get_command_case_insensitive(name)) and command_is_visible_to(command, viewer, guild)
         }
         if loaded:
             embed.add_field(name=category, value=f"{len(loaded)} commands", inline=True)
@@ -6130,7 +6155,7 @@ def help_category_page_count(category_name, per_page=10, viewer=None, guild=None
     seen_commands = set()
     for name in names:
         command = get_command_case_insensitive(name)
-        if not command or command.hidden or command.name in seen_commands:
+        if not command_is_visible_to(command, viewer, guild) or command.name in seen_commands:
             continue
         seen_commands.add(command.name)
         loaded.append(command.name)
@@ -6177,8 +6202,7 @@ def command_permission_label(command):
     aliases = set(getattr(command, "aliases", []) or [])
     names = {name, *aliases}
     admin_names = set(HELP_CATEGORIES.get("Admin", [])) | set(HELP_CATEGORIES.get("Server Tools", []))
-    que_only = {"addtick", "removetick", "settick", "setquesos", "fsleep", "wake"}
-    if names & que_only:
+    if is_superowner_help_command(command):
         return QUE_OWNER_DISPLAY
     if name in admin_names or names & admin_names:
         return "Admin / server owner"
@@ -6254,19 +6278,18 @@ class HelpRefreshButton(Button):
         )
 
 class HelpView(View):
-    def __init__(self, author_id, category_name=None):
+    def __init__(self, author_id, category_name=None, guild=None):
         super().__init__(timeout=LONG_HELP_VIEW_TIMEOUT)
         self.author_id = author_id
         self.category_name = category_name
         self.page = 0
+        viewer = bot.get_user(author_id) or discord.Object(id=author_id)
         self.add_item(HelpHomeButton())
         self.add_item(HelpPageButton(-1))
         self.add_item(HelpPageButton(1))
         self.add_item(HelpRefreshButton())
-        for category in HELP_CATEGORIES:
+        for category in help_categories_for(viewer, guild):
             self.add_item(HelpCategoryButton(category))
-        if author_id == super_owner_id:
-            self.add_item(HelpCategoryButton("Superowner"))
 
 def command_search_results(query, viewer=None, guild=None):
     query = (query or "").strip().casefold()
@@ -6311,10 +6334,10 @@ async def help_command(ctx, *, command_name: str = None):
 
         category = resolve_help_category(command_name, ctx.author, ctx.guild)
         if category:
-            return await ctx.send(embed=render_help_embed(ctx.guild, category, viewer=ctx.author), view=HelpView(ctx.author.id, category))
+            return await ctx.send(embed=render_help_embed(ctx.guild, category, viewer=ctx.author), view=HelpView(ctx.author.id, category, ctx.guild))
 
         command = get_command_case_insensitive(command_name)
-        if command and is_superowner_help_command(command) and not can_see_superowner_help(ctx.author, ctx.guild):
+        if command and not command_is_visible_to(command, ctx.author, ctx.guild):
             command = None
         if not command:
             current_prefix = prefix_for_guild(ctx.guild)
@@ -6338,7 +6361,7 @@ async def help_command(ctx, *, command_name: str = None):
         embed.set_footer(text=f"More detail: {current_prefix}explain {command.name}")
         return await ctx.send(embed=embed, view=command_setup_view(ctx.author.id, command.name), allowed_mentions=discord.AllowedMentions.none())
 
-    await ctx.send(embed=render_help_embed(ctx.guild, viewer=ctx.author), view=HelpView(ctx.author.id))
+    await ctx.send(embed=render_help_embed(ctx.guild, viewer=ctx.author), view=HelpView(ctx.author.id, guild=ctx.guild))
 
 def channel_status(guild, channel_id):
     if not channel_id:
@@ -6635,7 +6658,7 @@ async def aiknow_command(ctx, *, command_name: str = None):
     if not command_name:
         return await ctx.send("Use `.aiknow <command>`.")
     command = get_command_case_insensitive(command_name.strip())
-    if command and is_superowner_help_command(command) and not can_see_superowner_help(ctx.author, ctx.guild):
+    if command and not command_is_visible_to(command, ctx.author, ctx.guild):
         command = None
     if not command:
         return await ctx.send(f"I don't know a command named `{command_name}`.")
@@ -7068,9 +7091,11 @@ async def commandstats_command(ctx, scope: str = "local"):
         lines = []
         for index, row in enumerate(rows, 1):
             command_name, uses, users, last_used = row[:4]
+            if is_superowner_help_command(str(command_name)) and not can_see_superowner_help(ctx.author, ctx.guild):
+                continue
             ts = discord.utils.format_dt(last_used.replace(tzinfo=timezone.utc), "R") if last_used else "unknown"
             lines.append(f"**#{index}** `.{command_name}` - **{int(uses):,}** uses, **{int(users):,}** user(s), last {ts}")
-        embed.add_field(name="Commands", value=embed_value("\n".join(lines), 3800), inline=False)
+        embed.add_field(name="Commands", value=embed_value("\n".join(lines) or "No visible command usage tracked yet.", 3800), inline=False)
     await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
 @bot.command(name="receipt", aliases=["txreceipt", "qreceipt"])
@@ -7089,6 +7114,8 @@ async def receipt_command(ctx, receipt_id: str = None):
     if not row:
         return await ctx.send("Receipt not found.")
     row = normalize_receipt_row(row)
+    if is_superowner_help_command(str(row.get("action") or "")) and not can_see_superowner_help(ctx.author, ctx.guild):
+        return await ctx.send("Receipt not found.")
     rid = row.get("receipt_id")
     guild_id = row.get("guild_id")
     channel_id = row.get("channel_id")
@@ -7326,10 +7353,17 @@ async def errors_command(ctx):
     for event in list(command_error_events)[:6]:
         if guild_id is not None and event.get("guild_id") != guild_id:
             continue
+        if is_superowner_help_command(str(event.get("command") or "")) and not can_see_superowner_help(ctx.author, ctx.guild):
+            continue
         ts = discord.utils.format_dt(event["created_at"], "R")
         live_lines.append(f"`{event['receipt_id']}` `{event['command']}` · <@{event['user_id']}> · {ts}\n{embed_value(event['error'], 180)}")
     receipt_lines = []
     for row in rows[:8]:
+        details = str(row.get("details") or "")
+        if not can_see_superowner_help(ctx.author, ctx.guild):
+            tokens = re.findall(r"[A-Za-z][A-Za-z0-9_-]{1,32}", details)
+            if any(is_superowner_help_command(token) for token in tokens):
+                continue
         created = row.get("created_at")
         ts = discord.utils.format_dt(created.replace(tzinfo=timezone.utc), "R") if created else "unknown"
         receipt_lines.append(f"`{row['receipt_id']}` <@{row['actor_id']}> · {ts}\n{embed_value(row.get('details') or 'No details.', 180)}")
@@ -8362,7 +8396,7 @@ async def slash_status(interaction: discord.Interaction):
 async def slash_help(interaction: discord.Interaction, command: str = ""):
     if command:
         command_obj = get_command_case_insensitive(command)
-        if command_obj and is_superowner_help_command(command_obj) and not can_see_superowner_help(interaction.user, interaction.guild):
+        if command_obj and not command_is_visible_to(command_obj, interaction.user, interaction.guild):
             command_obj = None
         if not command_obj:
             return await interaction.response.send_message("Command not found.", ephemeral=True)
@@ -9385,7 +9419,7 @@ async def disable(ctx, cmd: str):
         return
 
     command = get_command_case_insensitive(cmd)
-    if not command:
+    if not command_is_visible_to(command, ctx.author, ctx.guild):
         await ctx.send("Command not found.")
         return
 
@@ -9401,7 +9435,7 @@ async def enable(ctx, cmd: str):
         return
 
     command = get_command_case_insensitive(cmd)
-    if not command:
+    if not command_is_visible_to(command, ctx.author, ctx.guild):
         await ctx.send("Command not found.")
         return
 
@@ -9423,7 +9457,7 @@ async def disableall(ctx):
     if not ok:
         return
     for command in bot.commands:
-        if command.name != "enableall":
+        if command.name != "enableall" and command_is_visible_to(command, ctx.author, ctx.guild):
             guild_disabled_commands(ctx.guild).add(command.name)
     await asyncio.to_thread(save_disabled_commands, scoped_id(ctx.guild), guild_disabled_commands(ctx.guild))
     await ctx.send("Disabled **all commands**")
@@ -9441,7 +9475,10 @@ async def enableall(ctx):
 @bot.command()
 @is_admin_power()
 async def dclist(ctx):
-    commands_for_guild = guild_disabled_commands(ctx.guild)
+    commands_for_guild = {
+        name for name in guild_disabled_commands(ctx.guild)
+        if command_is_visible_to(get_command_case_insensitive(name), ctx.author, ctx.guild)
+    }
     if not commands_for_guild:
         await ctx.send("No commands are disabled.")
     else:
