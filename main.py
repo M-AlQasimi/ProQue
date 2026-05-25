@@ -23,7 +23,7 @@ except ImportError:
 from collections import Counter, defaultdict, deque
 from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
-from discord import Embed, Emoji, File, Interaction, StickerItem, app_commands
+from discord import Embed, Emoji, File, Interaction, StickerItem
 from discord.ext import commands, tasks
 from discord.ui import Button, Modal, Select, TextInput, View
 try:
@@ -341,6 +341,7 @@ ai_action_history = deque(maxlen=80)
 background_jobs = {}
 background_job_counter = 0
 command_error_events = deque(maxlen=80)
+recent_log_event_keys = deque(maxlen=200)
 
 TTT_EMPTY = "empty"
 TTT_X = "x"
@@ -891,7 +892,7 @@ def bot_doctor_context(guild, active_sessions=None):
         f"birthday task={'running' if birthday_task and not birthday_task.done() else 'stopped'}; "
         f"activity task={'running' if activity_task and not activity_task.done() else 'stopped'}; "
         f"presence task={'running' if presence_rotation_task.is_running() else 'stopped'}; "
-        f"slash synced={slash_commands_synced}; active game sessions={active_sessions}; "
+        f"slash commands={'cleared' if slash_commands_synced else 'pending clear'}; active game sessions={active_sessions}; "
         f"guild disabled commands={len(guild_disabled_commands(guild)) if guild else 0}; "
         f"slow commands={'; '.join(slow) if slow else 'none tracked yet'}."
     )
@@ -1296,7 +1297,7 @@ def bot_capabilities_summary(guild, viewer=None):
         "You have global user memory for useful facts people explicitly share, saved bot profile data like birthdays/statuses, plus recent channel context. Use memory naturally when it helps and avoid being creepy about it. "
         "Use the live command/capability index below as your source of truth for bot features, commands, aliases, usage, permissions, games, 𝚀𝚞𝚎wo mechanics, and setup flows. "
         "If the user asks about the bot, explain the relevant command clearly and suggest the exact command to run. "
-        "Slash commands have real top-level entries for major features and grouped categories like /mod, /game, /quewo, /gamble, /utility, /ai, and /setup; /run remains a fallback for every prefix command. "
+        "Slash commands are disabled; users should use prefix commands and the interactive setup buttons shown by those commands. "
         "Be permission-aware: if a command is admin/server-owner/𝚀𝚞𝚎-only, say that plainly before telling someone how to use it. "
         "For economy/game advice, compare risk, max bet, payout, cooldown, and fun factor when useful. "
         "For errors/logs, act like the bot doctor: use reply context and the doctor snapshot to identify the likely broken command or subsystem and suggest the next test/fix. "
@@ -1408,107 +1409,6 @@ def looks_like_command_message(message):
         return True
     return False
 
-def slash_runnable_commands(viewer=None, guild=None):
-    commands_ = []
-    seen = set()
-    for command in bot.walk_commands():
-        if getattr(command, "parent", None):
-            continue
-        if not command_is_visible_to(command, viewer, guild):
-            continue
-        if command.name in seen:
-            continue
-        seen.add(command.name)
-        commands_.append(command)
-    return sorted(commands_, key=lambda c: c.name.casefold())
-
-def slash_command_search(current, viewer=None, guild=None):
-    current = (current or "").casefold().strip()
-    results = []
-    for command in slash_runnable_commands(viewer, guild):
-        names = [command.name, *command.aliases]
-        haystack = " ".join(names).casefold()
-        if current and current not in haystack:
-            continue
-        alias_text = f" ({', '.join(command.aliases[:3])})" if command.aliases else ""
-        label = f"{command.name}{alias_text}"
-        if len(label) > 100:
-            label = label[:97] + "..."
-        results.append(app_commands.Choice(name=label, value=command.name))
-        if len(results) >= 25:
-            break
-    return results
-
-def slash_arg_join(*parts):
-    cleaned = []
-    for part in parts:
-        if part is None:
-            continue
-        value = str(part).strip()
-        if value:
-            cleaned.append(value)
-    return " ".join(cleaned)
-
-def slash_user_arg(user):
-    return user.mention if user else ""
-
-def slash_channel_arg(channel):
-    return channel.mention if channel else ""
-
-def slash_poll_arg(question, options="", duration=""):
-    options = str(options or "").strip()
-    duration = str(duration or "").strip()
-    if options:
-        parts = [str(question).strip(), options]
-        if duration:
-            parts.append(duration)
-        return " | ".join(part for part in parts if part)
-    return slash_arg_join(question, duration)
-
-async def slash_invoke(interaction, command_name, *parts):
-    await interaction.response.defer(thinking=True)
-    await invoke_prefix_command_from_interaction(interaction, command_name, slash_arg_join(*parts))
-
-async def invoke_prefix_command_from_interaction(interaction, command_name, args=None):
-    command = get_command_case_insensitive(command_name)
-    if not command:
-        await interaction.followup.send(
-            f"Command `{command_name}` was not found. Try `/commands`.",
-            ephemeral=True
-        )
-        return
-    if not command_is_visible_to(command, interaction.user, interaction.guild):
-        await interaction.followup.send(
-            f"Command `{command_name}` was not found. Try `/commands`.",
-            ephemeral=True,
-            allowed_mentions=discord.AllowedMentions.none(),
-        )
-        return
-    if StringView is None or not hasattr(commands.Context, "from_interaction"):
-        await interaction.followup.send(
-            "Slash forwarding is not available in this Discord library version.",
-            ephemeral=True
-        )
-        return
-
-    ctx = await commands.Context.from_interaction(interaction)
-    ctx.command = command
-    ctx.invoked_with = command.name
-    ctx.prefix = "/run "
-    raw_args = (args or "").strip()
-    ctx.view = StringView(raw_args)
-    ctx.view.skip_ws()
-    try:
-        await command.invoke(ctx)
-    except commands.CommandError as e:
-        await on_command_error(ctx, e)
-    except Exception as e:
-        print(f"Slash command bridge failed for {command.name}: {type(e).__name__} - {e}")
-        if not interaction.response.is_done():
-            await interaction.response.send_message("That slash command failed.", ephemeral=True)
-        else:
-            await interaction.followup.send("That slash command failed.", ephemeral=True)
-
 async def invoke_prefix_command_from_message(message, command_name, args=None):
     command = get_command_case_insensitive(command_name)
     if not command:
@@ -1543,36 +1443,76 @@ async def invoke_prefix_command_from_message(message, command_name, args=None):
         )
     return False
 
+async def invoke_prefix_command_from_interaction(interaction, command_name, args=None):
+    command = get_command_case_insensitive(command_name)
+    if not command:
+        await interaction.followup.send(
+            f"I couldn't find `{command_name}`.",
+            ephemeral=True
+        )
+        return
+    if not command_is_visible_to(command, interaction.user, interaction.guild):
+        await interaction.followup.send(
+            f"I couldn't find `{command_name}`.",
+            ephemeral=True,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+        return
+    if StringView is None or not hasattr(commands.Context, "from_interaction"):
+        await interaction.followup.send(
+            "Command forwarding is not available in this Discord library version.",
+            ephemeral=True
+        )
+        return
+
+    ctx = await commands.Context.from_interaction(interaction)
+    ctx.command = command
+    ctx.invoked_with = command.name
+    ctx.prefix = "/ui "
+    raw_args = (args or "").strip()
+    ctx.view = StringView(raw_args)
+    ctx.view.skip_ws()
+    try:
+        await command.invoke(ctx)
+    except commands.CommandError as e:
+        await on_command_error(ctx, e)
+    except Exception as e:
+        print(f"Interaction command bridge failed for {command.name}: {type(e).__name__} - {e}")
+        if not interaction.response.is_done():
+            await interaction.response.send_message("That command failed.", ephemeral=True)
+        else:
+            await interaction.followup.send("That command failed.", ephemeral=True)
+
 async def sync_slash_commands_once(force=False):
     global slash_commands_synced
     if slash_commands_synced and not force:
-        return {"skipped": True, "synced_guilds": 0, "failed_guilds": 0, "runnable_count": len(slash_runnable_commands())}
-    runnable_count = len(slash_runnable_commands())
+        return {"skipped": True, "synced_guilds": 0, "failed_guilds": 0, "cleared": True}
     synced_guilds = 0
     failed_guilds = 0
     try:
+        bot.tree.clear_commands(guild=None)
         global_synced = await bot.tree.sync()
-        print(f"Global slash commands synced: {len(global_synced)} top-level commands.")
+        print(f"Global slash commands cleared: {len(global_synced)} remaining.")
     except Exception as e:
-        print(f"Global slash command sync failed: {type(e).__name__} - {e}")
+        print(f"Global slash command clear failed: {type(e).__name__} - {e}")
 
     for guild in bot.guilds:
         try:
-            bot.tree.copy_global_to(guild=discord.Object(id=guild.id))
+            bot.tree.clear_commands(guild=discord.Object(id=guild.id))
             synced = await bot.tree.sync(guild=discord.Object(id=guild.id))
             synced_guilds += 1
-            print(f"Guild slash commands synced for {guild.name} ({guild.id}): {len(synced)} commands.")
+            print(f"Guild slash commands cleared for {guild.name} ({guild.id}): {len(synced)} remaining.")
         except Exception as e:
             failed_guilds += 1
-            print(f"Guild slash command sync failed for {guild.name} ({guild.id}): {type(e).__name__} - {e}")
+            print(f"Guild slash command clear failed for {guild.name} ({guild.id}): {type(e).__name__} - {e}")
 
     if synced_guilds or not failed_guilds:
         slash_commands_synced = True
     print(
-        f"Slash command sync complete: {synced_guilds} guild(s) synced, "
-        f"{failed_guilds} failed. Real slash groups are available; /run still covers all {runnable_count} prefix commands."
+        f"Slash command clear complete: {synced_guilds} guild(s) cleared, "
+        f"{failed_guilds} failed. Prefix commands remain active."
     )
-    return {"skipped": False, "synced_guilds": synced_guilds, "failed_guilds": failed_guilds, "runnable_count": runnable_count}
+    return {"skipped": False, "synced_guilds": synced_guilds, "failed_guilds": failed_guilds, "cleared": True}
 
 def scoped_id(guild):
     return guild.id if guild else 0
@@ -1647,6 +1587,57 @@ def log_user(value):
     if user_id is None:
         return "Unknown"
     return f"<@{user_id}> ({user_id})"
+
+def log_role(value):
+    role_id = getattr(value, "id", None)
+    role_name = getattr(value, "name", "Unknown")
+    if role_id is None:
+        return str(role_name)
+    mention = getattr(value, "mention", f"<@&{role_id}>")
+    return f"{mention} `{role_name}` ({role_id})"
+
+async def find_audit_entry(guild, actions=None, target_id=None, limit=10, max_age_seconds=20):
+    if guild is None:
+        return None
+    actions = set(actions or [])
+    now = datetime.now(timezone.utc)
+    try:
+        async for entry in guild.audit_logs(limit=limit, oldest_first=False):
+            if actions and entry.action not in actions:
+                continue
+            if target_id is not None and getattr(entry.target, "id", None) != int(target_id):
+                continue
+            created_at = getattr(entry, "created_at", None)
+            if created_at and created_at.tzinfo is None:
+                created_at = created_at.replace(tzinfo=timezone.utc)
+            if created_at and abs((now - created_at).total_seconds()) > max_age_seconds:
+                continue
+            return entry
+    except discord.Forbidden:
+        print(f"Audit lookup skipped: missing View Audit Log in guild {guild.id}.")
+    except discord.HTTPException as e:
+        print(f"Audit lookup skipped for guild {guild.id}: {type(e).__name__} - {e}")
+    except Exception as e:
+        print(f"Audit lookup failed for guild {guild.id}: {type(e).__name__} - {e}")
+    return None
+
+def add_audit_actor_fields(embed, entry, actor_label="By"):
+    if not entry:
+        embed.add_field(name=actor_label, value="Unknown or missing audit permission", inline=False)
+        return
+    embed.add_field(name=actor_label, value=log_user(entry.user), inline=False)
+    if getattr(entry, "reason", None):
+        embed.add_field(name="Reason", value=embed_value(entry.reason, 1024), inline=False)
+
+def should_emit_log_once(key, ttl_seconds=15):
+    now = time.monotonic()
+    normalized = tuple(key)
+    while recent_log_event_keys and now - recent_log_event_keys[0][1] > ttl_seconds:
+        recent_log_event_keys.popleft()
+    if any(existing_key == normalized for existing_key, _ in recent_log_event_keys):
+        return False
+    recent_log_event_keys.append((normalized, now))
+    return True
 
 def normalize_log_embed(embed, guild):
     normalized = clone_embed(embed)
@@ -3107,39 +3098,31 @@ async def on_invite_delete(invite):
 
 @bot.event
 async def on_member_ban(guild, user):
-    async for entry in guild.audit_logs(limit=1, action=discord.AuditLogAction.ban):
-        if entry.target.id == user.id:
-            embed = discord.Embed(
-                title=f"{economy_q_hammer} Member Banned",
-                color=discord.Color.red()
-            )
-            embed.add_field(name="User", value=log_user(user), inline=False)
-            embed.add_field(name="Banned by", value=log_user(entry.user), inline=False)
-            embed.add_field(name="Reason", value=entry.reason or "No reason provided", inline=False)
-            embed.timestamp = datetime.now(timezone.utc)
-            try:
-                await send_log(embed, guild)
-            except Exception as e:
-                print(f"Failed to send log: {e}")
-            return
+    entry = await find_audit_entry(guild, {discord.AuditLogAction.ban}, user.id)
+    embed = discord.Embed(
+        title=f"{economy_q_hammer} Member Banned",
+        color=discord.Color.red()
+    )
+    embed.add_field(name="User", value=log_user(user), inline=False)
+    add_audit_actor_fields(embed, entry, "Banned by")
+    if not entry:
+        embed.add_field(name="Reason", value="No reason available", inline=False)
+    embed.timestamp = datetime.now(timezone.utc)
+    await send_log(embed, guild)
 
 @bot.event
 async def on_member_unban(guild, user):
-    async for entry in guild.audit_logs(limit=1, action=discord.AuditLogAction.unban):
-        if entry.target.id == user.id:
-            embed = discord.Embed(
-                title="Member Unbanned",
-                color=discord.Color.green()
-            )
-            embed.add_field(name="User", value=log_user(user), inline=False)
-            embed.add_field(name="Unbanned by", value=log_user(entry.user), inline=False)
-            embed.add_field(name="Reason", value=entry.reason or "No reason provided", inline=False)
-            embed.timestamp = datetime.now(timezone.utc)
-            try:
-                await send_log(embed, guild)
-            except Exception as e:
-                print(f"Failed to send log: {e}")
-            return
+    entry = await find_audit_entry(guild, {discord.AuditLogAction.unban}, user.id)
+    embed = discord.Embed(
+        title=f"{economy_q_accept} Member Unbanned",
+        color=discord.Color.green()
+    )
+    embed.add_field(name="User", value=log_user(user), inline=False)
+    add_audit_actor_fields(embed, entry, "Unbanned by")
+    if not entry:
+        embed.add_field(name="Reason", value="No reason available", inline=False)
+    embed.timestamp = datetime.now(timezone.utc)
+    await send_log(embed, guild)
 
 @bot.event
 async def on_guild_join(guild):
@@ -3783,8 +3766,9 @@ class MessageTrackerView(View):
         return message_tracker_embed(guild, label, rows=rows)
 
     async def refresh(self, interaction):
+        await interaction.response.defer()
         embed = await self.build_embed(interaction.guild)
-        await interaction.response.edit_message(embed=embed, view=self, allowed_mentions=discord.AllowedMentions.none())
+        await interaction.edit_original_response(embed=embed, view=self, allowed_mentions=discord.AllowedMentions.none())
 
     @discord.ui.button(label="Leaderboard", style=discord.ButtonStyle.primary, row=2)
     async def leaderboard_button(self, interaction, button):
@@ -4052,10 +4036,8 @@ async def on_guild_channel_create(channel):
     )
     embed.add_field(name="Channel", value=channel.mention, inline=False)
 
-    async for entry in channel.guild.audit_logs(limit=1, action=discord.AuditLogAction.channel_create):
-        if entry.target.id == channel.id:
-            embed.add_field(name="By", value=log_user(entry.user), inline=False)
-            break
+    entry = await find_audit_entry(channel.guild, {discord.AuditLogAction.channel_create}, channel.id)
+    add_audit_actor_fields(embed, entry)
 
     embed.timestamp = datetime.now(timezone.utc)
     try:
@@ -4071,10 +4053,8 @@ async def on_guild_channel_delete(channel):
     )
     embed.add_field(name="Channel", value=channel.name, inline=False)
 
-    async for entry in channel.guild.audit_logs(limit=1, action=discord.AuditLogAction.channel_delete):
-        if entry.target.id == channel.id:
-            embed.add_field(name="By", value=log_user(entry.user), inline=False)
-            break
+    entry = await find_audit_entry(channel.guild, {discord.AuditLogAction.channel_delete}, channel.id)
+    add_audit_actor_fields(embed, entry)
 
     embed.timestamp = datetime.now(timezone.utc)
     try:
@@ -4085,15 +4065,16 @@ async def on_guild_channel_delete(channel):
 @bot.event
 async def on_guild_role_create(role):
     embed = discord.Embed(
-        title="Role Created",
+        title=f"{economy_q_roles} Role Created",
         color=discord.Color.green()
     )
-    embed.add_field(name="Role", value=role.name, inline=False)
+    embed.add_field(name="Role", value=log_role(role), inline=False)
+    embed.add_field(name="Color", value=str(role.color), inline=True)
+    embed.add_field(name="Position", value=str(role.position), inline=True)
+    embed.add_field(name="Mentionable", value="Yes" if role.mentionable else "No", inline=True)
 
-    async for entry in role.guild.audit_logs(limit=1, action=discord.AuditLogAction.role_create):
-        if entry.target.id == role.id:
-            embed.add_field(name="By", value=log_user(entry.user), inline=False)
-            break
+    entry = await find_audit_entry(role.guild, {discord.AuditLogAction.role_create}, role.id)
+    add_audit_actor_fields(embed, entry)
 
     embed.timestamp = datetime.now(timezone.utc)
     try:
@@ -4107,12 +4088,13 @@ async def on_guild_role_delete(role):
         title=f"{economy_q_trash} Role Deleted",
         color=discord.Color.red()
     )
-    embed.add_field(name="Role", value=role.name, inline=False)
+    embed.add_field(name="Role", value=f"`{role.name}` ({role.id})", inline=False)
+    embed.add_field(name="Color", value=str(role.color), inline=True)
+    embed.add_field(name="Position", value=str(role.position), inline=True)
+    embed.add_field(name="Mentionable", value="Yes" if role.mentionable else "No", inline=True)
 
-    async for entry in role.guild.audit_logs(limit=1, action=discord.AuditLogAction.role_delete):
-        if entry.target.id == role.id:
-            embed.add_field(name="By", value=log_user(entry.user), inline=False)
-            break
+    entry = await find_audit_entry(role.guild, {discord.AuditLogAction.role_delete}, role.id)
+    add_audit_actor_fields(embed, entry)
 
     embed.timestamp = datetime.now(timezone.utc)
     try:
@@ -4122,11 +4104,22 @@ async def on_guild_role_delete(role):
 
 @bot.event
 async def on_guild_role_update(before, after):
+    position_only = (
+        before.position != after.position
+        and before.name == after.name
+        and before.color == after.color
+        and before.hoist == after.hoist
+        and before.mentionable == after.mentionable
+        and before.permissions == after.permissions
+    )
+    if position_only:
+        return
+
     embed = discord.Embed(
         title=f"{economy_q_roles} Role Updated",
         color=discord.Color.blue()
     )
-    embed.add_field(name="Role", value=f"{after.name} ({after.id})", inline=False)
+    embed.add_field(name="Role", value=log_role(after), inline=False)
 
     changes = []
 
@@ -4134,25 +4127,29 @@ async def on_guild_role_update(before, after):
         changes.append(f"**Name:** `{before.name}` → `{after.name}`")
     if before.color != after.color:
         changes.append(f"**Color:** `{before.color}` → `{after.color}`")
+    if before.hoist != after.hoist:
+        changes.append(f"**Displayed Separately:** {'Yes' if before.hoist else 'No'} → {'Yes' if after.hoist else 'No'}")
+    if before.mentionable != after.mentionable:
+        changes.append(f"**Mentionable:** {'Yes' if before.mentionable else 'No'} → {'Yes' if after.mentionable else 'No'}")
+    if before.position != after.position:
+        changes.append(f"**Position:** `{before.position}` → `{after.position}`")
     if before.permissions != after.permissions:
         before_perms = set(p[0] for p in before.permissions if p[1])
         after_perms = set(p[0] for p in after.permissions if p[1])
         added = after_perms - before_perms
         removed = before_perms - after_perms
         if added:
-            changes.append(f"**Perms Added:** {', '.join(added)}")
+            changes.append(f"**Perms Added:** {', '.join(sorted(added))}")
         if removed:
-            changes.append(f"**Perms Removed:** {', '.join(removed)}")
+            changes.append(f"**Perms Removed:** {', '.join(sorted(removed))}")
 
     if not changes:
         changes.append("No visible changes logged.")
 
     embed.add_field(name="Changes", value="\n".join(changes), inline=False)
 
-    async for entry in after.guild.audit_logs(limit=1, action=discord.AuditLogAction.role_update):
-        if entry.target.id == after.id:
-            embed.add_field(name="By", value=log_user(entry.user), inline=False)
-            break
+    entry = await find_audit_entry(after.guild, {discord.AuditLogAction.role_update}, after.id)
+    add_audit_actor_fields(embed, entry)
 
     embed.timestamp = datetime.now(timezone.utc)
     try:
@@ -4163,11 +4160,7 @@ async def on_guild_role_update(before, after):
 @bot.event
 async def on_guild_update(before, after):
     guild = after.guild if hasattr(after, 'guild') else before
-    entry = None
-    async for log in guild.audit_logs(limit=5):
-        if log.target.id == guild.id:
-            entry = log
-            break
+    entry = await find_audit_entry(guild, target_id=guild.id, limit=5)
 
     embed = None
 
@@ -4195,8 +4188,8 @@ async def on_guild_update(before, after):
             color=discord.Color.orange()
         )
 
-    if embed and entry:
-        embed.add_field(name="By", value=log_user(entry.user), inline=False)
+    if embed:
+        add_audit_actor_fields(embed, entry)
         embed.timestamp = datetime.now(timezone.utc)
         try:
             await send_log(embed, guild)
@@ -6469,7 +6462,11 @@ def command_search_results(query, viewer=None, guild=None):
     if not query:
         return []
     results = []
-    for command in slash_runnable_commands(viewer, guild):
+    for command in sorted(bot.walk_commands(), key=lambda cmd: cmd.qualified_name.casefold()):
+        if getattr(command, "parent", None):
+            continue
+        if not command_is_visible_to(command, viewer, guild):
+            continue
         names = [command.name, *command.aliases]
         description = command_short_description(command)
         explanation = economy_explanations.get(command.name, "")
@@ -6659,6 +6656,7 @@ class SettingsView(View):
     async def logs_button(self, interaction, button):
         if not has_owner_power(interaction.user, interaction.guild):
             return await interaction.response.send_message(denial_message(f"Only admins, the server owner, or {QUE_OWNER_DISPLAY} can use this."), ephemeral=True)
+        await interaction.response.defer()
         current = get_guild_log_config(interaction.guild.id) or {}
         reaction_id = current.get("reaction_log_channel_id") or interaction.channel.id
         await asyncio.to_thread(save_guild_log_config, interaction.guild.id, interaction.channel.id, reaction_id)
@@ -6666,12 +6664,13 @@ class SettingsView(View):
             "log_channel_id": interaction.channel.id,
             "reaction_log_channel_id": reaction_id,
         }
-        await interaction.response.edit_message(embed=await build_settings_embed(interaction.guild), view=self)
+        await interaction.edit_original_response(embed=await build_settings_embed(interaction.guild), view=self)
 
     @discord.ui.button(label="Reaction Logs Here", emoji=economy_q_reaction, style=discord.ButtonStyle.secondary)
     async def reaction_logs_button(self, interaction, button):
         if not has_owner_power(interaction.user, interaction.guild):
             return await interaction.response.send_message(denial_message(f"Only admins, the server owner, or {QUE_OWNER_DISPLAY} can use this."), ephemeral=True)
+        await interaction.response.defer()
         current = get_guild_log_config(interaction.guild.id) or {}
         log_id = current.get("log_channel_id") or interaction.channel.id
         await asyncio.to_thread(save_guild_log_config, interaction.guild.id, log_id, interaction.channel.id)
@@ -6679,75 +6678,82 @@ class SettingsView(View):
             "log_channel_id": log_id,
             "reaction_log_channel_id": interaction.channel.id,
         }
-        await interaction.response.edit_message(embed=await build_settings_embed(interaction.guild), view=self)
+        await interaction.edit_original_response(embed=await build_settings_embed(interaction.guild), view=self)
 
     @discord.ui.button(label="AI On/Off", emoji=economy_q_ai_history, style=discord.ButtonStyle.secondary)
     async def ai_toggle_button(self, interaction, button):
         if not has_owner_power(interaction.user, interaction.guild):
             return await interaction.response.send_message("Admin power only.", ephemeral=True)
+        await interaction.response.defer()
         settings = await ai_settings_for("guild", interaction.guild.id)
         current = settings.get("enabled", "on")
         new_value = "off" if current != "off" else "on"
         ok = await asyncio.to_thread(set_ai_control_setting, "guild", interaction.guild.id, "enabled", new_value, interaction.user.id)
         if not ok:
-            return await interaction.response.send_message("AI setting save failed.", ephemeral=True)
-        await interaction.response.edit_message(embed=await build_settings_embed(interaction.guild), view=self)
+            return await interaction.followup.send("AI setting save failed.", ephemeral=True)
+        await interaction.edit_original_response(embed=await build_settings_embed(interaction.guild), view=self)
 
     @discord.ui.button(label="𝚀𝚞𝚎wo Here", emoji=economy_q_bank, style=discord.ButtonStyle.secondary)
     async def quewo_channel_button(self, interaction, button):
         if not has_owner_power(interaction.user, interaction.guild):
             return await interaction.response.send_message("Admin power only.", ephemeral=True)
+        await interaction.response.defer()
         await asyncio.to_thread(economy_set_economy_channel_id, interaction.guild.id, interaction.channel.id)
-        await interaction.response.edit_message(embed=await build_settings_embed(interaction.guild), view=self)
+        await interaction.edit_original_response(embed=await build_settings_embed(interaction.guild), view=self)
 
     @discord.ui.button(label="Clear 𝚀𝚞𝚎wo Channel", emoji=economy_q_trash, style=discord.ButtonStyle.secondary)
     async def quewo_channel_clear_button(self, interaction, button):
         if not has_owner_power(interaction.user, interaction.guild):
             return await interaction.response.send_message("Admin power only.", ephemeral=True)
+        await interaction.response.defer()
         await asyncio.to_thread(economy_set_economy_channel_id, interaction.guild.id, None)
-        await interaction.response.edit_message(embed=await build_settings_embed(interaction.guild), view=self)
+        await interaction.edit_original_response(embed=await build_settings_embed(interaction.guild), view=self)
 
     @discord.ui.button(label="Birthdays Here", emoji=economy_q_birthday, style=discord.ButtonStyle.secondary)
     async def birthday_button(self, interaction, button):
         if not await can_manage_birthday_channel(interaction.user, interaction.guild):
             return await interaction.response.send_message("You can't change the birthday channel here.", ephemeral=True)
+        await interaction.response.defer()
         saved = await asyncio.to_thread(save_guild_birthday_channel, interaction.guild.id, interaction.channel.id, interaction.user.id)
         if not saved:
-            return await interaction.response.send_message("Birthday channel save failed.", ephemeral=True)
+            return await interaction.followup.send("Birthday channel save failed.", ephemeral=True)
         guild_birthday_channels[interaction.guild.id] = {"channel_id": interaction.channel.id, "set_by_user_id": interaction.user.id}
-        await interaction.response.edit_message(embed=await build_settings_embed(interaction.guild), view=self)
+        await interaction.edit_original_response(embed=await build_settings_embed(interaction.guild), view=self)
 
     @discord.ui.button(label="Clear Birthdays", emoji=economy_q_trash, style=discord.ButtonStyle.secondary)
     async def birthday_clear_button(self, interaction, button):
         if not await can_manage_birthday_channel(interaction.user, interaction.guild):
             return await interaction.response.send_message("You can't change the birthday channel here.", ephemeral=True)
+        await interaction.response.defer()
         ok = await asyncio.to_thread(delete_guild_birthday_channel, interaction.guild.id)
         if not ok:
-            return await interaction.response.send_message("Birthday channel clear failed.", ephemeral=True)
+            return await interaction.followup.send("Birthday channel clear failed.", ephemeral=True)
         guild_birthday_channels.pop(interaction.guild.id, None)
-        await interaction.response.edit_message(embed=await build_settings_embed(interaction.guild), view=self)
+        await interaction.edit_original_response(embed=await build_settings_embed(interaction.guild), view=self)
 
     @discord.ui.button(label="Activity Here", emoji=economy_q_activity, style=discord.ButtonStyle.secondary)
     async def activity_button(self, interaction, button):
         if not await can_manage_activity_channel(interaction.user, interaction.guild):
             return await interaction.response.send_message("You can't change activity reports here.", ephemeral=True)
+        await interaction.response.defer()
         ok, message, _ = await save_activity_report_config(interaction.guild, interaction.channel, interaction.user.id)
         if not ok:
-            return await interaction.response.send_message(message, ephemeral=True)
+            return await interaction.followup.send(message, ephemeral=True)
         schedule_activity_live_refresh(interaction.guild.id, guild_activity_channels[interaction.guild.id])
-        await interaction.response.edit_message(embed=await build_settings_embed(interaction.guild), view=self)
+        await interaction.edit_original_response(embed=await build_settings_embed(interaction.guild), view=self)
 
     @discord.ui.button(label="Stop Activity", emoji=economy_q_timeout, style=discord.ButtonStyle.secondary)
     async def activity_stop_button(self, interaction, button):
         if not await can_manage_activity_channel(interaction.user, interaction.guild):
             return await interaction.response.send_message("You can't change activity reports here.", ephemeral=True)
+        await interaction.response.defer()
         ok = await asyncio.to_thread(delete_guild_activity_channel, interaction.guild.id)
         if not ok:
-            return await interaction.response.send_message("Activity report stop failed.", ephemeral=True)
+            return await interaction.followup.send("Activity report stop failed.", ephemeral=True)
         guild_activity_channels.pop(interaction.guild.id, None)
         active_activity_status_messages.pop(interaction.guild.id, None)
         await asyncio.to_thread(clear_guild_activity_counts, interaction.guild.id)
-        await interaction.response.edit_message(embed=await build_settings_embed(interaction.guild), view=self)
+        await interaction.edit_original_response(embed=await build_settings_embed(interaction.guild), view=self)
 
     @discord.ui.button(label="Lottery Panel", emoji=economy_q_ticket, style=discord.ButtonStyle.secondary)
     async def lottery_button(self, interaction, button):
@@ -7286,16 +7292,16 @@ async def permaudit_command(ctx):
         lines.append(
             f"`{command.name}` - aliases: `{aliases}` | public-hidden: **{hidden_public}** | {command_risk_note(command)}"
         )
-    slash_blocked = ", ".join(f"`{name}`" for name in sorted(SUPEROWNER_HIDDEN_COMMANDS & set(SUPEROWNER_HELP_COMMANDS)))
+    hidden_commands = ", ".join(f"`{name}`" for name in sorted(SUPEROWNER_HIDDEN_COMMANDS & set(SUPEROWNER_HELP_COMMANDS)))
     embed = discord.Embed(
         title=f"{economy_q_permissions} Permission Audit",
-        description=f"Sensitive commands are only visible in help/search/run surfaces for {QUE_OWNER_DISPLAY}.",
+        description=f"Sensitive commands are only visible in help/search surfaces for {QUE_OWNER_DISPLAY}.",
         color=discord.Color.orange(),
         timestamp=datetime.now(timezone.utc),
     )
     embed.add_field(name="Sensitive Commands", value=embed_value("\n".join(lines) or "None", 3000), inline=False)
     embed.add_field(name="Missing Registered Commands", value=", ".join(missing) or "None", inline=False)
-    embed.add_field(name="Slash/AI Visibility", value=embed_value(f"Blocked from public `/run` autocomplete/direct use and public AI command knowledge.\nTracked: {slash_blocked}", 1000), inline=False)
+    embed.add_field(name="AI Visibility", value=embed_value(f"Blocked from public AI command knowledge.\nTracked: {hidden_commands}", 1000), inline=False)
     await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
 @bot.command(name="commandstats", aliases=["cmdstats", "usage"])
@@ -7414,17 +7420,16 @@ async def aidoctor_command(ctx):
 @bot.command(name="slashsync", aliases=["slashstatus", "syncslash"])
 @is_admin_power()
 async def slashsync_command(ctx):
-    """Checks and resyncs slash commands."""
+    """Clears stale slash commands from Discord."""
     result = await sync_slash_commands_once(force=True)
     embed = discord.Embed(
-        title="Slash Command Status",
-        description="Forced a slash command sync.",
+        title="Slash Commands Removed",
+        description="Forced Discord slash command registration to clear. Prefix commands are unchanged.",
         color=discord.Color.blurple(),
     )
-    embed.add_field(name="Prefix Commands Covered By /run", value=f"{result['runnable_count']}", inline=True)
-    embed.add_field(name="Guilds Synced", value=f"{result['synced_guilds']}", inline=True)
+    embed.add_field(name="Guilds Cleared", value=f"{result['synced_guilds']}", inline=True)
     embed.add_field(name="Failures", value=f"{result['failed_guilds']}", inline=True)
-    embed.set_footer(text="Discord may take a little time to show slash command updates.")
+    embed.set_footer(text="Discord may take a little time to hide old slash commands.")
     await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
 @bot.command(name="perf", aliases=["performance", "slowcommands"])
@@ -7719,7 +7724,7 @@ async def health_command(ctx):
     embed.add_field(name="Birthday Task", value="Running" if birthday_task and not birthday_task.done() else "Stopped", inline=True)
     embed.add_field(name="Activity Task", value="Running" if activity_task and not activity_task.done() else "Stopped", inline=True)
     embed.add_field(name="Presence Task", value="Running" if presence_rotation_task.is_running() else "Stopped", inline=True)
-    embed.add_field(name="Slash Sync", value="Synced" if slash_commands_synced else "Not synced", inline=True)
+    embed.add_field(name="Slash Commands", value="Disabled / cleared" if slash_commands_synced else "Pending clear", inline=True)
     embed.add_field(name="Active Sessions", value=f"{len(sessions):,}", inline=True)
     embed.add_field(name="Activity Reports", value=f"{len(guild_activity_channels):,}", inline=True)
     running_jobs = len([job for job in background_jobs.values() if job.get("status") == "running"])
@@ -9055,566 +9060,6 @@ async def flagstats(ctx, member: discord.Member = None):
     )
     await ctx.reply(embed=embed, mention_author=False, allowed_mentions=discord.AllowedMentions.none())
 
-@bot.tree.command(name="run", description="Run any Pro𝚀𝚞𝚎 prefix command through slash commands.")
-@app_commands.describe(command="Command name", input="What that command needs, like amount, time, user, channel, or message text")
-async def slash_run(interaction: discord.Interaction, command: str, input: str = ""):
-    await interaction.response.defer(thinking=True)
-    await invoke_prefix_command_from_interaction(interaction, command, input)
-
-@slash_run.autocomplete("command")
-async def slash_run_command_autocomplete(interaction: discord.Interaction, current: str):
-    return slash_command_search(current, interaction.user, interaction.guild)
-
-@bot.tree.command(name="truthordare", description="Start Truth or Dare.")
-@app_commands.describe(mode="Choose random, truth, or dare", user="Optional person to target")
-@app_commands.choices(mode=[
-    app_commands.Choice(name="Random", value="random"),
-    app_commands.Choice(name="Truth", value="truth"),
-    app_commands.Choice(name="Dare", value="dare"),
-])
-async def slash_truthordare(
-    interaction: discord.Interaction,
-    mode: str = "random",
-    user: discord.Member = None,
-):
-    await slash_invoke(interaction, "truthordare", mode, slash_user_arg(user))
-
-@bot.tree.command(name="snipe", description="Show recent deleted, edited, or reaction snipes.")
-@app_commands.describe(kind="What to snipe", user="Optional user filter", index="Which snipe to show")
-@app_commands.choices(kind=[
-    app_commands.Choice(name="Deleted", value="deleted"),
-    app_commands.Choice(name="Edited", value="edited"),
-    app_commands.Choice(name="Reaction", value="reaction"),
-])
-async def slash_snipe(
-    interaction: discord.Interaction,
-    kind: str = "deleted",
-    user: discord.Member = None,
-    index: int = None,
-):
-    await slash_invoke(interaction, "snipe", kind, slash_user_arg(user), index)
-
-@bot.tree.command(name="bal", description="Check a 𝚀𝚞𝚎wo balance.")
-@app_commands.describe(user="Optional user to check")
-async def slash_bal(interaction: discord.Interaction, user: discord.Member = None):
-    await slash_invoke(interaction, "bal", slash_user_arg(user))
-
-@bot.tree.command(name="shop", description="Open the 𝚀𝚞𝚎wo shop.")
-async def slash_shop(interaction: discord.Interaction):
-    await slash_invoke(interaction, "shop")
-
-@bot.tree.command(name="lottery", description="Show the current lottery.")
-async def slash_lottery(interaction: discord.Interaction):
-    await slash_invoke(interaction, "lottery")
-
-@bot.tree.command(name="timer", description="Start a timer.")
-@app_commands.describe(time="Time like 10m, 1h, or 30s", title="Optional timer title")
-async def slash_timer(interaction: discord.Interaction, time: str, title: str = ""):
-    await slash_invoke(interaction, "timer", time, title)
-
-@bot.tree.command(name="poll", description="Create a poll.")
-@app_commands.describe(question="Poll question", options="Options separated by |", time="Optional duration like 10m")
-async def slash_poll(interaction: discord.Interaction, question: str, options: str = "", time: str = ""):
-    await slash_invoke(interaction, "poll", slash_poll_arg(question, options, time))
-
-@bot.tree.command(name="commands", description="List slash command access for all Pro𝚀𝚞𝚎 commands.")
-async def slash_commands_list(interaction: discord.Interaction):
-    commands_ = slash_runnable_commands(interaction.user, interaction.guild)
-    prefix = prefix_for_guild(interaction.guild)
-    lines = []
-    for command in commands_:
-        alias_text = f" ({', '.join(command.aliases[:3])})" if command.aliases else ""
-        lines.append(f"`{command.name}`{alias_text}")
-    embed = discord.Embed(
-        title="Pro𝚀𝚞𝚎 Slash Commands",
-        description=(
-            "Use first-class slash commands for common actions, or category groups like "
-            "`/mod`, `/game`, `/quewo`, `/gamble`, `/utility`, `/ai`, and `/setup`.\n"
-            f"`/run command input` still covers any of the **{len(commands_)}** prefix commands.\n"
-            f"Prefix commands still use `{prefix}` in this server."
-        ),
-        color=discord.Color.blurple()
-    )
-    for index in range(0, len(lines), 25):
-        chunk = "\n".join(lines[index:index + 25])
-        embed.add_field(name=f"Commands {index + 1}-{min(index + 25, len(lines))}", value=chunk, inline=True)
-        if len(embed.fields) >= 6:
-            break
-    embed.set_footer(text="Input means the stuff the command needs: amount, time, user, channel, or message.")
-    await interaction.response.send_message(embed=embed, ephemeral=True)
-
-@bot.tree.command(name="slashstatus", description="Check and resync Pro𝚀𝚞𝚎 slash commands.")
-async def slash_status(interaction: discord.Interaction):
-    if interaction.guild and not has_owner_power(interaction.user, interaction.guild):
-        return await interaction.response.send_message("Admin power only.", ephemeral=True)
-    await interaction.response.defer(ephemeral=True, thinking=True)
-    before = len(bot.tree.get_commands())
-    result = await sync_slash_commands_once(force=True)
-    embed = discord.Embed(
-        title="Slash Command Status",
-        description="Forced a slash command sync for this process.",
-        color=discord.Color.blurple(),
-    )
-    embed.add_field(name="Top-Level Slash Commands", value=f"{before}", inline=True)
-    embed.add_field(name="Prefix Commands Covered By /run", value=f"{result['runnable_count']}", inline=True)
-    embed.add_field(name="Guilds Synced", value=f"{result['synced_guilds']}", inline=True)
-    embed.add_field(name="Failures", value=f"{result['failed_guilds']}", inline=True)
-    embed.set_footer(text="Discord may take a little time to show slash command updates.")
-    await interaction.followup.send(embed=embed, ephemeral=True)
-
-@bot.tree.command(name="help", description="Show Pro𝚀𝚞𝚎 help.")
-@app_commands.describe(command="Optional command name")
-async def slash_help(interaction: discord.Interaction, command: str = ""):
-    if command:
-        command_obj = get_command_case_insensitive(command)
-        if command_obj and not command_is_visible_to(command_obj, interaction.user, interaction.guild):
-            command_obj = None
-        if not command_obj:
-            return await interaction.response.send_message("Command not found.", ephemeral=True)
-        prefix = prefix_for_guild(interaction.guild)
-        usage = command_usage_text(command_obj, prefix)
-        aliases = f"\nAliases: {', '.join(command_obj.aliases)}" if command_obj.aliases else ""
-        description = command_short_description(command_obj)
-        setup_note = "\nRun it through `/run`, or use the setup UI where available." if command_obj.name in SETUP_UI_COMMANDS else "\nRun it through `/run command input`."
-        return await interaction.response.send_message(f"**{usage}**\n{description}{aliases}{setup_note}", ephemeral=True)
-    await interaction.response.send_message(embed=render_help_embed(interaction.guild, viewer=interaction.user), ephemeral=True)
-
-@slash_help.autocomplete("command")
-async def slash_help_command_autocomplete(interaction: discord.Interaction, current: str):
-    return slash_command_search(current, interaction.user, interaction.guild)
-
-@bot.tree.command(name="settings", description="Open the server settings dashboard.")
-async def slash_settings(interaction: discord.Interaction):
-    if interaction.guild is None:
-        return await interaction.response.send_message("Settings only work in servers.", ephemeral=True)
-    if not has_owner_power(interaction.user, interaction.guild):
-        return await interaction.response.send_message("Admin power only.", ephemeral=True)
-    await interaction.response.send_message(
-        embed=await build_settings_embed(interaction.guild),
-        view=SettingsView(interaction.user.id),
-        ephemeral=True
-    )
-
-@bot.tree.command(name="games", description="Show Pro𝚀𝚞𝚎 games.")
-async def slash_games(interaction: discord.Interaction):
-    prefix = prefix_for_guild(interaction.guild)
-    await interaction.response.send_message(embed=games_embed(prefix), view=GamesView(interaction.user.id, prefix), ephemeral=True)
-
-mod_group = app_commands.Group(name="mod", description="Moderation and server tools.")
-game_group = app_commands.Group(name="game", description="Games and social games.")
-quewo_group = app_commands.Group(name="quewo", description="𝚀𝚞𝚎wo economy commands.")
-gamble_group = app_commands.Group(name="gamble", description="𝚀𝚞𝚎wo gambling games.")
-utility_group = app_commands.Group(name="utility", description="Timers, polls, lookup, and utility commands.")
-ai_group = app_commands.Group(name="ai", description="AI assistant commands.")
-setup_group = app_commands.Group(name="setup", description="Server setup and configuration commands.")
-
-@mod_group.command(name="purge", description="Delete recent messages.")
-@app_commands.describe(amount="How many messages", user="Optional user filter")
-async def slash_mod_purge(interaction: discord.Interaction, amount: int, user: discord.Member = None):
-    await slash_invoke(interaction, "purge", amount, slash_user_arg(user))
-
-@mod_group.command(name="rpurge", description="Delete recent bot response messages.")
-@app_commands.describe(amount="How many messages")
-async def slash_mod_rpurge(interaction: discord.Interaction, amount: int):
-    await slash_invoke(interaction, "rpurge", amount)
-
-@mod_group.command(name="lock", description="Lock the current channel.")
-async def slash_mod_lock(interaction: discord.Interaction):
-    await slash_invoke(interaction, "lock")
-
-@mod_group.command(name="unlock", description="Unlock the current channel.")
-async def slash_mod_unlock(interaction: discord.Interaction):
-    await slash_invoke(interaction, "unlock")
-
-@mod_group.command(name="lockdown", description="Lock down the server.")
-async def slash_mod_lockdown(interaction: discord.Interaction):
-    await slash_invoke(interaction, "lockdown")
-
-@mod_group.command(name="reopen", description="Reopen after lockdown.")
-async def slash_mod_reopen(interaction: discord.Interaction):
-    await slash_invoke(interaction, "reopen")
-
-@mod_group.command(name="kick", description="Kick a member.")
-@app_commands.describe(user="Member to kick", reason="Optional reason")
-async def slash_mod_kick(interaction: discord.Interaction, user: discord.Member, reason: str = ""):
-    await slash_invoke(interaction, "kick", slash_user_arg(user), reason)
-
-@mod_group.command(name="ban", description="Ban a member.")
-@app_commands.describe(user="Member to ban", reason="Optional reason")
-async def slash_mod_ban(interaction: discord.Interaction, user: discord.Member, reason: str = ""):
-    await slash_invoke(interaction, "ban", slash_user_arg(user), reason)
-
-@mod_group.command(name="unban", description="Unban a user by user or ID.")
-@app_commands.describe(user_or_id="User mention, username, or ID")
-async def slash_mod_unban(interaction: discord.Interaction, user_or_id: str):
-    await slash_invoke(interaction, "unban", user_or_id)
-
-@mod_group.command(name="addrole", description="Add a role to a member.")
-@app_commands.describe(user="Member", role="Role")
-async def slash_mod_addrole(interaction: discord.Interaction, user: discord.Member, role: discord.Role):
-    await slash_invoke(interaction, "addrole", slash_user_arg(user), role.mention)
-
-@mod_group.command(name="removerole", description="Remove a role from a member.")
-@app_commands.describe(user="Member", role="Role")
-async def slash_mod_removerole(interaction: discord.Interaction, user: discord.Member, role: discord.Role):
-    await slash_invoke(interaction, "removerole", slash_user_arg(user), role.mention)
-
-@mod_group.command(name="setnick", description="Change a member nickname.")
-@app_commands.describe(user="Member", nickname="New nickname")
-async def slash_mod_setnick(interaction: discord.Interaction, user: discord.Member, nickname: str):
-    await slash_invoke(interaction, "setnick", slash_user_arg(user), nickname)
-
-@mod_group.command(name="steal", description="Steal an emoji or sticker.")
-@app_commands.describe(item="Emoji, sticker, or URL")
-async def slash_mod_steal(interaction: discord.Interaction, item: str):
-    await slash_invoke(interaction, "steal", item)
-
-@mod_group.command(name="fwd", description="Forward recent messages.")
-@app_commands.describe(amount="Number of messages", user="Optional user filter", target="Optional target channel")
-async def slash_mod_fwd(interaction: discord.Interaction, amount: int, user: discord.Member = None, target: discord.TextChannel = None):
-    await slash_invoke(interaction, "fwd", amount, slash_user_arg(user), slash_channel_arg(target))
-
-@game_group.command(name="truthordare", description="Start Truth or Dare.")
-@app_commands.describe(mode="Choose random, truth, or dare", user="Optional person to target")
-@app_commands.choices(mode=[
-    app_commands.Choice(name="Random", value="random"),
-    app_commands.Choice(name="Truth", value="truth"),
-    app_commands.Choice(name="Dare", value="dare"),
-])
-async def slash_game_truthordare(interaction: discord.Interaction, mode: str = "random", user: discord.Member = None):
-    await slash_invoke(interaction, "truthordare", mode, slash_user_arg(user))
-
-@game_group.command(name="ttt", description="Start Tic Tac Toe.")
-@app_commands.describe(user="Opponent", bet="Optional bet")
-async def slash_game_ttt(interaction: discord.Interaction, user: discord.Member, bet: str = ""):
-    await slash_invoke(interaction, "ttt", slash_user_arg(user), bet)
-
-@game_group.command(name="c4", description="Start Connect 4.")
-@app_commands.describe(user="Opponent", bet="Optional bet")
-async def slash_game_c4(interaction: discord.Interaction, user: discord.Member, bet: str = ""):
-    await slash_invoke(interaction, "c4", slash_user_arg(user), bet)
-
-@game_group.command(name="chess", description="Start chess.")
-@app_commands.describe(user="Opponent", bet="Optional bet")
-async def slash_game_chess(interaction: discord.Interaction, user: discord.Member, bet: str = ""):
-    await slash_invoke(interaction, "chess", slash_user_arg(user), bet)
-
-@game_group.command(name="move", description="Make a chess move.")
-@app_commands.describe(move="Move like e2e4")
-async def slash_game_move(interaction: discord.Interaction, move: str):
-    await slash_invoke(interaction, "move", move)
-
-@game_group.command(name="resign", description="Resign a chess game.")
-async def slash_game_resign(interaction: discord.Interaction):
-    await slash_invoke(interaction, "resign")
-
-@game_group.command(name="flagquiz", description="Start Flag Quiz.")
-@app_commands.describe(count="10, 20, 50, or all", mode="solo or public")
-async def slash_game_flagquiz(interaction: discord.Interaction, count: str = "", mode: str = ""):
-    await slash_invoke(interaction, "flagquiz", count, mode)
-
-@game_group.command(name="flagstats", description="Check Flag Quiz stats.")
-@app_commands.describe(user="Optional user")
-async def slash_game_flagstats(interaction: discord.Interaction, user: discord.Member = None):
-    await slash_invoke(interaction, "flagstats", slash_user_arg(user))
-
-@game_group.command(name="picker", description="Pick from options.")
-@app_commands.describe(options="Options separated by commas or |")
-async def slash_game_picker(interaction: discord.Interaction, options: str):
-    await slash_invoke(interaction, "picker", options)
-
-@quewo_group.command(name="bal", description="Check a 𝚀𝚞𝚎wo balance.")
-@app_commands.describe(user="Optional user")
-async def slash_quewo_bal(interaction: discord.Interaction, user: discord.Member = None):
-    await slash_invoke(interaction, "bal", slash_user_arg(user))
-
-@quewo_group.command(name="profile", description="Check a 𝚀𝚞𝚎wo profile.")
-@app_commands.describe(user="Optional user")
-async def slash_quewo_profile(interaction: discord.Interaction, user: discord.Member = None):
-    await slash_invoke(interaction, "profile", slash_user_arg(user))
-
-@quewo_group.command(name="inventory", description="Check inventory.")
-@app_commands.describe(user="Optional user")
-async def slash_quewo_inventory(interaction: discord.Interaction, user: discord.Member = None):
-    await slash_invoke(interaction, "inventory", slash_user_arg(user))
-
-@quewo_group.command(name="shop", description="Open the shop.")
-async def slash_quewo_shop(interaction: discord.Interaction):
-    await slash_invoke(interaction, "shop")
-
-@quewo_group.command(name="daily", description="Claim daily reward.")
-async def slash_quewo_daily(interaction: discord.Interaction):
-    await slash_invoke(interaction, "daily")
-
-@quewo_group.command(name="weekly", description="Claim weekly reward.")
-async def slash_quewo_weekly(interaction: discord.Interaction):
-    await slash_invoke(interaction, "weekly")
-
-@quewo_group.command(name="monthly", description="Claim monthly reward.")
-async def slash_quewo_monthly(interaction: discord.Interaction):
-    await slash_invoke(interaction, "monthly")
-
-@quewo_group.command(name="lottery", description="Show lottery.")
-async def slash_quewo_lottery(interaction: discord.Interaction):
-    await slash_invoke(interaction, "lottery")
-
-@quewo_group.command(name="buytick", description="Buy lottery tickets.")
-@app_commands.describe(amount="Ticket amount, usually 10, 20, or 30")
-async def slash_quewo_buytick(interaction: discord.Interaction, amount: int):
-    await slash_invoke(interaction, "buytick", amount)
-
-@quewo_group.command(name="give", description="Send 𝚀𝚞𝚎wo currency.")
-@app_commands.describe(user="Recipient", amount="Amount like 10k")
-async def slash_quewo_give(interaction: discord.Interaction, user: discord.Member, amount: str):
-    await slash_invoke(interaction, "give", slash_user_arg(user), amount)
-
-@quewo_group.command(name="bank", description="Open bank.")
-async def slash_quewo_bank(interaction: discord.Interaction):
-    await slash_invoke(interaction, "bank")
-
-@quewo_group.command(name="lb", description="Open leaderboard.")
-async def slash_quewo_lb(interaction: discord.Interaction):
-    await slash_invoke(interaction, "lb")
-
-@quewo_group.command(name="gamestats", description="Check game stats.")
-@app_commands.describe(user="Optional user")
-async def slash_quewo_gamestats(interaction: discord.Interaction, user: discord.Member = None):
-    await slash_invoke(interaction, "gamestats", slash_user_arg(user))
-
-@quewo_group.command(name="achievements", description="Check achievements.")
-@app_commands.describe(user="Optional user")
-async def slash_quewo_achievements(interaction: discord.Interaction, user: discord.Member = None):
-    await slash_invoke(interaction, "achievements", slash_user_arg(user))
-
-@quewo_group.command(name="explain", description="Explain a 𝚀𝚞𝚎wo command.")
-@app_commands.describe(command="Command to explain")
-async def slash_quewo_explain(interaction: discord.Interaction, command: str):
-    await slash_invoke(interaction, "explain", command)
-
-@gamble_group.command(name="cf", description="Coin flip.")
-@app_commands.describe(amount="Bet amount", side="heads/tails")
-async def slash_gamble_cf(interaction: discord.Interaction, amount: str, side: str):
-    await slash_invoke(interaction, "cf", amount, side)
-
-@gamble_group.command(name="roulette", description="Roulette.")
-@app_commands.describe(amount="Bet amount", color="red, black, or green")
-async def slash_gamble_roulette(interaction: discord.Interaction, amount: str, color: str = ""):
-    await slash_invoke(interaction, "roulette", amount, color)
-
-@gamble_group.command(name="slots", description="Slots.")
-@app_commands.describe(amount="Bet amount")
-async def slash_gamble_slots(interaction: discord.Interaction, amount: str):
-    await slash_invoke(interaction, "slots", amount)
-
-@gamble_group.command(name="blackjack", description="Blackjack.")
-@app_commands.describe(amount="Bet amount")
-async def slash_gamble_blackjack(interaction: discord.Interaction, amount: str):
-    await slash_invoke(interaction, "blackjack", amount)
-
-@gamble_group.command(name="scratch", description="Scratch card.")
-@app_commands.describe(amount="Bet amount")
-async def slash_gamble_scratch(interaction: discord.Interaction, amount: str):
-    await slash_invoke(interaction, "scratch", amount)
-
-@gamble_group.command(name="tower", description="Tower.")
-@app_commands.describe(amount="Bet amount")
-async def slash_gamble_tower(interaction: discord.Interaction, amount: str):
-    await slash_invoke(interaction, "tower", amount)
-
-@gamble_group.command(name="vault", description="Vault.")
-@app_commands.describe(amount="Bet amount")
-async def slash_gamble_vault(interaction: discord.Interaction, amount: str):
-    await slash_invoke(interaction, "vault", amount)
-
-@gamble_group.command(name="memory", description="Memory.")
-@app_commands.describe(amount="Bet amount")
-async def slash_gamble_memory(interaction: discord.Interaction, amount: str):
-    await slash_invoke(interaction, "memory", amount)
-
-@gamble_group.command(name="cardladder", description="Card Ladder.")
-@app_commands.describe(amount="Bet amount")
-async def slash_gamble_cardladder(interaction: discord.Interaction, amount: str):
-    await slash_invoke(interaction, "cardladder", amount)
-
-@gamble_group.command(name="lockpick", description="Lockpick.")
-@app_commands.describe(amount="Bet amount")
-async def slash_gamble_lockpick(interaction: discord.Interaction, amount: str):
-    await slash_invoke(interaction, "lockpick", amount)
-
-@gamble_group.command(name="heist", description="Heist.")
-@app_commands.describe(amount="Bet amount")
-async def slash_gamble_heist(interaction: discord.Interaction, amount: str):
-    await slash_invoke(interaction, "heist", amount)
-
-@gamble_group.command(name="diceduel", description="Dice Duel.")
-@app_commands.describe(amount="Bet amount")
-async def slash_gamble_diceduel(interaction: discord.Interaction, amount: str):
-    await slash_invoke(interaction, "diceduel", amount)
-
-@gamble_group.command(name="cases", description="Cases.")
-@app_commands.describe(amount="Bet amount")
-async def slash_gamble_cases(interaction: discord.Interaction, amount: str):
-    await slash_invoke(interaction, "cases", amount)
-
-@gamble_group.command(name="plinko", description="Plinko.")
-@app_commands.describe(amount="Bet amount")
-async def slash_gamble_plinko(interaction: discord.Interaction, amount: str):
-    await slash_invoke(interaction, "plinko", amount)
-
-@gamble_group.command(name="luckynumber", description="Lucky Number.")
-@app_commands.describe(amount="Bet amount")
-async def slash_gamble_luckynumber(interaction: discord.Interaction, amount: str):
-    await slash_invoke(interaction, "luckynumber", amount)
-
-@gamble_group.command(name="jackpotspin", description="Jackpot Spin.")
-@app_commands.describe(amount="Bet amount")
-async def slash_gamble_jackpotspin(interaction: discord.Interaction, amount: str):
-    await slash_invoke(interaction, "jackpotspin", amount)
-
-@gamble_group.command(name="dungeon", description="Dungeon.")
-@app_commands.describe(amount="Optional bet amount")
-async def slash_gamble_dungeon(interaction: discord.Interaction, amount: str = ""):
-    await slash_invoke(interaction, "dungeon", amount)
-
-@gamble_group.command(name="ms", description="Mine Sweeper.")
-@app_commands.describe(amount="Bet amount")
-async def slash_gamble_ms(interaction: discord.Interaction, amount: str):
-    await slash_invoke(interaction, "ms", amount)
-
-@gamble_group.command(name="wheel", description="Wheel.")
-@app_commands.describe(amount="Bet amount")
-async def slash_gamble_wheel(interaction: discord.Interaction, amount: str):
-    await slash_invoke(interaction, "wheel", amount)
-
-@utility_group.command(name="userinfo", description="Show user info.")
-@app_commands.describe(user="Optional user")
-async def slash_utility_userinfo(interaction: discord.Interaction, user: discord.Member = None):
-    await slash_invoke(interaction, "userinfo", slash_user_arg(user))
-
-@utility_group.command(name="pfp", description="Show a profile picture.")
-@app_commands.describe(user="Optional user")
-async def slash_utility_pfp(interaction: discord.Interaction, user: discord.Member = None):
-    await slash_invoke(interaction, "pfp", slash_user_arg(user))
-
-@utility_group.command(name="calc", description="Calculate an expression.")
-@app_commands.describe(expression="Expression to calculate")
-async def slash_utility_calc(interaction: discord.Interaction, expression: str):
-    await slash_invoke(interaction, "calc", expression)
-
-@utility_group.command(name="define", description="Define a word.")
-@app_commands.describe(word="Word to define")
-async def slash_utility_define(interaction: discord.Interaction, word: str):
-    await slash_invoke(interaction, "define", word)
-
-@utility_group.command(name="timer", description="Start a timer.")
-@app_commands.describe(time="Time like 10m, 1h, or 30s", title="Optional title")
-async def slash_utility_timer(interaction: discord.Interaction, time: str, title: str = ""):
-    await slash_invoke(interaction, "timer", time, title)
-
-@utility_group.command(name="alarm", description="Set an alarm.")
-@app_commands.describe(time="Date/time or duration", title="Optional title")
-async def slash_utility_alarm(interaction: discord.Interaction, time: str, title: str = ""):
-    await slash_invoke(interaction, "alarm", time, title)
-
-@utility_group.command(name="poll", description="Create a poll.")
-@app_commands.describe(question="Question", options="Options separated by |", time="Optional duration")
-async def slash_utility_poll(interaction: discord.Interaction, question: str, options: str = "", time: str = ""):
-    await slash_invoke(interaction, "poll", slash_poll_arg(question, options, time))
-
-@utility_group.command(name="translate", description="Translate text.")
-@app_commands.describe(text="Text to translate", language="Target language")
-async def slash_utility_translate(interaction: discord.Interaction, text: str, language: str = ""):
-    await slash_invoke(interaction, "translate", text, language)
-
-@utility_group.command(name="find", description="Find a user.")
-@app_commands.describe(query="Name or ID")
-async def slash_utility_find(interaction: discord.Interaction, query: str):
-    await slash_invoke(interaction, "find", query)
-
-@utility_group.command(name="messages", description="Open message tracker.")
-async def slash_utility_messages(interaction: discord.Interaction):
-    await slash_invoke(interaction, "messages")
-
-@utility_group.command(name="activity", description="Open activity report.")
-async def slash_utility_activity(interaction: discord.Interaction):
-    await slash_invoke(interaction, "activity")
-
-@ai_group.command(name="ask", description="Ask Pro𝚀𝚞𝚎 AI.")
-@app_commands.describe(prompt="What to ask")
-async def slash_ai_ask(interaction: discord.Interaction, prompt: str):
-    await slash_invoke(interaction, "ask", prompt)
-
-@ai_group.command(name="generate", description="Generate text with AI.")
-@app_commands.describe(prompt="What to generate")
-async def slash_ai_generate(interaction: discord.Interaction, prompt: str):
-    await slash_invoke(interaction, "generate", prompt)
-
-@ai_group.command(name="analyse", description="Analyse text or context.")
-@app_commands.describe(prompt="What to analyse")
-async def slash_ai_analyse(interaction: discord.Interaction, prompt: str):
-    await slash_invoke(interaction, "analyse", prompt)
-
-@ai_group.command(name="summarize", description="Summarize chat or a user.")
-@app_commands.describe(request="What to summarize")
-async def slash_ai_summarize(interaction: discord.Interaction, request: str = ""):
-    await slash_invoke(interaction, "summarize", request)
-
-@ai_group.command(name="aidetect", description="Estimate whether text is AI-written.")
-@app_commands.describe(text="Text to check")
-async def slash_ai_aidetect(interaction: discord.Interaction, text: str):
-    await slash_invoke(interaction, "aidetect", text)
-
-@ai_group.command(name="memory", description="Check your AI memory.")
-@app_commands.describe(user="Optional user, if you have permission")
-async def slash_ai_memory(interaction: discord.Interaction, user: discord.Member = None):
-    await slash_invoke(interaction, "aimemory", slash_user_arg(user))
-
-@ai_group.command(name="knowledge", description="Ask what Pro𝚀𝚞𝚎 knows about itself.")
-async def slash_ai_knowledge(interaction: discord.Interaction):
-    await slash_invoke(interaction, "aiknow")
-
-@setup_group.command(name="dashboard", description="Open settings.")
-async def slash_setup_dashboard(interaction: discord.Interaction):
-    await slash_invoke(interaction, "settings")
-
-@setup_group.command(name="prefix", description="Change the server prefix.")
-@app_commands.describe(prefix="New prefix")
-async def slash_setup_prefix(interaction: discord.Interaction, prefix: str = ""):
-    await slash_invoke(interaction, "prefix", prefix)
-
-@setup_group.command(name="logs", description="Set logs channel.")
-@app_commands.describe(channel="Logs channel")
-async def slash_setup_logs(interaction: discord.Interaction, channel: discord.TextChannel = None):
-    await slash_invoke(interaction, "setlogs", slash_channel_arg(channel))
-
-@setup_group.command(name="birthday", description="Set birthday channel.")
-@app_commands.describe(channel="Birthday channel")
-async def slash_setup_birthday(interaction: discord.Interaction, channel: discord.TextChannel = None):
-    await slash_invoke(interaction, "setbdaychannel", slash_channel_arg(channel))
-
-@setup_group.command(name="quewo", description="Restrict 𝚀𝚞𝚎wo to a channel.")
-@app_commands.describe(channel="Allowed 𝚀𝚞𝚎wo channel")
-async def slash_setup_quewo(interaction: discord.Interaction, channel: discord.TextChannel = None):
-    await slash_invoke(interaction, "quewochannel", slash_channel_arg(channel))
-
-@setup_group.command(name="truthordare", description="Restrict Truth or Dare channels.")
-@app_commands.describe(action="status, set, add, remove, clear, or here", channels="Channel mentions or IDs")
-async def slash_setup_truthordare(interaction: discord.Interaction, action: str = "status", channels: str = ""):
-    await slash_invoke(interaction, "todchannel", action, channels)
-
-@setup_group.command(name="ai", description="Set AI channel/options.")
-@app_commands.describe(channel="AI channel")
-async def slash_setup_ai(interaction: discord.Interaction, channel: discord.TextChannel = None):
-    await slash_invoke(interaction, "aichannel", slash_channel_arg(channel))
-
-@setup_group.command(name="robbing", description="Configure robbing.")
-@app_commands.describe(setting="on/off/status")
-async def slash_setup_robbing(interaction: discord.Interaction, setting: str = ""):
-    await slash_invoke(interaction, "robsettings", setting)
-
-for slash_group in (mod_group, game_group, quewo_group, gamble_group, utility_group, ai_group, setup_group):
-    bot.tree.add_command(slash_group)
-
 class ConfirmActionView(View):
     def __init__(self, author_id, label="Confirm"):
         super().__init__(timeout=45)
@@ -9669,10 +9114,9 @@ async def on_message_delete(message):
     deleter = "Unknown"
 
     if message.guild:
-        async for entry in message.guild.audit_logs(limit=5, action=discord.AuditLogAction.message_delete):
-            if entry.target.id == message.author.id and (datetime.now(timezone.utc) - entry.created_at).total_seconds() < 5:
-                deleter = log_user(entry.user)
-                break
+        entry = await find_audit_entry(message.guild, {discord.AuditLogAction.message_delete}, message.author.id, limit=5, max_age_seconds=8)
+        if entry:
+            deleter = log_user(entry.user)
 
     embed = discord.Embed(
         title=f"{economy_q_trash} Message Deleted",
@@ -10264,15 +9708,8 @@ async def on_raw_reaction_clear(payload):
     if not message.guild:
         return
 
-    try:
-        async for entry in message.guild.audit_logs(limit=1, action=discord.AuditLogAction.message_reaction_remove_all):
-            remover = entry.user
-            break
-        else:
-            remover = None
-    except Exception as e:
-        print(f"Failed to fetch audit log: {e}")
-        remover = None
+    entry = await find_audit_entry(message.guild, {discord.AuditLogAction.message_reaction_remove_all}, message.id, limit=3, max_age_seconds=15)
+    remover = entry.user if entry else None
 
     embed = discord.Embed(
         title=f"{economy_q_reaction} All Reactions Removed",
@@ -10300,13 +9737,10 @@ async def on_member_update(before, after):
     guild = after.guild
 
     async def get_action_by(action_types):
-        async for entry in guild.audit_logs(limit=10, oldest_first=False):
-            if entry.target.id == after.id and entry.action in action_types:
-                return log_user(entry.user)
-        return None
+        return await find_audit_entry(guild, action_types, after.id, limit=10)
 
     if before.nick != after.nick:
-        action_by = await get_action_by({discord.AuditLogAction.member_update})
+        action_entry = await get_action_by({discord.AuditLogAction.member_update})
         embed = discord.Embed(
             title=f"{economy_q_user_edit} Nickname Changed",
             color=discord.Color.blue()
@@ -10314,8 +9748,7 @@ async def on_member_update(before, after):
         embed.add_field(name="User", value=log_user(before), inline=False)
         embed.add_field(name="Before", value=before.nick or before.name, inline=True)
         embed.add_field(name="After", value=after.nick or after.name, inline=True)
-        if action_by:
-            embed.add_field(name="Changed by", value=action_by, inline=False)
+        add_audit_actor_fields(embed, action_entry, "Changed by")
         embed.timestamp = datetime.now(timezone.utc)
         await send_log(embed, guild)
 
@@ -10324,25 +9757,27 @@ async def on_member_update(before, after):
     added = after_roles - before_roles
     removed = before_roles - after_roles
     if added or removed:
-        action_by = await get_action_by({discord.AuditLogAction.member_role_update})
+        action_entry = await get_action_by({discord.AuditLogAction.member_role_update})
         embed = discord.Embed(
             title=f"{economy_q_roles} Roles Updated",
             color=discord.Color.teal()
         )
         embed.add_field(name="User", value=log_user(after), inline=False)
         if added:
-            embed.add_field(name="Added", value=", ".join(role.name for role in added), inline=True)
+            embed.add_field(name="Added", value=embed_value("\n".join(log_role(role) for role in sorted(added, key=lambda item: item.position, reverse=True)), 1024), inline=True)
         if removed:
-            embed.add_field(name="Removed", value=", ".join(role.name for role in removed), inline=True)
-        if action_by:
-            embed.add_field(name="Updated by", value=action_by, inline=False)
+            embed.add_field(name="Removed", value=embed_value("\n".join(log_role(role) for role in sorted(removed, key=lambda item: item.position, reverse=True)), 1024), inline=True)
+        add_audit_actor_fields(embed, action_entry, "Updated by")
         embed.timestamp = datetime.now(timezone.utc)
         await send_log(embed, guild)
 
     before_timeout = getattr(before, "communication_disabled_until", None)
     after_timeout = getattr(after, "communication_disabled_until", None)
     if before_timeout != after_timeout:
-        action_by = await get_action_by({discord.AuditLogAction.member_update})
+        timeout_stamp = int(after_timeout.timestamp()) if after_timeout else 0
+        if not should_emit_log_once(("member_timeout", guild.id, after.id, timeout_stamp), ttl_seconds=30):
+            return
+        action_entry = await get_action_by({discord.AuditLogAction.member_update})
         if after_timeout and (after_timeout > datetime.now(timezone.utc)):
             embed = discord.Embed(
                 title=f"{economy_q_timeout} Member Timed Out",
@@ -10350,8 +9785,7 @@ async def on_member_update(before, after):
             )
             embed.add_field(name="User", value=log_user(after), inline=False)
             embed.add_field(name="Until", value=f"<t:{int(after_timeout.timestamp())}:F>", inline=False)
-            if action_by:
-                embed.add_field(name="By", value=action_by, inline=False)
+            add_audit_actor_fields(embed, action_entry)
             embed.timestamp = datetime.now(timezone.utc)
         else:
             embed = discord.Embed(
@@ -10359,8 +9793,7 @@ async def on_member_update(before, after):
                 color=discord.Color.green()
             )
             embed.add_field(name="User", value=log_user(after), inline=False)
-            if action_by:
-                embed.add_field(name="By", value=action_by, inline=False)
+            add_audit_actor_fields(embed, action_entry)
             embed.timestamp = datetime.now(timezone.utc)
         await send_log(embed, guild)
 
@@ -10372,6 +9805,11 @@ async def on_audit_log_entry_create(entry):
             return
 
         after_timeout = getattr(target, "communication_disabled_until", None)
+        target_id = getattr(target, "id", None)
+        guild_id = getattr(getattr(entry, "guild", None), "id", 0)
+        timeout_stamp = int(after_timeout.timestamp()) if after_timeout else 0
+        if target_id is None or not should_emit_log_once(("member_timeout", guild_id, target_id, timeout_stamp), ttl_seconds=30):
+            return
 
         if after_timeout and after_timeout.timestamp() > datetime.now(timezone.utc).timestamp():
             embed = discord.Embed(
@@ -10438,21 +9876,17 @@ async def on_user_update(before, after):
 @bot.event
 async def on_member_remove(member):
     guild = member.guild
-    async for entry in guild.audit_logs(limit=1, action=discord.AuditLogAction.kick):
-        if entry.target.id == member.id:
-            embed = discord.Embed(
-                title=f"{economy_q_hammer} Member Kicked",
-                color=discord.Color.red()
-            )
-            embed.timestamp = datetime.now(timezone.utc)
-            embed.add_field(name="User", value=log_user(member), inline=False)
-            embed.add_field(name="Kicked by", value=log_user(entry.user), inline=False)
-            embed.add_field(name="Reason", value=entry.reason or "No reason provided", inline=False)
-            try:
-                await send_log(embed, guild)
-            except Exception as e:
-                print(f"Failed to send log: {e}")
-            return
+    entry = await find_audit_entry(guild, {discord.AuditLogAction.kick}, member.id)
+    if entry:
+        embed = discord.Embed(
+            title=f"{economy_q_hammer} Member Kicked",
+            color=discord.Color.red()
+        )
+        embed.timestamp = datetime.now(timezone.utc)
+        embed.add_field(name="User", value=log_user(member), inline=False)
+        add_audit_actor_fields(embed, entry, "Kicked by")
+        await send_log(embed, guild)
+        return
 
     embed = discord.Embed(
         title="Member Left",
@@ -12556,8 +11990,6 @@ async def runlock(ctx):
     await asyncio.to_thread(save_reaction_shutdown_channels, scoped_id(ctx.guild), channels)
     await ctx.send("Reactions are now enabled in this channel.", delete_after=5)
 
-from collections import Counter
-
 async def parse_member_count_args(ctx, args):
     try:
         tokens = shlex.split(str(args or ""))
@@ -12879,7 +12311,7 @@ async def addrole(ctx, *, args: str = None):
         return await ctx.send("You can't edit one or more of those members' roles.")
     changed = []
     for member in members:
-        await member.add_roles(role)
+        await member.add_roles(role, reason=f"addrole command by {ctx.author} ({ctx.author.id})")
         changed.append(f"<@{member.id}>")
     await ctx.send(
         f"Added **{role.name}** to **{len(changed)}** user(s): {', '.join(changed)}.",
@@ -12898,7 +12330,7 @@ async def removerole(ctx, *, args: str = None):
         return await ctx.send("You can't edit one or more of those members' roles.")
     changed = []
     for member in members:
-        await member.remove_roles(role)
+        await member.remove_roles(role, reason=f"removerole command by {ctx.author} ({ctx.author.id})")
         changed.append(f"<@{member.id}>")
     await ctx.send(
         f"Removed **{role.name}** from **{len(changed)}** user(s): {', '.join(changed)}.",
@@ -14699,7 +14131,7 @@ class BirthdaySetupModal(Modal):
         if interaction.user.id != self.author_id:
             return await interaction.response.send_message("Use your own setup UI.", ephemeral=True)
         try:
-            save_user_birthday(interaction.user.id, str(self.date.value).strip())
+            await asyncio.to_thread(save_user_birthday, interaction.user.id, str(self.date.value).strip())
         except ValueError:
             return await interaction.response.send_message("Use `DD/MM`, example: `25/12`.", ephemeral=True)
         await interaction.response.send_message(f"{economy_q_accept} Birthday saved!", ephemeral=True)
@@ -14721,7 +14153,7 @@ async def setbday(ctx, date: str = None):
             view=SingleUserSetupView(ctx.author.id, OpenBirthdaySetupButton())
         )
     try:
-        save_user_birthday(ctx.author.id, date)
+        await asyncio.to_thread(save_user_birthday, ctx.author.id, date)
         await ctx.send(f"{economy_q_accept} Birthday saved!")
     except ValueError:
         await ctx.send("Invalid date format. Use DD/MM.")

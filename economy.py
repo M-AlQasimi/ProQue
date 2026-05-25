@@ -2449,9 +2449,9 @@ async def handle_lottery_purchase(interaction, tickets):
     if interaction.guild is None:
         await interaction.response.send_message(f"{Q_DENIED} Lottery tickets only work in servers.", ephemeral=True)
         return
+    await interaction.response.defer(ephemeral=True, thinking=True)
     if not await ensure_economy_interaction_channel_allowed(interaction):
         return
-    await interaction.response.defer(ephemeral=True, thinking=True)
     try:
         result = await asyncio.to_thread(buy_lottery_tickets_sync, interaction.guild.id, interaction.user.id, tickets)
         if not result.get("ok"):
@@ -2468,9 +2468,9 @@ async def send_lottery_stats(interaction):
     if interaction.guild is None:
         await interaction.response.send_message(f"{Q_DENIED} Lottery stats only work in servers.", ephemeral=True)
         return
+    await interaction.response.defer(ephemeral=True, thinking=True)
     if not await ensure_economy_interaction_channel_allowed(interaction):
         return
-    await interaction.response.defer(ephemeral=True, thinking=True)
     try:
         config = await asyncio.to_thread(get_lottery_config, interaction.guild.id)
         if config is None:
@@ -2528,8 +2528,6 @@ class LotteryPanelView(discord.ui.View):
 
     @discord.ui.button(label="Custom", emoji=Q_EDIT, style=discord.ButtonStyle.blurple, custom_id="lottery:buy:custom")
     async def buy_custom(self, interaction, button):
-        if not await ensure_economy_interaction_channel_allowed(interaction):
-            return
         await interaction.response.send_modal(LotteryCustomAmountModal())
 
     @discord.ui.button(label="Stats", emoji=QOIN_CHEST, style=discord.ButtonStyle.gray, custom_id="lottery:stats")
@@ -4473,7 +4471,7 @@ async def invoke_economy_command_from_interaction(interaction, command_name, arg
     ctx = await commands.Context.from_interaction(interaction)
     ctx.command = command
     ctx.invoked_with = command.name
-    ctx.prefix = "/run "
+    ctx.prefix = "/ui "
     ctx.view = StringView(str(args or "").strip())
     ctx.view.skip_ws()
     try:
@@ -4990,10 +4988,11 @@ async def inventory(ctx, member: discord.Member = None):
 
         @discord.ui.button(label="Equip Theme", style=discord.ButtonStyle.primary)
         async def equip_theme_button(self, interaction, button):
+            await interaction.response.defer(ephemeral=True)
             try:
                 updated = await asyncio.to_thread(get_user, interaction.user.id)
             except Exception:
-                return await interaction.response.send_message(f"{Q_DENIED} Database unavailable. Try again shortly.", ephemeral=True)
+                return await interaction.followup.send(f"{Q_DENIED} Database unavailable. Try again shortly.", ephemeral=True)
             options = []
             for theme_id, info in PROFILE_THEMES.items():
                 item_id = info.get("item")
@@ -5015,17 +5014,18 @@ async def inventory(ctx, member: discord.Member = None):
                     await select_interaction.response.send_message(f"{Q_SUCCESS} Equipped **{PROFILE_THEMES[theme_id]['label']}**.", ephemeral=True)
                     await parent.refresh()
 
-            await interaction.response.send_message("Pick a theme to equip.", view=ThemeEquipView(), ephemeral=True)
+            await interaction.followup.send("Pick a theme to equip.", view=ThemeEquipView(), ephemeral=True)
 
         @discord.ui.button(label="Equip Badges", style=discord.ButtonStyle.secondary)
         async def equip_badges_button(self, interaction, button):
+            await interaction.response.defer(ephemeral=True)
             try:
                 updated = await asyncio.to_thread(get_user, interaction.user.id)
             except Exception:
-                return await interaction.response.send_message(f"{Q_DENIED} Database unavailable. Try again shortly.", ephemeral=True)
+                return await interaction.followup.send(f"{Q_DENIED} Database unavailable. Try again shortly.", ephemeral=True)
             earned = [badge for badge in achievement_ids(updated) if badge in GAME_ACHIEVEMENTS]
             if not earned:
-                return await interaction.response.send_message(f"{Q_DENIED} You have no earned badges yet.", ephemeral=True)
+                return await interaction.followup.send(f"{Q_DENIED} You have no earned badges yet.", ephemeral=True)
             options = [
                 discord.SelectOption(label=achievement_display(badge)[:100], value=badge)
                 for badge in earned[:25]
@@ -5050,7 +5050,7 @@ async def inventory(ctx, member: discord.Member = None):
                     await select_interaction.response.send_message(f"{Q_SUCCESS} Equipped **{len(selected)}** badge(s).", ephemeral=True)
                     await parent.refresh()
 
-            await interaction.response.send_message("Pick up to 3 badges for your profile.", view=BadgeEquipView(), ephemeral=True)
+            await interaction.followup.send("Pick up to 3 badges for your profile.", view=BadgeEquipView(), ephemeral=True)
 
         async def on_timeout(self):
             for item in self.children:
@@ -5103,8 +5103,9 @@ async def quests(ctx):
         async def select_page(self, interaction):
             self.page = self.page_select.values[0]
             self.update_select_defaults()
+            await interaction.response.defer()
             updated = await asyncio.to_thread(get_user, interaction.user.id)
-            await interaction.response.edit_message(
+            await interaction.edit_original_response(
                 content=None,
                 embed=build_quests_embed(interaction.user, updated, self.page),
                 view=self,
@@ -5483,11 +5484,12 @@ async def shop(ctx):
         async def select_item(self, interaction):
             self.mode = "catalog"
             self.selected_item_id = self.item_select.values[0]
+            await interaction.response.defer()
             data, discount = await asyncio.gather(
                 get_shop_data(interaction.user.id),
                 get_shop_discount(),
             )
-            await interaction.response.edit_message(
+            await interaction.edit_original_response(
                 embed=catalog_embed(data, self.selected_category, self.selected_item_id, discount),
                 view=self,
                 allowed_mentions=discord.AllowedMentions.none()
@@ -5498,11 +5500,12 @@ async def shop(ctx):
             self.selected_category = self.category_select.values[0]
             self.selected_item_id = selected_item_for_category(self.selected_category, self.selected_item_id)
             self.rebuild_components()
+            await interaction.response.defer()
             data, discount = await asyncio.gather(
                 get_shop_data(interaction.user.id),
                 get_shop_discount(),
             )
-            await interaction.response.edit_message(
+            await interaction.edit_original_response(
                 embed=catalog_embed(data, self.selected_category, self.selected_item_id, discount),
                 view=self,
                 allowed_mentions=discord.AllowedMentions.none()
@@ -5527,11 +5530,12 @@ async def shop(ctx):
         async def continue_shopping(self, interaction):
             self.mode = "catalog"
             self.rebuild_components()
+            await interaction.response.defer()
             data, discount = await asyncio.gather(
                 get_shop_data(interaction.user.id),
                 get_shop_discount(),
             )
-            await interaction.response.edit_message(
+            await interaction.edit_original_response(
                 embed=catalog_embed(data, self.selected_category, self.selected_item_id, discount),
                 view=self,
                 allowed_mentions=discord.AllowedMentions.none()
@@ -12003,8 +12007,9 @@ class OnboardingView(discord.ui.View):
 
     @discord.ui.button(label="Profile", emoji=Q_XP, style=discord.ButtonStyle.secondary)
     async def profile_button(self, interaction, button):
+        await interaction.response.defer(ephemeral=True)
         data = await asyncio.to_thread(get_user, interaction.user.id)
-        await interaction.response.send_message(embed=build_profile_embed(interaction.user, data), ephemeral=True)
+        await interaction.followup.send(embed=build_profile_embed(interaction.user, data), ephemeral=True)
 
 @commands.command(name="onboard", aliases=["onboarding", "newuser"])
 async def onboard(ctx):
