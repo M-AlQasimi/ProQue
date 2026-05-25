@@ -312,6 +312,7 @@ guild_prefixes = load_guild_prefixes()
 guild_birthday_channels = load_guild_birthday_channels()
 guild_activity_channels = load_guild_activity_channels()
 guild_log_configs = {}
+guild_invite_cache = {}
 censored_phrases = load_censored_phrases()
 watchlist = load_watchlist()
 reaction_watchlist = load_reaction_watchlist()
@@ -1309,7 +1310,7 @@ def command_denial_detail(ctx, error=None):
         "add", "remove", "addtick", "removetick", "settick", "lotterypot", "setquesos",
         "editlottery", "stoplottery", "qstats", "economyhealth", "balancedashboard", "endseason",
         "send", "reply", "fsleep", "wake", "clearwatchlist",
-        "aisettings", "aiperms", "aiignore", "aiunignore", "aichannel", "aistyle",
+    "aisettings", "aiperms", "aiignore", "aiunignore", "aistyle",
         "aihistory", "auditcommands", "styleaudit", "commandcleanup", "permaudit", "receipts", "aiguard",
     }
     if command_name in que_only:
@@ -1706,6 +1707,97 @@ async def send_rlog(embed, guild=None):
     except Exception as e:
         print(f"Failed to send reaction log for guild {guild.id if guild else 'unknown'}: {type(e).__name__} - {e}")
         return False
+
+def invite_snapshot(invite):
+    inviter = getattr(invite, "inviter", None)
+    channel = getattr(invite, "channel", None)
+    expires_at = getattr(invite, "expires_at", None)
+    created_at = getattr(invite, "created_at", None)
+    return {
+        "code": str(getattr(invite, "code", "")),
+        "uses": int(getattr(invite, "uses", 0) or 0),
+        "max_uses": int(getattr(invite, "max_uses", 0) or 0),
+        "max_age": int(getattr(invite, "max_age", 0) or 0),
+        "temporary": bool(getattr(invite, "temporary", False)),
+        "inviter_id": getattr(inviter, "id", None),
+        "channel_id": getattr(channel, "id", None),
+        "created_at": created_at,
+        "expires_at": expires_at,
+    }
+
+async def fetch_invite_snapshot(guild):
+    try:
+        invites = await guild.invites()
+    except discord.Forbidden:
+        return None, "missing Manage Server permission"
+    except discord.HTTPException as exc:
+        return None, f"Discord error: {clean_user_error(exc)}"
+    return {invite.code: invite_snapshot(invite) for invite in invites}, None
+
+async def refresh_invite_cache(guild):
+    snapshot, error = await fetch_invite_snapshot(guild)
+    if snapshot is not None:
+        guild_invite_cache[guild.id] = snapshot
+    return snapshot, error
+
+async def refresh_all_invite_caches():
+    refreshed = 0
+    skipped = 0
+    for guild in bot.guilds:
+        snapshot, _ = await refresh_invite_cache(guild)
+        if snapshot is None:
+            skipped += 1
+        else:
+            refreshed += 1
+        await asyncio.sleep(0.2)
+    print(f"Invite cache ready: refreshed={refreshed}, skipped={skipped}")
+
+async def identify_used_invite(guild):
+    before = guild_invite_cache.get(guild.id)
+    current, error = await fetch_invite_snapshot(guild)
+    if current is None:
+        return None, before, None, error
+    guild_invite_cache[guild.id] = current
+    if not before:
+        return None, before, current, "invite cache was not ready yet"
+    candidates = []
+    for code, after in current.items():
+        previous = before.get(code)
+        if previous and int(after.get("uses", 0)) > int(previous.get("uses", 0)):
+            candidates.append((int(after.get("uses", 0)) - int(previous.get("uses", 0)), previous, after))
+    if not candidates:
+        return None, before, current, "no invite use changed; possibly vanity URL, temporary invite, or missing cache"
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    _, previous, after = candidates[0]
+    return (previous, after), before, current, None
+
+def invite_value(invite_data, before_data=None):
+    if not invite_data:
+        return "Unknown"
+    code = invite_data.get("code") or "unknown"
+    url = f"https://discord.gg/{code}"
+    uses = int(invite_data.get("uses", 0) or 0)
+    previous_uses = int(before_data.get("uses", uses - 1) if before_data else uses - 1)
+    inviter_id = invite_data.get("inviter_id")
+    channel_id = invite_data.get("channel_id")
+    max_uses = int(invite_data.get("max_uses", 0) or 0)
+    expires_at = invite_data.get("expires_at")
+    created_at = invite_data.get("created_at")
+    lines = [
+        f"Code: [`{code}`]({url})",
+        f"Inviter: {f'<@{inviter_id}> (`{inviter_id}`)' if inviter_id else 'Unknown'}",
+        f"Uses: **{previous_uses:,} → {uses:,}**",
+        f"Channel: {f'<#{channel_id}>' if channel_id else 'Unknown'}",
+        f"Max Uses: **{max_uses:,}**" if max_uses else "Max Uses: **Unlimited**",
+        f"Temporary: **{'Yes' if invite_data.get('temporary') else 'No'}**",
+    ]
+    if created_at:
+        lines.append(f"Created: {discord.utils.format_dt(created_at, 'R')}")
+    if expires_at:
+        lines.append(f"Expires: {discord.utils.format_dt(expires_at, 'R')}")
+    elif int(invite_data.get("max_age", 0) or 0) == 0:
+        lines.append("Expires: **Never**")
+    return "\n".join(lines)
 
 async def log_raw_reaction(payload, added=True):
     guild = bot.get_guild(payload.guild_id) if payload.guild_id else None
@@ -2369,6 +2461,7 @@ async def on_ready():
         activity_task = asyncio.create_task(activity_report_loop())
     if not presence_rotation_task.is_running():
         presence_rotation_task.start()
+    asyncio.create_task(refresh_all_invite_caches())
     # Load economy cog
     try:
         await economy_setup(bot, send_log)
@@ -2926,6 +3019,7 @@ async def can_manage_activity_channel(user, guild):
 
 @bot.event
 async def on_member_join(member):
+    invite_match, _, _, invite_error = await identify_used_invite(member.guild)
     if member.id in guild_autoban_ids(member.guild):
         try:
             await member.ban(reason="Autoban")
@@ -2937,8 +3031,39 @@ async def on_member_join(member):
         color=discord.Color.green()
     )
     embed.add_field(name="User", value=log_user(member), inline=False)
+    embed.add_field(
+        name="Account Created",
+        value=discord.utils.format_dt(member.created_at, "F") + f"\n{discord.utils.format_dt(member.created_at, 'R')}",
+        inline=True,
+    )
+    embed.add_field(name="Member Count", value=f"{member.guild.member_count:,}", inline=True)
+    if invite_match:
+        before_invite, after_invite = invite_match
+        embed.add_field(name=f"{economy_q_trust} Invite Used", value=invite_value(after_invite, before_invite), inline=False)
+    else:
+        embed.add_field(
+            name=f"{economy_q_trust} Invite Used",
+            value=f"Unknown ({invite_error or 'could not identify the invite'}).",
+            inline=False,
+        )
     embed.timestamp = datetime.now(timezone.utc)
     await send_log(embed, member.guild)
+
+@bot.event
+async def on_invite_create(invite):
+    guild = getattr(invite, "guild", None)
+    if guild is None:
+        return
+    snapshot = guild_invite_cache.setdefault(guild.id, {})
+    snapshot[invite.code] = invite_snapshot(invite)
+
+@bot.event
+async def on_invite_delete(invite):
+    guild = getattr(invite, "guild", None)
+    if guild is None:
+        return
+    snapshot = guild_invite_cache.setdefault(guild.id, {})
+    snapshot.pop(invite.code, None)
 
 @bot.event
 async def on_member_ban(guild, user):
@@ -2979,6 +3104,7 @@ async def on_member_unban(guild, user):
 @bot.event
 async def on_guild_join(guild):
     print(f"Joined server: {guild.name} ({guild.id})")
+    await refresh_invite_cache(guild)
     await prompt_log_setup(guild)
 
 @bot.command()
@@ -3875,6 +4001,7 @@ async def endactivity(ctx):
 
 @bot.event
 async def on_guild_remove(guild):
+    guild_invite_cache.pop(guild.id, None)
     print(f"Left server: {guild.name} ({guild.id})")
 
 @bot.event
@@ -4453,7 +4580,7 @@ AI_SAFE_COMMANDS = {
 AI_CONFIRM_COMMANDS = {
     "poll", "epoll", "giveaway", "setbday", "removebday", "setbdaychannel", "rob",
     "activity", "messageevent", "msgevent", "chatevent", "messagecontest", "chatcontest", "settings", "prefix", "preifx", "setprefix",
-    "recover",
+    "recover", "aichannel", "aitoggle",
 }
 
 AI_SUPEROWNER_ONLY_COMMANDS = {
@@ -4461,7 +4588,7 @@ AI_SUPEROWNER_ONLY_COMMANDS = {
     "editlottery", "stoplottery", "qstats", "economystats", "qstatus", "economyhealth", "ecohealth", "moneyhealth", "supply", "balancedashboard", "ecodashboard", "moneydashboard", "sinkdashboard", "endseason", "rewardseason",
     "disable", "enable", "disableall", "enableall", "prefix", "preifx", "setprefix",
     "settings", "setup", "setupbot", "config", "controlpanel", "panel", "setlogs", "slashsync", "auditcommands", "cmdaudit", "commandaudit", "styleaudit", "uiaudit", "messageaudit", "commandcleanup", "cleanupcommands", "cmdcleanup", "dbaudit", "databaseaudit", "jobs", "backgroundjobs", "tasks", "errors", "errorlog", "recover", "restorestate", "recovery", "aihistory", "aiactions", "actionhistory",
-    "aisettings", "aiconfig", "aicontrols", "aiperms", "aipermissions", "aicapabilities", "aiauthority", "aiguard", "aicommandsafety", "aiignore", "ignoreai", "aiunignore", "unignoreai", "aichannel", "aitoggle", "aistyle", "aipersonality",
+    "aisettings", "aiconfig", "aicontrols", "aiperms", "aipermissions", "aicapabilities", "aiauthority", "aiguard", "aicommandsafety", "aiignore", "ignoreai", "aiunignore", "unignoreai", "aistyle", "aipersonality",
     "block", "unblock", "shut", "unshut", "rshut", "unrshut", "lockdown", "reopen",
     "rlockdown", "runlock", "lock", "unlock", "clearwatchlist", "ban", "unban", "kick", "addrole",
     "removerole", "deleterole", "send", "reply", "fwd", "forward", "fw", "quote", "archive", "censor", "uncensor", "clearcensors",
@@ -6019,14 +6146,14 @@ SUPEROWNER_HELP_COMMANDS = [
     "add", "remove", "addtick", "removetick", "settick", "lotterypot", "setquesos",
     "editlottery", "stoplottery", "qstats", "economyhealth", "balancedashboard", "endseason",
     "send", "reply", "fsleep", "wake", "clearwatchlist",
-    "aisettings", "aiperms", "aiignore", "aiunignore", "aichannel", "aistyle",
+        "aisettings", "aiperms", "aiignore", "aiunignore", "aistyle",
     "aihistory", "auditcommands", "styleaudit", "commandcleanup", "permaudit", "receipts", "aiguard",
 ]
 SUPEROWNER_HIDDEN_COMMANDS = {
     *SUPEROWNER_HELP_COMMANDS,
     "remtick", "deltick", "lotteryprize", "prizepool", "setpot", "addpot", "removepot",
     "economystats", "qstatus", "ecohealth", "moneyhealth", "supply", "rewardseason",
-    "ignoreai", "unignoreai", "aipermissions", "aicapabilities", "aiauthority", "aitoggle", "aipersonality",
+    "ignoreai", "unignoreai", "aipermissions", "aicapabilities", "aiauthority", "aipersonality",
     "aiactions", "actionhistory", "cmdaudit", "commandaudit", "uiaudit", "messageaudit", "cleanupcommands", "cmdcleanup", "ecodashboard", "moneydashboard", "sinkdashboard", "permsaudit", "permissionaudit", "sensitiveaudit", "receiptlist", "txreceipts", "aicommandsafety",
 }
 HELP_CATEGORY_ALIASES = {
@@ -6378,6 +6505,10 @@ async def build_settings_embed(guild):
         lottery_config = await asyncio.to_thread(economy_get_lottery_config, guild.id) if guild else None
     except Exception:
         lottery_config = None
+    try:
+        ai_config = await ai_settings_for("guild", guild.id) if guild else {}
+    except Exception:
+        ai_config = {}
     disabled = sorted(guild_disabled_commands(guild)) if guild else []
 
     embed = discord.Embed(
@@ -6390,6 +6521,7 @@ async def build_settings_embed(guild):
     embed.add_field(name=f"{economy_q_lock} Disabled Commands", value=f"{len(disabled)} disabled" if disabled else "None", inline=True)
     embed.add_field(name=f"{economy_q_archive} Logs", value=channel_status(guild, log_config.get("log_channel_id")), inline=True)
     embed.add_field(name=f"{economy_q_reaction} Reaction Logs", value=channel_status(guild, log_config.get("reaction_log_channel_id")), inline=True)
+    embed.add_field(name=f"{economy_q_ai_history} AI", value=f"**{ai_config.get('enabled', 'on').upper()}**", inline=True)
     embed.add_field(name=f"{economy_q_birthday} Birthdays", value=channel_status(guild, birthday_config.get("channel_id")), inline=True)
     activity_value = channel_status(guild, activity_config.get("channel_id"))
     if activity_config.get("next_report"):
@@ -6495,6 +6627,18 @@ class SettingsView(View):
         }
         await interaction.response.edit_message(embed=await build_settings_embed(interaction.guild), view=self)
 
+    @discord.ui.button(label="AI On/Off", emoji=economy_q_ai_history, style=discord.ButtonStyle.secondary)
+    async def ai_toggle_button(self, interaction, button):
+        if not has_owner_power(interaction.user, interaction.guild):
+            return await interaction.response.send_message("Admin power only.", ephemeral=True)
+        settings = await ai_settings_for("guild", interaction.guild.id)
+        current = settings.get("enabled", "on")
+        new_value = "off" if current != "off" else "on"
+        ok = await asyncio.to_thread(set_ai_control_setting, "guild", interaction.guild.id, "enabled", new_value, interaction.user.id)
+        if not ok:
+            return await interaction.response.send_message("AI setting save failed.", ephemeral=True)
+        await interaction.response.edit_message(embed=await build_settings_embed(interaction.guild), view=self)
+
     @discord.ui.button(label="Birthdays Here", emoji=economy_q_birthday, style=discord.ButtonStyle.secondary)
     async def birthday_button(self, interaction, button):
         if not await can_manage_birthday_channel(interaction.user, interaction.guild):
@@ -6565,6 +6709,7 @@ class SettingsView(View):
             f"`{prefix}jobs` / `{prefix}errors` - operations checks\n"
             f"`{prefix}receipt <id>` - review sensitive action receipts\n"
             f"`{prefix}economyaudit` - economy audit\n"
+            f"`{prefix}aichannel on/off` - server AI replies\n"
             f"`{prefix}aisettings` - AI controls for {QUE_OWNER_DISPLAY}",
             ephemeral=True,
         )
@@ -6593,7 +6738,7 @@ class SettingsView(View):
             inline=True,
         )
         embed.add_field(name="Safety", value=f"`{prefix}disable <command>`\n`{prefix}permaudit`\n`{prefix}receipts latest`\n`{prefix}errors`", inline=True)
-        embed.add_field(name="AI", value=f"`{prefix}aiknow <command>`\n`{prefix}aimemory`\n`{prefix}aidoctor`\n`{prefix}aiguard`", inline=True)
+        embed.add_field(name="AI", value=f"`{prefix}aichannel on/off`\n`{prefix}aiknow <command>`\n`{prefix}aimemory`\n`{prefix}aidoctor`\n`{prefix}aiguard`", inline=True)
         embed.add_field(name="Recovery", value=f"`{prefix}health`\n`{prefix}jobs`\n`{prefix}recover`\n`{prefix}dbaudit`", inline=True)
         await interaction.response.send_message(embed=embed, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
 
@@ -6777,11 +6922,19 @@ async def aiunignore_command(ctx, member: discord.User = None):
 @bot.command(name="aichannel", aliases=["aitoggle"])
 async def aichannel_command(ctx, mode: str = None):
     """Turns AI replies on or off in this server."""
-    if not has_super_owner_power(ctx.author, ctx.guild):
-        return await ctx.send(denial_message(f"Only {QUE_OWNER_DISPLAY} can change AI controls."), allowed_mentions=discord.AllowedMentions.none())
     if ctx.guild is None:
         return await ctx.send("Use this in a server.")
+    if not has_owner_power(ctx.author, ctx.guild):
+        return await ctx.send("Admin power only.")
     key = str(mode or "").casefold()
+    if key in {"enable", "enabled", "yes", "true"}:
+        key = "on"
+    elif key in {"disable", "disabled", "no", "false"}:
+        key = "off"
+    if not key:
+        settings = await ai_settings_for("guild", ctx.guild.id)
+        current = settings.get("enabled", "on")
+        return await ctx.send(f"{economy_q_ai_history} AI responses are currently **{current}** here.\nUse `.aichannel on` or `.aichannel off`.")
     if key not in {"on", "off"}:
         return await ctx.send("Use `.aichannel on` or `.aichannel off`.")
     ok = await asyncio.to_thread(set_ai_control_setting, "guild", ctx.guild.id, "enabled", key, ctx.author.id)
