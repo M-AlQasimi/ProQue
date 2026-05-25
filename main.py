@@ -1316,6 +1316,8 @@ active_activity_status_messages = {}
 message_event_tasks = {}
 active_message_event_cache = {}
 message_event_count_buffer = Counter()
+tracked_message_activity_ids = set()
+tracked_message_activity_order = deque()
 command_timing_stats = {}
 slow_command_events = deque(maxlen=40)
 command_queue_stats = {}
@@ -1332,6 +1334,7 @@ activity_recent_messages = {}
 ACTIVITY_DUPLICATE_WINDOW_SECONDS = 10 * 60
 ACTIVITY_NEAR_DUPLICATE_RATIO = 0.88
 ACTIVITY_RECENT_MESSAGE_LIMIT = 8
+TRACKED_MESSAGE_ACTIVITY_ID_LIMIT = 10000
 UTC_TIME_NOTE = "Absolute dates/times use UTC."
 
 def clear_help_cache():
@@ -2451,11 +2454,33 @@ async def flush_activity_buffer():
 def track_message_activity(message):
     if not message.guild or message.author.bot:
         return
+    message_id = int(getattr(message, "id", 0) or 0)
+    if message_id in tracked_message_activity_ids:
+        return
+    tracked_message_activity_ids.add(message_id)
+    tracked_message_activity_order.append(message_id)
+    while len(tracked_message_activity_order) > TRACKED_MESSAGE_ACTIVITY_ID_LIMIT:
+        tracked_message_activity_ids.discard(tracked_message_activity_order.popleft())
     if message.author.id in guild_blacklisted_users(message.guild):
         return
-    if not should_count_message_activity(message):
+    event_row = active_message_event_cache.get(message.guild.id)
+    event_scope = None
+    event_should_count = False
+    if event_row:
+        starts_at = normalize_event_datetime(event_row.get("starts_at"))
+        ends_at = normalize_event_datetime(event_row.get("ends_at"))
+        message_time = message.created_at
+        if message_time.tzinfo is None:
+            message_time = message_time.replace(tzinfo=timezone.utc)
+        else:
+            message_time = message_time.astimezone(timezone.utc)
+        if starts_at and ends_at and starts_at <= message_time <= ends_at:
+            event_scope = f"message_event:{message.guild.id}:{int(starts_at.timestamp())}"
+            event_should_count = should_count_message_activity(message, scope=event_scope)
+    general_should_count = should_count_message_activity(message, scope="general")
+    if not general_should_count and not event_should_count:
         return
-    if message.guild.id in guild_activity_channels:
+    if general_should_count and message.guild.id in guild_activity_channels:
         activity_buffer[(message.guild.id, message.author.id, "messages")] += 1
     created_at_aware = message.created_at
     if created_at_aware.tzinfo is None:
@@ -2470,12 +2495,8 @@ def track_message_activity(message):
         "message_id": message.id,
         "created_at": created_at,
     })
-    event_row = active_message_event_cache.get(message.guild.id)
-    if event_row:
-        starts_at = normalize_event_datetime(event_row.get("starts_at"))
-        ends_at = normalize_event_datetime(event_row.get("ends_at"))
-        if starts_at and ends_at and starts_at <= created_at_aware <= ends_at:
-            message_event_count_buffer[(message.guild.id, message.author.id)] += 1
+    if event_should_count:
+        message_event_count_buffer[(message.guild.id, message.author.id)] += 1
     if len(message_history_buffer) >= 200:
         asyncio.create_task(flush_activity_buffer())
 
@@ -2492,12 +2513,12 @@ def normalize_activity_message_content(message):
     content = re.sub(r"[^a-z0-9#\s_]+", " ", content)
     return re.sub(r"\s+", " ", content).strip()
 
-def should_count_message_activity(message):
+def should_count_message_activity(message, *, scope="general"):
     normalized = normalize_activity_message_content(message)
     if not normalized:
         return False
     now = message.created_at.timestamp() if getattr(message, "created_at", None) else time.time()
-    key = (message.guild.id, message.author.id)
+    key = (message.guild.id, message.author.id, scope)
     recent = activity_recent_messages.setdefault(key, deque(maxlen=ACTIVITY_RECENT_MESSAGE_LIMIT))
     while recent and now - recent[0][0] > ACTIVITY_DUPLICATE_WINDOW_SECONDS:
         recent.popleft()
@@ -3227,6 +3248,48 @@ def merge_pending_message_event_counts(guild_id, rows, limit=10):
     ranked = sorted(totals.items(), key=lambda item: (-item[1], item[0]))[:int(limit)]
     return [{"user_id": user_id, "messages": messages} for user_id, messages in ranked]
 
+def merge_pending_message_history_rows(guild_id, row, rows, limit=10):
+    starts_at = normalize_event_datetime(row["starts_at"])
+    ends_at = normalize_event_datetime(row["ends_at"])
+    if not starts_at or not ends_at:
+        return rows
+    end_limit = min(ends_at, datetime.now(timezone.utc))
+    totals = Counter({int(existing["user_id"]): int(existing["messages"]) for existing in rows or []})
+    for event in message_history_buffer:
+        if int(event.get("guild_id", 0) or 0) != int(guild_id):
+            continue
+        created_at = event.get("created_at")
+        if created_at is None:
+            continue
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        else:
+            created_at = created_at.astimezone(timezone.utc)
+        if starts_at <= created_at <= end_limit:
+            totals[int(event["user_id"])] += 1
+    ranked = sorted(totals.items(), key=lambda item: (-item[1], item[0]))[:int(limit)]
+    return [{"user_id": user_id, "messages": messages} for user_id, messages in ranked]
+
+def has_pending_message_history_for_event(guild_id, row):
+    starts_at = normalize_event_datetime(row["starts_at"])
+    ends_at = normalize_event_datetime(row["ends_at"])
+    if not starts_at or not ends_at:
+        return False
+    end_limit = min(ends_at, datetime.now(timezone.utc))
+    for event in message_history_buffer:
+        if int(event.get("guild_id", 0) or 0) != int(guild_id):
+            continue
+        created_at = event.get("created_at")
+        if created_at is None:
+            continue
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        else:
+            created_at = created_at.astimezone(timezone.utc)
+        if starts_at <= created_at <= end_limit:
+            return True
+    return False
+
 def message_event_embed(guild, row, rows=None, *, ended=False, cancelled=False):
     starts_at = normalize_event_datetime(row["starts_at"])
     ends_at = normalize_event_datetime(row["ends_at"])
@@ -3264,7 +3327,9 @@ async def message_event_current_rows(guild_id, row, limit=10):
         db_event_datetime(end_limit),
         limit,
     )
-    return merge_pending_message_event_counts(guild_id, rows, limit)
+    has_pending_history = has_pending_message_history_for_event(guild_id, row)
+    rows = merge_pending_message_history_rows(guild_id, row, rows, limit)
+    return rows if has_pending_history else merge_pending_message_event_counts(guild_id, rows, limit)
 
 async def finalize_message_event(guild_id, *, cancelled=False):
     row = await asyncio.to_thread(get_message_event, int(guild_id))
@@ -3289,7 +3354,10 @@ async def finalize_message_event(guild_id, *, cancelled=False):
             db_event_datetime(row["ends_at"]),
             10,
         )
-        rows = merge_pending_message_event_counts(guild_id, rows, 10)
+        has_pending_history = has_pending_message_history_for_event(guild_id, row)
+        rows = merge_pending_message_history_rows(guild_id, row, rows, 10)
+        if not has_pending_history:
+            rows = merge_pending_message_event_counts(guild_id, rows, 10)
     embed = message_event_embed(guild, row, rows, ended=not cancelled, cancelled=cancelled)
     message = None
     if channel and row.get("message_id"):
@@ -3310,6 +3378,29 @@ async def finalize_message_event(guild_id, *, cancelled=False):
         task.cancel()
     return True
 
+async def refresh_message_event_message(guild_id):
+    row = await asyncio.to_thread(get_message_event, int(guild_id))
+    if not row:
+        row = active_message_event_cache.get(int(guild_id))
+    if not row or not row.get("message_id"):
+        return False
+    guild = bot.get_guild(int(guild_id))
+    if guild is None:
+        return False
+    channel = guild.get_channel(int(row["channel_id"])) or bot.get_channel(int(row["channel_id"]))
+    if channel is None:
+        return False
+    try:
+        message = await channel.fetch_message(int(row["message_id"]))
+        rows = await message_event_current_rows(guild_id, row)
+        await message.edit(embed=message_event_embed(guild, row, rows), allowed_mentions=discord.AllowedMentions.none())
+        return True
+    except (discord.NotFound, discord.Forbidden):
+        return False
+    except Exception as e:
+        print(f"Message event live refresh failed for guild {guild_id}: {type(e).__name__} - {e}")
+        return False
+
 def schedule_message_event_finish(guild_id, row):
     guild_id = int(guild_id)
     active_message_event_cache[guild_id] = dict(row)
@@ -3320,7 +3411,13 @@ def schedule_message_event_finish(guild_id, row):
     async def runner():
         try:
             end_time = normalize_event_datetime(row["ends_at"])
-            await asyncio.sleep(max(0, (end_time - datetime.now(timezone.utc)).total_seconds()))
+            while True:
+                remaining = (end_time - datetime.now(timezone.utc)).total_seconds()
+                if remaining <= 0:
+                    break
+                await asyncio.sleep(min(60, max(5, remaining)))
+                if datetime.now(timezone.utc) < end_time:
+                    await refresh_message_event_message(guild_id)
             await finalize_message_event(guild_id)
         except asyncio.CancelledError:
             raise
@@ -5490,6 +5587,9 @@ async def maybe_run_ai_batch_action(message, question):
 async def on_message(message):
     if message.author.bot:
         return
+
+    if message.guild:
+        track_message_activity(message)
 
     await handle_returning_status(message)
     is_command = looks_like_command_message(message)
