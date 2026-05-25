@@ -20,7 +20,7 @@ try:
     import chess as chess_lib
 except ImportError:
     chess_lib = None
-from collections import Counter, deque
+from collections import Counter, defaultdict, deque
 from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from discord import Embed, Emoji, File, Interaction, StickerItem, app_commands
@@ -1296,6 +1296,7 @@ def bot_capabilities_summary(guild, viewer=None):
         "You have global user memory for useful facts people explicitly share, saved bot profile data like birthdays/statuses, plus recent channel context. Use memory naturally when it helps and avoid being creepy about it. "
         "Use the live command/capability index below as your source of truth for bot features, commands, aliases, usage, permissions, games, 𝚀𝚞𝚎wo mechanics, and setup flows. "
         "If the user asks about the bot, explain the relevant command clearly and suggest the exact command to run. "
+        "Slash commands have real top-level entries for major features and grouped categories like /mod, /game, /quewo, /gamble, /utility, /ai, and /setup; /run remains a fallback for every prefix command. "
         "Be permission-aware: if a command is admin/server-owner/𝚀𝚞𝚎-only, say that plainly before telling someone how to use it. "
         "For economy/game advice, compare risk, max bet, payout, cooldown, and fun factor when useful. "
         "For errors/logs, act like the bot doctor: use reply context and the doctor snapshot to identify the likely broken command or subsystem and suggest the next test/fix. "
@@ -1438,6 +1439,36 @@ def slash_command_search(current, viewer=None, guild=None):
             break
     return results
 
+def slash_arg_join(*parts):
+    cleaned = []
+    for part in parts:
+        if part is None:
+            continue
+        value = str(part).strip()
+        if value:
+            cleaned.append(value)
+    return " ".join(cleaned)
+
+def slash_user_arg(user):
+    return user.mention if user else ""
+
+def slash_channel_arg(channel):
+    return channel.mention if channel else ""
+
+def slash_poll_arg(question, options="", duration=""):
+    options = str(options or "").strip()
+    duration = str(duration or "").strip()
+    if options:
+        parts = [str(question).strip(), options]
+        if duration:
+            parts.append(duration)
+        return " | ".join(part for part in parts if part)
+    return slash_arg_join(question, duration)
+
+async def slash_invoke(interaction, command_name, *parts):
+    await interaction.response.defer(thinking=True)
+    await invoke_prefix_command_from_interaction(interaction, command_name, slash_arg_join(*parts))
+
 async def invoke_prefix_command_from_interaction(interaction, command_name, args=None):
     command = get_command_case_insensitive(command_name)
     if not command:
@@ -1539,7 +1570,7 @@ async def sync_slash_commands_once(force=False):
         slash_commands_synced = True
     print(
         f"Slash command sync complete: {synced_guilds} guild(s) synced, "
-        f"{failed_guilds} failed. Use /run for all {runnable_count} prefix commands."
+        f"{failed_guilds} failed. Real slash groups are available; /run still covers all {runnable_count} prefix commands."
     )
     return {"skipped": False, "synced_guilds": synced_guilds, "failed_guilds": failed_guilds, "runnable_count": runnable_count}
 
@@ -9034,6 +9065,58 @@ async def slash_run(interaction: discord.Interaction, command: str, input: str =
 async def slash_run_command_autocomplete(interaction: discord.Interaction, current: str):
     return slash_command_search(current, interaction.user, interaction.guild)
 
+@bot.tree.command(name="truthordare", description="Start Truth or Dare.")
+@app_commands.describe(mode="Choose random, truth, or dare", user="Optional person to target")
+@app_commands.choices(mode=[
+    app_commands.Choice(name="Random", value="random"),
+    app_commands.Choice(name="Truth", value="truth"),
+    app_commands.Choice(name="Dare", value="dare"),
+])
+async def slash_truthordare(
+    interaction: discord.Interaction,
+    mode: str = "random",
+    user: discord.Member = None,
+):
+    await slash_invoke(interaction, "truthordare", mode, slash_user_arg(user))
+
+@bot.tree.command(name="snipe", description="Show recent deleted, edited, or reaction snipes.")
+@app_commands.describe(kind="What to snipe", user="Optional user filter", index="Which snipe to show")
+@app_commands.choices(kind=[
+    app_commands.Choice(name="Deleted", value="deleted"),
+    app_commands.Choice(name="Edited", value="edited"),
+    app_commands.Choice(name="Reaction", value="reaction"),
+])
+async def slash_snipe(
+    interaction: discord.Interaction,
+    kind: str = "deleted",
+    user: discord.Member = None,
+    index: int = None,
+):
+    await slash_invoke(interaction, "snipe", kind, slash_user_arg(user), index)
+
+@bot.tree.command(name="bal", description="Check a 𝚀𝚞𝚎wo balance.")
+@app_commands.describe(user="Optional user to check")
+async def slash_bal(interaction: discord.Interaction, user: discord.Member = None):
+    await slash_invoke(interaction, "bal", slash_user_arg(user))
+
+@bot.tree.command(name="shop", description="Open the 𝚀𝚞𝚎wo shop.")
+async def slash_shop(interaction: discord.Interaction):
+    await slash_invoke(interaction, "shop")
+
+@bot.tree.command(name="lottery", description="Show the current lottery.")
+async def slash_lottery(interaction: discord.Interaction):
+    await slash_invoke(interaction, "lottery")
+
+@bot.tree.command(name="timer", description="Start a timer.")
+@app_commands.describe(time="Time like 10m, 1h, or 30s", title="Optional timer title")
+async def slash_timer(interaction: discord.Interaction, time: str, title: str = ""):
+    await slash_invoke(interaction, "timer", time, title)
+
+@bot.tree.command(name="poll", description="Create a poll.")
+@app_commands.describe(question="Poll question", options="Options separated by |", time="Optional duration like 10m")
+async def slash_poll(interaction: discord.Interaction, question: str, options: str = "", time: str = ""):
+    await slash_invoke(interaction, "poll", slash_poll_arg(question, options, time))
+
 @bot.tree.command(name="commands", description="List slash command access for all Pro𝚀𝚞𝚎 commands.")
 async def slash_commands_list(interaction: discord.Interaction):
     commands_ = slash_runnable_commands(interaction.user, interaction.guild)
@@ -9045,7 +9128,9 @@ async def slash_commands_list(interaction: discord.Interaction):
     embed = discord.Embed(
         title="Pro𝚀𝚞𝚎 Slash Commands",
         description=(
-            f"Use `/run command input` to run any of the **{len(commands_)}** commands.\n"
+            "Use first-class slash commands for common actions, or category groups like "
+            "`/mod`, `/game`, `/quewo`, `/gamble`, `/utility`, `/ai`, and `/setup`.\n"
+            f"`/run command input` still covers any of the **{len(commands_)}** prefix commands.\n"
             f"Prefix commands still use `{prefix}` in this server."
         ),
         color=discord.Color.blurple()
@@ -9114,6 +9199,421 @@ async def slash_settings(interaction: discord.Interaction):
 async def slash_games(interaction: discord.Interaction):
     prefix = prefix_for_guild(interaction.guild)
     await interaction.response.send_message(embed=games_embed(prefix), view=GamesView(interaction.user.id, prefix), ephemeral=True)
+
+mod_group = app_commands.Group(name="mod", description="Moderation and server tools.")
+game_group = app_commands.Group(name="game", description="Games and social games.")
+quewo_group = app_commands.Group(name="quewo", description="𝚀𝚞𝚎wo economy commands.")
+gamble_group = app_commands.Group(name="gamble", description="𝚀𝚞𝚎wo gambling games.")
+utility_group = app_commands.Group(name="utility", description="Timers, polls, lookup, and utility commands.")
+ai_group = app_commands.Group(name="ai", description="AI assistant commands.")
+setup_group = app_commands.Group(name="setup", description="Server setup and configuration commands.")
+
+@mod_group.command(name="purge", description="Delete recent messages.")
+@app_commands.describe(amount="How many messages", user="Optional user filter")
+async def slash_mod_purge(interaction: discord.Interaction, amount: int, user: discord.Member = None):
+    await slash_invoke(interaction, "purge", amount, slash_user_arg(user))
+
+@mod_group.command(name="rpurge", description="Delete recent bot response messages.")
+@app_commands.describe(amount="How many messages")
+async def slash_mod_rpurge(interaction: discord.Interaction, amount: int):
+    await slash_invoke(interaction, "rpurge", amount)
+
+@mod_group.command(name="lock", description="Lock the current channel.")
+async def slash_mod_lock(interaction: discord.Interaction):
+    await slash_invoke(interaction, "lock")
+
+@mod_group.command(name="unlock", description="Unlock the current channel.")
+async def slash_mod_unlock(interaction: discord.Interaction):
+    await slash_invoke(interaction, "unlock")
+
+@mod_group.command(name="lockdown", description="Lock down the server.")
+async def slash_mod_lockdown(interaction: discord.Interaction):
+    await slash_invoke(interaction, "lockdown")
+
+@mod_group.command(name="reopen", description="Reopen after lockdown.")
+async def slash_mod_reopen(interaction: discord.Interaction):
+    await slash_invoke(interaction, "reopen")
+
+@mod_group.command(name="kick", description="Kick a member.")
+@app_commands.describe(user="Member to kick", reason="Optional reason")
+async def slash_mod_kick(interaction: discord.Interaction, user: discord.Member, reason: str = ""):
+    await slash_invoke(interaction, "kick", slash_user_arg(user), reason)
+
+@mod_group.command(name="ban", description="Ban a member.")
+@app_commands.describe(user="Member to ban", reason="Optional reason")
+async def slash_mod_ban(interaction: discord.Interaction, user: discord.Member, reason: str = ""):
+    await slash_invoke(interaction, "ban", slash_user_arg(user), reason)
+
+@mod_group.command(name="unban", description="Unban a user by user or ID.")
+@app_commands.describe(user_or_id="User mention, username, or ID")
+async def slash_mod_unban(interaction: discord.Interaction, user_or_id: str):
+    await slash_invoke(interaction, "unban", user_or_id)
+
+@mod_group.command(name="addrole", description="Add a role to a member.")
+@app_commands.describe(user="Member", role="Role")
+async def slash_mod_addrole(interaction: discord.Interaction, user: discord.Member, role: discord.Role):
+    await slash_invoke(interaction, "addrole", slash_user_arg(user), role.mention)
+
+@mod_group.command(name="removerole", description="Remove a role from a member.")
+@app_commands.describe(user="Member", role="Role")
+async def slash_mod_removerole(interaction: discord.Interaction, user: discord.Member, role: discord.Role):
+    await slash_invoke(interaction, "removerole", slash_user_arg(user), role.mention)
+
+@mod_group.command(name="setnick", description="Change a member nickname.")
+@app_commands.describe(user="Member", nickname="New nickname")
+async def slash_mod_setnick(interaction: discord.Interaction, user: discord.Member, nickname: str):
+    await slash_invoke(interaction, "setnick", slash_user_arg(user), nickname)
+
+@mod_group.command(name="steal", description="Steal an emoji or sticker.")
+@app_commands.describe(item="Emoji, sticker, or URL")
+async def slash_mod_steal(interaction: discord.Interaction, item: str):
+    await slash_invoke(interaction, "steal", item)
+
+@mod_group.command(name="fwd", description="Forward recent messages.")
+@app_commands.describe(amount="Number of messages", user="Optional user filter", target="Optional target channel")
+async def slash_mod_fwd(interaction: discord.Interaction, amount: int, user: discord.Member = None, target: discord.TextChannel = None):
+    await slash_invoke(interaction, "fwd", amount, slash_user_arg(user), slash_channel_arg(target))
+
+@game_group.command(name="truthordare", description="Start Truth or Dare.")
+@app_commands.describe(mode="Choose random, truth, or dare", user="Optional person to target")
+@app_commands.choices(mode=[
+    app_commands.Choice(name="Random", value="random"),
+    app_commands.Choice(name="Truth", value="truth"),
+    app_commands.Choice(name="Dare", value="dare"),
+])
+async def slash_game_truthordare(interaction: discord.Interaction, mode: str = "random", user: discord.Member = None):
+    await slash_invoke(interaction, "truthordare", mode, slash_user_arg(user))
+
+@game_group.command(name="ttt", description="Start Tic Tac Toe.")
+@app_commands.describe(user="Opponent", bet="Optional bet")
+async def slash_game_ttt(interaction: discord.Interaction, user: discord.Member, bet: str = ""):
+    await slash_invoke(interaction, "ttt", slash_user_arg(user), bet)
+
+@game_group.command(name="c4", description="Start Connect 4.")
+@app_commands.describe(user="Opponent", bet="Optional bet")
+async def slash_game_c4(interaction: discord.Interaction, user: discord.Member, bet: str = ""):
+    await slash_invoke(interaction, "c4", slash_user_arg(user), bet)
+
+@game_group.command(name="chess", description="Start chess.")
+@app_commands.describe(user="Opponent", bet="Optional bet")
+async def slash_game_chess(interaction: discord.Interaction, user: discord.Member, bet: str = ""):
+    await slash_invoke(interaction, "chess", slash_user_arg(user), bet)
+
+@game_group.command(name="move", description="Make a chess move.")
+@app_commands.describe(move="Move like e2e4")
+async def slash_game_move(interaction: discord.Interaction, move: str):
+    await slash_invoke(interaction, "move", move)
+
+@game_group.command(name="resign", description="Resign a chess game.")
+async def slash_game_resign(interaction: discord.Interaction):
+    await slash_invoke(interaction, "resign")
+
+@game_group.command(name="flagquiz", description="Start Flag Quiz.")
+@app_commands.describe(count="10, 20, 50, or all", mode="solo or public")
+async def slash_game_flagquiz(interaction: discord.Interaction, count: str = "", mode: str = ""):
+    await slash_invoke(interaction, "flagquiz", count, mode)
+
+@game_group.command(name="flagstats", description="Check Flag Quiz stats.")
+@app_commands.describe(user="Optional user")
+async def slash_game_flagstats(interaction: discord.Interaction, user: discord.Member = None):
+    await slash_invoke(interaction, "flagstats", slash_user_arg(user))
+
+@game_group.command(name="picker", description="Pick from options.")
+@app_commands.describe(options="Options separated by commas or |")
+async def slash_game_picker(interaction: discord.Interaction, options: str):
+    await slash_invoke(interaction, "picker", options)
+
+@quewo_group.command(name="bal", description="Check a 𝚀𝚞𝚎wo balance.")
+@app_commands.describe(user="Optional user")
+async def slash_quewo_bal(interaction: discord.Interaction, user: discord.Member = None):
+    await slash_invoke(interaction, "bal", slash_user_arg(user))
+
+@quewo_group.command(name="profile", description="Check a 𝚀𝚞𝚎wo profile.")
+@app_commands.describe(user="Optional user")
+async def slash_quewo_profile(interaction: discord.Interaction, user: discord.Member = None):
+    await slash_invoke(interaction, "profile", slash_user_arg(user))
+
+@quewo_group.command(name="inventory", description="Check inventory.")
+@app_commands.describe(user="Optional user")
+async def slash_quewo_inventory(interaction: discord.Interaction, user: discord.Member = None):
+    await slash_invoke(interaction, "inventory", slash_user_arg(user))
+
+@quewo_group.command(name="shop", description="Open the shop.")
+async def slash_quewo_shop(interaction: discord.Interaction):
+    await slash_invoke(interaction, "shop")
+
+@quewo_group.command(name="daily", description="Claim daily reward.")
+async def slash_quewo_daily(interaction: discord.Interaction):
+    await slash_invoke(interaction, "daily")
+
+@quewo_group.command(name="weekly", description="Claim weekly reward.")
+async def slash_quewo_weekly(interaction: discord.Interaction):
+    await slash_invoke(interaction, "weekly")
+
+@quewo_group.command(name="monthly", description="Claim monthly reward.")
+async def slash_quewo_monthly(interaction: discord.Interaction):
+    await slash_invoke(interaction, "monthly")
+
+@quewo_group.command(name="lottery", description="Show lottery.")
+async def slash_quewo_lottery(interaction: discord.Interaction):
+    await slash_invoke(interaction, "lottery")
+
+@quewo_group.command(name="buytick", description="Buy lottery tickets.")
+@app_commands.describe(amount="Ticket amount, usually 10, 20, or 30")
+async def slash_quewo_buytick(interaction: discord.Interaction, amount: int):
+    await slash_invoke(interaction, "buytick", amount)
+
+@quewo_group.command(name="give", description="Send 𝚀𝚞𝚎wo currency.")
+@app_commands.describe(user="Recipient", amount="Amount like 10k")
+async def slash_quewo_give(interaction: discord.Interaction, user: discord.Member, amount: str):
+    await slash_invoke(interaction, "give", slash_user_arg(user), amount)
+
+@quewo_group.command(name="bank", description="Open bank.")
+async def slash_quewo_bank(interaction: discord.Interaction):
+    await slash_invoke(interaction, "bank")
+
+@quewo_group.command(name="lb", description="Open leaderboard.")
+async def slash_quewo_lb(interaction: discord.Interaction):
+    await slash_invoke(interaction, "lb")
+
+@quewo_group.command(name="gamestats", description="Check game stats.")
+@app_commands.describe(user="Optional user")
+async def slash_quewo_gamestats(interaction: discord.Interaction, user: discord.Member = None):
+    await slash_invoke(interaction, "gamestats", slash_user_arg(user))
+
+@quewo_group.command(name="achievements", description="Check achievements.")
+@app_commands.describe(user="Optional user")
+async def slash_quewo_achievements(interaction: discord.Interaction, user: discord.Member = None):
+    await slash_invoke(interaction, "achievements", slash_user_arg(user))
+
+@quewo_group.command(name="explain", description="Explain a 𝚀𝚞𝚎wo command.")
+@app_commands.describe(command="Command to explain")
+async def slash_quewo_explain(interaction: discord.Interaction, command: str):
+    await slash_invoke(interaction, "explain", command)
+
+@gamble_group.command(name="cf", description="Coin flip.")
+@app_commands.describe(amount="Bet amount", side="heads/tails")
+async def slash_gamble_cf(interaction: discord.Interaction, amount: str, side: str):
+    await slash_invoke(interaction, "cf", amount, side)
+
+@gamble_group.command(name="roulette", description="Roulette.")
+@app_commands.describe(amount="Bet amount", color="red, black, or green")
+async def slash_gamble_roulette(interaction: discord.Interaction, amount: str, color: str = ""):
+    await slash_invoke(interaction, "roulette", amount, color)
+
+@gamble_group.command(name="slots", description="Slots.")
+@app_commands.describe(amount="Bet amount")
+async def slash_gamble_slots(interaction: discord.Interaction, amount: str):
+    await slash_invoke(interaction, "slots", amount)
+
+@gamble_group.command(name="blackjack", description="Blackjack.")
+@app_commands.describe(amount="Bet amount")
+async def slash_gamble_blackjack(interaction: discord.Interaction, amount: str):
+    await slash_invoke(interaction, "blackjack", amount)
+
+@gamble_group.command(name="scratch", description="Scratch card.")
+@app_commands.describe(amount="Bet amount")
+async def slash_gamble_scratch(interaction: discord.Interaction, amount: str):
+    await slash_invoke(interaction, "scratch", amount)
+
+@gamble_group.command(name="tower", description="Tower.")
+@app_commands.describe(amount="Bet amount")
+async def slash_gamble_tower(interaction: discord.Interaction, amount: str):
+    await slash_invoke(interaction, "tower", amount)
+
+@gamble_group.command(name="vault", description="Vault.")
+@app_commands.describe(amount="Bet amount")
+async def slash_gamble_vault(interaction: discord.Interaction, amount: str):
+    await slash_invoke(interaction, "vault", amount)
+
+@gamble_group.command(name="memory", description="Memory.")
+@app_commands.describe(amount="Bet amount")
+async def slash_gamble_memory(interaction: discord.Interaction, amount: str):
+    await slash_invoke(interaction, "memory", amount)
+
+@gamble_group.command(name="cardladder", description="Card Ladder.")
+@app_commands.describe(amount="Bet amount")
+async def slash_gamble_cardladder(interaction: discord.Interaction, amount: str):
+    await slash_invoke(interaction, "cardladder", amount)
+
+@gamble_group.command(name="lockpick", description="Lockpick.")
+@app_commands.describe(amount="Bet amount")
+async def slash_gamble_lockpick(interaction: discord.Interaction, amount: str):
+    await slash_invoke(interaction, "lockpick", amount)
+
+@gamble_group.command(name="heist", description="Heist.")
+@app_commands.describe(amount="Bet amount")
+async def slash_gamble_heist(interaction: discord.Interaction, amount: str):
+    await slash_invoke(interaction, "heist", amount)
+
+@gamble_group.command(name="diceduel", description="Dice Duel.")
+@app_commands.describe(amount="Bet amount")
+async def slash_gamble_diceduel(interaction: discord.Interaction, amount: str):
+    await slash_invoke(interaction, "diceduel", amount)
+
+@gamble_group.command(name="cases", description="Cases.")
+@app_commands.describe(amount="Bet amount")
+async def slash_gamble_cases(interaction: discord.Interaction, amount: str):
+    await slash_invoke(interaction, "cases", amount)
+
+@gamble_group.command(name="plinko", description="Plinko.")
+@app_commands.describe(amount="Bet amount")
+async def slash_gamble_plinko(interaction: discord.Interaction, amount: str):
+    await slash_invoke(interaction, "plinko", amount)
+
+@gamble_group.command(name="luckynumber", description="Lucky Number.")
+@app_commands.describe(amount="Bet amount")
+async def slash_gamble_luckynumber(interaction: discord.Interaction, amount: str):
+    await slash_invoke(interaction, "luckynumber", amount)
+
+@gamble_group.command(name="jackpotspin", description="Jackpot Spin.")
+@app_commands.describe(amount="Bet amount")
+async def slash_gamble_jackpotspin(interaction: discord.Interaction, amount: str):
+    await slash_invoke(interaction, "jackpotspin", amount)
+
+@gamble_group.command(name="dungeon", description="Dungeon.")
+@app_commands.describe(amount="Optional bet amount")
+async def slash_gamble_dungeon(interaction: discord.Interaction, amount: str = ""):
+    await slash_invoke(interaction, "dungeon", amount)
+
+@gamble_group.command(name="ms", description="Mine Sweeper.")
+@app_commands.describe(amount="Bet amount")
+async def slash_gamble_ms(interaction: discord.Interaction, amount: str):
+    await slash_invoke(interaction, "ms", amount)
+
+@gamble_group.command(name="wheel", description="Wheel.")
+@app_commands.describe(amount="Bet amount")
+async def slash_gamble_wheel(interaction: discord.Interaction, amount: str):
+    await slash_invoke(interaction, "wheel", amount)
+
+@utility_group.command(name="userinfo", description="Show user info.")
+@app_commands.describe(user="Optional user")
+async def slash_utility_userinfo(interaction: discord.Interaction, user: discord.Member = None):
+    await slash_invoke(interaction, "userinfo", slash_user_arg(user))
+
+@utility_group.command(name="pfp", description="Show a profile picture.")
+@app_commands.describe(user="Optional user")
+async def slash_utility_pfp(interaction: discord.Interaction, user: discord.Member = None):
+    await slash_invoke(interaction, "pfp", slash_user_arg(user))
+
+@utility_group.command(name="calc", description="Calculate an expression.")
+@app_commands.describe(expression="Expression to calculate")
+async def slash_utility_calc(interaction: discord.Interaction, expression: str):
+    await slash_invoke(interaction, "calc", expression)
+
+@utility_group.command(name="define", description="Define a word.")
+@app_commands.describe(word="Word to define")
+async def slash_utility_define(interaction: discord.Interaction, word: str):
+    await slash_invoke(interaction, "define", word)
+
+@utility_group.command(name="timer", description="Start a timer.")
+@app_commands.describe(time="Time like 10m, 1h, or 30s", title="Optional title")
+async def slash_utility_timer(interaction: discord.Interaction, time: str, title: str = ""):
+    await slash_invoke(interaction, "timer", time, title)
+
+@utility_group.command(name="alarm", description="Set an alarm.")
+@app_commands.describe(time="Date/time or duration", title="Optional title")
+async def slash_utility_alarm(interaction: discord.Interaction, time: str, title: str = ""):
+    await slash_invoke(interaction, "alarm", time, title)
+
+@utility_group.command(name="poll", description="Create a poll.")
+@app_commands.describe(question="Question", options="Options separated by |", time="Optional duration")
+async def slash_utility_poll(interaction: discord.Interaction, question: str, options: str = "", time: str = ""):
+    await slash_invoke(interaction, "poll", slash_poll_arg(question, options, time))
+
+@utility_group.command(name="translate", description="Translate text.")
+@app_commands.describe(text="Text to translate", language="Target language")
+async def slash_utility_translate(interaction: discord.Interaction, text: str, language: str = ""):
+    await slash_invoke(interaction, "translate", text, language)
+
+@utility_group.command(name="find", description="Find a user.")
+@app_commands.describe(query="Name or ID")
+async def slash_utility_find(interaction: discord.Interaction, query: str):
+    await slash_invoke(interaction, "find", query)
+
+@utility_group.command(name="messages", description="Open message tracker.")
+async def slash_utility_messages(interaction: discord.Interaction):
+    await slash_invoke(interaction, "messages")
+
+@utility_group.command(name="activity", description="Open activity report.")
+async def slash_utility_activity(interaction: discord.Interaction):
+    await slash_invoke(interaction, "activity")
+
+@ai_group.command(name="ask", description="Ask Pro𝚀𝚞𝚎 AI.")
+@app_commands.describe(prompt="What to ask")
+async def slash_ai_ask(interaction: discord.Interaction, prompt: str):
+    await slash_invoke(interaction, "ask", prompt)
+
+@ai_group.command(name="generate", description="Generate text with AI.")
+@app_commands.describe(prompt="What to generate")
+async def slash_ai_generate(interaction: discord.Interaction, prompt: str):
+    await slash_invoke(interaction, "generate", prompt)
+
+@ai_group.command(name="analyse", description="Analyse text or context.")
+@app_commands.describe(prompt="What to analyse")
+async def slash_ai_analyse(interaction: discord.Interaction, prompt: str):
+    await slash_invoke(interaction, "analyse", prompt)
+
+@ai_group.command(name="summarize", description="Summarize chat or a user.")
+@app_commands.describe(request="What to summarize")
+async def slash_ai_summarize(interaction: discord.Interaction, request: str = ""):
+    await slash_invoke(interaction, "summarize", request)
+
+@ai_group.command(name="aidetect", description="Estimate whether text is AI-written.")
+@app_commands.describe(text="Text to check")
+async def slash_ai_aidetect(interaction: discord.Interaction, text: str):
+    await slash_invoke(interaction, "aidetect", text)
+
+@ai_group.command(name="memory", description="Check your AI memory.")
+@app_commands.describe(user="Optional user, if you have permission")
+async def slash_ai_memory(interaction: discord.Interaction, user: discord.Member = None):
+    await slash_invoke(interaction, "aimemory", slash_user_arg(user))
+
+@ai_group.command(name="knowledge", description="Ask what Pro𝚀𝚞𝚎 knows about itself.")
+async def slash_ai_knowledge(interaction: discord.Interaction):
+    await slash_invoke(interaction, "aiknow")
+
+@setup_group.command(name="dashboard", description="Open settings.")
+async def slash_setup_dashboard(interaction: discord.Interaction):
+    await slash_invoke(interaction, "settings")
+
+@setup_group.command(name="prefix", description="Change the server prefix.")
+@app_commands.describe(prefix="New prefix")
+async def slash_setup_prefix(interaction: discord.Interaction, prefix: str = ""):
+    await slash_invoke(interaction, "prefix", prefix)
+
+@setup_group.command(name="logs", description="Set logs channel.")
+@app_commands.describe(channel="Logs channel")
+async def slash_setup_logs(interaction: discord.Interaction, channel: discord.TextChannel = None):
+    await slash_invoke(interaction, "setlogs", slash_channel_arg(channel))
+
+@setup_group.command(name="birthday", description="Set birthday channel.")
+@app_commands.describe(channel="Birthday channel")
+async def slash_setup_birthday(interaction: discord.Interaction, channel: discord.TextChannel = None):
+    await slash_invoke(interaction, "setbdaychannel", slash_channel_arg(channel))
+
+@setup_group.command(name="quewo", description="Restrict 𝚀𝚞𝚎wo to a channel.")
+@app_commands.describe(channel="Allowed 𝚀𝚞𝚎wo channel")
+async def slash_setup_quewo(interaction: discord.Interaction, channel: discord.TextChannel = None):
+    await slash_invoke(interaction, "quewochannel", slash_channel_arg(channel))
+
+@setup_group.command(name="truthordare", description="Restrict Truth or Dare channels.")
+@app_commands.describe(action="status, set, add, remove, clear, or here", channels="Channel mentions or IDs")
+async def slash_setup_truthordare(interaction: discord.Interaction, action: str = "status", channels: str = ""):
+    await slash_invoke(interaction, "todchannel", action, channels)
+
+@setup_group.command(name="ai", description="Set AI channel/options.")
+@app_commands.describe(channel="AI channel")
+async def slash_setup_ai(interaction: discord.Interaction, channel: discord.TextChannel = None):
+    await slash_invoke(interaction, "aichannel", slash_channel_arg(channel))
+
+@setup_group.command(name="robbing", description="Configure robbing.")
+@app_commands.describe(setting="on/off/status")
+async def slash_setup_robbing(interaction: discord.Interaction, setting: str = ""):
+    await slash_invoke(interaction, "robsettings", setting)
+
+for slash_group in (mod_group, game_group, quewo_group, gamble_group, utility_group, ai_group, setup_group):
+    bot.tree.add_command(slash_group)
 
 class ConfirmActionView(View):
     def __init__(self, author_id, label="Confirm"):
