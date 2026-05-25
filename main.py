@@ -44,6 +44,7 @@ from economy import (
     EXPLANATIONS as economy_explanations,
     format_balance as economy_format_balance,
     get_lottery_config as economy_get_lottery_config,
+    get_economy_channel_id as economy_get_economy_channel_id,
     get_leaderboard_user_ids as economy_get_leaderboard_user_ids,
     get_game_stat as economy_get_game_stat,
     get_user as economy_get_user,
@@ -103,6 +104,7 @@ from economy import (
     Q_SNIPE as economy_q_snipe,
     Q_SETUP as economy_q_setup,
     Q_SEASON_PASS as economy_q_season_pass,
+    Q_TARGET as economy_q_target,
     Q_THINKING as economy_q_thinking,
     Q_TICKET as economy_q_ticket,
     Q_TIMEOUT as economy_q_timeout,
@@ -119,6 +121,7 @@ from economy import (
     risk_label as economy_risk_label,
     record_game_result as economy_record_game_result,
     setup as economy_setup,
+    set_economy_channel_id as economy_set_economy_channel_id,
     todays_daily_challenge as economy_todays_daily_challenge,
     track_daily_challenge_progress as economy_track_daily_challenge_progress,
     update_user as economy_update_user,
@@ -155,6 +158,7 @@ from pgdata import (
     load_guild_log_config,
     load_message_events,
     load_reaction_shutdown_channels,
+    load_truth_or_dare_channels,
     load_reaction_watchlist,
     load_shutdown_channels,
     load_sleeping_users as pg_load_sleeping_users,
@@ -187,6 +191,7 @@ from pgdata import (
     set_ai_control_setting,
     delete_ai_control_setting,
     save_reaction_shutdown_channels,
+    save_truth_or_dare_channels,
     save_reaction_watchlist,
     save_shutdown_channels,
     save_sleeping_user,
@@ -307,6 +312,7 @@ autoban_ids = load_autoban_ids()
 blacklisted_users = load_blacklisted_users()
 shutdown_channels = load_shutdown_channels()
 reaction_shutdown_channels = load_reaction_shutdown_channels()
+truth_or_dare_channels = load_truth_or_dare_channels()
 disabled_commands = load_disabled_commands()
 guild_prefixes = load_guild_prefixes()
 guild_birthday_channels = load_guild_birthday_channels()
@@ -1563,6 +1569,9 @@ def guild_shutdown_channels(guild):
 
 def guild_reaction_shutdown_channels(guild):
     return scoped_set(reaction_shutdown_channels, guild)
+
+def guild_truth_or_dare_channels(guild):
+    return scoped_set(truth_or_dare_channels, guild)
 
 def guild_disabled_commands(guild):
     return scoped_set(disabled_commands, guild)
@@ -4213,6 +4222,7 @@ COMMAND_EXAMPLE_OVERRIDES = {
     "aiignore": ".aiignore @user",
     "aiunignore": ".aiunignore @user",
     "aichannel": ".aichannel on",
+    "quewochannel": ".quewochannel here",
     "aistyle": ".aistyle casual and short",
     "ban": ".ban @user reason",
     "blackjack": ".blackjack 1000",
@@ -4309,6 +4319,9 @@ COMMAND_EXAMPLE_OVERRIDES = {
     "summon": ".summon @user",
     "summon2": ".summon2 @user",
     "timer": ".timer 10m study",
+    "truthordare": ".tod",
+    "tod": ".tod truth @user",
+    "todchannel": ".todchannel set #truth-or-dare #games",
     "usersettings": ".usersettings receipts on",
     "tower": ".tower 1000",
     "tutorial": ".tutorial off",
@@ -4580,7 +4593,8 @@ AI_SAFE_COMMANDS = {
 AI_CONFIRM_COMMANDS = {
     "poll", "epoll", "giveaway", "setbday", "removebday", "setbdaychannel", "rob",
     "activity", "messageevent", "msgevent", "chatevent", "messagecontest", "chatcontest", "settings", "prefix", "preifx", "setprefix",
-    "recover", "aichannel", "aitoggle",
+    "recover", "aichannel", "aitoggle", "quewochannel", "qchannel", "econchannel", "economychannel", "gamblingchannel", "setquewochannel",
+    "todchannel", "todchannels", "truthdarechannel", "truthordarechannel", "settdchannel",
 }
 
 AI_SUPEROWNER_ONLY_COMMANDS = {
@@ -6123,9 +6137,9 @@ HELP_CATEGORIES = {
         "guide", "onboard", "tutorial", "bal", "bank", "profile", "inventory", "settheme", "quests", "dailychallenge", "streaks", "shop", "cooldowns", "transactions", "lottery", "lotterystats", "buytick",
         "daily", "weekly", "monthly", "cf", "roulette", "slots", "blackjack", "scratch", "tower", "vault", "memory", "cardladder", "lockpick",
         "heist", "diceduel", "cases", "plinko", "luckynumber", "jackpotspin", "dungeon", "ms", "wheel",
-        "give", "rob", "robsettings", "recommendgame", "lb", "gamestats", "achievements", "setbadge", "gamebalance", "gameaudit", "balanceaudit", "balancedashboard", "gamehistory", "season", "seasonpass", "event", "limits", "qstats", "economyhealth", "economyaudit", "abuseaudit", "riskprofile", "econhelp", "explain",
+        "give", "rob", "robsettings", "quewochannel", "recommendgame", "lb", "gamestats", "achievements", "setbadge", "gamebalance", "gameaudit", "balanceaudit", "balancedashboard", "gamehistory", "season", "seasonpass", "event", "limits", "qstats", "economyhealth", "economyaudit", "abuseaudit", "riskprofile", "econhelp", "explain",
     ],
-    "Games": ["games", "howtoplay", "ttt", "c4", "chess", "move", "resign", "flagquiz", "flagstats", "q", "picker"],
+    "Games": ["games", "howtoplay", "truthordare", "ttt", "c4", "chess", "move", "resign", "flagquiz", "flagstats", "q", "picker"],
     "Utility": ["help", "userinfo", "pfp", "calc", "define", "timer", "ctimer", "alarm", "poll", "epoll", "translate", "find"],
     "AI": ["ask", "generate", "analyse", "summarize", "aidetect", "aimemory", "aiknow", "aihistory", "aiperms", "aiguard", "aisettings", "aiignore", "aiunignore", "aichannel", "aistyle", "usersettings", "aidoctor"],
     "Server Tools": [
@@ -6135,6 +6149,7 @@ HELP_CATEGORIES = {
     "Status": ["afk", "sleep", "wake", "fsleep", "away", "setbday", "removebday", "setbdaychannel", "activity", "activitystats", "messages"],
     "Admin": [
         "settings", "slashsync", "health", "perms", "permaudit", "sessions", "recover", "jobs", "errors", "dbaudit", "auditcommands", "styleaudit", "commandcleanup", "commandstats", "bulkqueue", "receipt", "receipts", "setlogs", "prefix", "disable", "enable", "disableall", "enableall", "dclist", "perf", "test", "testlog", "testrlog",
+        "todchannel",
         "endttt", "setnick", "unmute", "kick", "ban", "unban", "addrole", "removerole", "deleterole",
         "lock", "unlock", "lockdown", "reopen", "rlockdown", "runlock", "shut", "unshut", "clearwatchlist", "rshut", "unrshut",
         "send", "reply", "fwd", "aban", "raban", "abanlist", "summon", "summon2", "block", "unblock",
@@ -6506,6 +6521,10 @@ async def build_settings_embed(guild):
     except Exception:
         lottery_config = None
     try:
+        quewo_channel_id = await asyncio.to_thread(economy_get_economy_channel_id, guild.id) if guild else None
+    except Exception:
+        quewo_channel_id = None
+    try:
         ai_config = await ai_settings_for("guild", guild.id) if guild else {}
     except Exception:
         ai_config = {}
@@ -6522,6 +6541,8 @@ async def build_settings_embed(guild):
     embed.add_field(name=f"{economy_q_archive} Logs", value=channel_status(guild, log_config.get("log_channel_id")), inline=True)
     embed.add_field(name=f"{economy_q_reaction} Reaction Logs", value=channel_status(guild, log_config.get("reaction_log_channel_id")), inline=True)
     embed.add_field(name=f"{economy_q_ai_history} AI", value=f"**{ai_config.get('enabled', 'on').upper()}**", inline=True)
+    embed.add_field(name=f"{economy_q_bank} 𝚀𝚞𝚎wo Channel", value=channel_status(guild, quewo_channel_id) if quewo_channel_id else "All channels", inline=True)
+    embed.add_field(name=f"{economy_q_target} Truth or Dare", value=truth_or_dare_channel_text(guild), inline=True)
     embed.add_field(name=f"{economy_q_birthday} Birthdays", value=channel_status(guild, birthday_config.get("channel_id")), inline=True)
     activity_value = channel_status(guild, activity_config.get("channel_id"))
     if activity_config.get("next_report"):
@@ -6553,6 +6574,8 @@ async def build_settings_embed(guild):
         f"{economy_q_accept if birthday_config.get('channel_id') else economy_q_warning} Birthdays",
         f"{economy_q_accept if activity_config.get('channel_id') else economy_q_warning} Activity",
         f"{economy_q_accept if lottery_config else economy_q_warning} Lottery",
+        f"{economy_q_accept} 𝚀𝚞𝚎wo: {channel_status(guild, quewo_channel_id) if quewo_channel_id else 'all channels'}",
+        f"{economy_q_accept} Truth/Dare: {truth_or_dare_channel_text(guild)}",
     ]
     embed.add_field(name=f"{economy_q_command_check} Setup Checklist", value="\n".join(checklist), inline=False)
     embed.set_footer(text="Use the buttons below for quick setup actions.")
@@ -6639,6 +6662,20 @@ class SettingsView(View):
             return await interaction.response.send_message("AI setting save failed.", ephemeral=True)
         await interaction.response.edit_message(embed=await build_settings_embed(interaction.guild), view=self)
 
+    @discord.ui.button(label="𝚀𝚞𝚎wo Here", emoji=economy_q_bank, style=discord.ButtonStyle.secondary)
+    async def quewo_channel_button(self, interaction, button):
+        if not has_owner_power(interaction.user, interaction.guild):
+            return await interaction.response.send_message("Admin power only.", ephemeral=True)
+        await asyncio.to_thread(economy_set_economy_channel_id, interaction.guild.id, interaction.channel.id)
+        await interaction.response.edit_message(embed=await build_settings_embed(interaction.guild), view=self)
+
+    @discord.ui.button(label="Clear 𝚀𝚞𝚎wo Channel", emoji=economy_q_trash, style=discord.ButtonStyle.secondary)
+    async def quewo_channel_clear_button(self, interaction, button):
+        if not has_owner_power(interaction.user, interaction.guild):
+            return await interaction.response.send_message("Admin power only.", ephemeral=True)
+        await asyncio.to_thread(economy_set_economy_channel_id, interaction.guild.id, None)
+        await interaction.response.edit_message(embed=await build_settings_embed(interaction.guild), view=self)
+
     @discord.ui.button(label="Birthdays Here", emoji=economy_q_birthday, style=discord.ButtonStyle.secondary)
     async def birthday_button(self, interaction, button):
         if not await can_manage_birthday_channel(interaction.user, interaction.guild):
@@ -6700,8 +6737,10 @@ class SettingsView(View):
             f"`{prefix}setlogs` - setup logs\n"
             f"`{prefix}setbdaychannel #channel` - birthdays\n"
             f"`{prefix}activity setup` - activity reports\n"
+            f"`{prefix}todchannel set #channel` - Truth or Dare channels\n"
             f"`{prefix}lottery` - lottery panel\n"
             f"`{prefix}editlottery <setting> <value>` - lottery settings\n"
+            f"`{prefix}quewochannel here/off` - restrict 𝚀𝚞𝚎wo channel\n"
             f"{economy_q_bank} `{prefix}bank` - protected cash\n"
             f"{economy_q_rob} `{prefix}robsettings on/off` - server robbing\n"
             f"`{prefix}disable <command>` / `{prefix}enable <command>` - command access\n"
@@ -6723,12 +6762,13 @@ class SettingsView(View):
             color=discord.Color.green(),
         )
         embed.add_field(name="Core", value=f"`{prefix}prefix <new>`\n`{prefix}setlogs`\n`{prefix}settings`\n{economy_q_tutorial} `{prefix}tutorial`", inline=True)
-        embed.add_field(name="Community", value=f"`{prefix}setbdaychannel #channel`\n`{prefix}activity setup`\n`{prefix}messages`", inline=True)
+        embed.add_field(name="Community", value=f"`{prefix}setbdaychannel #channel`\n`{prefix}activity setup`\n`{prefix}todchannel`\n`{prefix}messages`", inline=True)
         embed.add_field(
             name="𝚀𝚞𝚎wo",
             value=(
                 f"`{prefix}lottery`\n"
                 f"`{prefix}editlottery`\n"
+                f"`{prefix}quewochannel`\n"
                 f"{economy_q_bank} `{prefix}bank`\n"
                 f"{economy_q_rob} `{prefix}robsettings`\n"
                 f"`{prefix}balanceaudit`\n"
@@ -7662,10 +7702,502 @@ async def health_command(ctx):
     embed.add_field(name="Active Lotteries", value=str(lottery_configs), inline=True)
     await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
+TRUTH_OR_DARE_TRUTHS = [
+    "What is something tiny that instantly annoys you?",
+    "What is the funniest thing you believed as a kid?",
+    "Who in this server would survive a zombie apocalypse the longest, and why?",
+    "What is one thing you pretend to understand but absolutely do not?",
+    "What is the most random screenshot in your camera roll?",
+    "What is a song you like but would skip if someone was watching?",
+    "What is the dumbest reason you ever got embarrassed?",
+    "If your last three emojis described your week, how bad is it?",
+    "What is a harmless secret you can admit right now?",
+    "Which fictional character are you weirdly similar to?",
+    "What is the worst food take you secretly stand by?",
+    "What is one habit you know is chaotic but refuse to fix?",
+    "Who here gives main-character energy?",
+    "What is the most unserious thing you spent money on?",
+    "What would your villain origin story be?",
+    "What is a compliment you still remember?",
+    "What is your most irrational fear?",
+    "What is the most awkward message you have ever sent to the wrong person?",
+    "If you had to delete one app for a month, which one would hurt most?",
+    "What is something you are better at than people expect?",
+    "What is the most dramatic thing you have done over something small?",
+    "What is a message you typed and then deleted?",
+    "What is your most specific comfort food?",
+    "What is a trend you secretly enjoyed?",
+    "What is a trend you never understood?",
+    "Who here would be the worst at keeping a secret?",
+    "Who here would be the best at planning a surprise?",
+    "What is the most suspicious thing in your search history that has a normal explanation?",
+    "What is one thing you would instantly buy if money was not real?",
+    "What is a nickname you would never accept?",
+    "What is the funniest typo you remember sending?",
+    "What is one opinion you have that would start a silly argument?",
+    "What is a game you are weirdly competitive about?",
+    "What is the most questionable outfit phase you had?",
+    "What is something you are too lazy to learn but should?",
+    "Who here would be the group detective?",
+    "Who here would accidentally cause the problem and then solve it?",
+    "What is your most used excuse?",
+    "What is a random skill you wish you had?",
+    "What is the worst advice you have ever followed?",
+    "What is a harmless lie you tell yourself too often?",
+    "What is the most chaotic notification you could receive right now?",
+    "What is something you liked before it became popular?",
+    "What is something popular that you still do not get?",
+    "What is a food combo you know sounds illegal but tastes good?",
+    "What is your biggest green flag?",
+    "What is your funniest red flag?",
+    "What is one thing that instantly makes you trust someone?",
+    "What is one thing that instantly makes you suspicious?",
+    "What is the most awkward way you have ended a conversation?",
+    "What is one thing you wish people asked you about more?",
+    "What is something you have never admitted in a group chat?",
+    "What is the most cursed item in your room?",
+    "Who here would be the best game show host?",
+    "Who here would fold first in a horror movie?",
+    "What is something you would do if embarrassment did not exist?",
+    "What is a compliment you are bad at accepting?",
+    "What is a small win you are proud of?",
+    "What is something you always overthink?",
+    "What is the weirdest reason you stayed up too late?",
+    "What is your most unserious goal?",
+    "What is one thing you are secretly good at?",
+    "What is something you are secretly terrible at?",
+    "What is a word or phrase you say too much?",
+    "What is the last thing that made you laugh harder than it should have?",
+    "If your personality had a warning label, what would it say?",
+    "What is one thing you would never put in your bio but is true?",
+    "What is the most random hill you will die on?",
+    "What is your villain weakness?",
+    "What is a tiny luxury you love?",
+    "What is something you judge people for even though you probably should not?",
+    "Who here would be easiest to prank?",
+    "What is one thing you would erase from your memory just to experience again?",
+    "What is a song lyric you always sing wrong?",
+    "What is your most irrational loyalty?",
+    "What is a decision you made way too confidently?",
+    "What is the funniest thing you misunderstood recently?",
+    "What is something you would ask your future self?",
+    "What is a small thing that can fix your mood instantly?",
+    "What is one habit you picked up from someone else?",
+    "What is the most ridiculous thing you have done to avoid being awkward?",
+    "What is something you would only admit after midnight?",
+    "What is the most dramatic overreaction you have had recently?",
+    "What is the most embarrassing thing you have searched because you forgot the obvious answer?",
+    "What is a secret talent that is useful almost nowhere?",
+    "What is the weirdest compliment you would actually enjoy receiving?",
+    "What is one thing you would never do on camera?",
+    "What is a lie you told as a kid that got way too complicated?",
+    "What is one thing you still do even though you know it makes no sense?",
+    "What is a smell that instantly brings back memories?",
+    "What is the most suspicious thing you have done while being completely innocent?",
+    "What is a movie or show you quote too often?",
+    "What is the strangest dream you remember?",
+    "What is a small thing that makes you irrationally happy?",
+    "What is one thing you would ban from existing for a week?",
+    "What is the most embarrassing phase you survived?",
+    "What is something you thought would be easy but humbled you fast?",
+    "What is a secret rule you follow in your head?",
+    "What is the funniest thing you have overheard?",
+    "What is a weird thing you are picky about?",
+    "What is one thing you have always wanted to ask someone but never did?",
+    "What is a harmless thing you would be famous for if everyone knew?",
+    "What is your most useless strong opinion?",
+    "What is something you always notice about people first?",
+    "What is one thing you pretend not to care about but definitely do?",
+    "What is the most chaotic thing you have done while tired?",
+    "What is a random memory that lives rent-free in your head?",
+    "What is one thing you would never let your younger self post online?",
+    "What is the funniest thing you have taken personally?",
+    "What is a weird flex you secretly have?",
+    "What is the worst excuse you have actually used?",
+    "What is something you would be terrible at explaining to an alien?",
+    "What is one thing you are glad nobody recorded?",
+    "What is a moment where you had to act normal but absolutely were not normal?",
+    "What is something you would confess if everyone promised not to react?",
+    "What is the most random reason you have laughed in public?",
+    "What is one thing that makes you instantly competitive?",
+    "What is your most questionable comfort show or video?",
+    "What is something you would do for a dare but regret immediately?",
+    "What is one truth about you that sounds fake?",
+    "Who is the last person you DM'd, and what is the general vibe of the conversation?",
+    "What is the funniest recent message you sent on Discord?",
+    "What Discord status would describe your life right now?",
+    "What is the most chaotic server name you have ever seen?",
+    "What is your most-used Discord reaction lately?",
+    "What is a Discord notification you would be scared to open?",
+    "What is the weirdest reason you have muted a server?",
+    "What is your most suspicious Discord habit?",
+    "What is the funniest thing you have seen in a server chat?",
+    "What type of Discord user are you: lurker, yapper, chaos starter, or helper?",
+    "What is one channel name that would describe your mood today?",
+    "What is the most dramatic Discord argument you have witnessed without naming names?",
+    "What is your most embarrassing Discord typo?",
+    "What is a server rule you secretly think is funny?",
+    "What is the last message you almost sent but decided not to?",
+    "What is the funniest Discord nickname you have had or seen?",
+    "What is one emoji reaction that feels personal when someone uses it?",
+    "What is the weirdest thing in your Discord saved images or downloads?",
+    "What is a Discord habit you judge but also do yourself?",
+    "What is the most random DM you have ever received?",
+]
+
+TRUTH_OR_DARE_DARES = [
+    "Send your most-used emoji with no context.",
+    "Type your next message like a dramatic movie trailer.",
+    "Give someone in chat a fake award title.",
+    "Let the chat pick your display name vibe for 10 minutes.",
+    "Speak only in questions for your next 3 messages.",
+    "Send a one-sentence apology to your sleep schedule.",
+    "Describe your day using only 5 words.",
+    "React to the last 3 messages with your honest mood.",
+    "Make a tiny sales pitch for the nearest object to you.",
+    "Write a fake weather report for the server.",
+    "Send a message with zero vowels.",
+    "Compliment the person above you, but make it oddly specific.",
+    "Use only lowercase for your next 5 messages.",
+    "Confess to a crime you clearly did not commit.",
+    "Make up a rumor about someone here being secretly powerful.",
+    "Send a terrible motivational quote.",
+    "Rate your current energy from sleepy potato to final boss.",
+    "Post a random fun fact you know.",
+    "Write a two-line poem about the last snack or drink you had.",
+    "Let someone choose a word you must include in your next 3 messages.",
+    "Send your next message as if you are a detective revealing the truth.",
+    "Give the person above you a dramatic theme song title.",
+    "Type a fake sponsor ad for this chat.",
+    "Rename yourself in one sentence without changing your actual nickname.",
+    "Send a message that sounds like a fortune cookie.",
+    "Write a dramatic goodbye to an object near you.",
+    "Use the word `sparkle` naturally in your next message.",
+    "Give someone here a completely fake superpower.",
+    "Send a compliment that sounds strangely official.",
+    "Write your next message like a pirate with Wi-Fi.",
+    "Give the chat a fake breaking-news headline.",
+    "Make a tiny roast about yourself.",
+    "Ask the chat a question that sounds deep but is actually silly.",
+    "Use only 3 words in your next message.",
+    "Send your current mood as a movie title.",
+    "Turn the last message into a fake law.",
+    "Give the person above you a dramatic villain title.",
+    "Write a fake apology to your keyboard.",
+    "Say something nice about the last person who sent a message.",
+    "Send a message that includes exactly one emoji.",
+    "Pretend you are announcing an award and nominate someone here.",
+    "Describe the server as a restaurant review.",
+    "Make your next message sound like it came from a fantasy quest.",
+    "Give the group a team name.",
+    "Send a fake prophecy about the next 10 minutes.",
+    "Use all caps for one short sentence only.",
+    "Write a one-line diss track about your own sleep schedule.",
+    "Ask someone here for their official opinion on a useless topic.",
+    "Send a message using no letter `e`.",
+    "Give someone a fake job title based on their vibe.",
+    "Write a dramatic courtroom objection about the last topic.",
+    "Send a random object near you a thank-you note.",
+    "Make up a fake menu item named after someone in chat.",
+    "Write a warning label for yourself.",
+    "Send the most mysterious sentence you can think of.",
+    "Explain your day like a patch note.",
+    "Write a tiny poem about the last emoji used.",
+    "Send a message that sounds like a boss fight intro.",
+    "Give someone here a fake side quest.",
+    "Make a prediction about the next person to type.",
+    "Type your next message like you are whispering a secret.",
+    "Send an intentionally bad slogan for this server.",
+    "Describe your current energy as a weather forecast.",
+    "Invent a fake holiday and tell us how to celebrate it.",
+    "Give a motivational speech to the nearest snack or drink.",
+    "Write one sentence that includes `legend`, `oops`, and `sparkly`.",
+    "Pretend to be a mysterious narrator for one message.",
+    "Make a fake achievement for someone in chat.",
+    "Send a message that starts with `Plot twist:`.",
+    "Write a haiku about procrastination.",
+    "Give the chat a fake safety announcement.",
+    "Describe someone here as a video game character class.",
+    "Send the most dramatic `brb` you can.",
+    "Create a fake conspiracy theory about why the chat is quiet.",
+    "Write a one-sentence review of today.",
+    "Give yourself a fake royal title.",
+    "Send a message with exactly 7 words.",
+    "Make up a new server rule that is harmless and silly.",
+    "Write a tiny villain monologue about losing a game.",
+    "Ask a yes/no question that everyone can answer quickly.",
+    "Send a voice-note-style sentence without actually sending audio.",
+    "Tell the chat to stop doing something nobody is doing.",
+    "Make up a fake emergency about something tiny.",
+    "Describe your current face without using the words face, eyes, mouth, or nose.",
+    "Send a message like you just discovered gravity.",
+    "Give someone a fake warning label.",
+    "Write one sentence like an evil genius who forgot their plan.",
+    "Send your best fake celebrity apology.",
+    "Make a normal sentence sound suspicious.",
+    "Write a dramatic review of water.",
+    "Challenge someone to a completely pointless duel.",
+    "Send a message like you are trying not to laugh.",
+    "Tell a tiny lie and immediately expose yourself.",
+    "Make up a fake name for your current mood.",
+    "Send a message that could be the title of a terrible reality show.",
+    "Give someone a fake horoscope.",
+    "Act offended by the nearest object.",
+    "Write a one-line breakup text to a bad habit.",
+    "Send a message like a confused time traveler.",
+    "Invent a fake app and pitch it badly.",
+    "Give the group a fake mission for the next 5 minutes.",
+    "Use an overly fancy word in a very normal sentence.",
+    "Send a message as if you are the final boss of doing nothing.",
+    "Make up a fake fun fact and label it as fake.",
+    "Give someone a harmless dare of your own.",
+    "Write a sentence that starts normal and ends dramatic.",
+    "Describe a random object like it is priceless art.",
+    "Send your best fake evil laugh in text.",
+    "Make a wild accusation about yourself.",
+    "Write a warning announcement for your current mood.",
+    "Tell the chat your fake campaign promise.",
+    "Create a fake nickname for the person below you.",
+    "Send a message using exactly one punctuation mark.",
+    "Write a sentence like a soap opera character.",
+    "Make the next normal thing someone says sound dramatic.",
+    "Send a message that sounds like it was translated badly twice.",
+    "Give a fake acceptance speech for an award you did not win.",
+    "Make a silly confession in the most serious tone possible.",
+    "Send a message like you are trying to distract everyone.",
+    "Write a tiny dramatic monologue about being hungry.",
+    "Show the last 5 messages from the last person you DM'd.",
+    "Send your last 3 used emojis and let the chat judge the story.",
+    "Screenshot your Discord status picker or type what your current status should be.",
+    "React to the next 5 messages with only one emoji.",
+    "Change your Discord status text for 10 minutes to something the chat chooses.",
+    "Send the most recent Discord screenshot in your camera roll.",
+    "Ping nobody, but write a fake dramatic announcement for the whole server.",
+    "Reply to the last message like it was a serious official report.",
+    "Type your next message like a Discord moderator making a tiny announcement.",
+    "Send a fake server rule that sounds real for half a second.",
+    "Let the chat choose one emoji you must react with for the next 5 minutes.",
+    "Show your top 5 recently used emojis, or type them if you cannot screenshot.",
+    "Scroll up a little and quote a random harmless message with no context.",
+    "Send a message that looks like it belongs in a channel called `bad-ideas`.",
+    "Make up a fake channel name for the current conversation.",
+    "Write a fake Discord notification that would make everyone panic.",
+    "Describe the person above you using only Discord channel names.",
+    "Send a message like you accidentally typed it in the wrong server.",
+    "Ask the chat to vote with reactions on a completely useless question.",
+    "Write a fake timeout reason for yourself.",
+]
+
+TRUTH_OR_DARE_RECENT_LIMIT = 80
+truth_or_dare_recent_prompts = defaultdict(lambda: deque(maxlen=TRUTH_OR_DARE_RECENT_LIMIT))
+
+def truth_or_dare_history_key(location, mode):
+    guild = getattr(location, "guild", None)
+    channel = getattr(location, "channel", None)
+    guild_id = int(getattr(guild, "id", 0) or 0)
+    channel_id = int(getattr(channel, "id", 0) or 0)
+    return (guild_id, channel_id, mode)
+
+def truth_or_dare_pick(mode, location=None):
+    mode = str(mode or "random").casefold()
+    if mode not in {"truth", "dare"}:
+        mode = random.choice(["truth", "dare"])
+    pool = TRUTH_OR_DARE_TRUTHS if mode == "truth" else TRUTH_OR_DARE_DARES
+    key = truth_or_dare_history_key(location, mode)
+    recent = truth_or_dare_recent_prompts[key]
+    available = [prompt for prompt in pool if prompt not in recent]
+    if not available:
+        recent.clear()
+        available = list(pool)
+    prompt = random.choice(available)
+    recent.append(prompt)
+    return mode, prompt
+
+def truth_or_dare_embed(mode, prompt, target=None):
+    is_truth = mode == "truth"
+    icon = economy_q_thinking if is_truth else economy_q_target
+    title = "Truth" if is_truth else "Dare"
+    target_text = target.mention if target else "Whoever is playing"
+    embed = standard_embed(
+        f"{title}",
+        description=f"{icon} {target_text}\n\n**{prompt}**",
+        color=discord.Color.blurple() if is_truth else discord.Color.orange(),
+        icon=icon,
+    )
+    embed.set_footer(text="Use the buttons for another prompt.")
+    return embed
+
+def truth_or_dare_channel_text(guild):
+    channels = sorted(guild_truth_or_dare_channels(guild))
+    if not channels:
+        return "All channels"
+    parts = []
+    for channel_id in channels:
+        channel = guild.get_channel(int(channel_id)) if guild else None
+        parts.append(channel.mention if channel else f"`{channel_id}`")
+    return joined_embed_value(parts, limit=900)
+
+async def truth_or_dare_channel_allowed(location):
+    guild = getattr(location, "guild", None)
+    channel = getattr(location, "channel", None)
+    if guild is None:
+        return True
+    allowed = guild_truth_or_dare_channels(guild)
+    return not allowed or int(getattr(channel, "id", 0) or 0) in allowed
+
+async def send_truth_or_dare_channel_denial(destination, guild):
+    message = f"{economy_q_reject} Truth or Dare is set to: {truth_or_dare_channel_text(guild)}"
+    if isinstance(destination, discord.Interaction):
+        if destination.response.is_done():
+            await destination.followup.send(message, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+        else:
+            await destination.response.send_message(message, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+    else:
+        await destination.send(message, allowed_mentions=discord.AllowedMentions.none())
+
+async def resolve_truth_or_dare_channels(ctx, raw):
+    channels = []
+    seen = set()
+    for channel in getattr(ctx.message, "channel_mentions", []) or []:
+        if isinstance(channel, discord.TextChannel) and channel.id not in seen:
+            channels.append(channel)
+            seen.add(channel.id)
+    cleaned = re.sub(r"<#\d+>", " ", str(raw or ""))
+    for token in shlex.split(cleaned):
+        if token.casefold() in {"add", "set", "remove", "rm", "delete", "clear", "off", "status", "list", "here"}:
+            continue
+        try:
+            channel = await commands.TextChannelConverter().convert(ctx, token)
+        except commands.BadArgument:
+            continue
+        if channel.id not in seen:
+            channels.append(channel)
+            seen.add(channel.id)
+    return channels
+
+@bot.command(name="todchannel", aliases=["todchannels", "truthdarechannel", "truthordarechannel", "settdchannel"])
+@is_admin_power()
+async def truth_or_dare_channel_command(ctx, action: str = None, *, raw_channels: str = None):
+    """Sets allowed Truth or Dare channels for this server."""
+    if ctx.guild is None:
+        return await ctx.send("Truth or Dare channel settings only work in servers.")
+    prefix = prefix_for_guild(ctx.guild)
+    action_key = str(action or "status").casefold()
+    allowed = set(guild_truth_or_dare_channels(ctx.guild))
+    valid_actions = {"status", "list", "show", "clear", "off", "disable", "all", "anywhere", "here", "this", "set", "only", "add", "allow", "include", "remove", "rm", "delete", "del"}
+    if action and action_key not in valid_actions:
+        raw_channels = f"{action} {raw_channels or ''}".strip()
+        action_key = "set"
+
+    if action_key in {"status", "list", "show"}:
+        return await ctx.send(
+            f"{economy_q_target} Truth or Dare Channels: **{truth_or_dare_channel_text(ctx.guild)}**\n"
+            f"Use `{prefix}todchannel add #channel`, `{prefix}todchannel set #one #two`, `{prefix}todchannel remove #channel`, or `{prefix}todchannel clear`.",
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+    if action_key in {"clear", "off", "disable", "all", "anywhere"}:
+        allowed.clear()
+        await asyncio.to_thread(save_truth_or_dare_channels, ctx.guild.id, allowed)
+        return await ctx.send(f"{economy_q_target} Truth or Dare can now be used in **all channels**.")
+
+    if action_key in {"here", "this"}:
+        raw_channels = "here"
+        action_key = "set"
+
+    if raw_channels and raw_channels.strip().casefold() in {"here", "this"}:
+        channels = [ctx.channel]
+    else:
+        channels = await resolve_truth_or_dare_channels(ctx, raw_channels or "")
+
+    if not channels:
+        return await ctx.send(
+            f"{economy_q_reject} Pick at least one channel.\n"
+            f"Examples: `{prefix}todchannel set #truth-or-dare #games`, `{prefix}todchannel add here`, `{prefix}todchannel clear`.",
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+    if action_key in {"set", "only"}:
+        allowed = {channel.id for channel in channels}
+    elif action_key in {"add", "allow", "include"}:
+        allowed.update(channel.id for channel in channels)
+    elif action_key in {"remove", "rm", "delete", "del"}:
+        allowed.difference_update(channel.id for channel in channels)
+    else:
+        return await ctx.send(
+            f"{economy_q_reject} Use `set`, `add`, `remove`, `clear`, or `status`.\n"
+            f"Example: `{prefix}todchannel set #truth-or-dare #games`.",
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+    await asyncio.to_thread(save_truth_or_dare_channels, ctx.guild.id, allowed)
+    guild_truth_or_dare_channels(ctx.guild).clear()
+    guild_truth_or_dare_channels(ctx.guild).update(allowed)
+    await ctx.send(
+        f"{economy_q_target} Truth or Dare Channels: **{truth_or_dare_channel_text(ctx.guild)}**",
+        allowed_mentions=discord.AllowedMentions.none(),
+    )
+
+class TruthOrDareView(View):
+    def __init__(self, target_id=None):
+        super().__init__(timeout=LONG_HELP_VIEW_TIMEOUT)
+        self.target_id = int(target_id) if target_id else None
+
+    def target_for(self, interaction):
+        if not self.target_id:
+            return None
+        return interaction.guild.get_member(self.target_id) if interaction.guild else None
+
+    async def roll(self, interaction, mode):
+        if not await truth_or_dare_channel_allowed(interaction):
+            return await send_truth_or_dare_channel_denial(interaction, interaction.guild)
+        selected_mode, prompt = truth_or_dare_pick(mode, interaction)
+        await interaction.response.edit_message(
+            embed=truth_or_dare_embed(selected_mode, prompt, self.target_for(interaction)),
+            view=self,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+    @discord.ui.button(label="Truth", emoji=economy_q_thinking, style=discord.ButtonStyle.primary)
+    async def truth_button(self, interaction, button):
+        await self.roll(interaction, "truth")
+
+    @discord.ui.button(label="Dare", emoji=economy_q_target, style=discord.ButtonStyle.danger)
+    async def dare_button(self, interaction, button):
+        await self.roll(interaction, "dare")
+
+    @discord.ui.button(label="Random", emoji=economy_q_refresh, style=discord.ButtonStyle.secondary)
+    async def random_button(self, interaction, button):
+        await self.roll(interaction, "random")
+
+@bot.command(name="truthordare", aliases=["tod", "truth", "dare"])
+async def truth_or_dare_command(ctx, *, raw: str = None):
+    """Starts a Truth or Dare prompt with buttons."""
+    if not await truth_or_dare_channel_allowed(ctx):
+        return await send_truth_or_dare_channel_denial(ctx, ctx.guild)
+    invoked = str(ctx.invoked_with or "").casefold()
+    text = str(raw or "").strip()
+    target = next((member for member in getattr(ctx.message, "mentions", []) if not member.bot), None)
+    cleaned = re.sub(r"<@!?\d+>", " ", text).strip()
+    tokens = cleaned.split()
+    mode = "random"
+    if invoked in {"truth", "dare"}:
+        mode = invoked
+    elif tokens and tokens[0].casefold() in {"truth", "t", "dare", "d", "random", "r"}:
+        first = tokens[0].casefold()
+        mode = {"t": "truth", "d": "dare", "r": "random"}.get(first, first)
+    selected_mode, prompt = truth_or_dare_pick(mode, ctx)
+    await ctx.send(
+        embed=truth_or_dare_embed(selected_mode, prompt, target),
+        view=TruthOrDareView(target.id if target else None),
+        allowed_mentions=discord.AllowedMentions.none(),
+    )
+
 GAME_MENU = [
     ("PvP", "Tic Tac Toe", None, "`.ttt @user [bet]`", "Quick 2-player strategy. Supports bets."),
     ("PvP", "Connect 4", None, "`.c4 @user [bet]`", "Column strategy game. Supports bets."),
     ("PvP", "Chess", None, "`.chess @user [bet]`", "Full chess with UI moves and 10-minute clocks."),
+    ("Party", "Truth or Dare", None, "`.tod [truth/dare/random] [@user]`", "Social prompts with Truth, Dare, and Random buttons."),
     ("Skill", "Tower", "tower", "`.tower <amount>`", "Climb floors or cash out."),
     ("Skill", "Vault", "vault", "`.vault <amount>`", "Think through code hints before tries run out."),
     ("Skill", "Memory", "memory", "`.memory <amount>`", "Match pairs before too many mistakes."),
@@ -7687,6 +8219,7 @@ GAME_FILTERS = {
     "All": lambda item: True,
     "Solo": lambda item: item[0] == "Solo",
     "PvP": lambda item: item[0] == "PvP",
+    "Party": lambda item: item[0] == "Party",
     "Skill": lambda item: item[0] == "Skill",
     "Luck": lambda item: item[0] == "Luck",
     "Free": lambda item: item[2] in {"dungeon"} or item[1] in {"Flag Quiz", "Picker"},
@@ -7707,7 +8240,7 @@ def games_embed(prefix=".", selected_filter="All"):
         color=discord.Color.green(),
         icon=economy_q_game_win,
     )
-    for category in ["PvP", "Skill", "Luck", "Solo", "Utility"]:
+    for category in ["PvP", "Party", "Skill", "Luck", "Solo", "Utility"]:
         lines = []
         for item in GAME_MENU:
             item_category, name, game_key, usage, desc = item
@@ -7758,7 +8291,7 @@ class GamesView(View):
         self.prefix = prefix
         self.selected_filter = "All"
         self.add_item(GamesRefreshButton())
-        for filter_name in ["All", "Solo", "PvP", "Skill", "Luck", "Free", "High Risk", "No Bet"]:
+        for filter_name in ["All", "Solo", "PvP", "Party", "Skill", "Luck", "Free", "High Risk", "No Bet"]:
             self.add_item(GamesFilterButton(filter_name))
 
     async def interaction_check(self, interaction):

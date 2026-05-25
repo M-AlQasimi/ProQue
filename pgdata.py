@@ -87,6 +87,14 @@ def _create_tables(cur):
     cur.execute("ALTER TABLE guild_activity_config ADD COLUMN IF NOT EXISTS current_message_id BIGINT")
 
     cur.execute("""
+        CREATE TABLE IF NOT EXISTS guild_truth_or_dare_channels (
+            guild_id BIGINT NOT NULL,
+            channel_id BIGINT NOT NULL,
+            PRIMARY KEY (guild_id, channel_id)
+        )
+    """)
+
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS guild_activity_counts (
             guild_id BIGINT NOT NULL,
             user_id BIGINT NOT NULL,
@@ -843,6 +851,12 @@ def load_reaction_shutdown_channels():
 
 def save_reaction_shutdown_channels(guild_id, channel_ids):
     _save_scoped_id_set("guild_reaction_shutdown_channels", guild_id, channel_ids, "channel_id")
+
+def load_truth_or_dare_channels():
+    return _fetch_scoped_id_sets("guild_truth_or_dare_channels", "channel_id")
+
+def save_truth_or_dare_channels(guild_id, channel_ids):
+    _save_scoped_id_set("guild_truth_or_dare_channels", guild_id, channel_ids, "channel_id")
 
 def load_censored_phrases():
     return {guild_id: list(values) for guild_id, values in _fetch_scoped_text_sets("guild_censored_phrases", "phrase").items()}

@@ -21,6 +21,7 @@ db_initializing = False
 db_init_task = None
 
 bot = None
+economy_channel_cache = {}
 
 # --- Config ---
 MAX_BET = 200_000
@@ -381,6 +382,7 @@ QUEWO_COOLDOWN_EXEMPT = {
     "bal", "profile", "quests", "shop", "cooldowns", "transactions",
     "lottery", "lotterystats", "daily", "weekly", "monthly",
     "econhelp", "economyhelp", "quewohelp", "ehelp", "explain",
+    "quewochannel",
 }
 
 def get_db_connection():
@@ -468,7 +470,8 @@ def init_db():
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS economy_guild_settings (
                     guild_id BIGINT PRIMARY KEY,
-                    robbing_enabled BOOLEAN NOT NULL DEFAULT FALSE
+                    robbing_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+                    allowed_channel_id BIGINT
                 )
             """)
             cur.execute("""
@@ -626,6 +629,7 @@ def init_db():
             cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS gambling_pause_until TIMESTAMP")
             cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS tutorial_mode BOOLEAN DEFAULT TRUE")
             cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS tutorial_uses INTEGER DEFAULT 0")
+            cur.execute("ALTER TABLE economy_guild_settings ADD COLUMN IF NOT EXISTS allowed_channel_id BIGINT")
             cur.execute("ALTER TABLE economy_events ADD COLUMN IF NOT EXISTS channel_id BIGINT")
             cur.execute("ALTER TABLE economy_events ADD COLUMN IF NOT EXISTS pot BIGINT NOT NULL DEFAULT 0")
             cur.execute("ALTER TABLE lottery_config ADD COLUMN IF NOT EXISTS thread_id BIGINT")
@@ -2445,6 +2449,8 @@ async def handle_lottery_purchase(interaction, tickets):
     if interaction.guild is None:
         await interaction.response.send_message(f"{Q_DENIED} Lottery tickets only work in servers.", ephemeral=True)
         return
+    if not await ensure_economy_interaction_channel_allowed(interaction):
+        return
     await interaction.response.defer(ephemeral=True, thinking=True)
     try:
         result = await asyncio.to_thread(buy_lottery_tickets_sync, interaction.guild.id, interaction.user.id, tickets)
@@ -2461,6 +2467,8 @@ async def handle_lottery_purchase(interaction, tickets):
 async def send_lottery_stats(interaction):
     if interaction.guild is None:
         await interaction.response.send_message(f"{Q_DENIED} Lottery stats only work in servers.", ephemeral=True)
+        return
+    if not await ensure_economy_interaction_channel_allowed(interaction):
         return
     await interaction.response.defer(ephemeral=True, thinking=True)
     try:
@@ -2520,6 +2528,8 @@ class LotteryPanelView(discord.ui.View):
 
     @discord.ui.button(label="Custom", emoji=Q_EDIT, style=discord.ButtonStyle.blurple, custom_id="lottery:buy:custom")
     async def buy_custom(self, interaction, button):
+        if not await ensure_economy_interaction_channel_allowed(interaction):
+            return
         await interaction.response.send_modal(LotteryCustomAmountModal())
 
     @discord.ui.button(label="Stats", emoji=QOIN_CHEST, style=discord.ButtonStyle.gray, custom_id="lottery:stats")
@@ -2825,6 +2835,41 @@ def set_robbing_enabled(guild_id, enabled):
     cur.close()
     conn.close()
     return bool(enabled)
+
+def get_economy_channel_id(guild_id):
+    if guild_id is None:
+        return None
+    guild_id = int(guild_id)
+    if guild_id in economy_channel_cache:
+        return economy_channel_cache[guild_id]
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT allowed_channel_id FROM economy_guild_settings WHERE guild_id = %s", (guild_id,))
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    channel_id = int(row["allowed_channel_id"]) if row and row.get("allowed_channel_id") else None
+    economy_channel_cache[guild_id] = channel_id
+    return channel_id
+
+def set_economy_channel_id(guild_id, channel_id):
+    guild_id = int(guild_id)
+    channel_id = int(channel_id) if channel_id else None
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO economy_guild_settings (guild_id, allowed_channel_id)
+        VALUES (%s, %s)
+        ON CONFLICT (guild_id) DO UPDATE SET allowed_channel_id = EXCLUDED.allowed_channel_id
+        """,
+        (guild_id, channel_id),
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+    economy_channel_cache[guild_id] = channel_id
+    return channel_id
 
 def transfer_to_bank(user_id, amount, mode):
     amount = int(amount)
@@ -3882,6 +3927,8 @@ async def quewo_command_cooldown_check(ctx):
     command_name = ctx.command.name if ctx.command else ""
     if command_name in QUEWO_COOLDOWN_EXEMPT or has_economy_owner_power(ctx.author.id, ctx.guild):
         return True
+    if not await ensure_economy_channel_allowed(ctx):
+        return False
     now = time.time()
     last_used = _command_cooldowns.get(ctx.author.id)
     cooldown = COOLDOWN_SECS
@@ -4480,10 +4527,67 @@ async def send_economy_command_input_ui(ctx, command_name, note=None):
     embed.add_field(name="Example", value=f"`{example}`", inline=False)
     await ctx.send(embed=embed, view=EconomyCommandInputView(ctx.author.id, command_name), allowed_mentions=discord.AllowedMentions.none())
 
+ECONOMY_CHANNEL_EXEMPT_COMMANDS = {
+    "quewochannel", "qchannel", "econchannel", "economychannel", "gamblingchannel", "setquewochannel",
+    "econhelp", "economyhelp", "quewohelp", "ehelp", "explain",
+    "editlottery", "stoplottery", "lotterypot",
+    "robsettings", "robbing", "setrob", "robconfig",
+    "qstats", "economyhealth", "economystats", "qstatus", "ecohealth", "moneyhealth", "supply",
+    "economyaudit", "econaudit", "qaudit", "audit", "abuseaudit", "riskwatch", "antiexploit",
+    "balancedashboard", "ecodashboard", "moneydashboard", "sinkdashboard",
+    "gameaudit", "balanceaudit", "event", "qevent", "events",
+    "add", "remove", "addtick", "removetick", "settick", "setquesos",
+}
+
+def economy_command_names_for_ctx(ctx):
+    names = set()
+    command = getattr(ctx, "command", None)
+    if command:
+        names.add(str(command.name).casefold())
+        names.add(str(getattr(command, "qualified_name", command.name)).casefold())
+        names.update(str(alias).casefold() for alias in getattr(command, "aliases", []) or [])
+    invoked = getattr(ctx, "invoked_with", None)
+    if invoked:
+        names.add(str(invoked).casefold())
+    return names
+
+async def ensure_economy_channel_allowed(ctx):
+    if ctx.guild is None or is_superowner_id(ctx.author.id):
+        return True
+    if economy_command_names_for_ctx(ctx) & ECONOMY_CHANNEL_EXEMPT_COMMANDS:
+        return True
+    try:
+        allowed_channel_id = await asyncio.to_thread(get_economy_channel_id, ctx.guild.id)
+    except Exception:
+        return True
+    if not allowed_channel_id or int(getattr(ctx.channel, "id", 0) or 0) == int(allowed_channel_id):
+        return True
+    await ctx.send(
+        f"{Q_DENIED} 𝚀𝚞𝚎wo is set to <#{allowed_channel_id}> here.",
+        allowed_mentions=discord.AllowedMentions.none(),
+    )
+    return False
+
+async def ensure_economy_interaction_channel_allowed(interaction):
+    if interaction.guild is None or is_superowner_id(interaction.user.id):
+        return True
+    try:
+        allowed_channel_id = await asyncio.to_thread(get_economy_channel_id, interaction.guild.id)
+    except Exception:
+        return True
+    if not allowed_channel_id or int(getattr(interaction, "channel_id", 0) or 0) == int(allowed_channel_id):
+        return True
+    message = f"{Q_DENIED} 𝚀𝚞𝚎wo is set to <#{allowed_channel_id}> here."
+    if interaction.response.is_done():
+        await interaction.followup.send(message, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+    else:
+        await interaction.response.send_message(message, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+    return False
+
 async def ensure_db_ready(ctx, force=False):
     global db_initializing, db_init_task
     if db_ready and not force:
-        return True
+        return await ensure_economy_channel_allowed(ctx)
 
     if force or db_init_task is None or db_init_task.done():
         db_initializing = True
@@ -4495,7 +4599,9 @@ async def ensure_db_ready(ctx, force=False):
     await db_init_task
     db_initializing = False
 
-    return bool(db_ready)
+    if not db_ready or force:
+        return bool(db_ready)
+    return await ensure_economy_channel_allowed(ctx)
 
 # =====================
 # BALANCE + STREAKS
@@ -4682,6 +4788,48 @@ async def robsettings(ctx, setting: str = None):
         return await ctx.send(f"{Q_ROB} Robbing is now **disabled**.")
     enabled = await asyncio.to_thread(robbing_enabled, ctx.guild.id)
     await ctx.send(f"{Q_ROB} Robbing is **{'enabled' if enabled else 'disabled'}**.\nUse `.robsettings on` or `.robsettings off`.")
+
+@commands.command(name="quewochannel", aliases=["qchannel", "econchannel", "economychannel", "gamblingchannel", "setquewochannel"])
+async def quewochannel(ctx, *, channel: str = None):
+    if not await ensure_db_ready(ctx):
+        return
+    if ctx.guild is None:
+        return await ctx.send(f"{Q_DENIED} 𝚀𝚞𝚎wo channel settings only work in servers.")
+    if not has_economy_owner_power(ctx.author.id, ctx.guild):
+        return await ctx.send(f"{Q_DENIED} Server owner or admin only.")
+
+    prefix = getattr(ctx, "prefix", ".")
+    raw = str(channel or "").strip()
+    if not raw:
+        channel_id = await asyncio.to_thread(get_economy_channel_id, ctx.guild.id)
+        current = f"<#{channel_id}>" if channel_id else "All channels"
+        return await ctx.send(
+            f"{Q_SETUP} 𝚀𝚞𝚎wo Channel: **{current}**\n"
+            f"Use `{prefix}quewochannel here`, `{prefix}quewochannel #channel`, or `{prefix}quewochannel off`.",
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+    key = raw.casefold()
+    if key in {"off", "clear", "none", "disable", "disabled", "all", "anywhere"}:
+        await asyncio.to_thread(set_economy_channel_id, ctx.guild.id, None)
+        return await ctx.send(f"{Q_SETUP} 𝚀𝚞𝚎wo commands can now be used in **all channels**.", allowed_mentions=discord.AllowedMentions.none())
+
+    if key in {"here", "this", "current"}:
+        target_channel = ctx.channel
+    else:
+        try:
+            target_channel = await commands.TextChannelConverter().convert(ctx, raw)
+        except commands.BadArgument:
+            return await ctx.send(
+                f"{Q_DENIED} I couldn't find that channel. Use `{prefix}quewochannel #channel`, a channel ID, `here`, or `off`.",
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+
+    await asyncio.to_thread(set_economy_channel_id, ctx.guild.id, target_channel.id)
+    await ctx.send(
+        f"{Q_SETUP} 𝚀𝚞𝚎wo commands are now restricted to {target_channel.mention}.",
+        allowed_mentions=discord.AllowedMentions.none(),
+    )
 
 @commands.command(name="rob", aliases=["stealqs", "mug"])
 async def rob(ctx, member: discord.Member = None):
@@ -11794,6 +11942,8 @@ async def economyaudit(ctx, member: discord.Member = None):
 
 @commands.command(name="guide", aliases=["start", "begin", "gettingstarted"])
 async def guide(ctx):
+    if not await ensure_db_ready(ctx):
+        return
     prefix = getattr(ctx, "prefix", ".")
     embed = discord.Embed(
         title=f"{Q_BOOK} Pro𝚀𝚞𝚎 Guide",
@@ -11858,6 +12008,8 @@ class OnboardingView(discord.ui.View):
 
 @commands.command(name="onboard", aliases=["onboarding", "newuser"])
 async def onboard(ctx):
+    if not await ensure_db_ready(ctx):
+        return
     embed = discord.Embed(
         title=f"{Q_BOOK} Pro𝚀𝚞𝚎 Start",
         description="Start here if you're new. These buttons point you to the safest first actions.",
@@ -12607,6 +12759,15 @@ EXPLANATIONS = {
     "config": "Alias for `.settings`. Opens the server setup dashboard.",
     "games": "Shows the bot's games, short rules, bet support, and how to start each one.",
     "gamelist": "Alias for `.games`. Shows available games.",
+    "truthordare": "Starts a party-style Truth or Dare prompt with Truth, Dare, and Random buttons.",
+    "tod": "Alias for `.truthordare`. Starts a Truth or Dare prompt.",
+    "truth": "Alias for `.truthordare truth`. Rolls a truth prompt.",
+    "dare": "Alias for `.truthordare dare`. Rolls a dare prompt.",
+    "todchannel": "Admin command. Restricts Truth or Dare to one or more channels, or clears the restriction.",
+    "todchannels": "Alias for `.todchannel`. Shows or changes Truth or Dare channels.",
+    "truthdarechannel": "Alias for `.todchannel`. Shows or changes Truth or Dare channels.",
+    "truthordarechannel": "Alias for `.todchannel`. Shows or changes Truth or Dare channels.",
+    "settdchannel": "Alias for `.todchannel`. Shows or changes Truth or Dare channels.",
     "flagquiz": "Starts a flag quiz with solo/public mode and 10, 20, 50, or all flags.",
     "flags": "Alias for `.flagquiz`. Starts a flag quiz.",
     "fq": "Alias for `.flagquiz`. Starts a flag quiz.",
@@ -12635,6 +12796,12 @@ EXPLANATIONS = {
     "robbing": "Alias for `.robsettings`. Shows or changes robbing status.",
     "setrob": "Alias for `.robsettings`. Shows or changes robbing status.",
     "robconfig": "Alias for `.robsettings`. Shows or changes robbing status.",
+    "quewochannel": "Admin command. Restricts 𝚀𝚞𝚎wo economy and gambling commands to one channel, or clears the restriction.",
+    "qchannel": "Alias for `.quewochannel`. Shows or changes the 𝚀𝚞𝚎wo channel.",
+    "econchannel": "Alias for `.quewochannel`. Shows or changes the 𝚀𝚞𝚎wo channel.",
+    "economychannel": "Alias for `.quewochannel`. Shows or changes the 𝚀𝚞𝚎wo channel.",
+    "gamblingchannel": "Alias for `.quewochannel`. Shows or changes the 𝚀𝚞𝚎wo channel.",
+    "setquewochannel": "Alias for `.quewochannel`. Shows or changes the 𝚀𝚞𝚎wo channel.",
     "profile": "Shows level, XP, balance, stats, and owned items. Use `.profile` or `.profile @user`.",
     "level": "Alias for `.profile`. Shows level, XP, balance, stats, and owned items.",
     "lvl": "Alias for `.profile`. Shows level, XP, balance, stats, and owned items.",
@@ -12941,11 +13108,14 @@ EXPLANATIONS = {
 }
 
 DETAILED_EXPLANATIONS = {
+    "truthordare": "Party game with clean social prompts. Use `.tod`, `.tod truth`, `.tod dare`, `.truth`, or `.dare`. Mention someone like `.tod dare @user` if the prompt should point at a specific player. The message has Truth, Dare, and Random buttons so the group can keep rolling prompts without rerunning the command. Each channel tracks recent Truth and Dare prompts separately and avoids repeating the last 45 of each type when possible.",
+    "todchannel": "Admin setting for Truth or Dare channels. Use `.todchannel` for status, `.todchannel set #channel #other-channel` to restrict it to one or more channels, `.todchannel add #channel` to add another allowed channel, `.todchannel remove #channel` to remove one, or `.todchannel clear` to allow all channels again.",
     "daily": f"Gives a reward once every 24 hours. Base reward is 10,000-15,000 {CURRENCY_EMOJI}. Your daily streak adds a small bonus after day 1.",
     "bank": "Protected savings for 𝚀𝚞𝚎wo. Use `.bank` to view cash/bank/total, `.bank deposit 100k` to protect cash, `.bank deposit all` to store all cash, `.bank withdraw 50k` to move money back to spendable cash, or `.bank interest` to claim small daily interest. Robbing can only touch cash, never banked money.",
     "tutorial": "Tutorial mode is on for new users. After a few starter prompts it shows an End Tutorial button. Use `.tutorial off` to stop starter tips or `.tutorial on` to bring them back.",
     "recommendgame": "Looks at your cash and recent game stats, then suggests a game that makes sense for your bankroll and risk. It prioritizes safe/free games when you are low on cash and cashout-control games when you have more room.",
     "rob": "Robbing is server-controlled with `.robsettings on/off`. If enabled, `.rob @user` can steal a small chunk of the target's cash balance, capped at 200k, but it can fail and pay the target a fine. Banked money cannot be robbed.",
+    "quewochannel": "Server owner/admin setting for where 𝚀𝚞𝚎wo can be used. Use `.quewochannel here` to restrict economy and gambling commands to the current channel, `.quewochannel #channel` to choose another text channel, or `.quewochannel off` to allow all channels again. Admin management commands can still be used outside the chosen channel so the setting can be changed later.",
     "profile": f"Shows level, current XP toward the next level, balance, net gambling result, and shop items. Chat XP can level you up and level rewards start at {format_balance(LEVEL_REWARD_BASE)}.",
     "level": f"Alias for `.profile`. Shows level, current XP toward the next level, balance, net gambling result, and shop items. Level rewards start at {format_balance(LEVEL_REWARD_BASE)}.",
     "lvl": f"Alias for `.profile`. Shows level, current XP toward the next level, balance, net gambling result, and shop items. Level rewards start at {format_balance(LEVEL_REWARD_BASE)}.",
@@ -13087,7 +13257,7 @@ DETAILED_EXPLANATIONS = {
 }
 
 ECONHELP_COMMANDS = [
-    ("Core", ["guide", "onboard", "tutorial", "bal", "bank", "profile", "inventory", "settheme", "quests", "dailychallenge", "streaks", "shop", "cooldowns", "transactions", "limits", "lb"]),
+    ("Core", ["guide", "onboard", "tutorial", "bal", "bank", "profile", "inventory", "settheme", "quests", "dailychallenge", "streaks", "shop", "cooldowns", "transactions", "limits", "lb", "quewochannel"]),
     ("Stats", ["gamestats", "achievements", "setbadge", "gamebalance", "gameaudit", "balanceaudit", "balancedashboard", "gamehistory", "season", "seasonpass", "qstats", "economyhealth", "economyaudit", "abuseaudit", "riskprofile", "recommendgame"]),
     ("Claims", ["daily", "weekly", "monthly"]),
     ("Lottery", ["lottery", "buytick", "lotterystats", "editlottery", "stoplottery"]),
@@ -13348,7 +13518,7 @@ async def setup(bot_ref, log_callback=None):
     print(f"𝚀𝚞𝚎wo db_ready = {db_ready}")
 
     economy_commands = [
-        bal, bank, tutorial, recommendgame, robsettings, rob, profile, inventory, settheme, quests, dailychallenge, streaks, guide, onboard, shop, cooldowns, transactions, limits, lottery, editlottery, stoplottery, lotterystats, buytick,
+        bal, bank, tutorial, recommendgame, robsettings, quewochannel, rob, profile, inventory, settheme, quests, dailychallenge, streaks, guide, onboard, shop, cooldowns, transactions, limits, lottery, editlottery, stoplottery, lotterystats, buytick,
         daily, weekly, monthly, gamble, roulette, slots, blackjack,
         scratch, tower, vault, memory_game, card_ladder, lockpick, heist, dice_duel, cases, plinko, lucky_number, jackpot_spin, dungeon, minesweeper, wheel, give, lb, gamestats, achievements, setbadge, gamebalance, gameaudit, balanceaudit, balancedashboard, event, gamehistory, season, seasonpass, endseason, qstats, economyhealth, economyaudit, abuseaudit, riskprofile, add, remove, addtick, removetick, settick, lotterypot, setquesos, econhelp, explain
     ]
