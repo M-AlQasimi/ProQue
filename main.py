@@ -2497,7 +2497,7 @@ async def on_ready():
     try:
         await economy_setup(bot, send_log)
         economy_command_names = [
-            "bal", "bank", "tutorial", "recommendgame", "robsettings", "rob", "profile", "inventory", "settheme", "quests", "dailychallenge", "streaks", "guide", "onboard", "shop", "cooldowns", "transactions", "limits", "lottery", "editlottery", "stoplottery", "lotterystats", "buytick",
+            "bal", "bank", "tutorial", "recommendgame", "robsettings", "quewochannel", "levelupchannel", "rob", "profile", "inventory", "settheme", "quests", "dailychallenge", "streaks", "guide", "onboard", "shop", "claimreminders", "cooldowns", "transactions", "limits", "lottery", "editlottery", "stoplottery", "lotterystats", "buytick",
             "daily", "weekly", "monthly", "cf", "roulette", "slots",
             "blackjack", "scratch", "tower", "vault", "memory", "cardladder", "lockpick", "heist", "diceduel", "cases", "plinko", "luckynumber", "jackpotspin", "dungeon", "ms", "wheel", "give", "lb", "gamestats", "achievements", "setbadge", "gamebalance", "gamehistory", "seasonpass",
             "qstats", "economyaudit", "abuseaudit", "season", "endseason", "add", "remove", "addtick", "removetick", "settick", "lotterypot", "setquesos", "econhelp", "explain"
@@ -4213,10 +4213,20 @@ async def award_chat_xp_background(message):
         return
     try:
         data = await asyncio.to_thread(economy_get_user, message.author.id)
-        await message.channel.send(
+        target_channel = message.channel
+        try:
+            level_channel_id = await asyncio.to_thread(economy_module.get_levelup_channel_id, message.guild.id) if message.guild else None
+            configured_channel = message.guild.get_channel(level_channel_id) if level_channel_id and message.guild else None
+            if configured_channel:
+                perms = configured_channel.permissions_for(message.guild.me)
+                if perms.view_channel and perms.send_messages:
+                    target_channel = configured_channel
+        except Exception:
+            target_channel = message.channel
+        await target_channel.send(
             f"{economy_q_level_pulse} <@{message.author.id}> leveled up.",
             embed=economy_build_level_up_embed(message.author, data, xp_result),
-            allowed_mentions=discord.AllowedMentions.none()
+            allowed_mentions=discord.AllowedMentions(users=True)
         )
     except Exception as e:
         print(f"Level-up message skipped for {message.author.id}: {type(e).__name__} - {e}")
@@ -4247,6 +4257,7 @@ COMMAND_EXAMPLE_OVERRIDES = {
     "aiunignore": ".aiunignore @user",
     "aichannel": ".aichannel on",
     "quewochannel": ".quewochannel here",
+    "levelupchannel": ".levelupchannel #level-ups",
     "aistyle": ".aistyle casual and short",
     "ban": ".ban @user reason",
     "blackjack": ".blackjack 1000",
@@ -4483,10 +4494,32 @@ def status_reason_text(reason):
         return None
     return str(reason).strip()
 
+def normalize_status_mention_entry(entry):
+    if len(entry) >= 4:
+        uid, link, ts, guild_id = entry[:4]
+    else:
+        uid, link, ts = entry[:3]
+        guild_id = None
+    return int(uid), link, int(ts), int(guild_id) if guild_id else None
+
+def split_status_mentions_for_guild(mentions_list, guild_id):
+    same_server = []
+    other_servers = []
+    current_guild_id = int(guild_id) if guild_id else None
+    for entry in mentions_list:
+        uid, link, ts, entry_guild_id = normalize_status_mention_entry(entry)
+        normalized = (uid, link, ts, entry_guild_id)
+        if entry_guild_id is None or entry_guild_id == current_guild_id:
+            same_server.append(normalized)
+        else:
+            other_servers.append(normalized)
+    return same_server, other_servers
+
 def mention_summary_lines(mentions_list):
     grouped = {}
     order = []
-    for uid, link, ts in mentions_list:
+    for entry in mentions_list:
+        uid, link, ts, _guild_id = normalize_status_mention_entry(entry)
         if uid not in grouped:
             grouped[uid] = []
             order.append(uid)
@@ -4547,6 +4580,22 @@ def add_mentions_to_status_embed(embed, mentions_list):
         return File(BytesIO(full_text.encode("utf-8")), filename="mentions.txt")
     return None
 
+async def send_private_cross_server_mentions(user, mentions_list, status_label):
+    if not mentions_list:
+        return False
+    embed = standard_embed(
+        "Private mention catch-up",
+        description=f"While you were {status_label}, these mentions came from other servers, so I kept them private.",
+        color=0x5865F2,
+        icon=economy_q_bell,
+    )
+    mention_file = add_mentions_to_status_embed(embed, mentions_list)
+    try:
+        await user.send(embed=embed, file=mention_file, allowed_mentions=discord.AllowedMentions.none())
+        return True
+    except Exception:
+        return False
+
 async def handle_returning_status(message):
     if message.author.id in sleeping_users:
         start = sleeping_users.pop(message.author.id)
@@ -4564,7 +4613,19 @@ async def handle_returning_status(message):
         embed.add_field(name="Away for", value=f"**{formatted}**", inline=True)
 
         mentions_list = user_mentions.pop(message.author.id, [])
-        mention_file = add_mentions_to_status_embed(embed, mentions_list)
+        same_server_mentions, private_mentions = split_status_mentions_for_guild(mentions_list, message.guild.id if message.guild else None)
+        mention_file = add_mentions_to_status_embed(embed, same_server_mentions)
+        if private_mentions:
+            dm_sent = await send_private_cross_server_mentions(message.author, private_mentions, "sleeping")
+            embed.add_field(
+                name="Private mentions",
+                value=(
+                    f"{economy_q_bell} Sent **{len(private_mentions):,}** mention(s) from other servers privately."
+                    if dm_sent else
+                    f"{economy_q_bell} **{len(private_mentions):,}** mention(s) from other servers were kept out of this channel, but your DMs are closed."
+                ),
+                inline=False,
+            )
 
         await message.channel.send(embed=embed, file=mention_file, allowed_mentions=discord.AllowedMentions.none())
 
@@ -4588,14 +4649,26 @@ async def handle_returning_status(message):
             embed.add_field(name="Reason", value=embed_value(reason), inline=False)
 
         mentions_list = user_mentions.pop(message.author.id, [])
-        mention_file = add_mentions_to_status_embed(embed, mentions_list)
+        same_server_mentions, private_mentions = split_status_mentions_for_guild(mentions_list, message.guild.id if message.guild else None)
+        mention_file = add_mentions_to_status_embed(embed, same_server_mentions)
+        if private_mentions:
+            dm_sent = await send_private_cross_server_mentions(message.author, private_mentions, "AFK")
+            embed.add_field(
+                name="Private mentions",
+                value=(
+                    f"{economy_q_bell} Sent **{len(private_mentions):,}** mention(s) from other servers privately."
+                    if dm_sent else
+                    f"{economy_q_bell} **{len(private_mentions):,}** mention(s) from other servers were kept out of this channel, but your DMs are closed."
+                ),
+                inline=False,
+            )
 
         await message.channel.send(embed=embed, file=mention_file, allowed_mentions=discord.AllowedMentions.none())
 
 AI_SAFE_COMMANDS = {
     "help", "commands", "cmds", "games", "howtoplay", "how", "rules",
     "bal", "balance", "cash", "bank", "safe", "vaultcash", "deposit", "withdraw", "tutorial", "tutorialmode", "tips", "recommendgame", "recgame", "whatgame", "suggestgame", "profile", "level", "lvl", "inventory", "inv",
-    "shop", "cooldowns", "cds", "quests", "transactions", "tx", "lb",
+    "shop", "claimreminders", "claimreminder", "reminders", "dmreminders", "cooldowns", "cds", "quests", "transactions", "tx", "lb",
     "leaderboard", "gamestats", "achievements", "gamebalance", "gamehistory",
     "season", "seasonpass", "monthlychallenges", "pass", "spass", "limits", "riskprofile", "risk", "userrisk", "riskcheck", "economyhealth", "ecohealth", "moneyhealth", "supply",
     "messages", "msgstats", "messagestats", "mstats",
@@ -4618,6 +4691,7 @@ AI_CONFIRM_COMMANDS = {
     "poll", "epoll", "giveaway", "setbday", "removebday", "setbdaychannel", "rob",
     "activity", "messageevent", "msgevent", "chatevent", "messagecontest", "chatcontest", "settings", "prefix", "preifx", "setprefix",
     "recover", "aichannel", "aitoggle", "quewochannel", "qchannel", "econchannel", "economychannel", "gamblingchannel", "setquewochannel",
+    "levelupchannel", "levelchannel", "setlevelchannel", "lvlchannel", "xplevelchannel",
     "todchannel", "todchannels", "truthdarechannel", "truthordarechannel", "settdchannel",
 }
 
@@ -4708,6 +4782,7 @@ def extract_ai_command_request(question, guild=None):
         (("games", "game list", "what can we play", "play list"), "games", ""),
         (("shop", "store", "what can i buy"), "shop", ""),
         (("inventory", "my items", "stuff i own", "what do i own"), "inventory", ""),
+        (("claim reminders", "dm reminders", "remind me to claim", "claim reminder", "turn claim reminders"), "claimreminders", ""),
         (("cooldowns", "cooldown", "what can i claim", "can i claim"), "cooldowns", ""),
         (("quests", "quest", "tasks", "missions"), "quests", ""),
         (("leaderboard", "lb", "ranking", "rankings", "richest"), "lb", ""),
@@ -6055,7 +6130,8 @@ async def on_message(message):
             user_mentions[mentioned_user.id].append((
                 message.author.id,
                 message.jump_url,
-                int(message.created_at.timestamp())
+                int(message.created_at.timestamp()),
+                message.guild.id if message.guild else None
             ))
 
     for uid in list(sleeping_users):
@@ -6158,10 +6234,10 @@ async def on_command_error(ctx, error):
 
 HELP_CATEGORIES = {
     "𝚀𝚞𝚎wo (Gambling)": [
-        "guide", "onboard", "tutorial", "bal", "bank", "profile", "inventory", "settheme", "quests", "dailychallenge", "streaks", "shop", "cooldowns", "transactions", "lottery", "lotterystats", "buytick",
+        "guide", "onboard", "tutorial", "bal", "bank", "profile", "inventory", "settheme", "quests", "dailychallenge", "streaks", "shop", "claimreminders", "cooldowns", "transactions", "lottery", "lotterystats", "buytick",
         "daily", "weekly", "monthly", "cf", "roulette", "slots", "blackjack", "scratch", "tower", "vault", "memory", "cardladder", "lockpick",
         "heist", "diceduel", "cases", "plinko", "luckynumber", "jackpotspin", "dungeon", "ms", "wheel",
-        "give", "rob", "robsettings", "quewochannel", "recommendgame", "lb", "gamestats", "achievements", "setbadge", "gamebalance", "gameaudit", "balanceaudit", "balancedashboard", "gamehistory", "season", "seasonpass", "event", "limits", "qstats", "economyhealth", "economyaudit", "abuseaudit", "riskprofile", "econhelp", "explain",
+        "give", "rob", "robsettings", "quewochannel", "levelupchannel", "recommendgame", "lb", "gamestats", "achievements", "setbadge", "gamebalance", "gameaudit", "balanceaudit", "balancedashboard", "gamehistory", "season", "seasonpass", "event", "limits", "qstats", "economyhealth", "economyaudit", "abuseaudit", "riskprofile", "econhelp", "explain",
     ],
     "Games": ["games", "howtoplay", "truthordare", "ttt", "c4", "chess", "move", "resign", "flagquiz", "flagstats", "q", "picker"],
     "Utility": ["help", "userinfo", "pfp", "calc", "define", "timer", "ctimer", "alarm", "poll", "epoll", "translate", "find"],

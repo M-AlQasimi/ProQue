@@ -371,6 +371,7 @@ SHOP_ITEMS = {
 economy_log_callback = None
 lottery_task = None
 db_keepalive_task = None
+claim_reminder_task = None
 lottery_view_registered = False
 lottery_status_messages = {}
 
@@ -382,7 +383,7 @@ QUEWO_COOLDOWN_EXEMPT = {
     "bal", "profile", "quests", "shop", "cooldowns", "transactions",
     "lottery", "lotterystats", "daily", "weekly", "monthly",
     "econhelp", "economyhelp", "quewohelp", "ehelp", "explain",
-    "quewochannel",
+    "quewochannel", "levelupchannel",
 }
 
 def get_db_connection():
@@ -471,7 +472,8 @@ def init_db():
                 CREATE TABLE IF NOT EXISTS economy_guild_settings (
                     guild_id BIGINT PRIMARY KEY,
                     robbing_enabled BOOLEAN NOT NULL DEFAULT FALSE,
-                    allowed_channel_id BIGINT
+                    allowed_channel_id BIGINT,
+                    levelup_channel_id BIGINT
                 )
             """)
             cur.execute("""
@@ -546,6 +548,17 @@ def init_db():
                     pot BIGINT NOT NULL DEFAULT 0,
                     ends_at TIMESTAMP NOT NULL,
                     created_at TIMESTAMP NOT NULL DEFAULT NOW()
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS economy_claim_reminders (
+                    user_id BIGINT NOT NULL,
+                    reminder_key TEXT NOT NULL,
+                    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                    ready_at TIMESTAMP NOT NULL,
+                    sent_at TIMESTAMP,
+                    updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (user_id, reminder_key)
                 )
             """)
             cur.execute("""
@@ -630,6 +643,7 @@ def init_db():
             cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS tutorial_mode BOOLEAN DEFAULT TRUE")
             cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS tutorial_uses INTEGER DEFAULT 0")
             cur.execute("ALTER TABLE economy_guild_settings ADD COLUMN IF NOT EXISTS allowed_channel_id BIGINT")
+            cur.execute("ALTER TABLE economy_guild_settings ADD COLUMN IF NOT EXISTS levelup_channel_id BIGINT")
             cur.execute("ALTER TABLE economy_events ADD COLUMN IF NOT EXISTS channel_id BIGINT")
             cur.execute("ALTER TABLE economy_events ADD COLUMN IF NOT EXISTS pot BIGINT NOT NULL DEFAULT 0")
             cur.execute("ALTER TABLE lottery_config ADD COLUMN IF NOT EXISTS thread_id BIGINT")
@@ -1554,6 +1568,200 @@ def get_daily_loss_amount(user_id):
     cur.close()
     conn.close()
     return int((row or {}).get("amount", 0) or 0)
+
+CLAIM_REMINDER_CONFIG = {
+    "daily": {"label": "Daily", "command": ".daily", "emoji": QOIN_BAG, "field": "last_daily", "seconds": 86400},
+    "weekly": {"label": "Weekly", "command": ".weekly", "emoji": Q_GIFT, "field": "last_weekly", "seconds": 604800},
+    "monthly": {"label": "Monthly", "command": ".monthly", "emoji": Q_ROYAL_CROWN, "field": "last_monthly", "seconds": 2592000},
+    "bank_interest": {"label": "Bank Interest", "command": ".bank interest", "emoji": Q_BANK, "field": "last_bank_interest", "seconds": 86400},
+}
+
+def upsert_claim_reminder(user_id, reminder_key, ready_at):
+    if reminder_key not in CLAIM_REMINDER_CONFIG or ready_at is None:
+        return
+    if getattr(ready_at, "tzinfo", None) is not None:
+        ready_at = ready_at.astimezone(timezone.utc).replace(tzinfo=None)
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO economy_claim_reminders (user_id, reminder_key, ready_at)
+        VALUES (%s, %s, %s)
+        ON CONFLICT (user_id, reminder_key) DO UPDATE SET
+            ready_at = EXCLUDED.ready_at,
+            sent_at = CASE
+                WHEN economy_claim_reminders.ready_at = EXCLUDED.ready_at THEN economy_claim_reminders.sent_at
+                ELSE NULL
+            END,
+            updated_at = NOW()
+        """,
+        (int(user_id), reminder_key, ready_at),
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+
+def set_claim_reminders_enabled(user_id, enabled=True):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO economy_claim_reminders (user_id, reminder_key, enabled, ready_at)
+        SELECT %s, reminder_keys.reminder_key, %s, NOW()
+        FROM UNNEST(%s::text[]) AS reminder_keys(reminder_key)
+        ON CONFLICT (user_id, reminder_key) DO UPDATE SET
+            enabled = EXCLUDED.enabled,
+            updated_at = NOW()
+        """,
+        (int(user_id), bool(enabled), list(CLAIM_REMINDER_CONFIG.keys())),
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+
+def claim_reminder_status(user_id):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT reminder_key, enabled, ready_at, sent_at FROM economy_claim_reminders WHERE user_id = %s",
+        (int(user_id),),
+    )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return {row["reminder_key"]: row for row in rows}
+
+def refresh_claim_reminder_schedule(limit=1000):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT user_id, last_daily, last_weekly, last_monthly, last_bank_interest, bank_balance
+        FROM economy
+        WHERE last_daily IS NOT NULL
+           OR last_weekly IS NOT NULL
+           OR last_monthly IS NOT NULL
+           OR last_bank_interest IS NOT NULL
+        LIMIT %s
+        """,
+        (int(limit),),
+    )
+    rows = cur.fetchall()
+    for row in rows:
+        for key, config in CLAIM_REMINDER_CONFIG.items():
+            if key == "bank_interest" and int(row.get("bank_balance") or 0) <= 0:
+                continue
+            last = row.get(config["field"])
+            if not last:
+                continue
+            if last.tzinfo is None:
+                last = last.replace(tzinfo=timezone.utc)
+            ready_at = last + timedelta(seconds=config["seconds"])
+            cur.execute(
+                """
+                INSERT INTO economy_claim_reminders (user_id, reminder_key, ready_at)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (user_id, reminder_key) DO UPDATE SET
+                    ready_at = EXCLUDED.ready_at,
+                    sent_at = CASE
+                        WHEN economy_claim_reminders.ready_at = EXCLUDED.ready_at THEN economy_claim_reminders.sent_at
+                        ELSE NULL
+                    END,
+                    updated_at = NOW()
+                """,
+                (int(row["user_id"]), key, ready_at.replace(tzinfo=None)),
+            )
+    conn.commit()
+    cur.close()
+    conn.close()
+
+def due_claim_reminders(limit=50):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT user_id, reminder_key, ready_at
+        FROM economy_claim_reminders
+        WHERE enabled = TRUE
+          AND ready_at <= NOW()
+          AND (sent_at IS NULL OR sent_at < ready_at)
+        ORDER BY ready_at ASC
+        LIMIT %s
+        """,
+        (int(limit),),
+    )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
+
+def mark_claim_reminder_sent(user_id, reminder_key):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE economy_claim_reminders SET sent_at = NOW(), updated_at = NOW() WHERE user_id = %s AND reminder_key = %s",
+        (int(user_id), reminder_key),
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+
+class ClaimReminderControlView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Turn off claim reminders", emoji=Q_TIMEOUT, style=discord.ButtonStyle.secondary, custom_id="claim_reminders:disable")
+    async def disable_reminders(self, interaction, button):
+        try:
+            await asyncio.to_thread(set_claim_reminders_enabled, interaction.user.id, False)
+        except Exception:
+            return await interaction.response.send_message(f"{Q_DENIED} I couldn't update reminder settings right now.", ephemeral=True)
+        await interaction.response.send_message(
+            f"{Q_SUCCESS} Claim reminders are off. Turn them back on anytime with `.claimreminders on`.",
+            ephemeral=True,
+        )
+
+async def send_claim_ready_dm(user_id, reminder_key, ready_at):
+    if bot is None:
+        return False
+    config = CLAIM_REMINDER_CONFIG.get(reminder_key)
+    if not config:
+        return False
+    try:
+        user = bot.get_user(int(user_id)) or await bot.fetch_user(int(user_id))
+    except Exception:
+        return False
+    ready = ready_at.replace(tzinfo=timezone.utc) if getattr(ready_at, "tzinfo", None) is None else ready_at
+    embed = discord.Embed(
+        title=f"{config['emoji']} {config['label']} is ready",
+        description=(
+            f"You can claim it now with `{config['command']}`.\n"
+            f"Ready since {discord_relative_time(ready)}."
+        ),
+        color=discord.Color.green(),
+    )
+    embed.set_footer(text="Use .claimreminders off to stop these, or .claimreminders on to turn them back on.")
+    try:
+        await user.send(embed=embed, view=ClaimReminderControlView(), allowed_mentions=discord.AllowedMentions.none())
+        return True
+    except Exception:
+        return False
+
+async def claim_reminder_loop():
+    await asyncio.sleep(20)
+    while True:
+        try:
+            await asyncio.to_thread(refresh_claim_reminder_schedule)
+            rows = await asyncio.to_thread(due_claim_reminders, 50)
+            for row in rows:
+                sent = await send_claim_ready_dm(row["user_id"], row["reminder_key"], row["ready_at"])
+                await asyncio.to_thread(mark_claim_reminder_sent, row["user_id"], row["reminder_key"])
+                if not sent:
+                    print(f"Claim reminder DM skipped for {row['user_id']} ({row['reminder_key']})")
+                await asyncio.sleep(0.5)
+        except Exception as e:
+            print(f"Claim reminder loop failed: {type(e).__name__} - {e}")
+        await asyncio.sleep(300)
 
 def daily_loss_status(user_id, balance, proposed_loss=0):
     lost_today = get_daily_loss_amount(user_id)
@@ -2867,6 +3075,35 @@ def set_economy_channel_id(guild_id, channel_id):
     cur.close()
     conn.close()
     economy_channel_cache[guild_id] = channel_id
+    return channel_id
+
+def get_levelup_channel_id(guild_id):
+    if guild_id is None:
+        return None
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT levelup_channel_id FROM economy_guild_settings WHERE guild_id = %s", (int(guild_id),))
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    return int(row["levelup_channel_id"]) if row and row.get("levelup_channel_id") else None
+
+def set_levelup_channel_id(guild_id, channel_id):
+    guild_id = int(guild_id)
+    channel_id = int(channel_id) if channel_id else None
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO economy_guild_settings (guild_id, levelup_channel_id)
+        VALUES (%s, %s)
+        ON CONFLICT (guild_id) DO UPDATE SET levelup_channel_id = EXCLUDED.levelup_channel_id
+        """,
+        (guild_id, channel_id),
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
     return channel_id
 
 def transfer_to_bank(user_id, amount, mode):
@@ -4447,7 +4684,7 @@ def public_error_text(error, fallback="That action failed."):
         return "That response was too long for Discord."
     return text[:220] if text else fallback
 
-ECONOMY_INPUT_UI_COMMANDS = {"buytick", "give", "add", "remove", "addtick", "removetick", "settick", "setquesos"}
+ECONOMY_INPUT_UI_COMMANDS = {"buytick", "give", "add", "remove", "addtick", "removetick", "settick", "setquesos", "levelupchannel"}
 
 ECONOMY_INPUT_PLACEHOLDERS = {
     "buytick": "30",
@@ -4458,6 +4695,7 @@ ECONOMY_INPUT_PLACEHOLDERS = {
     "removetick": "@user 10",
     "settick": "@user 10",
     "setquesos": "@user 1m",
+    "levelupchannel": "#level-ups",
 }
 
 async def invoke_economy_command_from_interaction(interaction, command_name, args):
@@ -4527,6 +4765,7 @@ async def send_economy_command_input_ui(ctx, command_name, note=None):
 
 ECONOMY_CHANNEL_EXEMPT_COMMANDS = {
     "quewochannel", "qchannel", "econchannel", "economychannel", "gamblingchannel", "setquewochannel",
+    "levelupchannel", "levelchannel", "setlevelchannel", "lvlchannel", "xplevelchannel",
     "econhelp", "economyhelp", "quewohelp", "ehelp", "explain",
     "editlottery", "stoplottery", "lotterypot",
     "robsettings", "robbing", "setrob", "robconfig",
@@ -4681,6 +4920,12 @@ async def bank(ctx, action: str = None, *, raw_amount: str = None):
             return await send_error(ctx, "Database unavailable. Try again shortly.")
         if not result.get("ok"):
             return await ctx.send(result["message"], allowed_mentions=discord.AllowedMentions.none())
+        await asyncio.to_thread(
+            upsert_claim_reminder,
+            ctx.author.id,
+            "bank_interest",
+            datetime.now(timezone.utc) + timedelta(hours=24),
+        )
         return await ctx.send(
             f"{Q_BANK} Claimed **{format_balance(result['amount'])}** bank interest.\n"
             f"Cash: **{format_balance(result['balance'])}**\n"
@@ -4826,6 +5071,55 @@ async def quewochannel(ctx, *, channel: str = None):
     await asyncio.to_thread(set_economy_channel_id, ctx.guild.id, target_channel.id)
     await ctx.send(
         f"{Q_SETUP} 𝚀𝚞𝚎wo commands are now restricted to {target_channel.mention}.",
+        allowed_mentions=discord.AllowedMentions.none(),
+    )
+
+@commands.command(name="levelupchannel", aliases=["levelchannel", "setlevelchannel", "lvlchannel", "xplevelchannel"])
+async def levelupchannel(ctx, *, channel: str = None):
+    if not await ensure_db_ready(ctx):
+        return
+    if ctx.guild is None:
+        return await ctx.send(f"{Q_DENIED} Level-up channel settings only work in servers.")
+    if not has_economy_owner_power(ctx.author.id, ctx.guild):
+        return await ctx.send(f"{Q_DENIED} Server owner or admin only.")
+
+    prefix = getattr(ctx, "prefix", ".")
+    raw = str(channel or "").strip()
+    if not raw:
+        channel_id = await asyncio.to_thread(get_levelup_channel_id, ctx.guild.id)
+        current = f"<#{channel_id}>" if channel_id else "Same channel as the level-up"
+        return await ctx.send(
+            f"{Q_LEVEL_UP} Level-Up Channel: **{current}**\n"
+            f"Use `{prefix}levelupchannel here`, `{prefix}levelupchannel #channel`, or `{prefix}levelupchannel off`.",
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+    key = raw.casefold()
+    if key in {"off", "clear", "none", "disable", "disabled", "same", "current"}:
+        await asyncio.to_thread(set_levelup_channel_id, ctx.guild.id, None)
+        return await ctx.send(
+            f"{Q_LEVEL_UP} Level-up messages will now stay in the channel where the user leveled up.",
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+    if key in {"here", "this"}:
+        target_channel = ctx.channel
+    else:
+        try:
+            target_channel = await commands.TextChannelConverter().convert(ctx, raw)
+        except commands.BadArgument:
+            return await ctx.send(
+                f"{Q_DENIED} I couldn't find that channel. Use `{prefix}levelupchannel #channel`, a channel ID, `here`, or `off`.",
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+
+    perms = target_channel.permissions_for(ctx.guild.me)
+    if not (perms.view_channel and perms.send_messages):
+        return await ctx.send(f"{Q_DENIED} I can't send level-up messages in {target_channel.mention}.", allowed_mentions=discord.AllowedMentions.none())
+
+    await asyncio.to_thread(set_levelup_channel_id, ctx.guild.id, target_channel.id)
+    await ctx.send(
+        f"{Q_LEVEL_UP} Level-up messages will now go to {target_channel.mention} and ping the user.",
         allowed_mentions=discord.AllowedMentions.none(),
     )
 
@@ -5567,6 +5861,42 @@ async def shop(ctx):
         await maybe_send_tutorial(ctx, await asyncio.to_thread(get_user, ctx.author.id), "shop")
     except Exception:
         pass
+
+@commands.command(name="claimreminders", aliases=["claimreminder", "reminders", "dmreminders"])
+async def claimreminders(ctx, setting: str = None):
+    if not await ensure_db_ready(ctx):
+        return
+    key = str(setting or "status").casefold()
+    if key in {"on", "enable", "enabled", "start"}:
+        await asyncio.to_thread(set_claim_reminders_enabled, ctx.author.id, True)
+        return await ctx.send(
+            f"{Q_SUCCESS} Claim reminders are **on**. I’ll DM you when daily, weekly, monthly, or bank interest is ready.",
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+    if key in {"off", "disable", "disabled", "stop"}:
+        await asyncio.to_thread(set_claim_reminders_enabled, ctx.author.id, False)
+        return await ctx.send(
+            f"{Q_SUCCESS} Claim reminders are **off**. Turn them back on with `.claimreminders on`.",
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+    rows = await asyncio.to_thread(claim_reminder_status, ctx.author.id)
+    lines = []
+    for reminder_key, config in CLAIM_REMINDER_CONFIG.items():
+        row = rows.get(reminder_key)
+        enabled = bool(row.get("enabled")) if row else True
+        ready_at = row.get("ready_at") if row else None
+        if ready_at and ready_at.tzinfo is None:
+            ready_at = ready_at.replace(tzinfo=timezone.utc)
+        status = "on" if enabled else "off"
+        ready_text = discord_relative_time(ready_at) if ready_at else "after your next claim"
+        lines.append(f"{config['emoji']} **{config['label']}**: `{status}` · next DM {ready_text}")
+    embed = discord.Embed(
+        title=f"{Q_BELL} Claim Reminders",
+        description="\n".join(lines),
+        color=discord.Color.blurple(),
+    )
+    embed.add_field(name="Controls", value="Use `.claimreminders on` or `.claimreminders off`.\nEvery reminder DM also has a button to turn them off.", inline=False)
+    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
 @commands.command(aliases=["cd", "cooldown"])
 async def cooldowns(ctx):
@@ -6497,6 +6827,19 @@ class BalanceRankView(discord.ui.View):
         self.page = max(0, (self.total - 1) // self.per_page)
         await self.refresh_interaction(interaction)
 
+    @discord.ui.button(label="Show Profile", emoji=Q_XP, style=discord.ButtonStyle.secondary, row=3)
+    async def show_profile(self, interaction, button):
+        await interaction.response.defer(ephemeral=True)
+        try:
+            data = await asyncio.to_thread(get_user, interaction.user.id)
+        except Exception:
+            return await interaction.followup.send(f"{Q_DENIED} Database unavailable. Try again shortly.", ephemeral=True)
+        await interaction.followup.send(
+            embed=build_profile_embed(interaction.user, data),
+            ephemeral=True,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
     async def on_timeout(self):
         for item in self.children:
             item.disabled = True
@@ -6570,6 +6913,7 @@ async def daily(ctx):
 
     extra = f"\n{Q_QUEST} Main quest complete: **{format_balance(achievement_reward)}**!" if achievement_reward else ""
     await reply_to_command(ctx, f"{QOIN_BAG} You claimed **{format_balance(reward)}**!\nStreak: **{plural_unit(streak, 'day')}** (+{streak_bonus} bonus){freeze_note}{extra}")
+    await asyncio.to_thread(upsert_claim_reminder, ctx.author.id, "daily", now + timedelta(seconds=86400))
     await maybe_send_tutorial(ctx, updated, "start")
 
 @commands.command()
@@ -6621,6 +6965,7 @@ async def weekly(ctx):
 
     extra = f"\n{Q_QUEST} Main quest complete: **{format_balance(achievement_reward)}**!" if achievement_reward else ""
     await reply_to_command(ctx, f"{QOIN_BAG} You claimed **{format_balance(reward)}**!\nWeekly streak: **{plural_unit(streak, 'week')}** (+{streak_bonus} bonus){freeze_note}{extra}")
+    await asyncio.to_thread(upsert_claim_reminder, ctx.author.id, "weekly", now + timedelta(seconds=604800))
 
 @commands.command()
 async def monthly(ctx):
@@ -6671,6 +7016,7 @@ async def monthly(ctx):
 
     extra = f"\n{Q_QUEST} Main quest complete: **{format_balance(achievement_reward)}**!" if achievement_reward else ""
     await reply_to_command(ctx, f"{QOIN_BAG} You claimed **{format_balance(reward)}**!\nMonthly streak: **{plural_unit(streak, 'month')}** (+{streak_bonus} bonus){freeze_note}{extra}")
+    await asyncio.to_thread(upsert_claim_reminder, ctx.author.id, "monthly", now + timedelta(seconds=2592000))
 
 # =====================
 # COIN FLIP
@@ -12807,6 +13153,11 @@ EXPLANATIONS = {
     "economychannel": "Alias for `.quewochannel`. Shows or changes the 𝚀𝚞𝚎wo channel.",
     "gamblingchannel": "Alias for `.quewochannel`. Shows or changes the 𝚀𝚞𝚎wo channel.",
     "setquewochannel": "Alias for `.quewochannel`. Shows or changes the 𝚀𝚞𝚎wo channel.",
+    "levelupchannel": "Admin command. Sends future level-up messages to a chosen channel, or clears the setting.",
+    "levelchannel": "Alias for `.levelupchannel`. Shows or changes the level-up channel.",
+    "setlevelchannel": "Alias for `.levelupchannel`. Shows or changes the level-up channel.",
+    "lvlchannel": "Alias for `.levelupchannel`. Shows or changes the level-up channel.",
+    "xplevelchannel": "Alias for `.levelupchannel`. Shows or changes the level-up channel.",
     "profile": "Shows level, XP, balance, stats, and owned items. Use `.profile` or `.profile @user`.",
     "level": "Alias for `.profile`. Shows level, XP, balance, stats, and owned items.",
     "lvl": "Alias for `.profile`. Shows level, XP, balance, stats, and owned items.",
@@ -12839,6 +13190,8 @@ EXPLANATIONS = {
     "gamblelimit": "Alias for `.limits`. Shows or sets personal gambling safety limits.",
     "betlimit": "Alias for `.limits`. Shows or sets personal gambling safety limits.",
     "cooldowns": "Shows daily, weekly, monthly, and gambling cooldowns. Use `.cooldowns` or `.cd`.",
+    "claimreminders": "Turns DM claim reminders on/off for daily, weekly, monthly, and bank interest.",
+    "reminders": "Alias for `.claimreminders`. Manages DM claim reminders.",
     "transactions": "Shows recent 𝚀𝚞𝚎wo transactions. Use `.transactions` or `.transactions @user`.",
     "lottery": "Shows and refreshes the lottery ticket panel. First server run sets channel and draw period.",
     "editlottery": "Server owner/admin command. Edits lottery price, duration, house cut, or channel, then refreshes the panel.",
@@ -13121,6 +13474,7 @@ DETAILED_EXPLANATIONS = {
     "recommendgame": "Looks at your cash and recent game stats, then suggests a game that makes sense for your bankroll and risk. It prioritizes safe/free games when you are low on cash and cashout-control games when you have more room.",
     "rob": "Robbing is server-controlled with `.robsettings on/off`. If enabled, `.rob @user` can steal a small chunk of the target's cash balance, capped at 200k, but it can fail and pay the target a fine. Banked money cannot be robbed.",
     "quewochannel": "Server owner/admin setting for where 𝚀𝚞𝚎wo can be used. Use `.quewochannel here` to restrict economy and gambling commands to the current channel, `.quewochannel #channel` to choose another text channel, or `.quewochannel off` to allow all channels again. Admin management commands can still be used outside the chosen channel so the setting can be changed later.",
+    "levelupchannel": "Server owner/admin setting for level-up announcements. Use `.levelupchannel here` to send all future level-up messages to the current channel, `.levelupchannel #channel` to choose another text channel, or `.levelupchannel off` to send level-ups in the channel where the user leveled. Level-up messages mention the user.",
     "profile": f"Shows level, current XP toward the next level, balance, net gambling result, and shop items. Chat XP can level you up and level rewards start at {format_balance(LEVEL_REWARD_BASE)}.",
     "level": f"Alias for `.profile`. Shows level, current XP toward the next level, balance, net gambling result, and shop items. Level rewards start at {format_balance(LEVEL_REWARD_BASE)}.",
     "lvl": f"Alias for `.profile`. Shows level, current XP toward the next level, balance, net gambling result, and shop items. Level rewards start at {format_balance(LEVEL_REWARD_BASE)}.",
@@ -13135,6 +13489,7 @@ DETAILED_EXPLANATIONS = {
     "dailychallenge": "One rotating daily challenge is active per day. Game wins update it automatically, and Flag Quiz point challenges count each correct flag. Use `.dailychallenge claim` when your progress reaches the target.",
     "shop": "Opens an interactive categorized 𝚀𝚞𝚎wo shop. Select an item, press Buy, then enter the quantity. The bot checks your balance, item limit, and total price before purchasing.",
     "cooldowns": "Shows daily, weekly, monthly, and active gambling command cooldowns in one place.",
+    "claimreminders": "Manages DM reminders for timed claims. Use `.claimreminders` for status, `.claimreminders on` to enable, or `.claimreminders off` to disable. Reminder DMs also include a button to turn them off.",
     "transactions": "Shows recent money movement including shop purchases, quest rewards, level rewards, transfer tax, admin changes, and lottery activity.",
     "limits": f"Shows your daily gambling loss safety limit. The bot warns near {int(DAILY_LOSS_WARNING_RATIO * 100)}% and blocks bets before daily losses exceed {int(DAILY_LOSS_HARD_RATIO * 100)}% of your current daily gambling bankroll. It also shows lottery round spending, your personal gambling cap, and any active gambling pause. Use `.limits set 50k`, `.limits pause 2h`, `.limits resume`, or `.limits clear`.",
     "lottery": f"Server lottery. First run asks the server owner or an admin for a channel and draw period, locks the channel, and posts a persistent ticket panel with buy buttons. Existing active lottery data is preserved when the panel is refreshed. The prize is the full current pot. Tickets cost {format_balance(LOTTERY_TICKET_COST)} and {int(LOTTERY_HOUSE_CUT * 100)}% is burned as a money sink. Users can spend up to {int(LOTTERY_MAX_BALANCE_SPEND_RATIO * 100)}% of their lottery-adjusted balance per round.",
@@ -13262,9 +13617,9 @@ DETAILED_EXPLANATIONS = {
 }
 
 ECONHELP_COMMANDS = [
-    ("Core", ["guide", "onboard", "tutorial", "bal", "bank", "profile", "inventory", "settheme", "quests", "dailychallenge", "streaks", "shop", "cooldowns", "transactions", "limits", "lb", "quewochannel"]),
+    ("Core", ["guide", "onboard", "tutorial", "bal", "bank", "profile", "inventory", "settheme", "quests", "dailychallenge", "streaks", "shop", "cooldowns", "transactions", "limits", "lb", "quewochannel", "levelupchannel"]),
     ("Stats", ["gamestats", "achievements", "setbadge", "gamebalance", "gameaudit", "balanceaudit", "balancedashboard", "gamehistory", "season", "seasonpass", "qstats", "economyhealth", "economyaudit", "abuseaudit", "riskprofile", "recommendgame"]),
-    ("Claims", ["daily", "weekly", "monthly"]),
+    ("Claims", ["daily", "weekly", "monthly", "claimreminders"]),
     ("Lottery", ["lottery", "buytick", "lotterystats", "editlottery", "stoplottery"]),
     ("Gambling", ["cf", "roulette", "slots", "blackjack", "scratch", "tower", "vault", "memory", "cardladder", "lockpick", "heist", "diceduel", "cases", "plinko", "luckynumber", "jackpotspin", "dungeon", "ms", "wheel", "rob", "robsettings"]),
     ("Transfers", ["give"]),
@@ -13515,7 +13870,7 @@ async def explain(ctx, command_name: str = None):
 # SETUP
 # =====================
 async def setup(bot_ref, log_callback=None):
-    global bot, economy_log_callback, lottery_task, db_keepalive_task
+    global bot, economy_log_callback, lottery_task, db_keepalive_task, claim_reminder_task
     bot = bot_ref
     economy_log_callback = log_callback
     print("Initializing 𝚀𝚞𝚎wo system...")
@@ -13523,7 +13878,7 @@ async def setup(bot_ref, log_callback=None):
     print(f"𝚀𝚞𝚎wo db_ready = {db_ready}")
 
     economy_commands = [
-        bal, bank, tutorial, recommendgame, robsettings, quewochannel, rob, profile, inventory, settheme, quests, dailychallenge, streaks, guide, onboard, shop, cooldowns, transactions, limits, lottery, editlottery, stoplottery, lotterystats, buytick,
+        bal, bank, tutorial, recommendgame, robsettings, quewochannel, levelupchannel, rob, profile, inventory, settheme, quests, dailychallenge, streaks, guide, onboard, shop, claimreminders, cooldowns, transactions, limits, lottery, editlottery, stoplottery, lotterystats, buytick,
         daily, weekly, monthly, gamble, roulette, slots, blackjack,
         scratch, tower, vault, memory_game, card_ladder, lockpick, heist, dice_duel, cases, plinko, lucky_number, jackpot_spin, dungeon, minesweeper, wheel, give, lb, gamestats, achievements, setbadge, gamebalance, gameaudit, balanceaudit, balancedashboard, event, gamehistory, season, seasonpass, endseason, qstats, economyhealth, economyaudit, abuseaudit, riskprofile, add, remove, addtick, removetick, settick, lotterypot, setquesos, econhelp, explain
     ]
@@ -13533,9 +13888,16 @@ async def setup(bot_ref, log_callback=None):
         command.add_check(quewo_command_cooldown_check)
         bot.add_command(command)
 
+    try:
+        bot.add_view(ClaimReminderControlView())
+    except ValueError:
+        pass
+
     await restore_lottery_panels()
 
     if lottery_task is None or lottery_task.done():
         lottery_task = asyncio.create_task(lottery_draw_loop())
     if db_keepalive_task is None or db_keepalive_task.done():
         db_keepalive_task = asyncio.create_task(db_keepalive_loop())
+    if claim_reminder_task is None or claim_reminder_task.done():
+        claim_reminder_task = asyncio.create_task(claim_reminder_loop())
