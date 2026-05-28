@@ -7306,6 +7306,74 @@ async def lotterystats(ctx):
     view.message = await ctx.send(embed=view.embed(), view=view, allowed_mentions=discord.AllowedMentions.none())
     schedule_lottery_refresh(ctx.guild, config)
 
+@commands.command(name="tickets", aliases=["mytickets", "entries", "myentries"])
+async def tickets(ctx, *, target: str = None):
+    if ctx.guild is None:
+        await ctx.send(f"{Q_DENIED} Lottery tickets only work in servers.")
+        return
+    if not await ensure_db_ready(ctx):
+        return
+
+    config = await asyncio.to_thread(get_lottery_config, ctx.guild.id)
+    if config is None:
+        await ctx.send("Lottery is not set up yet.")
+        return
+
+    user = ctx.author
+    inspected_by_owner = False
+    if target:
+        if not is_superowner_id(ctx.author.id):
+            await ctx.send(f"{Q_DENIED} You can only check your own tickets.")
+            return
+        inspected_by_owner = True
+        try:
+            user = await commands.MemberConverter().convert(ctx, target)
+        except commands.BadArgument:
+            match = re.search(r"\d{15,25}", target)
+            if not match:
+                await ctx.send(f"{Q_DENIED} Mention a user or paste their ID. Example: `.tickets @user`.")
+                return
+            user_id = int(match.group(0))
+            user = ctx.guild.get_member(user_id) or discord.Object(id=user_id)
+
+    try:
+        row, rows = await asyncio.gather(
+            asyncio.to_thread(get_lottery_user_spend, ctx.guild.id, user.id),
+            asyncio.to_thread(lottery_ticket_rows, ctx.guild.id),
+        )
+    except Exception:
+        await send_error(ctx, "Database unavailable. Try again shortly.")
+        return
+
+    entries = int((row or {}).get("tickets", 0) or 0)
+    spent = int((row or {}).get("spent", 0) or 0)
+    total_entries = sum(int(entry["tickets"] or 0) for entry in rows)
+    sorted_rows = sorted(rows, key=lambda entry: int(entry["tickets"] or 0), reverse=True)
+    rank = next((index for index, entry in enumerate(sorted_rows, 1) if int(entry["user_id"]) == int(user.id)), None)
+    odds = (entries / total_entries * 100) if total_entries else 0
+    next_draw = config["next_draw"]
+    if next_draw and next_draw.tzinfo is None:
+        next_draw = next_draw.replace(tzinfo=timezone.utc)
+
+    embed = discord.Embed(
+        title=f"{Q_TICKET} Lottery Tickets",
+        description=user_mention(user.id),
+        color=discord.Color.gold(),
+    )
+    embed.add_field(name="Your Entries" if not inspected_by_owner else "Entries", value=f"**{entries:,}**", inline=True)
+    embed.add_field(name="Current Odds", value=f"**{odds:.2f}%**", inline=True)
+    embed.add_field(name="Rank", value=f"**#{rank:,}**" if rank else "No entries yet", inline=True)
+    embed.add_field(name="Round Total", value=f"**{total_entries:,}** entries", inline=True)
+    embed.add_field(name="Next Draw", value=discord_relative_time(next_draw) if next_draw else "Unknown", inline=True)
+    if inspected_by_owner:
+        embed.add_field(name="Current Round Spend", value=f"**{format_balance(spent)}**", inline=True)
+    panel_url = lottery_panel_url(ctx.guild, config)
+    if panel_url:
+        embed.add_field(name="Panel", value=f"[Open Lottery Panel]({panel_url})", inline=False)
+    embed.set_footer(text="Spend shown here is for the current lottery round.")
+    await ctx.reply(embed=embed, mention_author=False, allowed_mentions=discord.AllowedMentions.none())
+    schedule_lottery_refresh(ctx.guild, config)
+
 @commands.command()
 async def buytick(ctx, amount: str = None):
     if ctx.guild is None:
@@ -14310,6 +14378,10 @@ EXPLANATIONS = {
     "editlottery": "Server owner/admin command. Edits lottery price, duration, house cut, or channel, then refreshes the panel.",
     "stoplottery": "Server owner/admin command. Stops this server's lottery and clears its tickets/config.",
     "lotterystats": "Shows lottery prize, tickets, players, next draw, paginated ticket holders, and panel link.",
+    "tickets": "Shows your current lottery entries, odds, rank, and next draw.",
+    "mytickets": "Alias for `.tickets`. Shows your current lottery entries.",
+    "entries": "Alias for `.tickets`. Shows your current lottery entries.",
+    "myentries": "Alias for `.tickets`. Shows your current lottery entries.",
     "buytick": "Legacy text command for buying lottery tickets. The lottery panel buttons are preferred. Lottery spending is capped at 60% of your lottery-adjusted balance per round.",
     "daily": "Claim a daily reward. Higher daily streak means a small bonus.",
     "weekly": "Claim a weekly reward. Higher weekly streak means a bigger bonus.",
@@ -14623,6 +14695,7 @@ DETAILED_EXPLANATIONS = {
     "editlottery": "Server owner/admin command. Run `.editlottery` to open the edit UI, or use `.editlottery price 250000`, `.editlottery duration 12h`, `.editlottery cut 5`, or `.editlottery channel #lottery`. Duration resets the next draw timer. Channel posts a fresh lottery panel. Updates ping the lottery participant role.",
     "stoplottery": "Server owner/admin command. Use `.stoplottery` to remove the lottery setup for this server, clear the current pot/tickets, and delete the participant role if the bot can. It leaves channels and panel messages alone.",
     "lotterystats": "Shows the current lottery prize pot, total ticket count, number of players, participant role, next draw time, panel link, and paginated ticket holders with approximate odds.",
+    "tickets": f"Shows your current lottery entries, rank, current odds, round total entries, and next draw. {QUE_OWNER_DISPLAY} can inspect another user with `.tickets @user` or `.tickets <user id>`, which also shows how much that user spent in the current lottery round.",
     "buytick": f"Legacy text command for buying tickets for the configured server lottery. The lottery panel buttons are preferred because they send private confirmations and update the panel automatically. Each ticket costs {format_balance(LOTTERY_TICKET_COST)}. The prize is the full current lottery pot; every ticket is one entry. Ticket spending is capped at {int(LOTTERY_MAX_BALANCE_SPEND_RATIO * 100)}% of your lottery-adjusted balance for the current round, so earning or spending quesos changes how many more tickets you can buy.",
     "weekly": f"Gives a reward once every 7 days. Base reward is 20,000-30,000 {CURRENCY_EMOJI}. Your weekly streak adds a bonus after week 1.",
     "monthly": f"Gives a reward once every 30 days. Base reward is 40,000-60,000 {CURRENCY_EMOJI}. Your monthly streak adds a bigger bonus after month 1.",
@@ -14757,7 +14830,7 @@ ECONHELP_COMMANDS = [
     ("Start", ["guide", "onboard", "tutorial", "recommendgame", "bal", "profile", "bank", "inventory", "career", "jobs", "work"]),
     ("Claims", ["daily", "weekly", "monthly", "streaks", "claimreminders", "cooldowns", "quests", "dailychallenge"]),
     ("Shop", ["shop", "settheme", "achievements", "setbadge", "seasonpass"]),
-    ("Lottery", ["lottery", "buytick", "lotterystats"]),
+    ("Lottery", ["lottery", "tickets", "buytick", "lotterystats"]),
     ("Games", ["cf", "roulette", "slots", "blackjack", "scratch", "tower", "vault", "memory", "cardladder", "lockpick", "heist", "diceduel", "cases", "plinko", "luckynumber", "jackpotspin", "dungeon", "ms", "wheel", "rob"]),
     ("Stats", ["lb", "gamestats", "gamehistory", "season", "transactions", "limits", "riskprofile", "gamebalance"]),
     ("Transfers", ["give"]),
@@ -15025,7 +15098,7 @@ async def setup(bot_ref, log_callback=None):
     print(f"𝚀𝚞𝚎wo db_ready = {db_ready}")
 
     economy_commands = [
-        bal, bank, tutorial, recommendgame, career, jobs, work, robsettings, quewochannel, levelupchannel, rob, profile, inventory, settheme, quests, dailychallenge, streaks, guide, onboard, shop, claimreminders, cooldowns, transactions, limits, lottery, editlottery, stoplottery, lotterystats, buytick,
+        bal, bank, tutorial, recommendgame, career, jobs, work, robsettings, quewochannel, levelupchannel, rob, profile, inventory, settheme, quests, dailychallenge, streaks, guide, onboard, shop, claimreminders, cooldowns, transactions, limits, lottery, editlottery, stoplottery, lotterystats, tickets, buytick,
         daily, weekly, monthly, gamble, roulette, slots, blackjack,
         scratch, tower, vault, memory_game, card_ladder, lockpick, heist, dice_duel, cases, plinko, lucky_number, jackpot_spin, dungeon, minesweeper, wheel, give, lb, gamestats, achievements, setbadge, gamebalance, gameaudit, balanceaudit, balancedashboard, event, gamehistory, season, seasonpass, endseason, qstats, economyhealth, economyaudit, abuseaudit, riskprofile, add, remove, addtick, removetick, settick, lotterypot, setquesos, addxp, removexp, addlvl, removelvl, setlvl, econhelp, explain
     ]
