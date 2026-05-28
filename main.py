@@ -6233,28 +6233,37 @@ async def on_command_error(ctx, error):
             await ctx.send(denial_message("Something went wrong while running this command. Try the help command for the right usage."), allowed_mentions=discord.AllowedMentions.none())
 
 HELP_CATEGORIES = {
-    "𝚀𝚞𝚎wo (Gambling)": [
-        "guide", "onboard", "tutorial", "bal", "bank", "profile", "inventory", "settheme", "quests", "dailychallenge", "streaks", "shop", "claimreminders", "cooldowns", "transactions", "lottery", "lotterystats", "buytick",
-        "daily", "weekly", "monthly", "cf", "roulette", "slots", "blackjack", "scratch", "tower", "vault", "memory", "cardladder", "lockpick",
-        "heist", "diceduel", "cases", "plinko", "luckynumber", "jackpotspin", "dungeon", "ms", "wheel",
-        "give", "rob", "robsettings", "quewochannel", "levelupchannel", "recommendgame", "lb", "gamestats", "achievements", "setbadge", "gamebalance", "gameaudit", "balanceaudit", "balancedashboard", "gamehistory", "season", "seasonpass", "event", "limits", "qstats", "economyhealth", "economyaudit", "abuseaudit", "riskprofile", "econhelp", "explain",
+    "Start Here": ["help", "games", "econhelp", "guide", "onboard", "tutorial", "recommendgame", "explain", "usersettings"],
+    "𝚀𝚞𝚎wo Basics": [
+        "bal", "bank", "profile", "inventory", "settheme", "shop", "quests", "dailychallenge",
+        "daily", "weekly", "monthly", "streaks", "cooldowns", "claimreminders", "transactions", "limits", "give",
     ],
-    "Games": ["games", "howtoplay", "truthordare", "ttt", "c4", "chess", "move", "resign", "flagquiz", "flagstats", "q", "picker"],
-    "Utility": ["help", "userinfo", "pfp", "calc", "define", "timer", "ctimer", "alarm", "poll", "epoll", "translate", "find"],
-    "AI": ["ask", "generate", "analyse", "summarize", "aidetect", "aimemory", "aiknow", "aihistory", "aiperms", "aiguard", "aisettings", "aiignore", "aiunignore", "aichannel", "aistyle", "usersettings", "aidoctor"],
-    "Server Tools": [
-        "snipe", "dsnipe", "esnipe", "rsnipe", "rolesinfo", "roleinfo", "purge", "rpurge", "steal", "fwd", "quote", "archive",
-        "giveaway", "listbans", "listblocks", "listtargets", "listcensors", "lists",
+    "𝚀𝚞𝚎wo Games": [
+        "cf", "roulette", "slots", "blackjack", "scratch", "tower", "vault", "memory", "cardladder", "lockpick",
+        "heist", "diceduel", "cases", "plinko", "luckynumber", "jackpotspin", "ms", "wheel", "dungeon", "rob",
     ],
-    "Status": ["afk", "sleep", "wake", "fsleep", "away", "setbday", "removebday", "setbdaychannel", "activity", "activitystats", "messages"],
-    "Admin": [
-        "settings", "slashsync", "health", "perms", "permaudit", "sessions", "recover", "jobs", "errors", "dbaudit", "auditcommands", "styleaudit", "commandcleanup", "commandstats", "bulkqueue", "receipt", "receipts", "setlogs", "prefix", "disable", "enable", "disableall", "enableall", "dclist", "perf", "test", "testlog", "testrlog",
-        "todchannel",
-        "endttt", "setnick", "unmute", "kick", "ban", "unban", "addrole", "removerole", "deleterole",
-        "lock", "unlock", "lockdown", "reopen", "rlockdown", "runlock", "shut", "unshut", "clearwatchlist", "rshut", "unrshut",
-        "send", "reply", "fwd", "aban", "raban", "abanlist", "summon", "summon2", "block", "unblock",
-        "censor", "uncensor", "clearcensors", "editlottery", "stoplottery", "editactivity", "endactivity", "stopactivity", "messageevent",
-        "add", "remove", "addtick", "removetick", "settick", "lotterypot", "setquesos",
+    "𝚀𝚞𝚎wo Stats": [
+        "lb", "gamestats", "achievements", "setbadge", "gamehistory", "season", "seasonpass",
+        "lottery", "buytick", "lotterystats", "riskprofile",
+    ],
+    "Social Games": ["games", "howtoplay", "truthordare", "flagquiz", "flagstats", "ttt", "c4", "chess", "move", "resign", "q", "picker"],
+    "Utility": ["userinfo", "pfp", "calc", "define", "timer", "ctimer", "alarm", "poll", "epoll", "translate", "find"],
+    "AI": ["ask", "summarize", "aidetect", "generate", "analyse", "aimemory", "aiknow", "usersettings"],
+    "Community": ["afk", "sleep", "wake", "away", "setbday", "removebday", "activity", "activitystats", "messages"],
+    "Snipes": ["snipe", "dsnipe", "esnipe", "rsnipe"],
+    "Server Setup": [
+        "settings", "setlogs", "prefix", "setbdaychannel", "activity", "editactivity", "endactivity", "stopactivity",
+        "messageevent", "todchannel", "quewochannel", "levelupchannel", "robsettings", "editlottery", "stoplottery",
+    ],
+    "Moderation": [
+        "rolesinfo", "roleinfo", "purge", "rpurge", "steal", "fwd", "quote", "archive",
+        "giveaway", "setnick", "unmute", "kick", "ban", "unban", "addrole", "removerole", "deleterole",
+        "lock", "unlock", "lockdown", "reopen", "rlockdown", "runlock", "shut", "unshut",
+        "disable", "enable", "disableall", "enableall", "dclist", "listbans", "listblocks", "listtargets", "listcensors", "lists",
+    ],
+    "Diagnostics": [
+        "health", "perms", "sessions", "recover", "jobs", "errors", "dbaudit", "aidoctor", "perf",
+        "bulkqueue", "commandstats", "receipt", "aichannel",
     ],
 }
 SUPEROWNER_HELP_COMMANDS = [
@@ -6272,10 +6281,44 @@ SUPEROWNER_HIDDEN_COMMANDS = {
     "aiactions", "actionhistory", "cmdaudit", "commandaudit", "uiaudit", "messageaudit", "cleanupcommands", "cmdcleanup", "ecodashboard", "moneydashboard", "sinkdashboard", "permsaudit", "permissionaudit", "sensitiveaudit", "receiptlist", "txreceipts", "aicommandsafety",
 }
 HELP_CATEGORY_ALIASES = {
-    "quewo": "𝚀𝚞𝚎wo (Gambling)",
-    "𝚀𝚞𝚎wo": "𝚀𝚞𝚎wo (Gambling)",
-    "gambling": "𝚀𝚞𝚎wo (Gambling)",
+    "quewo": "𝚀𝚞𝚎wo Basics",
+    "𝚀𝚞𝚎wo": "𝚀𝚞𝚎wo Basics",
+    "gambling": "𝚀𝚞𝚎wo Games",
+    "economy": "𝚀𝚞𝚎wo Basics",
+    "eco": "𝚀𝚞𝚎wo Basics",
+    "money": "𝚀𝚞𝚎wo Basics",
+    "casino": "𝚀𝚞𝚎wo Games",
+    "betting": "𝚀𝚞𝚎wo Games",
+    "stats": "𝚀𝚞𝚎wo Stats",
+    "leaderboards": "𝚀𝚞𝚎wo Stats",
+    "social": "Social Games",
+    "snipe": "Snipes",
+    "snipes": "Snipes",
+    "setup": "Server Setup",
+    "config": "Server Setup",
+    "admin": "Server Setup",
+    "mod": "Moderation",
+    "moderation": "Moderation",
+    "tools": "Utility",
+    "doctor": "Diagnostics",
+    "debug": "Diagnostics",
 }
+HELP_CATEGORY_DESCRIPTIONS = {
+    "Start Here": "Main menus and beginner guides.",
+    "𝚀𝚞𝚎wo Basics": "Money, claims, shop, profile, inventory, and transfers.",
+    "𝚀𝚞𝚎wo Games": "Gambling, skill games, solo games, and robbing.",
+    "𝚀𝚞𝚎wo Stats": "Leaderboards, achievements, lottery, seasons, and history.",
+    "Social Games": "Party games, PvP games, flags, chess, and picker.",
+    "Utility": "Timers, polls, calculator, definitions, translation, and message tools.",
+    "AI": "Chat, summaries, image analysis, AI detector, and AI memory.",
+    "Community": "AFK, sleep, birthdays, activity, and message stats.",
+    "Snipes": "Deleted, edited, and reaction snipes.",
+    "Server Setup": "Server configuration for admins.",
+    "Moderation": "Moderation, snipes, roles, locks, and cleanup.",
+    "Diagnostics": "Health, recovery, errors, performance, and audit tools.",
+    "Superowner": "Hidden 𝚀𝚞𝚎-only controls.",
+}
+ADMIN_HELP_CATEGORIES = {"Server Setup", "Moderation", "Diagnostics"}
 
 def is_superowner_help_command(command_or_name):
     names = {str(command_or_name).casefold()}
@@ -6295,7 +6338,10 @@ def command_is_visible_to(command, user=None, guild=None):
 
 def help_categories_for(user=None, guild=None):
     visible = {}
+    can_manage = bool(user and guild and has_owner_power(user, guild))
     for category, names in HELP_CATEGORIES.items():
+        if category in ADMIN_HELP_CATEGORIES and not can_manage:
+            continue
         filtered = []
         for name in names:
             command = get_command_case_insensitive(name)
@@ -6351,9 +6397,15 @@ def _render_help_embed_uncached(guild=None, category_name=None, page=0, per_page
             embed.description += "\n\nNo commands loaded for this category."
         return embed
 
+    fast_starts = [f"`{current_prefix}games`", f"`{current_prefix}econhelp`", f"`{current_prefix}ask`"]
+    if viewer and guild and has_owner_power(viewer, guild):
+        fast_starts.insert(2, f"`{current_prefix}settings`")
     embed = standard_embed(
         "Help",
-        description=f"Pick a category below, or use `{current_prefix}help <command>`.",
+        description=(
+            f"Pick a category below, use `{current_prefix}help <command>`, or search with `{current_prefix}help search <word>`.\n"
+            f"Fast starts: {', '.join(fast_starts)}."
+        ),
         color=discord.Color.blurple(),
         icon=economy_q_book,
     )
@@ -6372,7 +6424,8 @@ def _render_help_embed_uncached(guild=None, category_name=None, page=0, per_page
             if (command := get_command_case_insensitive(name)) and command_is_visible_to(command, viewer, guild)
         }
         if loaded:
-            embed.add_field(name=category, value=f"{len(loaded)} commands", inline=True)
+            description = HELP_CATEGORY_DESCRIPTIONS.get(category, "Command category.")
+            embed.add_field(name=category, value=f"{description}\n**{len(loaded)}** commands", inline=True)
     return embed
 
 def render_help_embed(guild=None, category_name=None, page=0, per_page=10, viewer=None):
@@ -6443,7 +6496,11 @@ def command_permission_label(command):
     name = command.name
     aliases = set(getattr(command, "aliases", []) or [])
     names = {name, *aliases}
-    admin_names = set(HELP_CATEGORIES.get("Admin", [])) | set(HELP_CATEGORIES.get("Server Tools", []))
+    admin_names = (
+        set(HELP_CATEGORIES.get("Server Setup", []))
+        | set(HELP_CATEGORIES.get("Moderation", []))
+        | set(HELP_CATEGORIES.get("Diagnostics", []))
+    )
     if is_superowner_help_command(command):
         return QUE_OWNER_DISPLAY
     if name in admin_names or names & admin_names:

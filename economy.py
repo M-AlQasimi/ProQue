@@ -32,10 +32,10 @@ DAILY_LOSS_WARNING_RATIO = 0.70
 DAILY_LOSS_HARD_RATIO = 0.85
 STREAK_BASE_BONUS = 0.01
 STREAK_STEP_BONUS = 0.0025
-BLACKJACK_DEALER_STAND_ON_16_CHANCE = 0.20
-COINFLIP_WIN_CHANCE = 0.49
-ROULETTE_WIN_CHANCE = 0.32
-SLOTS_WIN_CHANCE = 0.25
+BLACKJACK_DEALER_STAND_ON_16_CHANCE = 0.25
+COINFLIP_WIN_CHANCE = 0.51
+ROULETTE_WIN_CHANCE = 0.34
+SLOTS_WIN_CHANCE = 0.27
 SUPER_OWNER_ID = 885548126365171824
 QUE_OWNER_DISPLAY = f"𝚀𝚞𝚎 (<@{SUPER_OWNER_ID}>)"
 SUPEROWNER_LUCK_BONUS = 0.05
@@ -3627,6 +3627,7 @@ def settle_gambling_result(user_id, game_key, amount, base_multiplier=0, won=Fal
     if neutral:
         record_game_result(user_id, game_key, None, 0, 0)
         return {
+            "user_id": int(user_id),
             "balance": int(latest["balance"]),
             "winnings": 0,
             "net": 0,
@@ -3649,6 +3650,7 @@ def settle_gambling_result(user_id, game_key, amount, base_multiplier=0, won=Fal
         stats = record_game_result(user_id, game_key, True, net, winnings)
         achievements = maybe_award_game_achievements(user_id, game_key, stats)
         return {
+            "user_id": int(user_id),
             "balance": int(updated["balance"]),
             "winnings": winnings,
             "net": net,
@@ -3665,6 +3667,7 @@ def settle_gambling_result(user_id, game_key, amount, base_multiplier=0, won=Fal
     )
     record_game_result(user_id, game_key, False, -amount, 0)
     return {
+        "user_id": int(user_id),
         "balance": int(updated["balance"]),
         "winnings": 0,
         "net": -amount,
@@ -3722,11 +3725,14 @@ def double_or_nothing_view(user_id, game_key, result):
     stake = int(result.get("winnings", 0) or 0)
     return DoubleOrNothingView(user_id, game_key, stake) if stake > 0 else None
 
-def gamble_result_block(game_key, amount, result, base_multiplier=None, outcome=None, details=None):
+def gamble_result_block(game_key, amount, result, base_multiplier=None, outcome=None, details=None, player_id=None):
+    player_id = player_id or result.get("user_id")
     lines = [
         f"{risk_emoji(game_key)} Risk: **{risk_label(game_key)}**",
-        f"Bet: **{format_balance(amount)}**",
     ]
+    if player_id:
+        lines.append(f"Player: {user_mention(player_id)}")
+    lines.append(f"Bet: **{format_balance(amount)}**")
     if details:
         lines.extend(str(details).splitlines())
     if result["winnings"] > 0:
@@ -7148,6 +7154,7 @@ async def gamble(ctx, amount: str, choice: str = None):
                 {"winnings": winnings, "balance": new_balance, "streak": new_streak, "streak_mult": mult},
                 2,
                 outcome=f"{coin_result} - You Win",
+                player_id=user_id,
             )
             await flip_msg.edit(
                 content=(
@@ -7172,6 +7179,7 @@ async def gamble(ctx, amount: str, choice: str = None):
                 amount,
                 {"winnings": 0, "balance": new_balance},
                 outcome=f"{coin_result} - You Lose",
+                player_id=user_id,
             )
             await flip_msg.edit(
                 content=(
@@ -7324,6 +7332,7 @@ async def roulette(ctx, amount: str, color: str = None):
                 {"winnings": winnings, "balance": new_balance, "streak": new_streak, "streak_mult": mult},
                 multipliers[color],
                 outcome=f"{color.upper()}",
+                player_id=user_id,
             )
             await roulette_msg.edit(
                 content=(
@@ -7349,6 +7358,7 @@ async def roulette(ctx, amount: str, color: str = None):
                 amount,
                 {"winnings": 0, "balance": new_balance},
                 outcome=f"{result.upper()}",
+                player_id=user_id,
             )
             await roulette_msg.edit(
                 content=(
@@ -7467,6 +7477,7 @@ async def slots(ctx, amount: str):
                 {"winnings": winnings, "balance": new_balance, "streak": new_streak, "streak_mult": mult},
                 result_multiplier,
                 outcome=f"Three Match x{result_multiplier}",
+                player_id=user_id,
             )
             await slots_msg.edit(
                 content=(
@@ -7492,6 +7503,7 @@ async def slots(ctx, amount: str):
                 amount,
                 {"winnings": 0, "balance": new_balance},
                 outcome="No Match",
+                player_id=user_id,
             )
             await slots_msg.edit(
                 content=(
@@ -7612,6 +7624,7 @@ async def blackjack(ctx, amount: str):
                     {"winnings": prize, "balance": data["balance"] + winnings, "streak": new_streak, "streak_mult": mult},
                     None,
                     outcome=win_type,
+                    player_id=user_id,
                 )
                 await msg.edit(
                     content=(
@@ -7634,6 +7647,7 @@ async def blackjack(ctx, amount: str):
                         f"**Dealer:**     {format_hand(dealer_hand)}  →  **{dealer_final}**\n"
                         f"─────────────────\n"
                         f">>> {Q_TIMER} **{win_type}**\n"
+                        f"Player: {user_mention(user_id)}\n"
                         f"Nothing lost, nothing won.\n"
                         f"New Balance: **{format_balance(data['balance'])}**"
                     )
@@ -7651,6 +7665,7 @@ async def blackjack(ctx, amount: str):
                     abs(amount_delta),
                     {"winnings": 0, "balance": new_balance},
                     outcome=win_type,
+                    player_id=user_id,
                 )
                 await msg.edit(
                     content=(
@@ -9459,6 +9474,7 @@ async def card_ladder(ctx, amount: str):
             amount,
             {"winnings": 0, "balance": new_balance},
             outcome=f"Wrong call ({label})",
+            player_id=user_id,
         )
         view.clear_items()
         await interaction.message.edit(
@@ -9495,6 +9511,7 @@ async def card_ladder(ctx, amount: str):
             {"winnings": winnings, "balance": new_balance, "streak": new_streak, "streak_mult": streak_mult},
             base_multiplier,
             outcome=label,
+            player_id=user_id,
         )
         view.clear_items()
         await interaction.edit_original_response(
@@ -9658,6 +9675,7 @@ async def lockpick(ctx, amount: str):
             {"winnings": 0, "balance": new_balance},
             outcome=reason,
             details=f"Code: **{'-'.join(map(str, target))}**",
+            player_id=user_id,
         )
         view.clear_items()
         await interaction.message.edit(
@@ -9688,6 +9706,7 @@ async def lockpick(ctx, amount: str):
             {"winnings": winnings, "balance": new_balance, "streak": new_streak, "streak_mult": streak_mult},
             LOCKPICK_MULTIPLIER,
             outcome="Lock opened",
+            player_id=user_id,
         )
         view.clear_items()
         await interaction.message.edit(
@@ -13617,13 +13636,18 @@ DETAILED_EXPLANATIONS = {
 }
 
 ECONHELP_COMMANDS = [
-    ("Core", ["guide", "onboard", "tutorial", "bal", "bank", "profile", "inventory", "settheme", "quests", "dailychallenge", "streaks", "shop", "cooldowns", "transactions", "limits", "lb", "quewochannel", "levelupchannel"]),
-    ("Stats", ["gamestats", "achievements", "setbadge", "gamebalance", "gameaudit", "balanceaudit", "balancedashboard", "gamehistory", "season", "seasonpass", "qstats", "economyhealth", "economyaudit", "abuseaudit", "riskprofile", "recommendgame"]),
-    ("Claims", ["daily", "weekly", "monthly", "claimreminders"]),
-    ("Lottery", ["lottery", "buytick", "lotterystats", "editlottery", "stoplottery"]),
-    ("Gambling", ["cf", "roulette", "slots", "blackjack", "scratch", "tower", "vault", "memory", "cardladder", "lockpick", "heist", "diceduel", "cases", "plinko", "luckynumber", "jackpotspin", "dungeon", "ms", "wheel", "rob", "robsettings"]),
+    ("Start", ["guide", "onboard", "tutorial", "recommendgame", "bal", "profile", "bank", "inventory"]),
+    ("Claims", ["daily", "weekly", "monthly", "streaks", "claimreminders", "cooldowns", "quests", "dailychallenge"]),
+    ("Shop", ["shop", "settheme", "achievements", "setbadge", "seasonpass"]),
+    ("Lottery", ["lottery", "buytick", "lotterystats"]),
+    ("Games", ["cf", "roulette", "slots", "blackjack", "scratch", "tower", "vault", "memory", "cardladder", "lockpick", "heist", "diceduel", "cases", "plinko", "luckynumber", "jackpotspin", "dungeon", "ms", "wheel", "rob"]),
+    ("Stats", ["lb", "gamestats", "gamehistory", "season", "transactions", "limits", "riskprofile", "gamebalance"]),
     ("Transfers", ["give"]),
     ("Help", ["econhelp", "explain"]),
+]
+ECONHELP_ADMIN_COMMANDS = [
+    "quewochannel", "levelupchannel", "robsettings", "editlottery", "stoplottery",
+    "event", "gameaudit", "balanceaudit", "economyaudit", "abuseaudit",
 ]
 ECONHELP_SUPEROWNER_COMMANDS = [
     "add", "remove", "addtick", "removetick", "settick", "lotterypot", "setquesos",
@@ -13695,11 +13719,14 @@ async def econhelp(ctx):
     """Shows 𝚀𝚞𝚎wo commands, aliases, and short explanations."""
     prefix = getattr(ctx, "prefix", ".")
     is_que = is_superowner_id(ctx.author.id)
+    is_admin = ctx.guild is not None and has_economy_owner_power(ctx.author.id, ctx.guild)
     visible_econhelp_commands = []
     for category, command_names in ECONHELP_COMMANDS:
         filtered = [name for name in command_names if is_que or not is_econ_superowner_hidden(name)]
         if filtered:
             visible_econhelp_commands.append((category, filtered))
+    if is_admin or is_que:
+        visible_econhelp_commands.append(("Server Settings", ECONHELP_ADMIN_COMMANDS))
     if is_que:
         visible_econhelp_commands.append(("Superowner", ECONHELP_SUPEROWNER_COMMANDS))
 
@@ -13785,7 +13812,7 @@ async def econhelp(ctx):
     class EconHelpView(discord.ui.View):
         def __init__(self):
             super().__init__(timeout=LONG_HELP_VIEW_TIMEOUT)
-            self.category = "Core"
+            self.category = visible_econhelp_commands[0][0]
             self.page = 0
             self.add_item(EconHelpSelect())
             self.add_item(EconHelpPageButton(-1))
@@ -13802,7 +13829,7 @@ async def econhelp(ctx):
 
     view = EconHelpView()
     view.message = await ctx.send(
-        embed=build_embed("Core", 0),
+        embed=build_embed(visible_econhelp_commands[0][0], 0),
         view=view,
         allowed_mentions=discord.AllowedMentions.none()
     )
