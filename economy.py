@@ -203,6 +203,7 @@ SLOT_SYMBOL_PAYOUTS = [
 CHAT_XP_COOLDOWN_SECS = 60
 LEVEL_REWARD_BASE = 300_000
 LEVEL_REWARD_STEP = 50_000
+LEVEL_ADMIN_MAX_LEVEL = 10_000
 TRANSFER_TAX_RATE = 0.05
 LOTTERY_TICKET_COST = 100_000
 LOTTERY_HOUSE_CUT = 0.10
@@ -372,7 +373,7 @@ SHOP_ITEMS = {
     },
 }
 
-CAREER_WORK_COOLDOWN_SECONDS = 30 * 60
+CAREER_MIN_WORK_COOLDOWN_SECONDS = 2 * 60 * 60
 CAREER_TIERS = [
     {"threshold": 0, "pay": 45_000, "xp": 24},
     {"threshold": 120, "pay": 75_000, "xp": 32},
@@ -386,6 +387,7 @@ CAREER_PATHS = {
         "name": "Service Track",
         "emoji": Q_BRIEFCASE,
         "summary": "Steady customer chaos, timing, and quick choices.",
+        "cooldown": 2 * 60 * 60,
         "titles": ["Runner", "Crew Lead", "Shift Boss", "Floor Manager", "Operations Lead", "Venue Director"],
         "tasks": [
             ("Lunch rush hits. What saves the line?", ["Serve VIP first", "Batch similar orders", "Close counter"], "Batch similar orders"),
@@ -398,6 +400,7 @@ CAREER_PATHS = {
         "name": "Tech Track",
         "emoji": Q_DATABASE,
         "summary": "Debugging, systems, clean fixes, and bigger pay later.",
+        "cooldown": 4 * 60 * 60,
         "titles": ["Bug Hunter", "Junior Dev", "Systems Dev", "Stack Lead", "Architect", "Chief Engineer"],
         "tasks": [
             ("The dashboard is blank after deploy.", ["Restart randomly", "Check logs first", "Blame users"], "Check logs first"),
@@ -410,6 +413,7 @@ CAREER_PATHS = {
         "name": "Trade Track",
         "emoji": Q_BALANCE,
         "summary": "Market reads, supply choices, and bigger risk-reward decisions.",
+        "cooldown": 3 * 60 * 60,
         "titles": ["Street Seller", "Market Scout", "Broker", "Trade Captain", "Portfolio Lead", "Tycoon"],
         "tasks": [
             ("Demand spikes but stock is thin.", ["Raise slowly", "Dump stock", "Close shop"], "Raise slowly"),
@@ -422,6 +426,7 @@ CAREER_PATHS = {
         "name": "Creative Track",
         "emoji": Q_IMAGE,
         "summary": "Design briefs, taste, polish, and reputation.",
+        "cooldown": 2 * 60 * 60,
         "titles": ["Sketch Rookie", "Designer", "Brand Maker", "Creative Lead", "Studio Head", "Icon Director"],
         "tasks": [
             ("A banner looks too crowded.", ["Add more text", "Simplify layout", "Use ten fonts"], "Simplify layout"),
@@ -434,6 +439,7 @@ CAREER_PATHS = {
         "name": "Investigator Track",
         "emoji": Q_WATCH,
         "summary": "Read patterns, catch clues, and solve cleaner cases.",
+        "cooldown": 150 * 60,
         "titles": ["Clue Runner", "Case Aide", "Investigator", "Field Analyst", "Case Commander", "Master Sleuth"],
         "tasks": [
             ("Three stories conflict.", ["Compare timestamps", "Pick loudest", "Skip notes"], "Compare timestamps"),
@@ -1070,18 +1076,22 @@ def career_tier_data(tier):
     index = max(0, min(int(tier or 1) - 1, len(CAREER_TIERS) - 1))
     return CAREER_TIERS[index]
 
-def career_cooldown_ready_at(last_work):
+def career_work_cooldown_seconds(path_key=None):
+    path = career_path(path_key)
+    return max(CAREER_MIN_WORK_COOLDOWN_SECONDS, int(path.get("cooldown") or CAREER_MIN_WORK_COOLDOWN_SECONDS))
+
+def career_cooldown_ready_at(last_work, path_key=None):
     if not last_work:
         return None
     if getattr(last_work, "tzinfo", None):
         base = last_work.astimezone(timezone.utc).replace(tzinfo=None)
     else:
         base = last_work
-    return base + timedelta(seconds=CAREER_WORK_COOLDOWN_SECONDS)
+    return base + timedelta(seconds=career_work_cooldown_seconds(path_key))
 
 def career_work_ready(row, now=None):
     now = now or datetime.utcnow()
-    ready_at = career_cooldown_ready_at((row or {}).get("last_work"))
+    ready_at = career_cooldown_ready_at((row or {}).get("last_work"), (row or {}).get("path_key"))
     return ready_at is None or now >= ready_at, ready_at
 
 def get_career(user_id):
@@ -1375,6 +1385,111 @@ def bulk_set_balances(user_ids, amount, actor_id, note):
     cur.close()
     conn.close()
     return len(updated_ids)
+
+def level_state_label(row_or_pair):
+    if isinstance(row_or_pair, (tuple, list)) and len(row_or_pair) >= 2:
+        level, xp = int(row_or_pair[0]), int(row_or_pair[1])
+    else:
+        level = int((row_or_pair or {}).get("level") or 1)
+        xp = int((row_or_pair or {}).get("xp") or 0)
+    return f"Level {level:,} • XP {xp:,}/{xp_needed_for_level(level):,}"
+
+def total_level_xp(level, xp):
+    level = max(1, int(level or 1))
+    total = max(0, int(xp or 0))
+    for current_level in range(1, level):
+        total += xp_needed_for_level(current_level)
+    return total
+
+def split_level_xp(total_xp):
+    remaining = max(0, int(total_xp or 0))
+    level = 1
+    while level < LEVEL_ADMIN_MAX_LEVEL and remaining >= xp_needed_for_level(level):
+        remaining -= xp_needed_for_level(level)
+        level += 1
+    if level >= LEVEL_ADMIN_MAX_LEVEL:
+        remaining = min(remaining, max(0, xp_needed_for_level(level) - 1))
+    return level, remaining
+
+def get_level_states_for_users(user_ids):
+    unique_ids = sorted(set(int(user_id) for user_id in user_ids))
+    if not unique_ids:
+        return {}
+    states = {user_id: (1, 0) for user_id in unique_ids}
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT user_id, level, xp FROM economy WHERE user_id = ANY(%s::bigint[])",
+        (unique_ids,)
+    )
+    for row in cur.fetchall():
+        states[int(row["user_id"])] = (int(row["level"] or 1), int(row["xp"] or 0))
+    cur.close()
+    conn.close()
+    return states
+
+def bulk_adjust_levels(user_ids, mode, amount, actor_id, note):
+    unique_ids = sorted(set(int(user_id) for user_id in user_ids))
+    if not unique_ids:
+        return 0
+    mode = str(mode).casefold()
+    amount = int(amount)
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            INSERT INTO economy (user_id, balance)
+            SELECT user_id, 0 FROM unnest(%s::bigint[]) AS user_id
+            ON CONFLICT (user_id) DO NOTHING
+            """,
+            (unique_ids,)
+        )
+        cur.execute(
+            "SELECT user_id, level, xp FROM economy WHERE user_id = ANY(%s::bigint[]) ORDER BY user_id FOR UPDATE",
+            (unique_ids,)
+        )
+        rows = cur.fetchall()
+        changed = 0
+        for row in rows:
+            user_id = int(row["user_id"])
+            old_level = int(row["level"] or 1)
+            old_xp = int(row["xp"] or 0)
+            if mode == "addxp":
+                new_level, new_xp = split_level_xp(total_level_xp(old_level, old_xp) + amount)
+            elif mode == "removexp":
+                new_level, new_xp = split_level_xp(total_level_xp(old_level, old_xp) - amount)
+            elif mode == "addlvl":
+                new_level = min(LEVEL_ADMIN_MAX_LEVEL, max(1, old_level + amount))
+                new_xp = min(old_xp, max(0, xp_needed_for_level(new_level) - 1))
+            elif mode == "removelvl":
+                new_level = max(1, old_level - amount)
+                new_xp = min(old_xp, max(0, xp_needed_for_level(new_level) - 1))
+            elif mode == "setlvl":
+                new_level = min(LEVEL_ADMIN_MAX_LEVEL, max(1, amount))
+                new_xp = 0
+            else:
+                raise ValueError("unknown_level_mode")
+            cur.execute(
+                "UPDATE economy SET level = %s, xp = %s WHERE user_id = %s",
+                (new_level, new_xp, user_id)
+            )
+            changed += 1
+        cur.execute(
+            """
+            INSERT INTO economy_transactions (user_id, kind, amount, note)
+            SELECT user_id, %s, %s, %s FROM unnest(%s::bigint[]) AS user_id
+            """,
+            (f"owner_{mode}", amount, f"By {actor_id}: {note}", unique_ids)
+        )
+        conn.commit()
+        return changed
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cur.close()
+        conn.close()
 
 def get_recent_transactions(user_id, limit=10):
     conn = get_db_connection()
@@ -3724,6 +3839,7 @@ GAME_DISPLAY_NAMES = {
     "slots": "Slots",
     "scratch": "Scratch",
     "blackjack": "Blackjack",
+    "bj": "Blackjack",
     "roulette": "Roulette",
     "cf": "Coin Flip",
 }
@@ -3747,6 +3863,7 @@ GAME_RISK_LABELS = {
     "slots": "High",
     "scratch": "High",
     "blackjack": "Medium",
+    "bj": "Medium",
     "roulette": "Medium",
     "cf": "Medium",
 }
@@ -3825,6 +3942,7 @@ GAME_RISK_ALIASES = {
     "qdungeon": "dungeon",
     "minesweeper": "ms",
     "minesweepeer": "ms",
+    "bj": "blackjack",
 }
 
 def risk_key(game_key):
@@ -3851,7 +3969,11 @@ def risk_emoji(game_key):
     return Q_RISK_MEDIUM
 
 def game_display_name(game_key):
-    return GAME_DISPLAY_NAMES.get(game_key, str(game_key).replace("_", " ").title())
+    key = risk_key(game_key)
+    return GAME_DISPLAY_NAMES.get(key, str(key).replace("_", " ").title())
+
+def running_game_player_line(user_id):
+    return f"Player: {user_mention(user_id)}\n"
 
 def todays_daily_challenge(now=None):
     now = now or datetime.now(timezone.utc)
@@ -4162,7 +4284,14 @@ class DoubleOrNothingView(discord.ui.View):
 
     @discord.ui.button(label="How To Play", emoji=Q_BOOK, style=discord.ButtonStyle.secondary)
     async def how_to_play(self, interaction, button):
-        details = DETAILED_EXPLANATIONS.get(self.game_key) or EXPLANATIONS.get(self.game_key) or f"Play {game_display_name(self.game_key)}."
+        canonical_key = risk_key(self.game_key)
+        details = (
+            DETAILED_EXPLANATIONS.get(self.game_key)
+            or DETAILED_EXPLANATIONS.get(canonical_key)
+            or EXPLANATIONS.get(self.game_key)
+            or EXPLANATIONS.get(canonical_key)
+            or f"Play {game_display_name(self.game_key)}."
+        )
         embed = discord.Embed(
             title=f"{Q_BOOK} How To Play: {game_display_name(self.game_key)}",
             description=embed_value(details, 1800),
@@ -5148,7 +5277,10 @@ def public_error_text(error, fallback="That action failed."):
         return "That response was too long for Discord."
     return text[:220] if text else fallback
 
-ECONOMY_INPUT_UI_COMMANDS = {"buytick", "give", "add", "remove", "addtick", "removetick", "settick", "setquesos", "levelupchannel"}
+ECONOMY_INPUT_UI_COMMANDS = {
+    "buytick", "give", "add", "remove", "addtick", "removetick", "settick", "setquesos",
+    "addxp", "removexp", "addlvl", "removelvl", "setlvl", "levelupchannel",
+}
 
 ECONOMY_INPUT_PLACEHOLDERS = {
     "buytick": "30",
@@ -5159,6 +5291,11 @@ ECONOMY_INPUT_PLACEHOLDERS = {
     "removetick": "@user 10",
     "settick": "@user 10",
     "setquesos": "@user 1m",
+    "addxp": "@user 500",
+    "removexp": "@user 500",
+    "addlvl": "@user 2",
+    "removelvl": "@user 2",
+    "setlvl": "@user 10",
     "levelupchannel": "#level-ups",
 }
 
@@ -5238,6 +5375,7 @@ ECONOMY_CHANNEL_EXEMPT_COMMANDS = {
     "balancedashboard", "ecodashboard", "moneydashboard", "sinkdashboard",
     "gameaudit", "balanceaudit", "event", "qevent", "events",
     "add", "remove", "addtick", "removetick", "settick", "setquesos",
+    "addxp", "removexp", "addlvl", "removelvl", "setlvl",
 }
 
 def economy_command_names_for_ctx(ctx):
@@ -5486,27 +5624,34 @@ def build_career_embed(user, career_row):
     xp = int(career_row.get("career_xp") or 0)
     ready, ready_at = career_work_ready(career_row)
     next_threshold = career_next_threshold(tier)
-    next_text = "Max tier reached" if next_threshold is None else f"Next promotion at **{next_threshold:,} XP**"
+    next_text = "Max job reached" if next_threshold is None else f"Promotion at **{next_threshold:,} XP**"
     embed = discord.Embed(
-        title=f"{Q_CAREER} Career",
-        description=f"{user_mention(user.id)}\n**{path['name']}** - **{title}**",
+        title=f"{Q_CAREER} Job",
+        description=f"{user_mention(user.id)}\n**{title}** in **{path['name']}**",
         color=discord.Color.teal(),
     )
-    embed.add_field(name="Tier", value=f"**{tier}/{len(CAREER_TIERS)}**", inline=True)
-    embed.add_field(name="Career XP", value=f"**{xp:,}**\n{career_progress_text(career_row)}", inline=True)
-    embed.add_field(name="Status", value="Ready to work" if ready else f"Next work {discord_relative_time(ready_at)}", inline=True)
     embed.add_field(
-        name="Record",
+        name="Now",
         value=(
-            f"Worked: **{int(career_row.get('works_done') or 0):,}**\n"
-            f"Perfect: **{int(career_row.get('perfect_works') or 0):,}**\n"
-            f"Streak: **{int(career_row.get('streak') or 0):,}**"
+            f"Level: **{tier}/{len(CAREER_TIERS)}**\n"
+            f"XP: **{xp:,}** ({career_progress_text(career_row)})\n"
+            f"Status: **{'Ready' if ready else discord_relative_time(ready_at)}**"
         ),
         inline=True,
     )
-    embed.add_field(name="Path", value=path["summary"], inline=False)
-    embed.add_field(name="Promotion", value=next_text, inline=False)
-    embed.set_footer(text="Use .work for a task, .jobs to switch tracks, or .career to reopen this panel.")
+    embed.add_field(
+        name="Stats",
+        value=(
+            f"Worked: **{int(career_row.get('works_done') or 0):,}**\n"
+            f"Streak: **{int(career_row.get('streak') or 0):,}**\n"
+            f"Perfect: **{int(career_row.get('perfect_works') or 0):,}**"
+        ),
+        inline=True,
+    )
+    embed.add_field(name="Next", value=next_text, inline=True)
+    embed.add_field(name="Cooldown", value=f"Every **{format_duration(career_work_cooldown_seconds(path_key))}** for this job.", inline=True)
+    embed.add_field(name="How it works", value="Press **Work**, pick the best answer, get paid. More XP means better job titles and better pay.", inline=False)
+    embed.set_footer(text=".work = earn now | .jobs = change job | .career = this page")
     return embed
 
 def build_jobs_embed(selected_path=None):
@@ -5515,17 +5660,16 @@ def build_jobs_embed(selected_path=None):
     for key, path in CAREER_PATHS.items():
         marker = Q_SUCCESS if key == selected_path else path["emoji"]
         lines.append(
-            f"{marker} **{path['name']}** (`{key}`)\n"
-            f"{path['summary']}\n"
-            f"Top role: **{path['titles'][-1]}**"
+            f"{marker} **{path['name']}** (`{key}`) - {path['summary']} `every {format_duration(career_work_cooldown_seconds(key))}`"
         )
     embed = discord.Embed(
-        title=f"{Q_BRIEFCASE} Careers",
-        description="Pick a career track, then use `.work` to complete mini tasks, earn pay, gain career XP, and promote into better jobs.",
+        title=f"{Q_BRIEFCASE} Jobs",
+        description="Pick one job. Then use `.work` to earn money and level it up.",
         color=discord.Color.teal(),
     )
-    add_split_embed_field(embed, "Career Tracks", lines, inline=False)
-    embed.set_footer(text="Switching tracks keeps your career XP and tier. It only changes the kind of tasks and titles.")
+    add_split_embed_field(embed, "Pick A Job", lines, inline=False)
+    embed.add_field(name="Simple version", value="`.jobs` -> choose job\n`.work` -> answer task\n`.career` -> check progress", inline=False)
+    embed.set_footer(text="You can switch jobs any time. Your level/XP stays. Minimum work cooldown is 2 hours.")
     return embed
 
 class CareerPathSelect(discord.ui.Select):
@@ -5540,7 +5684,7 @@ class CareerPathSelect(discord.ui.Select):
             )
             for key, path in CAREER_PATHS.items()
         ]
-        super().__init__(placeholder="Choose a career track", min_values=1, max_values=1, options=options)
+        super().__init__(placeholder="Choose a job", min_values=1, max_values=1, options=options)
 
     async def callback(self, interaction):
         if interaction.user.id != self.owner_id:
@@ -5563,7 +5707,7 @@ class CareerHomeView(discord.ui.View):
     async def interaction_check(self, interaction):
         if interaction.user.id == self.owner_id:
             return True
-        await interaction.response.send_message("This career panel is not yours.", ephemeral=True)
+        await interaction.response.send_message("This job panel is not yours.", ephemeral=True)
         return False
 
     @discord.ui.button(label="Work", emoji=Q_WORK, style=discord.ButtonStyle.success)
@@ -5571,7 +5715,7 @@ class CareerHomeView(discord.ui.View):
         await interaction.response.defer()
         await start_career_work(interaction, from_interaction=True)
 
-    @discord.ui.button(label="Jobs", emoji=Q_BRIEFCASE, style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="Change Job", emoji=Q_BRIEFCASE, style=discord.ButtonStyle.secondary)
     async def jobs_button(self, interaction, button):
         try:
             row = await asyncio.to_thread(get_career, interaction.user.id)
@@ -5642,20 +5786,16 @@ class CareerTaskButton(discord.ui.Button):
         color = discord.Color.green() if result["correct"] else discord.Color.orange()
         embed = discord.Embed(
             title=f"{Q_WORK} Work Complete",
-            description=f"{user_mention(interaction.user.id)} finished a **{career_path(view.task['path_key'])['name']}** task.",
+            description=f"{user_mention(interaction.user.id)} finished work.",
             color=color,
         )
-        embed.add_field(name="Task", value=view.task["prompt"], inline=False)
-        embed.add_field(name="Choice", value=f"**{self.choice}**", inline=True)
-        embed.add_field(name="Best Move", value=f"**{view.task['answer']}**", inline=True)
-        embed.add_field(name="Grade", value=f"**{grade}**", inline=True)
+        embed.add_field(name="Result", value=f"**{grade}**\nBest answer: **{view.task['answer']}**", inline=True)
         embed.add_field(name="Reward", value=f"{format_balance(result['pay'])}\n+**{result['xp_gain']:,}** career XP", inline=True)
         embed.add_field(name="Balance", value=format_balance(result["balance"]), inline=True)
-        embed.add_field(name="Streak", value=f"**{result['streak']}** work win(s)" if result["streak"] else "Reset", inline=True)
         if result["promotions"]:
             promo_lines = [f"{Q_PROMOTION} **Tier {p['tier']} - {p['title']}** bonus **{format_balance(p['bonus'])}**" for p in result["promotions"]]
             add_split_embed_field(embed, "Promotion", promo_lines, inline=False)
-        embed.set_footer(text="Use .career to see your full career profile.")
+        embed.set_footer(text=".work again when the cooldown ends. .career shows progress.")
         await interaction.edit_original_response(embed=embed, view=view, allowed_mentions=discord.AllowedMentions.none())
 
 class CareerTaskView(discord.ui.View):
@@ -5705,12 +5845,12 @@ async def start_career_work(target, from_interaction=False):
     task = generate_career_task(row.get("path_key"), row.get("tier"))
     path = career_path(task["path_key"])
     embed = discord.Embed(
-        title=f"{path['emoji']} Work Task",
+        title=f"{path['emoji']} Work",
         description=f"**{career_title(task['path_key'], task['tier'])}**\n{task['prompt']}",
         color=discord.Color.teal(),
     )
-    embed.add_field(name="Pay Grade", value=f"Base: **{format_balance(career_tier_data(task['tier'])['pay'])}**\nXP: **{career_tier_data(task['tier'])['xp']:,}**", inline=True)
-    embed.add_field(name="How", value="Pick the best move. Good answers pay more and build promotion XP.", inline=False)
+    embed.add_field(name="Reward", value=f"Up to **{format_balance(career_tier_data(task['tier'])['pay'])}**\n+**{career_tier_data(task['tier'])['xp']:,}** XP", inline=True)
+    embed.add_field(name="What to do", value="Pick the best answer.", inline=False)
     view = CareerTaskView(user.id, task)
     _active_career_tasks.add(int(user.id))
     if from_interaction:
@@ -5741,7 +5881,7 @@ async def jobs(ctx, path: str = None):
     if path:
         key = path.casefold()
         if key not in CAREER_PATHS:
-            return await ctx.reply(f"{Q_DENIED} Unknown career. Use `.jobs` and pick one from the menu.", mention_author=False)
+            return await ctx.reply(f"{Q_DENIED} Unknown job. Use `.jobs` and pick one from the menu.", mention_author=False)
         try:
             row = await asyncio.to_thread(set_career_path, ctx.author.id, key)
         except Exception:
@@ -7862,8 +8002,10 @@ async def gamble(ctx, amount: str, choice: str = None):
     flip_msg = await ctx.send(
         f"{Q_FLIP_SPIN} **COIN FLIP**\n"
         f"─────────────────\n"
+        f"{running_game_player_line(user_id)}"
         f"Pick: **{chosen_side}**\n"
-        f"`[ spinning ]`  Bet: **{format_balance(amount)}**"
+        f"`[ spinning ]`  Bet: **{format_balance(amount)}**",
+        allowed_mentions=discord.AllowedMentions.none(),
     )
     for face in ["HEADS", "TAILS", "HEADS", coin_result]:
         await asyncio.sleep(0.8)
@@ -7871,6 +8013,7 @@ async def gamble(ctx, amount: str, choice: str = None):
             content=(
                 f"{Q_FLIP_SPIN} **COIN FLIP**\n"
                 f"─────────────────\n"
+                f"{running_game_player_line(user_id)}"
                 f"Pick: **{chosen_side}**\n"
                 f"`[ {face} ]`  Bet: **{format_balance(amount)}**"
             )
@@ -8033,8 +8176,10 @@ async def roulette(ctx, amount: str, color: str = None):
     roulette_msg = await ctx.send(
         f"{Q_WHEEL_SPIN} **ROULETTE**\n"
         f"─────────────────\n"
+        f"{running_game_player_line(user_id)}"
         f"{Q_TARGET} Pick: **{emoji_map[color]} {color.upper()}**\n"
-        f"[ spinning... ]"
+        f"[ spinning... ]",
+        allowed_mentions=discord.AllowedMentions.none(),
     )
     side_colors = [entry for entry in colors if entry != result]
     spin_frames = [
@@ -8049,6 +8194,7 @@ async def roulette(ctx, amount: str, color: str = None):
             content=(
                 f"{Q_WHEEL_SPIN} **ROULETTE**\n"
                 f"─────────────────\n"
+                f"{running_game_player_line(user_id)}"
                 f"{Q_TARGET} Pick: **{emoji_map[color]} {color.upper()}**\n"
                 f"[ {frame} ]"
             )
@@ -8170,8 +8316,10 @@ async def slots(ctx, amount: str):
     slots_msg = await ctx.send(
         f"{Q_SLOTS} **SPINNING...**\n"
         f"─────────────────\n"
+        f"{running_game_player_line(user_id)}"
         f"| {Q_SLOTS} | {Q_SLOTS} | {Q_SLOTS} |\n"
-        f"─────────────────"
+        f"─────────────────",
+        allowed_mentions=discord.AllowedMentions.none(),
     )
 
     await asyncio.sleep(1.1)
@@ -8180,6 +8328,7 @@ async def slots(ctx, amount: str):
         content=(
             f"{Q_SLOTS} **SPINNING...**\n"
             f"─────────────────\n"
+            f"{running_game_player_line(user_id)}"
             f"| {r1} | {Q_SLOTS} | {Q_SLOTS} |\n"
             f"─────────────────\n"
             f"_First reel locked..._"
@@ -8191,6 +8340,7 @@ async def slots(ctx, amount: str):
         content=(
             f"{Q_SLOTS} **SPINNING...**\n"
             f"─────────────────\n"
+            f"{running_game_player_line(user_id)}"
             f"| {r1} | {r2} | {Q_SLOTS} |\n"
             f"─────────────────\n"
             f"_One reel left..._"
@@ -8470,6 +8620,7 @@ async def blackjack(ctx, amount: str):
                     content=(
                         f"{Q_CARDS} **BLACKJACK**\n"
                         f"─────────────────\n"
+                        f"{running_game_player_line(user_id)}"
                         f"**Your hand:** {format_hand(player_hand)}  →  **{player_val}**\n"
                         f"**Dealer:**     [{dealer_hand[0][0]}{dealer_hand[0][1]}]  [?]\n"
                         f"─────────────────"
@@ -8503,10 +8654,12 @@ async def blackjack(ctx, amount: str):
     msg = await ctx.send(
         f"{Q_CARDS} **BLACKJACK**\n"
         f"─────────────────\n"
+        f"{running_game_player_line(user_id)}"
         f"**Your hand:** {format_hand(player_hand)}  →  **{player_val}**\n"
         f"**Dealer:**     [{dealer_hand[0][0]}{dealer_hand[0][1]}]  [?]\n"
         f"─────────────────",
-        view=BJView()
+        view=BJView(),
+        allowed_mentions=discord.AllowedMentions.none(),
     )
 
 # =====================
@@ -9487,6 +9640,104 @@ async def setquesos(ctx, *, args: str = None):
         ("New Balance", format_balance(amount), True),
     ], color=discord.Color.gold())
 
+async def run_level_admin_command(ctx, mode, label, args, *, allow_zero=False):
+    if ctx.guild is None:
+        await ctx.send(f"{Q_DENIED} `.{label}` only works in servers.")
+        return
+    if not await ensure_db_ready(ctx):
+        return
+    if not is_superowner_id(ctx.author.id):
+        await send_owner_only(ctx)
+        return
+    bulk_confirmed, args = strip_bulk_confirm(args)
+    target, amount_text = parse_target_amount_args(args)
+    if not target:
+        await send_economy_command_input_ui(ctx, label, "Enter the target and amount. Users, roles, and @everyone work.")
+        return
+    amount = parse_whole_number(amount_text)
+    if amount is None:
+        await ctx.send(f"{Q_DENIED} Use `.{label} @user <amount>`, `.{label} @role <amount>`, or `.{label} @everyone <amount>`.")
+        return
+    if amount < 0 or (amount == 0 and not allow_zero):
+        await ctx.send(f"{Q_DENIED} Amount must be {'0 or higher' if allow_zero else 'positive'}.")
+        return
+    try:
+        targets = await resolve_admin_targets(ctx, target)
+    except commands.BadArgument:
+        await ctx.send(f"{Q_DENIED} Use `.{label} @user <amount>`, `.{label} @role <amount>`, or `.{label} @everyone <amount>`.")
+        return
+    if not targets["user_ids"]:
+        await ctx.send(f"{Q_DENIED} No users matched that target.")
+        return
+    blocked = [user_id for user_id in targets["user_ids"] if not can_economy_act_on(ctx.author.id, user_id, ctx.guild)]
+    if blocked:
+        await ctx.send(f"{Q_DENIED} You can't edit one or more of those users' levels.")
+        return
+    if not bulk_confirmed and await require_bulk_confirmation(ctx, label, len(targets["user_ids"])):
+        return
+
+    progress_msg = await send_bulk_progress(ctx, f"{label} levels/xp", len(targets["user_ids"]))
+    try:
+        def run_bulk_level_update():
+            before = get_level_states_for_users(targets["user_ids"])
+            count = bulk_adjust_levels(targets["user_ids"], mode, amount, ctx.author.id, targets["log_label"])
+            after = get_level_states_for_users(targets["user_ids"])
+            receipt = create_receipt(ctx.guild.id, ctx.channel.id, ctx.author.id, targets["user_ids"], label, amount, f"mode={mode}; count={count}; target={targets['log_label']}")
+            return before, count, after, receipt
+        before_levels, count, after_levels, receipt_id = await asyncio.to_thread(run_bulk_level_update)
+    except Exception:
+        await send_or_edit_bulk_error(ctx, progress_msg, "Database unavailable. Try again shortly.")
+        return
+    action_text = {
+        "addxp": f"Added **{amount:,} XP**",
+        "removexp": f"Removed **{amount:,} XP**",
+        "addlvl": f"Added **{amount:,} level(s)**",
+        "removelvl": f"Removed **{amount:,} level(s)**",
+        "setlvl": f"Set level to **{amount:,}**",
+    }.get(mode, f"Updated by **{amount:,}**")
+    await send_bulk_before_after_result(
+        ctx,
+        progress_msg,
+        f"{Q_SUCCESS} {action_text} for **{count:,}** target(s).",
+        targets["user_ids"],
+        before_levels,
+        after_levels,
+        level_state_label,
+        "Level",
+        receipt_id=receipt_id,
+    )
+    await send_economy_log(ctx, "𝚀𝚞𝚎wo Level Admin", [
+        ("Action", label, True),
+        ("Target", targets["log_label"], False),
+        ("Recipients", f"{count:,}", True),
+        ("Amount", f"{amount:,}", True),
+    ], color=discord.Color.blurple())
+
+@commands.command(name="addxp", aliases=["givexp"])
+async def addxp(ctx, *, args: str = None):
+    """𝚀𝚞𝚎 owner only. Adds XP and levels up users when thresholds are crossed."""
+    await run_level_admin_command(ctx, "addxp", "addxp", args)
+
+@commands.command(name="removexp", aliases=["remxp", "delxp"])
+async def removexp(ctx, *, args: str = None):
+    """𝚀𝚞𝚎 owner only. Removes XP and can lower levels based on total XP."""
+    await run_level_admin_command(ctx, "removexp", "removexp", args)
+
+@commands.command(name="addlvl", aliases=["addlevel"])
+async def addlvl(ctx, *, args: str = None):
+    """𝚀𝚞𝚎 owner only. Adds levels."""
+    await run_level_admin_command(ctx, "addlvl", "addlvl", args)
+
+@commands.command(name="removelvl", aliases=["removelvls", "remlevel", "removelevel", "dellvl", "dellevel"])
+async def removelvl(ctx, *, args: str = None):
+    """𝚀𝚞𝚎 owner only. Removes levels without going below level 1."""
+    await run_level_admin_command(ctx, "removelvl", "removelvl", args)
+
+@commands.command(name="setlvl", aliases=["setlevel"])
+async def setlvl(ctx, *, args: str = None):
+    """𝚀𝚞𝚎 owner only. Sets exact level and resets current XP to 0."""
+    await run_level_admin_command(ctx, "setlvl", "setlvl", args)
+
 # =====================
 # SCRATCH CARD
 # =====================
@@ -9570,6 +9821,7 @@ async def scratch(ctx, amount: str):
         return (
             f"{QOIN_CHEST} **SCRATCH CARD**\n"
             f"─────────────────\n"
+            f"{running_game_player_line(user_id)}"
             f"{cells_line}\n"
             f"─────────────────\n"
             f"{extra or f'Bet: **{format_balance(amount)}**\n_Revealing cells..._'}"
@@ -9687,6 +9939,7 @@ async def tower(ctx, amount: str):
         lines = [
             f"{Q_TOWER} **Q TOWERS**",
             "─────────────────",
+            running_game_player_line(user_id).rstrip(),
             f"Bet: **{format_balance(amount)}**",
             f"Floor: **{floor}/{len(TOWER_MULTIPLIERS)}**",
             f"Traps This Floor: **{TOWER_TRAPS_BY_FLOOR[floor] if floor < len(TOWER_TRAPS_BY_FLOOR) else TOWER_TRAPS_BY_FLOOR[-1]}/3**",
@@ -9799,7 +10052,7 @@ async def tower(ctx, amount: str):
                 pass
 
     view = TowerView()
-    view.message = await ctx.send(render(), view=view)
+    view.message = await ctx.send(render(), view=view, allowed_mentions=discord.AllowedMentions.none())
 
 
 # =====================
@@ -9970,6 +10223,7 @@ async def memory_game(ctx, amount: str):
             rows.append(" ".join(cells))
         text = (
             f"{Q_MEMORY} **Q MEMORY**\n"
+            f"{running_game_player_line(user_id)}"
             f"Bet: **{format_balance(amount)}** | Prize: **×{MEMORY_MULTIPLIER}** | Mistakes: **{mistakes}/{MEMORY_MAX_MISTAKES}**\n"
             + "\n".join(rows)
         )
@@ -10125,7 +10379,7 @@ async def memory_game(ctx, amount: str):
                 pass
 
     view = MemoryView()
-    view.message = await ctx.send(render(), view=view)
+    view.message = await ctx.send(render(), view=view, allowed_mentions=discord.AllowedMentions.none())
 
 
 # =====================
@@ -10188,6 +10442,7 @@ async def card_ladder(ctx, amount: str):
         lines = [
             f"{Q_CARD_LADDER} **CARD LADDER**",
             "─────────────────",
+            running_game_player_line(user_id).rstrip(),
             f"Bet: **{format_balance(amount)}**",
             f"Current Card: {format_ladder_card(current_card)}",
             f"Rung: **{rung}/{len(CARD_LADDER_MULTIPLIERS)}**",
@@ -10332,7 +10587,7 @@ async def card_ladder(ctx, amount: str):
                 pass
 
     view = LadderView()
-    view.message = await ctx.send(render(), view=view)
+    view.message = await ctx.send(render(), view=view, allowed_mentions=discord.AllowedMentions.none())
 
 
 # =====================
@@ -10390,6 +10645,7 @@ async def lockpick(ctx, amount: str):
         lines = [
             f"{Q_LOCKPICK} **LOCKPICK**",
             "─────────────────",
+            running_game_player_line(user_id).rstrip(),
             f"Bet: **{format_balance(amount)}** | Prize: **×{LOCKPICK_MULTIPLIER:g}**",
             f"Tests: **{tries}/{LOCKPICK_TRIES}**",
             *pin_lines,
@@ -10546,7 +10802,7 @@ async def lockpick(ctx, amount: str):
                 pass
 
     view = LockpickView()
-    view.message = await ctx.send(render(), view=view)
+    view.message = await ctx.send(render(), view=view, allowed_mentions=discord.AllowedMentions.none())
 
 
 # =====================
@@ -13557,7 +13813,10 @@ async def minesweeper(ctx, amount: str):
                     cell = GRID_EMOJIS['hidden']
                 row_str += cell
             lines.append(row_str)
-        header = f"{Q_MINE_SPARK} **MINE HUNT** `{rows}x{cols}` | {Q_MINE} {bomb_count} | Bet **{format_balance(amount)}**"
+        header = (
+            f"{Q_MINE_SPARK} **MINE HUNT** `{rows}x{cols}` | {Q_MINE} {bomb_count} | Bet **{format_balance(amount)}**\n"
+            f"{running_game_player_line(user_id).rstrip()}"
+        )
         if game_over:
             if game_won:
                 header += f"\n> {Q_SUCCESS} All gems found! ×{multiplier:.2f} multiplier!"
@@ -13706,7 +13965,7 @@ async def minesweeper(ctx, amount: str):
                     pass
 
     view = MSView()
-    msg = await ctx.send(render_board(), view=view)
+    msg = await ctx.send(render_board(), view=view, allowed_mentions=discord.AllowedMentions.none())
     view.message = msg
 
 
@@ -13801,7 +14060,10 @@ async def wheel(ctx, amount: str):
         right = WHEEL_SEGMENTS[(offset + 3) % n][2]
         bottom = WHEEL_SEGMENTS[(offset + 4) % n][2]
         wheel_art = f"      {top}\n   {left}  {center_emoji}  {right}\n      {bottom}"
-        header = f"{Q_WHEEL_SPIN if spinning else Q_WHEEL} **FORTUNE WHEEL**  |  Bet **{format_balance(amount)}**"
+        header = (
+            f"{Q_WHEEL_SPIN if spinning else Q_WHEEL} **FORTUNE WHEEL**  |  Bet **{format_balance(amount)}**\n"
+            f"{running_game_player_line(user_id).rstrip()}"
+        )
         if not spinning:
             if label == 'BLANK':
                 header += f"\n> {emoji} **{label}** — nothing lost, nothing won"
@@ -13812,7 +14074,7 @@ async def wheel(ctx, amount: str):
             header += "\n> _Spinning..._"
         return header + "\n" + wheel_art
 
-    msg = await ctx.send(render_wheel(spinning=True))
+    msg = await ctx.send(render_wheel(spinning=True), allowed_mentions=discord.AllowedMentions.none())
 
     final_offset = (segment_idx - 2) % len(WHEEL_SEGMENTS)
 
@@ -13939,16 +14201,16 @@ EXPLANATIONS = {
     "settings": "Admin-power command. Opens the server setup/control panel for prefix, logs, birthdays, activity reports, lottery status, disabled commands, and operations checks.",
     "setup": "Alias for `.settings`. Opens the server setup dashboard.",
     "controlpanel": "Alias for `.settings`. Opens the server setup/control panel.",
-    "jobs": "Shows career tracks and lets you switch jobs. Use `.work` to do mini tasks, earn pay, gain career XP, and promote.",
-    "career": "Shows your career profile: active track, job title, career XP, work cooldown, streak, and promotion progress.",
-    "job": "Alias for `.career`. Shows your career profile.",
-    "profession": "Alias for `.career`. Shows your career profile.",
-    "workprofile": "Alias for `.career`. Shows your career profile.",
-    "careers": "Alias for `.jobs`. Shows career tracks.",
-    "careerpaths": "Alias for `.jobs`. Shows career tracks.",
-    "joblist": "Alias for `.jobs`. Shows career tracks.",
-    "apply": "Alias for `.jobs <track>`. Switches your career track.",
-    "work": "Starts an interactive career task. Pick the best option to earn pay, career XP, streak progress, and promotions.",
+    "jobs": "Shows jobs. Pick one, then use `.work` to earn money and level up.",
+    "career": "Shows your current job, progress, cooldown, and buttons for Work / Change Job.",
+    "job": "Alias for `.career`. Shows your current job.",
+    "profession": "Alias for `.career`. Shows your current job.",
+    "workprofile": "Alias for `.career`. Shows your current job.",
+    "careers": "Alias for `.jobs`. Shows jobs.",
+    "careerpaths": "Alias for `.jobs`. Shows jobs.",
+    "joblist": "Alias for `.jobs`. Shows jobs.",
+    "apply": "Alias for `.jobs <job>`. Switches your job.",
+    "work": "Starts a quick job task. Pick the best answer, get paid, and gain XP. Each job has its own cooldown, with a 2-hour minimum.",
     "shift": "Alias for `.work`. Starts a career task.",
     "worktask": "Alias for `.work`. Starts a career task.",
     "clockin": "Alias for `.work`. Starts a career task.",
@@ -14175,6 +14437,20 @@ EXPLANATIONS = {
     "addpot": "Alias for `.lotterypot add`. Adds to the lottery prize pool.",
     "removepot": "Alias for `.lotterypot remove`. Removes from the lottery prize pool.",
     "setquesos": f"{QUE_OWNER_DISPLAY} command. Sets balances. Target and amount can be in either order.",
+    "addxp": f"{QUE_OWNER_DISPLAY} command. Adds XP to users. Target and XP can be in either order.",
+    "removexp": f"{QUE_OWNER_DISPLAY} command. Removes XP from users and can lower levels.",
+    "remxp": "Alias for `.removexp`. Removes XP from users.",
+    "delxp": "Alias for `.removexp`. Removes XP from users.",
+    "addlvl": f"{QUE_OWNER_DISPLAY} command. Adds levels to users.",
+    "addlevel": "Alias for `.addlvl`. Adds levels to users.",
+    "removelvl": f"{QUE_OWNER_DISPLAY} command. Removes levels from users without going below level 1.",
+    "removelvls": "Alias for `.removelvl`. Removes levels from users.",
+    "remlevel": "Alias for `.removelvl`. Removes levels from users.",
+    "removelevel": "Alias for `.removelvl`. Removes levels from users.",
+    "dellvl": "Alias for `.removelvl`. Removes levels from users.",
+    "dellevel": "Alias for `.removelvl`. Removes levels from users.",
+    "setlvl": f"{QUE_OWNER_DISPLAY} command. Sets exact user levels and resets current XP to 0.",
+    "setlevel": "Alias for `.setlvl`. Sets exact user levels.",
     "disable": f"Admin-power command. Disables one bot command. {QUE_OWNER_DISPLAY} can still bypass disabled commands.",
     "enable": "Admin-power command. Enables one disabled command.",
     "disableall": "Admin-power command. Disables all commands except enableall.",
@@ -14422,6 +14698,11 @@ DETAILED_EXPLANATIONS = {
     "settick": f"{QUE_OWNER_DISPLAY}-only lottery admin command. Sets current lottery entries to an exact number. `.settick @user <tickets>` and `.settick <tickets> @user` both work, including roles and @everyone.",
     "lotterypot": f"{QUE_OWNER_DISPLAY}-only lottery admin command. Edits the current lottery prize pool directly without changing tickets. Use `.lotterypot add 1m`, `.lotterypot remove 500k`, or `.lotterypot set 10m`. Aliases also work: `.addpot 1m`, `.removepot 500k`, `.setpot 10m`. The lottery panel and status messages refresh after the change.",
     "setquesos": f"{QUE_OWNER_DISPLAY}-only 𝚀𝚞𝚎wo admin command. Sets balances directly. `.setquesos @user <amount>` and `.setquesos <amount> @user` both work, including roles and @everyone.",
+    "addxp": f"{QUE_OWNER_DISPLAY}-only level admin command. Adds XP using total-XP math, so crossing thresholds increases levels. `.addxp @user 500`, `.addxp @role 2k`, and `.addxp @user1 @user2 500` work.",
+    "removexp": f"{QUE_OWNER_DISPLAY}-only level admin command. Removes XP using total-XP math, so removing enough XP can lower levels. `.removexp @user 500`, `.removexp @role 2k`, and `.removexp @user1 @user2 500` work.",
+    "addlvl": f"{QUE_OWNER_DISPLAY}-only level admin command. Adds whole levels while keeping current XP safely under the new level threshold. `.addlvl @user 2` and `.addlvl @role 1` work.",
+    "removelvl": f"{QUE_OWNER_DISPLAY}-only level admin command. Removes whole levels without going below level 1. `.removelvl @user 2` and `.removelvl @role 1` work.",
+    "setlvl": f"{QUE_OWNER_DISPLAY}-only level admin command. Sets the exact level and resets current XP to 0 for a clean profile state. `.setlvl @user 10`, `.setlvl @role 5`, and `.setlvl @user1 @user2 12` work.",
     "prefix": f"Changes the command prefix for this server. Use `.prefix !` or `.preifx !`. If {QUE_OWNER_DISPLAY} is in the server, only {QUE_OWNER_DISPLAY} can change it. If not, the server owner or admins can change it.",
     "preifx": "Typo alias for `.prefix`. Changes the command prefix for this server.",
     "setbdaychannel": "Sets the birthday announcement channel for this server. Use `.setbdaychannel #birthdays` or `.setbdaychannel <channel id>`. Users keep one birthday date globally, and the bot announces it in every server where they are still a member and a birthday channel is configured.",
@@ -14450,11 +14731,11 @@ DETAILED_EXPLANATIONS = {
     "aidoctor": "Admin-power bot doctor panel. Shows task health, 𝚀𝚞𝚎wo DB status, slash sync status, active sessions, disabled commands, and slow command stats. Useful when replying to errors and asking the AI to diagnose them.",
     "translate": "Translates provided text or the message you reply to. Friendly forms work: `.translate hello to Italian`, `.translate to Spanish hello`, `.translate it hello`, or reply to a message with `.translate to Spanish`. If no target is given, it translates to English.",
     "settings": "Admin-power server setup/control panel. It summarizes prefix, logs, reaction logs, birthday channel, activity reports, lottery, disabled command count, and operations commands. Buttons let admins refresh the dashboard, change the prefix, set logs, set birthdays/activity to the current channel, open a setup guide, and find recovery/performance tools.",
-    "career": "Your career profile stores one active track, tier, career XP, work streak, work count, perfect work count, and cooldown. Career work pays real 𝚀𝚞𝚎wo balance, updates total earned, and can promote you into higher titles with better base pay. Use `.work` for tasks and `.jobs` to switch tracks.",
-    "job": "Alias for `.career`. Shows your career profile.",
-    "jobs": "Shows all career tracks: Service, Tech, Trade, Creative, and Investigator. Switching tracks keeps your career XP and tier, but changes titles and work task flavor. Use `.jobs tech` or the dropdown to switch.",
-    "careers": "Alias for `.jobs`. Shows career tracks.",
-    "work": "Starts a timed interactive career task. Pick the best option from the buttons. Correct work pays the full tier amount, perfect work pays extra, messy work still gives a small payout and XP, and promotions add bonus pay. Work has a separate cooldown, so it is not just another daily claim.",
+    "career": "Shows your current job in a simple panel: job title, level, XP, next promotion, cooldown, and buttons. The loop is simple: `.jobs` picks a job, `.work` earns money, `.career` checks progress.",
+    "job": "Alias for `.career`. Shows your current job.",
+    "jobs": "Shows all jobs: Service, Tech, Trade, Creative, and Investigator. Pick one from the dropdown or use `.jobs tech`. Switching jobs keeps your level and XP.",
+    "careers": "Alias for `.jobs`. Shows jobs.",
+    "work": "Starts a quick interactive job task. Pick the best answer from the buttons. Better answers pay more and add XP. More XP promotes you into better job titles with better pay. Cooldowns depend on the job track and never go below 2 hours.",
     "backgroundjobs": "Shows background jobs started by Pro𝚀𝚞𝚎 during this process, including manual recovery and future maintenance jobs. Use `.backgroundjobs clear` to remove finished jobs from the panel.",
     "recover": "Starts a background recovery job. It reruns timer/poll recovery, restores saved Tic Tac Toe, Connect 4, and chess sessions, and refreshes lottery persistent views. Use this after reconnect weirdness or if a panel/game did not restore cleanly.",
     "errors": "Shows recent command failures from this restart plus saved command-error receipts from the database. Use `.receipt <id>` for a full saved receipt when one exists.",
@@ -14488,11 +14769,13 @@ ECONHELP_ADMIN_COMMANDS = [
 ]
 ECONHELP_SUPEROWNER_COMMANDS = [
     "add", "remove", "addtick", "removetick", "settick", "lotterypot", "setquesos",
+    "addxp", "removexp", "addlvl", "removelvl", "setlvl",
     "editlottery", "stoplottery", "qstats", "economyhealth", "balancedashboard", "endseason",
 ]
 ECONHELP_SUPEROWNER_HIDDEN = {
     *ECONHELP_SUPEROWNER_COMMANDS,
     "remtick", "deltick", "lotteryprize", "prizepool", "setpot", "addpot", "removepot",
+    "givexp", "remxp", "delxp", "addlevel", "removelvls", "remlevel", "removelevel", "dellvl", "dellevel", "setlevel",
     "economystats", "qstatus", "ecohealth", "moneyhealth", "supply", "ecodashboard", "moneydashboard", "sinkdashboard", "rewardseason",
     "send", "reply", "fsleep", "wake", "clearwatchlist",
     "aisettings", "aiconfig", "aicontrols", "aiperms", "aipermissions", "aicapabilities", "aiauthority",
@@ -14744,7 +15027,7 @@ async def setup(bot_ref, log_callback=None):
     economy_commands = [
         bal, bank, tutorial, recommendgame, career, jobs, work, robsettings, quewochannel, levelupchannel, rob, profile, inventory, settheme, quests, dailychallenge, streaks, guide, onboard, shop, claimreminders, cooldowns, transactions, limits, lottery, editlottery, stoplottery, lotterystats, buytick,
         daily, weekly, monthly, gamble, roulette, slots, blackjack,
-        scratch, tower, vault, memory_game, card_ladder, lockpick, heist, dice_duel, cases, plinko, lucky_number, jackpot_spin, dungeon, minesweeper, wheel, give, lb, gamestats, achievements, setbadge, gamebalance, gameaudit, balanceaudit, balancedashboard, event, gamehistory, season, seasonpass, endseason, qstats, economyhealth, economyaudit, abuseaudit, riskprofile, add, remove, addtick, removetick, settick, lotterypot, setquesos, econhelp, explain
+        scratch, tower, vault, memory_game, card_ladder, lockpick, heist, dice_duel, cases, plinko, lucky_number, jackpot_spin, dungeon, minesweeper, wheel, give, lb, gamestats, achievements, setbadge, gamebalance, gameaudit, balanceaudit, balancedashboard, event, gamehistory, season, seasonpass, endseason, qstats, economyhealth, economyaudit, abuseaudit, riskprofile, add, remove, addtick, removetick, settick, lotterypot, setquesos, addxp, removexp, addlvl, removelvl, setlvl, econhelp, explain
     ]
     for command in economy_commands:
         if bot.get_command(command.name):

@@ -8401,6 +8401,12 @@ GAME_MENU = [
     ("Skill", "Card Ladder", "cardladder", "`.cardladder <amount>`", "Higher/lower card climb with cash-out."),
     ("Skill", "Lockpick", "lockpick", "`.lockpick <amount>`", "Set pins using high/low hints before tries run out."),
     ("Skill", "Minesweeper", "ms", "`.ms <amount>`", "Reveal safe tiles and avoid bombs."),
+    ("Luck", "Coin Flip", "cf", "`.cf <amount> h/t`", "Pick heads or tails."),
+    ("Luck", "Roulette", "roulette", "`.roulette <amount>`", "Pick a color and spin."),
+    ("Luck", "Slots", "slots", "`.slots <amount>`", "Spin 3 matching reels."),
+    ("Luck", "Blackjack", "blackjack", "`.blackjack <amount>`", "Hit or stand against the dealer."),
+    ("Luck", "Scratch", "scratch", "`.scratch <amount>`", "Reveal 5 matching symbols."),
+    ("Luck", "Wheel", "wheel", "`.wheel <amount>`", "Spin for multiplier segments."),
     ("Luck", "Heist", "heist", "`.heist <amount>`", "Pick a route. Riskier routes pay more."),
     ("Luck", "Dice Duel", "diceduel", "`.diceduel <amount>`", "Roll against the dealer."),
     ("Luck", "Q Cases", "cases", "`.cases <amount>`", "Open weighted prize cases."),
@@ -8527,7 +8533,7 @@ class GamesView(View):
         details = economy_detailed_explanations.get(command_key) or economy_explanations.get(command_key) or desc
         embed = discord.Embed(
             title=f"{economy_q_book} How To Play: {name}",
-            description=details,
+            description=embed_value(details, 1800),
             color=discord.Color.green(),
         )
         embed.add_field(name="Start", value=usage.replace("`.", f"`{self.prefix}"), inline=False)
@@ -8575,11 +8581,17 @@ async def howtoplay_command(ctx, *, game: str = None):
     if not game:
         return await send_command_input_ui(ctx, "howtoplay", note=f"Enter a game name, or use the How To Play button in `{prefix}games`.")
     key = game.strip().casefold().replace(" ", "")
+    lookup_keys = {key}
+    command = bot.get_command(key)
+    if command:
+        lookup_keys.add(command.name.casefold())
+        lookup_keys.add(command.qualified_name.casefold())
+        lookup_keys.update(alias.casefold() for alias in getattr(command, "aliases", []) or [])
     row = next(
         (
             item for item in GAME_MENU
-            if item[1].casefold().replace(" ", "") == key
-            or (item[2] and item[2].casefold() == key)
+            if item[1].casefold().replace(" ", "") in lookup_keys
+            or (item[2] and item[2].casefold() in lookup_keys)
         ),
         None,
     )
@@ -8588,7 +8600,7 @@ async def howtoplay_command(ctx, *, game: str = None):
     _, name, game_key, usage, desc = row
     command_key = game_key or name.casefold().replace(" ", "")
     details = economy_detailed_explanations.get(command_key) or economy_explanations.get(command_key) or desc
-    embed = discord.Embed(title=f"{economy_q_book} How To Play: {name}", description=details, color=discord.Color.green())
+    embed = discord.Embed(title=f"{economy_q_book} How To Play: {name}", description=embed_value(details, 1800), color=discord.Color.green())
     embed.add_field(name="Start", value=usage.replace("`.", f"`{prefix}"), inline=False)
     if game_key:
         embed.add_field(name="Risk", value=f"**{economy_risk_label(game_key)}**", inline=True)
