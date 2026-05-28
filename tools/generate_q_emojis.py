@@ -688,6 +688,44 @@ def qseason_pass():
     c.sparkle(99, 28, 6)
     return c
 
+def qbriefcase():
+    c = Canvas()
+    c.rect(24, 48, 80, 52, BLUE_MID, outline=BLUE_DARK, width=5)
+    c.rect(45, 35, 38, 18, NAVY, outline=BLUE_DARK, width=4)
+    c.rect(53, 41, 22, 9, SILVER, outline=BLUE_MID, width=2)
+    c.rect(27, 61, 74, 13, BLUE, outline=CYAN, width=2)
+    c.circle(64, 74, 13, GOLD, outline=BLUE_DARK, width=3)
+    c.text_q(64, 75, 14, BLUE_MID)
+    c.sparkle(98, 34, 6)
+    return c
+
+def qcareer():
+    c = qbriefcase()
+    c.poly([(42, 31), (64, 17), (86, 31), (77, 31), (77, 43), (51, 43), (51, 31)], GOLD, outline=BLUE_DARK, width=3)
+    c.line(64, 19, 64, 42, ICE, 3)
+    c.sparkle(34, 34, 6)
+    return c
+
+def qwork():
+    c = Canvas()
+    c.circle(64, 64, 43, NAVY, outline=BLUE_DARK, width=5)
+    c.rect(38, 61, 52, 30, BLUE_MID, outline=CYAN, width=3)
+    c.rect(45, 44, 38, 17, SILVER, outline=BLUE_DARK, width=3)
+    c.line(37, 91, 91, 37, GOLD, 7)
+    c.line(38, 90, 90, 38, ICE, 2)
+    c.text_q(64, 75, 22, BLUE)
+    c.sparkle(96, 30, 7)
+    return c
+
+def qpromotion():
+    c = Canvas()
+    coin(c, 64, 72, 31)
+    c.poly([(64, 16), (90, 48), (76, 48), (76, 71), (52, 71), (52, 48), (38, 48)], GOLD, outline=BLUE_DARK, width=4)
+    c.line(64, 23, 64, 64, ICE, 4)
+    c.sparkle(98, 34, 7)
+    c.sparkle(30, 53, 5)
+    return c
+
 
 def arrow_arc(c, cx, cy, r, start, end, color=CYAN, width=5):
     steps = 18
@@ -2023,6 +2061,10 @@ STATIC = {
     "QTutorial": qtutorial,
     "QRecommend": qrecommend,
     "QSeasonPass": qseason_pass,
+    "QBriefcase": qbriefcase,
+    "QCareer": qcareer,
+    "QWork": qwork,
+    "QPromotion": qpromotion,
     "QRefresh": qrefresh,
     "QQueue": qqueue,
     "QRecovery": qrecovery,
@@ -2044,6 +2086,7 @@ STATIC_CATEGORIES = {
         "QStreakPolish", "QGoldBadge", "QHighRoller", "QVelvetFrame", "QTicketCharm",
         "QCooldownClock", "QRoyalCrown", "QStreakFire", "QFortuneVial",
         "QAudit", "QLimits", "QPerf", "QFilter", "QBank", "QStreakFreeze", "QSeasonPass",
+        "QBriefcase", "QCareer", "QWork", "QPromotion",
     },
     "moderation": {
         "QHammer", "QTrash", "QEdit", "QLock", "QBroom", "QReaction", "QUserEdit",

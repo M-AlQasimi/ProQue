@@ -35,7 +35,7 @@ STREAK_STEP_BONUS = 0.0025
 BLACKJACK_DEALER_STAND_ON_16_CHANCE = 0.25
 COINFLIP_WIN_CHANCE = 0.51
 ROULETTE_WIN_CHANCE = 0.34
-SLOTS_WIN_CHANCE = 0.27
+SLOTS_WIN_CHANCE = 0.29
 SUPER_OWNER_ID = 885548126365171824
 QUE_OWNER_DISPLAY = f"𝚀𝚞𝚎 (<@{SUPER_OWNER_ID}>)"
 SUPEROWNER_LUCK_BONUS = 0.05
@@ -189,6 +189,10 @@ Q_ROB = "<:QRob:1507458102977364020>"
 Q_TUTORIAL = "<:QTutorial:1507458236968865993>"
 Q_RECOMMEND = "<:QRecommend:1507458216437747833>"
 Q_SEASON_PASS = "<:QSeasonPass:1507457946756321482>"
+Q_BRIEFCASE = "<:QBriefcase:1509556589340790927>"
+Q_CAREER = "<:QCareer:1509556591630749736>"
+Q_PROMOTION = "<:QPromotion:1509556626045009950>"
+Q_WORK = "<:QWork:1509556652456673280>"
 INTERNAL_SUPEROWNER_TRANSACTION_KINDS = {"transfer_tax", "lottery_house_cut", "shop_payment"}
 SLOT_SYMBOL_PAYOUTS = [
     (Q_SLOT_STAR, 2),
@@ -368,6 +372,79 @@ SHOP_ITEMS = {
     },
 }
 
+CAREER_WORK_COOLDOWN_SECONDS = 30 * 60
+CAREER_TIERS = [
+    {"threshold": 0, "pay": 45_000, "xp": 24},
+    {"threshold": 120, "pay": 75_000, "xp": 32},
+    {"threshold": 320, "pay": 120_000, "xp": 44},
+    {"threshold": 650, "pay": 180_000, "xp": 58},
+    {"threshold": 1_100, "pay": 275_000, "xp": 76},
+    {"threshold": 1_700, "pay": 400_000, "xp": 96},
+]
+CAREER_PATHS = {
+    "service": {
+        "name": "Service Track",
+        "emoji": Q_BRIEFCASE,
+        "summary": "Steady customer chaos, timing, and quick choices.",
+        "titles": ["Runner", "Crew Lead", "Shift Boss", "Floor Manager", "Operations Lead", "Venue Director"],
+        "tasks": [
+            ("Lunch rush hits. What saves the line?", ["Serve VIP first", "Batch similar orders", "Close counter"], "Batch similar orders"),
+            ("A customer gets the wrong order.", ["Argue receipt", "Replace fast", "Ignore it"], "Replace fast"),
+            ("Stock is low before peak hour.", ["Recount slowly", "Restock essentials", "Wait it out"], "Restock essentials"),
+            ("Two queues are moving unevenly.", ["Merge and sort", "Open a side queue", "Take a break"], "Open a side queue"),
+        ],
+    },
+    "tech": {
+        "name": "Tech Track",
+        "emoji": Q_DATABASE,
+        "summary": "Debugging, systems, clean fixes, and bigger pay later.",
+        "titles": ["Bug Hunter", "Junior Dev", "Systems Dev", "Stack Lead", "Architect", "Chief Engineer"],
+        "tasks": [
+            ("The dashboard is blank after deploy.", ["Restart randomly", "Check logs first", "Blame users"], "Check logs first"),
+            ("A query is freezing the app.", ["Run it everywhere", "Add an index", "Delete data"], "Add an index"),
+            ("Two fixes touch the same file.", ["Merge carefully", "Overwrite both", "Ship blind"], "Merge carefully"),
+            ("An API keeps timing out.", ["Add retries", "Spam requests", "Ignore errors"], "Add retries"),
+        ],
+    },
+    "trade": {
+        "name": "Trade Track",
+        "emoji": Q_BALANCE,
+        "summary": "Market reads, supply choices, and bigger risk-reward decisions.",
+        "titles": ["Street Seller", "Market Scout", "Broker", "Trade Captain", "Portfolio Lead", "Tycoon"],
+        "tasks": [
+            ("Demand spikes but stock is thin.", ["Raise slowly", "Dump stock", "Close shop"], "Raise slowly"),
+            ("A supplier offers cheap goods.", ["Inspect quality", "Buy all instantly", "Ignore forever"], "Inspect quality"),
+            ("Prices are falling fast.", ["Hold everything", "Cut losses", "Double down"], "Cut losses"),
+            ("A rare buyer appears.", ["Bundle extras", "Hide prices", "Walk away"], "Bundle extras"),
+        ],
+    },
+    "creative": {
+        "name": "Creative Track",
+        "emoji": Q_IMAGE,
+        "summary": "Design briefs, taste, polish, and reputation.",
+        "titles": ["Sketch Rookie", "Designer", "Brand Maker", "Creative Lead", "Studio Head", "Icon Director"],
+        "tasks": [
+            ("A banner looks too crowded.", ["Add more text", "Simplify layout", "Use ten fonts"], "Simplify layout"),
+            ("The client wants premium energy.", ["Flat gray only", "Metallic highlights", "Tiny unreadable art"], "Metallic highlights"),
+            ("The icon fails at small size.", ["Increase detail", "Boost silhouette", "Blur it"], "Boost silhouette"),
+            ("A theme feels inconsistent.", ["Match palette", "Change everything", "Ignore contrast"], "Match palette"),
+        ],
+    },
+    "investigator": {
+        "name": "Investigator Track",
+        "emoji": Q_WATCH,
+        "summary": "Read patterns, catch clues, and solve cleaner cases.",
+        "titles": ["Clue Runner", "Case Aide", "Investigator", "Field Analyst", "Case Commander", "Master Sleuth"],
+        "tasks": [
+            ("Three stories conflict.", ["Compare timestamps", "Pick loudest", "Skip notes"], "Compare timestamps"),
+            ("A clue appears twice.", ["Mark pattern", "Delete it", "Call it luck"], "Mark pattern"),
+            ("A suspect changes details.", ["Ask same point", "Change topic", "End case"], "Ask same point"),
+            ("Evidence is messy.", ["Sort by source", "Guess quickly", "Hide weak parts"], "Sort by source"),
+        ],
+    },
+}
+CAREER_DEFAULT_PATH = "service"
+
 economy_log_callback = None
 lottery_task = None
 db_keepalive_task = None
@@ -378,12 +455,14 @@ lottery_status_messages = {}
 # --- Cooldown tracking ---
 _cooldowns = {}  # {(user_id, command): timestamp}
 _command_cooldowns = {}  # {user_id: timestamp}
+_double_or_nothing_bet_caps = {}  # {user_id: max replay stake}
 _cooldown_multiplier_cache = {}  # {user_id: (expires_at, multiplier)}
+_active_career_tasks = set()
 QUEWO_COOLDOWN_EXEMPT = {
     "bal", "profile", "quests", "shop", "cooldowns", "transactions",
     "lottery", "lotterystats", "daily", "weekly", "monthly",
     "econhelp", "economyhelp", "quewohelp", "ehelp", "explain",
-    "quewochannel", "levelupchannel",
+    "quewochannel", "levelupchannel", "career", "job", "jobs", "careers",
 }
 
 def get_db_connection():
@@ -562,6 +641,20 @@ def init_db():
                 )
             """)
             cur.execute("""
+                CREATE TABLE IF NOT EXISTS economy_careers (
+                    user_id BIGINT PRIMARY KEY,
+                    path_key TEXT NOT NULL DEFAULT 'service',
+                    tier INTEGER NOT NULL DEFAULT 1,
+                    career_xp BIGINT NOT NULL DEFAULT 0,
+                    works_done BIGINT NOT NULL DEFAULT 0,
+                    perfect_works BIGINT NOT NULL DEFAULT 0,
+                    failed_works BIGINT NOT NULL DEFAULT 0,
+                    streak INTEGER NOT NULL DEFAULT 0,
+                    last_work TIMESTAMP,
+                    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+                )
+            """)
+            cur.execute("""
                 CREATE TABLE IF NOT EXISTS bot_receipts (
                     receipt_id TEXT PRIMARY KEY,
                     guild_id BIGINT NOT NULL,
@@ -646,6 +739,15 @@ def init_db():
             cur.execute("ALTER TABLE economy_guild_settings ADD COLUMN IF NOT EXISTS levelup_channel_id BIGINT")
             cur.execute("ALTER TABLE economy_events ADD COLUMN IF NOT EXISTS channel_id BIGINT")
             cur.execute("ALTER TABLE economy_events ADD COLUMN IF NOT EXISTS pot BIGINT NOT NULL DEFAULT 0")
+            cur.execute("ALTER TABLE economy_careers ADD COLUMN IF NOT EXISTS path_key TEXT NOT NULL DEFAULT 'service'")
+            cur.execute("ALTER TABLE economy_careers ADD COLUMN IF NOT EXISTS tier INTEGER NOT NULL DEFAULT 1")
+            cur.execute("ALTER TABLE economy_careers ADD COLUMN IF NOT EXISTS career_xp BIGINT NOT NULL DEFAULT 0")
+            cur.execute("ALTER TABLE economy_careers ADD COLUMN IF NOT EXISTS works_done BIGINT NOT NULL DEFAULT 0")
+            cur.execute("ALTER TABLE economy_careers ADD COLUMN IF NOT EXISTS perfect_works BIGINT NOT NULL DEFAULT 0")
+            cur.execute("ALTER TABLE economy_careers ADD COLUMN IF NOT EXISTS failed_works BIGINT NOT NULL DEFAULT 0")
+            cur.execute("ALTER TABLE economy_careers ADD COLUMN IF NOT EXISTS streak INTEGER NOT NULL DEFAULT 0")
+            cur.execute("ALTER TABLE economy_careers ADD COLUMN IF NOT EXISTS last_work TIMESTAMP")
+            cur.execute("ALTER TABLE economy_careers ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NOT NULL DEFAULT NOW()")
             cur.execute("ALTER TABLE lottery_config ADD COLUMN IF NOT EXISTS thread_id BIGINT")
             cur.execute("ALTER TABLE lottery_config ADD COLUMN IF NOT EXISTS message_id BIGINT")
             cur.execute("ALTER TABLE lottery_config ADD COLUMN IF NOT EXISTS role_id BIGINT")
@@ -949,6 +1051,196 @@ def log_transaction(user_id, kind, amount, note=""):
         conn.close()
     except Exception as e:
         print(f"Transaction log failed: {type(e).__name__} - {e}")
+
+def career_path(path_key):
+    return CAREER_PATHS.get(str(path_key or "").casefold()) or CAREER_PATHS[CAREER_DEFAULT_PATH]
+
+def career_title(path_key, tier):
+    path = career_path(path_key)
+    index = max(0, min(int(tier or 1) - 1, len(path["titles"]) - 1))
+    return path["titles"][index]
+
+def career_next_threshold(tier):
+    index = int(tier or 1)
+    if index >= len(CAREER_TIERS):
+        return None
+    return int(CAREER_TIERS[index]["threshold"])
+
+def career_tier_data(tier):
+    index = max(0, min(int(tier or 1) - 1, len(CAREER_TIERS) - 1))
+    return CAREER_TIERS[index]
+
+def career_cooldown_ready_at(last_work):
+    if not last_work:
+        return None
+    if getattr(last_work, "tzinfo", None):
+        base = last_work.astimezone(timezone.utc).replace(tzinfo=None)
+    else:
+        base = last_work
+    return base + timedelta(seconds=CAREER_WORK_COOLDOWN_SECONDS)
+
+def career_work_ready(row, now=None):
+    now = now or datetime.utcnow()
+    ready_at = career_cooldown_ready_at((row or {}).get("last_work"))
+    return ready_at is None or now >= ready_at, ready_at
+
+def get_career(user_id):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            INSERT INTO economy_careers (user_id)
+            VALUES (%s)
+            ON CONFLICT (user_id) DO NOTHING
+            """,
+            (int(user_id),)
+        )
+        cur.execute("SELECT * FROM economy_careers WHERE user_id = %s", (int(user_id),))
+        row = cur.fetchone()
+        conn.commit()
+        return row
+    finally:
+        cur.close()
+        conn.close()
+
+def set_career_path(user_id, path_key):
+    key = str(path_key or "").casefold()
+    if key not in CAREER_PATHS:
+        raise ValueError("unknown_career_path")
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            INSERT INTO economy_careers (user_id, path_key)
+            VALUES (%s, %s)
+            ON CONFLICT (user_id) DO UPDATE SET
+                path_key = EXCLUDED.path_key,
+                updated_at = NOW()
+            RETURNING *
+            """,
+            (int(user_id), key)
+        )
+        row = cur.fetchone()
+        conn.commit()
+        return row
+    finally:
+        cur.close()
+        conn.close()
+
+def career_progress_text(row):
+    tier = int(row.get("tier") or 1)
+    xp = int(row.get("career_xp") or 0)
+    next_threshold = career_next_threshold(tier)
+    if next_threshold is None:
+        return "Max tier"
+    current_threshold = int(CAREER_TIERS[tier - 1]["threshold"])
+    progress = max(0, xp - current_threshold)
+    needed = max(1, next_threshold - current_threshold)
+    return f"{min(progress, needed):,}/{needed:,}"
+
+def generate_career_task(path_key, tier):
+    path = career_path(path_key)
+    prompt, options, answer = random.choice(path["tasks"])
+    return {
+        "path_key": str(path_key or CAREER_DEFAULT_PATH).casefold(),
+        "tier": int(tier or 1),
+        "prompt": prompt,
+        "options": list(options),
+        "answer": answer,
+    }
+
+def complete_career_work(user_id, path_key, tier, correct, perfect=False):
+    user_id = int(user_id)
+    tier = int(tier or 1)
+    path_key = str(path_key or CAREER_DEFAULT_PATH).casefold()
+    tier_info = career_tier_data(tier)
+    if correct:
+        streak_bonus = min(0.20, max(0, int(tier) - 1) * 0.015)
+        grade_mult = 1.20 if perfect else 1.0
+        xp_gain = int(tier_info["xp"] * (1.25 if perfect else 1.0))
+        pay = int(tier_info["pay"] * grade_mult * (1 + streak_bonus))
+        failed_delta = 0
+    else:
+        xp_gain = max(6, int(tier_info["xp"] * 0.25))
+        pay = max(5_000, int(tier_info["pay"] * 0.12))
+        failed_delta = 1
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("INSERT INTO economy (user_id, balance) VALUES (%s, 0) ON CONFLICT (user_id) DO NOTHING", (user_id,))
+        cur.execute("INSERT INTO economy_careers (user_id, path_key) VALUES (%s, %s) ON CONFLICT (user_id) DO NOTHING", (user_id, path_key))
+        cur.execute("SELECT balance, total_earned FROM economy WHERE user_id = %s FOR UPDATE", (user_id,))
+        econ = cur.fetchone()
+        cur.execute("SELECT * FROM economy_careers WHERE user_id = %s FOR UPDATE", (user_id,))
+        career = cur.fetchone()
+        old_tier = int(career.get("tier") or 1)
+        old_xp = int(career.get("career_xp") or 0)
+        old_streak = int(career.get("streak") or 0)
+        if str(career.get("path_key") or CAREER_DEFAULT_PATH).casefold() != path_key:
+            path_key = str(career.get("path_key") or CAREER_DEFAULT_PATH).casefold()
+
+        new_xp = old_xp + xp_gain
+        new_tier = old_tier
+        promotions = []
+        while new_tier < len(CAREER_TIERS):
+            next_threshold = career_next_threshold(new_tier)
+            if next_threshold is None or new_xp < next_threshold:
+                break
+            new_tier += 1
+            promotion_bonus = 100_000 + new_tier * 75_000
+            pay += promotion_bonus
+            promotions.append({"tier": new_tier, "bonus": promotion_bonus, "title": career_title(path_key, new_tier)})
+
+        new_streak = old_streak + 1 if correct else 0
+        new_balance = int(econ["balance"] or 0) + pay
+        new_total_earned = int(econ["total_earned"] or 0) + pay
+        cur.execute(
+            "UPDATE economy SET balance = %s, total_earned = %s WHERE user_id = %s RETURNING balance, total_earned",
+            (new_balance, new_total_earned, user_id)
+        )
+        cur.execute(
+            """
+            UPDATE economy_careers
+            SET path_key = %s,
+                tier = %s,
+                career_xp = %s,
+                works_done = works_done + 1,
+                perfect_works = perfect_works + %s,
+                failed_works = failed_works + %s,
+                streak = %s,
+                last_work = NOW(),
+                updated_at = NOW()
+            WHERE user_id = %s
+            RETURNING *
+            """,
+            (path_key, new_tier, new_xp, 1 if perfect else 0, failed_delta, new_streak, user_id)
+        )
+        updated_career = cur.fetchone()
+        cur.execute(
+            "INSERT INTO economy_transactions (user_id, kind, amount, note) VALUES (%s, %s, %s, %s)",
+            (user_id, "career_work", pay, f"{career_path(path_key)['name']} work task")
+        )
+        conn.commit()
+        return {
+            "career": updated_career,
+            "old_tier": old_tier,
+            "pay": pay,
+            "xp_gain": xp_gain,
+            "correct": bool(correct),
+            "perfect": bool(perfect),
+            "streak": new_streak,
+            "balance": new_balance,
+            "promotions": promotions,
+        }
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cur.close()
+        conn.close()
 
 def apply_shop_purchase(user_id, item_id, total_cost, new_balance, inventory=None, luck_boost_until=None, note=""):
     conn = get_db_connection()
@@ -1500,9 +1792,9 @@ def reward_previous_season(season_key):
         conn.close()
 
 def get_economy_audit():
-    stats = get_economy_stats()
     conn = get_db_connection()
     cur = conn.cursor()
+    stats = get_economy_stats()
     cur.execute(
         """
         SELECT
@@ -1542,6 +1834,138 @@ def get_economy_audit():
     stats["transactions_24h"] = int(tx_24h["rows"] or 0)
     stats["transaction_amount_24h"] = int(tx_24h["amount"] or 0)
     return stats
+
+def get_scoped_economy_audit(user_ids, guild_id=None):
+    user_ids = sorted({int(uid) for uid in (user_ids or []) if int(uid) > 0})
+    if not user_ids:
+        return {
+            "users": 0,
+            "total_balance": 0,
+            "total_earned": 0,
+            "total_won": 0,
+            "total_lost": 0,
+            "messages_sent": 0,
+            "richest_user_id": None,
+            "richest_balance": 0,
+            "active_lotteries": 0,
+            "lottery_pots": 0,
+            "lottery_tickets": 0,
+            "lottery_spent": 0,
+            "transaction_totals": {},
+            "games": [],
+            "lost_today": 0,
+            "transactions_24h": 0,
+            "transaction_amount_24h": 0,
+        }
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT
+                COUNT(*) AS users,
+                COALESCE(SUM(balance), 0) AS total_balance,
+                COALESCE(SUM(total_earned), 0) AS total_earned,
+                COALESCE(SUM(total_won), 0) AS total_won,
+                COALESCE(SUM(total_lost), 0) AS total_lost,
+                COALESCE(SUM(messages_sent), 0) AS messages_sent,
+                COALESCE(MAX(balance), 0) AS richest_balance
+            FROM economy
+            WHERE user_id = ANY(%s::bigint[])
+            """,
+            (user_ids,)
+        )
+        totals = cur.fetchone()
+        cur.execute(
+            """
+            SELECT user_id, balance
+            FROM economy
+            WHERE user_id = ANY(%s::bigint[])
+            ORDER BY balance DESC, user_id ASC
+            LIMIT 1
+            """,
+            (user_ids,)
+        )
+        richest = cur.fetchone()
+        if guild_id:
+            cur.execute("SELECT COUNT(*) AS count, COALESCE(SUM(pot), 0) AS total_pot FROM lottery_config WHERE guild_id = %s", (guild_id,))
+            lottery = cur.fetchone()
+            cur.execute("SELECT COALESCE(SUM(tickets), 0) AS tickets, COALESCE(SUM(spent), 0) AS spent FROM lottery_tickets WHERE guild_id = %s", (guild_id,))
+            tickets = cur.fetchone()
+        else:
+            lottery = {"count": 0, "total_pot": 0}
+            tickets = {"tickets": 0, "spent": 0}
+        cur.execute(
+            """
+            SELECT kind, COALESCE(SUM(amount), 0) AS total
+            FROM economy_transactions
+            WHERE user_id = ANY(%s::bigint[])
+              AND kind IN ('transfer_tax_paid', 'lottery_ticket_buy', 'shop_purchase', 'give_sent', 'give_received', 'owner_add', 'owner_remove')
+            GROUP BY kind
+            """,
+            (user_ids,)
+        )
+        transaction_totals = {row["kind"]: int(row["total"] or 0) for row in cur.fetchall()}
+        transaction_totals["transfer_tax"] = abs(transaction_totals.get("transfer_tax_paid", 0))
+        cur.execute(
+            """
+            SELECT
+                game_key,
+                SUM(played) AS played,
+                SUM(wins) AS wins,
+                SUM(losses) AS losses,
+                SUM(profit) AS profit,
+                MAX(biggest_win) AS biggest_win
+            FROM economy_game_stats
+            WHERE user_id = ANY(%s::bigint[])
+            GROUP BY game_key
+            ORDER BY ABS(SUM(profit)) DESC, SUM(played) DESC
+            LIMIT 8
+            """,
+            (user_ids,)
+        )
+        games = cur.fetchall()
+        cur.execute(
+            """
+            SELECT COALESCE(SUM(amount), 0) AS lost_today
+            FROM economy_daily_losses
+            WHERE loss_date = CURRENT_DATE AND user_id = ANY(%s::bigint[])
+            """,
+            (user_ids,)
+        )
+        daily_losses = cur.fetchone()
+        cur.execute(
+            """
+            SELECT COUNT(*) AS rows, COALESCE(SUM(amount), 0) AS amount
+            FROM economy_transactions
+            WHERE created_at >= NOW() - INTERVAL '24 hours'
+              AND user_id = ANY(%s::bigint[])
+            """,
+            (user_ids,)
+        )
+        tx_24h = cur.fetchone()
+        return {
+            "users": int(totals["users"] or 0),
+            "total_balance": int(totals["total_balance"] or 0),
+            "total_earned": int(totals["total_earned"] or 0),
+            "total_won": int(totals["total_won"] or 0),
+            "total_lost": int(totals["total_lost"] or 0),
+            "messages_sent": int(totals["messages_sent"] or 0),
+            "richest_user_id": int(richest["user_id"]) if richest else None,
+            "richest_balance": int(richest["balance"] or 0) if richest else 0,
+            "active_lotteries": int(lottery["count"] or 0),
+            "lottery_pots": int(lottery["total_pot"] or 0),
+            "lottery_tickets": int(tickets["tickets"] or 0),
+            "lottery_spent": int(tickets["spent"] or 0),
+            "transaction_totals": transaction_totals,
+            "games": games,
+            "lost_today": int(daily_losses["lost_today"] or 0),
+            "transactions_24h": int(tx_24h["rows"] or 0),
+            "transaction_amount_24h": int(tx_24h["amount"] or 0),
+        }
+    finally:
+        cur.close()
+        conn.close()
 
 def get_lottery_user_spend(guild_id, user_id):
     if not guild_id:
@@ -2838,11 +3262,21 @@ async def apply_lottery_edit(guild, author, setting, value, send, channel_mentio
     await send(f"{Q_SUCCESS} {message}", allowed_mentions=discord.AllowedMentions.none())
     return True
 
+async def quietly_delete_message(message):
+    if not message:
+        return
+    try:
+        await message.delete()
+    except Exception:
+        pass
+
 class LotteryEditValueModal(discord.ui.Modal):
-    def __init__(self, author_id, setting, label, placeholder):
+    def __init__(self, author_id, setting, label, placeholder, panel_message=None, command_message=None):
         super().__init__(title=f"Edit lottery {label.lower()}")
         self.author_id = author_id
         self.setting = setting
+        self.panel_message = panel_message
+        self.command_message = command_message
         self.value_input = discord.ui.TextInput(
             label=label,
             placeholder=placeholder,
@@ -2861,13 +3295,16 @@ class LotteryEditValueModal(discord.ui.Modal):
             kwargs.setdefault("ephemeral", True)
             return await interaction.followup.send(content, **kwargs)
 
-        await apply_lottery_edit(
+        changed = await apply_lottery_edit(
             interaction.guild,
             interaction.user,
             self.setting,
             str(self.value_input.value).strip(),
             send,
         )
+        if changed:
+            await quietly_delete_message(self.panel_message)
+            await quietly_delete_message(self.command_message)
 
 class LotteryEditSettingSelect(discord.ui.Select):
     def __init__(self):
@@ -2895,12 +3332,23 @@ class LotteryEditSettingSelect(discord.ui.Select):
             "channel": ("Channel mention or ID", "#lottery or 123456789012345678"),
         }
         label, placeholder = modal_specs[setting]
-        await interaction.response.send_modal(LotteryEditValueModal(self.view.author_id, setting, label, placeholder))
+        await interaction.response.send_modal(
+            LotteryEditValueModal(
+                self.view.author_id,
+                setting,
+                label,
+                placeholder,
+                getattr(self.view, "panel_message", None) or interaction.message,
+                getattr(self.view, "command_message", None),
+            )
+        )
 
 class LotteryEditView(discord.ui.View):
-    def __init__(self, author_id):
+    def __init__(self, author_id, command_message=None):
         super().__init__(timeout=LONG_SETUP_VIEW_TIMEOUT)
         self.author_id = author_id
+        self.command_message = command_message
+        self.panel_message = None
         self.add_item(LotteryEditSettingSelect())
 
 async def send_lottery_edit_ui(ctx, selected_setting=None):
@@ -2914,7 +3362,9 @@ async def send_lottery_edit_ui(ctx, selected_setting=None):
     embed.add_field(name="Duration", value="Time between draws, like `12h` or `1d`.", inline=False)
     embed.add_field(name="House Cut", value="Percent taken from purchases, like `5`.", inline=False)
     embed.add_field(name="Channel", value="Paste a channel mention or ID.", inline=False)
-    await ctx.send(embed=embed, view=LotteryEditView(ctx.author.id), allowed_mentions=discord.AllowedMentions.none())
+    view = LotteryEditView(ctx.author.id, command_message=getattr(ctx, "message", None))
+    panel = await ctx.send(embed=embed, view=view, allowed_mentions=discord.AllowedMentions.none())
+    view.panel_message = panel
 
 async def announce_lottery_update(guild, config, message):
     channel = guild.get_channel(config["channel_id"]) if guild else None
@@ -4534,6 +4984,12 @@ def check_cooldown(user_id, command, data=None):
 def parse_amount(raw, user_id=None, guild=None, balance=None):
     raw_text = str(raw).strip().lower().replace(",", "").replace("_", "")
     personal_limit = None
+    double_or_nothing_cap = 0
+    if user_id is not None:
+        try:
+            double_or_nothing_cap = int(_double_or_nothing_bet_caps.get(int(user_id), 0) or 0)
+        except Exception:
+            double_or_nothing_cap = 0
     if user_id is not None and balance is None and not has_economy_owner_power(user_id, guild) and db_ready:
         try:
             data = get_user(user_id)
@@ -4559,6 +5015,8 @@ def parse_amount(raw, user_id=None, guild=None, balance=None):
                 break
         val = int(float(number) * multipliers.get(suffix, 1))
         if user_id is not None and has_economy_owner_power(user_id, guild):
+            return val
+        if double_or_nothing_cap and 0 < val <= double_or_nothing_cap:
             return val
         cap = min(val, MAX_BET)
         return min(cap, personal_limit) if personal_limit else cap
@@ -5019,6 +5477,287 @@ async def recommendgame(ctx):
     embed.add_field(name="Your Cash", value=format_balance(balance), inline=True)
     embed.add_field(name="Safer Move", value="Bank extra money with `.bank deposit <amount>` before gambling.", inline=False)
     await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
+def build_career_embed(user, career_row):
+    path_key = str(career_row.get("path_key") or CAREER_DEFAULT_PATH).casefold()
+    path = career_path(path_key)
+    tier = int(career_row.get("tier") or 1)
+    title = career_title(path_key, tier)
+    xp = int(career_row.get("career_xp") or 0)
+    ready, ready_at = career_work_ready(career_row)
+    next_threshold = career_next_threshold(tier)
+    next_text = "Max tier reached" if next_threshold is None else f"Next promotion at **{next_threshold:,} XP**"
+    embed = discord.Embed(
+        title=f"{Q_CAREER} Career",
+        description=f"{user_mention(user.id)}\n**{path['name']}** - **{title}**",
+        color=discord.Color.teal(),
+    )
+    embed.add_field(name="Tier", value=f"**{tier}/{len(CAREER_TIERS)}**", inline=True)
+    embed.add_field(name="Career XP", value=f"**{xp:,}**\n{career_progress_text(career_row)}", inline=True)
+    embed.add_field(name="Status", value="Ready to work" if ready else f"Next work {discord_relative_time(ready_at)}", inline=True)
+    embed.add_field(
+        name="Record",
+        value=(
+            f"Worked: **{int(career_row.get('works_done') or 0):,}**\n"
+            f"Perfect: **{int(career_row.get('perfect_works') or 0):,}**\n"
+            f"Streak: **{int(career_row.get('streak') or 0):,}**"
+        ),
+        inline=True,
+    )
+    embed.add_field(name="Path", value=path["summary"], inline=False)
+    embed.add_field(name="Promotion", value=next_text, inline=False)
+    embed.set_footer(text="Use .work for a task, .jobs to switch tracks, or .career to reopen this panel.")
+    return embed
+
+def build_jobs_embed(selected_path=None):
+    lines = []
+    selected_path = str(selected_path or "").casefold()
+    for key, path in CAREER_PATHS.items():
+        marker = Q_SUCCESS if key == selected_path else path["emoji"]
+        lines.append(
+            f"{marker} **{path['name']}** (`{key}`)\n"
+            f"{path['summary']}\n"
+            f"Top role: **{path['titles'][-1]}**"
+        )
+    embed = discord.Embed(
+        title=f"{Q_BRIEFCASE} Careers",
+        description="Pick a career track, then use `.work` to complete mini tasks, earn pay, gain career XP, and promote into better jobs.",
+        color=discord.Color.teal(),
+    )
+    add_split_embed_field(embed, "Career Tracks", lines, inline=False)
+    embed.set_footer(text="Switching tracks keeps your career XP and tier. It only changes the kind of tasks and titles.")
+    return embed
+
+class CareerPathSelect(discord.ui.Select):
+    def __init__(self, owner_id):
+        self.owner_id = int(owner_id)
+        options = [
+            discord.SelectOption(
+                label=path["name"],
+                value=key,
+                description=path["summary"][:100],
+                emoji=path["emoji"],
+            )
+            for key, path in CAREER_PATHS.items()
+        ]
+        super().__init__(placeholder="Choose a career track", min_values=1, max_values=1, options=options)
+
+    async def callback(self, interaction):
+        if interaction.user.id != self.owner_id:
+            return await interaction.response.send_message("This career menu is not yours.", ephemeral=True)
+        await interaction.response.defer()
+        try:
+            row = await asyncio.to_thread(set_career_path, interaction.user.id, self.values[0])
+        except Exception:
+            return await interaction.followup.send(f"{Q_DENIED} Couldn't switch career right now.", ephemeral=True)
+        await interaction.edit_original_response(
+            embed=build_career_embed(interaction.user, row),
+            view=CareerHomeView(interaction.user.id),
+        )
+
+class CareerHomeView(discord.ui.View):
+    def __init__(self, owner_id):
+        super().__init__(timeout=LONG_HELP_VIEW_TIMEOUT)
+        self.owner_id = int(owner_id)
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id == self.owner_id:
+            return True
+        await interaction.response.send_message("This career panel is not yours.", ephemeral=True)
+        return False
+
+    @discord.ui.button(label="Work", emoji=Q_WORK, style=discord.ButtonStyle.success)
+    async def work_button(self, interaction, button):
+        await interaction.response.defer()
+        await start_career_work(interaction, from_interaction=True)
+
+    @discord.ui.button(label="Jobs", emoji=Q_BRIEFCASE, style=discord.ButtonStyle.secondary)
+    async def jobs_button(self, interaction, button):
+        try:
+            row = await asyncio.to_thread(get_career, interaction.user.id)
+        except Exception:
+            return await interaction.response.send_message(f"{Q_DENIED} Career data unavailable.", ephemeral=True)
+        view = CareerPathView(interaction.user.id)
+        await interaction.response.edit_message(embed=build_jobs_embed(row.get("path_key")), view=view)
+
+    @discord.ui.button(label="Refresh", emoji=Q_REFRESH, style=discord.ButtonStyle.secondary)
+    async def refresh_button(self, interaction, button):
+        try:
+            row = await asyncio.to_thread(get_career, interaction.user.id)
+        except Exception:
+            return await interaction.response.send_message(f"{Q_DENIED} Career data unavailable.", ephemeral=True)
+        await interaction.response.edit_message(embed=build_career_embed(interaction.user, row), view=self)
+
+class CareerPathView(discord.ui.View):
+    def __init__(self, owner_id):
+        super().__init__(timeout=LONG_HELP_VIEW_TIMEOUT)
+        self.owner_id = int(owner_id)
+        self.add_item(CareerPathSelect(owner_id))
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id == self.owner_id:
+            return True
+        await interaction.response.send_message("This jobs menu is not yours.", ephemeral=True)
+        return False
+
+    @discord.ui.button(label="Back", emoji=Q_REFRESH, style=discord.ButtonStyle.secondary)
+    async def back_button(self, interaction, button):
+        try:
+            row = await asyncio.to_thread(get_career, interaction.user.id)
+        except Exception:
+            return await interaction.response.send_message(f"{Q_DENIED} Career data unavailable.", ephemeral=True)
+        await interaction.response.edit_message(embed=build_career_embed(interaction.user, row), view=CareerHomeView(interaction.user.id))
+
+class CareerTaskButton(discord.ui.Button):
+    def __init__(self, label):
+        super().__init__(label=label, style=discord.ButtonStyle.primary)
+        self.choice = label
+
+    async def callback(self, interaction):
+        view = self.view
+        if interaction.user.id != view.owner_id:
+            return await interaction.response.send_message("This work task is not yours.", ephemeral=True)
+        if view.done:
+            return await interaction.response.defer()
+        view.done = True
+        _active_career_tasks.discard(view.owner_id)
+        for item in view.children:
+            item.disabled = True
+        await interaction.response.defer()
+        correct = self.choice == view.task["answer"]
+        perfect = bool(correct and random.random() < 0.28)
+        try:
+            result = await asyncio.to_thread(
+                complete_career_work,
+                interaction.user.id,
+                view.task["path_key"],
+                view.task["tier"],
+                correct,
+                perfect,
+            )
+        except Exception:
+            return await interaction.edit_original_response(content=f"{Q_DENIED} Career database unavailable.", embed=None, view=None)
+
+        grade = "Perfect" if result["perfect"] else ("Clean" if result["correct"] else "Messy")
+        color = discord.Color.green() if result["correct"] else discord.Color.orange()
+        embed = discord.Embed(
+            title=f"{Q_WORK} Work Complete",
+            description=f"{user_mention(interaction.user.id)} finished a **{career_path(view.task['path_key'])['name']}** task.",
+            color=color,
+        )
+        embed.add_field(name="Task", value=view.task["prompt"], inline=False)
+        embed.add_field(name="Choice", value=f"**{self.choice}**", inline=True)
+        embed.add_field(name="Best Move", value=f"**{view.task['answer']}**", inline=True)
+        embed.add_field(name="Grade", value=f"**{grade}**", inline=True)
+        embed.add_field(name="Reward", value=f"{format_balance(result['pay'])}\n+**{result['xp_gain']:,}** career XP", inline=True)
+        embed.add_field(name="Balance", value=format_balance(result["balance"]), inline=True)
+        embed.add_field(name="Streak", value=f"**{result['streak']}** work win(s)" if result["streak"] else "Reset", inline=True)
+        if result["promotions"]:
+            promo_lines = [f"{Q_PROMOTION} **Tier {p['tier']} - {p['title']}** bonus **{format_balance(p['bonus'])}**" for p in result["promotions"]]
+            add_split_embed_field(embed, "Promotion", promo_lines, inline=False)
+        embed.set_footer(text="Use .career to see your full career profile.")
+        await interaction.edit_original_response(embed=embed, view=view, allowed_mentions=discord.AllowedMentions.none())
+
+class CareerTaskView(discord.ui.View):
+    def __init__(self, owner_id, task):
+        super().__init__(timeout=45)
+        self.owner_id = int(owner_id)
+        self.task = task
+        self.done = False
+        options = list(task["options"])
+        random.shuffle(options)
+        for option in options:
+            self.add_item(CareerTaskButton(option))
+
+    async def on_timeout(self):
+        if self.done:
+            return
+        self.done = True
+        _active_career_tasks.discard(self.owner_id)
+        for item in self.children:
+            item.disabled = True
+        if hasattr(self, "message"):
+            try:
+                await self.message.edit(content=f"{Q_TIMER} Work task expired. Use `.work` when you're ready.", view=self)
+            except Exception:
+                pass
+
+async def start_career_work(target, from_interaction=False):
+    user = target.user if from_interaction else target.author
+    try:
+        row = await asyncio.to_thread(get_career, user.id)
+    except Exception:
+        message = f"{Q_DENIED} Career data unavailable. Try again shortly."
+        if from_interaction:
+            return await target.followup.send(message, ephemeral=True)
+        return await target.send(message)
+    ready, ready_at = career_work_ready(row)
+    if not ready:
+        message = f"{Q_TIMER_TICK} Next work task is ready {discord_relative_time(ready_at)}."
+        if from_interaction:
+            return await target.followup.send(message, ephemeral=True)
+        return await target.reply(message, mention_author=False)
+    if int(user.id) in _active_career_tasks:
+        message = f"{Q_TIMER} Finish your current work task first."
+        if from_interaction:
+            return await target.followup.send(message, ephemeral=True)
+        return await target.reply(message, mention_author=False)
+    task = generate_career_task(row.get("path_key"), row.get("tier"))
+    path = career_path(task["path_key"])
+    embed = discord.Embed(
+        title=f"{path['emoji']} Work Task",
+        description=f"**{career_title(task['path_key'], task['tier'])}**\n{task['prompt']}",
+        color=discord.Color.teal(),
+    )
+    embed.add_field(name="Pay Grade", value=f"Base: **{format_balance(career_tier_data(task['tier'])['pay'])}**\nXP: **{career_tier_data(task['tier'])['xp']:,}**", inline=True)
+    embed.add_field(name="How", value="Pick the best move. Good answers pay more and build promotion XP.", inline=False)
+    view = CareerTaskView(user.id, task)
+    _active_career_tasks.add(int(user.id))
+    if from_interaction:
+        await target.followup.send(embed=embed, view=view, allowed_mentions=discord.AllowedMentions.none())
+        try:
+            view.message = await target.original_response()
+        except Exception:
+            pass
+    else:
+        view.message = await target.reply(embed=embed, view=view, mention_author=False, allowed_mentions=discord.AllowedMentions.none())
+
+@commands.command(name="career", aliases=["job", "profession", "workprofile"])
+async def career(ctx, member: discord.Member = None):
+    if not await ensure_db_ready(ctx):
+        return
+    user = member or ctx.author
+    try:
+        row = await asyncio.to_thread(get_career, user.id)
+    except Exception:
+        return await send_error(ctx, "Career data unavailable. Try again shortly.")
+    view = CareerHomeView(ctx.author.id) if user.id == ctx.author.id else None
+    await ctx.reply(embed=build_career_embed(user, row), view=view, mention_author=False, allowed_mentions=discord.AllowedMentions.none())
+
+@commands.command(name="jobs", aliases=["careers", "careerpaths", "joblist", "apply"])
+async def jobs(ctx, path: str = None):
+    if not await ensure_db_ready(ctx):
+        return
+    if path:
+        key = path.casefold()
+        if key not in CAREER_PATHS:
+            return await ctx.reply(f"{Q_DENIED} Unknown career. Use `.jobs` and pick one from the menu.", mention_author=False)
+        try:
+            row = await asyncio.to_thread(set_career_path, ctx.author.id, key)
+        except Exception:
+            return await send_error(ctx, "Career data unavailable. Try again shortly.")
+        return await ctx.reply(embed=build_career_embed(ctx.author, row), view=CareerHomeView(ctx.author.id), mention_author=False, allowed_mentions=discord.AllowedMentions.none())
+    try:
+        row = await asyncio.to_thread(get_career, ctx.author.id)
+    except Exception:
+        return await send_error(ctx, "Career data unavailable. Try again shortly.")
+    await ctx.reply(embed=build_jobs_embed(row.get("path_key")), view=CareerPathView(ctx.author.id), mention_author=False, allowed_mentions=discord.AllowedMentions.none())
+
+@commands.command(name="work", aliases=["shift", "worktask", "clockin"])
+async def work(ctx):
+    if not await ensure_db_ready(ctx):
+        return
+    await start_career_work(ctx, from_interaction=False)
 
 @commands.command(name="robsettings", aliases=["robbing", "setrob", "robconfig"])
 async def robsettings(ctx, setting: str = None):
@@ -6179,7 +6918,9 @@ async def editlottery(ctx, setting: str = None, *, value: str = None):
     async def send(content=None, **kwargs):
         return await ctx.send(content, **kwargs)
 
-    await apply_lottery_edit(ctx.guild, ctx.author, setting, value, send, ctx.message.channel_mentions)
+    changed = await apply_lottery_edit(ctx.guild, ctx.author, setting, value, send, ctx.message.channel_mentions)
+    if changed:
+        await quietly_delete_message(getattr(ctx, "message", None))
 
 @commands.command()
 async def stoplottery(ctx):
@@ -11683,7 +12424,8 @@ async def setbadge(ctx, *, badge_ids: str = None):
         ]
         await ctx.reply(
             f"{Q_ACHIEVEMENT_UNLOCKED} Use `.setbadge <badge id> [badge id] [badge id]` to show up to 3 on your profile, or `.setbadge clear`.\n"
-            + "\n".join(lines[:20]),
+            + "\n".join(lines[:10])
+            + ("\nUse `.achievements` to browse the full badge list." if len(lines) > 10 else ""),
             mention_author=False,
             allowed_mentions=discord.AllowedMentions.none(),
         )
@@ -11854,9 +12596,9 @@ async def gameaudit(ctx, days: int = 7):
                 f"{risk_emoji(row['game_key'])} **{game_display_name(row['game_key'])}** - "
                 f"{plays:,} plays, {win_rate:.1f}% win, house {format_balance(house_profit)}{flag}"
             )
-        add_split_embed_field(embed, "Games", lines[:20], inline=False)
+        add_split_embed_field(embed, "Games", lines[:10], inline=False)
         if warnings:
-            add_split_embed_field(embed, "Signals", warnings[:8], inline=False)
+            add_split_embed_field(embed, "Signals", warnings[:4], inline=False)
     await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
 @commands.command(name="balanceaudit", aliases=["balaudit", "economybalance", "balancing"])
@@ -11912,8 +12654,8 @@ async def balanceaudit(ctx, days: int = 14):
                 f"{plays:,} plays, {win_rate:.1f}% win, risk **{label}**, house {format_balance(house_profit)} | {verdict}"
             )
         embed.add_field(name="Summary", value=f"Tracked Plays: **{total_plays:,}**\nHouse Net: **{format_balance(total_house)}**", inline=False)
-        add_split_embed_field(embed, "Games", lines[:20], inline=False)
-        add_split_embed_field(embed, "Action Notes", actions[:8] or ["No obvious balance problems from recent tracked data."], inline=False)
+        add_split_embed_field(embed, "Games", lines[:10], inline=False)
+        add_split_embed_field(embed, "Action Notes", actions[:4] or ["No obvious balance problems from recent tracked data."], inline=False)
     await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
 def economy_event_embed(guild, row):
@@ -12162,6 +12904,127 @@ async def gamehistory(ctx, member: discord.Member = None):
 
     await ctx.reply(embed=embed, view=GameHistoryView(), mention_author=False, allowed_mentions=discord.AllowedMentions.none())
 
+def economy_audit_member_ids(guild):
+    if guild is None:
+        return []
+    return [int(member.id) for member in getattr(guild, "members", []) if not getattr(member, "bot", False)]
+
+def build_economy_audit_embed(stats, scope_label="Global"):
+    net_gambling = int(stats["total_won"] or 0) - int(stats["total_lost"] or 0)
+    tx = stats.get("transaction_totals") or {}
+    tracked_flow = (
+        abs(int(tx.get("shop_purchase", 0) or 0)) +
+        abs(int(tx.get("transfer_tax", 0) or 0)) +
+        abs(int(tx.get("lottery_house_cut", 0) or 0)) +
+        abs(int(tx.get("lottery_ticket_buy", 0) or 0))
+    )
+    supply = max(1, int(stats["total_balance"] or 0))
+    flow_ratio = abs(int(stats["transaction_amount_24h"] or 0)) / supply
+    if flow_ratio > 0.35 or int(stats["lost_today"] or 0) > supply * 0.12:
+        health = f"{Q_WARNING} Hot"
+    elif tracked_flow / supply >= 0.08:
+        health = f"{Q_SUCCESS} Stable"
+    else:
+        health = f"{Q_THINKING} Watch"
+
+    embed = discord.Embed(
+        title=f"{Q_AUDIT} Economy Audit",
+        description=f"Scope: **{scope_label}**",
+        color=discord.Color.gold(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.add_field(
+        name="Snapshot",
+        value=(
+            f"Users: **{int(stats['users'] or 0):,}**\n"
+            f"Money: **{format_balance(stats['total_balance'])}**\n"
+            f"Net gambling: **{format_balance(net_gambling)}**"
+        ),
+        inline=True,
+    )
+    embed.add_field(
+        name="24h Flow",
+        value=(
+            f"Transactions: **{int(stats['transactions_24h'] or 0):,}**\n"
+            f"Net amount: **{format_balance(stats['transaction_amount_24h'])}**\n"
+            f"Health: **{health}**"
+        ),
+        inline=True,
+    )
+    embed.add_field(
+        name="Lottery",
+        value=(
+            f"Pots: **{format_balance(stats['lottery_pots'])}**\n"
+            f"Tickets: **{int(stats['lottery_tickets'] or 0):,}**\n"
+            f"Spent: **{format_balance(stats.get('lottery_spent', 0))}**"
+        ),
+        inline=True,
+    )
+    flow_lines = [
+        f"Tracked tax/sinks: **{format_balance(tracked_flow)}**",
+        f"Lost today: **{format_balance(stats['lost_today'])}**",
+        f"Total earned: **{format_balance(stats['total_earned'])}**",
+    ]
+    if stats.get("richest_user_id"):
+        flow_lines.append(f"Top balance: {user_mention(stats['richest_user_id'])} - **{format_balance(stats['richest_balance'])}**")
+    embed.add_field(name="Flow Notes", value="\n".join(flow_lines), inline=False)
+
+    game_lines = []
+    for row in (stats.get("games") or [])[:6]:
+        played = int(row["played"] or 0)
+        wins = int(row["wins"] or 0)
+        win_rate = wins / played * 100 if played else 0
+        profit = int(row["profit"] or 0)
+        game_lines.append(
+            f"{risk_emoji(row['game_key'])} **{game_display_name(row['game_key'])}** - {played:,} plays, {win_rate:.1f}% win, users {format_balance(profit)}"
+        )
+    add_split_embed_field(embed, "Game Signals", game_lines or ["No game stats yet."], inline=False)
+
+    warnings = []
+    if int(stats["lost_today"] or 0) > supply * 0.08:
+        warnings.append(f"{Q_WARNING} Daily gambling losses are high versus current supply.")
+    if abs(int(stats["transaction_amount_24h"] or 0)) > supply * 0.15:
+        warnings.append(f"{Q_WARNING} 24h transaction flow is high versus current supply.")
+    for row in (stats.get("games") or []):
+        played = int(row["played"] or 0)
+        profit = int(row["profit"] or 0)
+        if played >= 50 and profit > 0:
+            warnings.append(f"{Q_WARNING} {game_display_name(row['game_key'])} is net-positive for players; review odds.")
+        if len(warnings) >= 3:
+            break
+    add_split_embed_field(embed, "Warnings", warnings or [f"{Q_SUCCESS} No obvious audit warnings."], inline=False)
+    return embed
+
+class EconomyAuditScopeView(discord.ui.View):
+    def __init__(self, ctx, local_user_ids):
+        super().__init__(timeout=LONG_HELP_VIEW_TIMEOUT)
+        self.ctx = ctx
+        self.local_user_ids = list(local_user_ids or [])
+
+    async def interaction_check(self, interaction):
+        if is_superowner_id(interaction.user.id):
+            return True
+        await interaction.response.send_message("Only 𝚀𝚞𝚎 can switch audit scope.", ephemeral=True)
+        return False
+
+    @discord.ui.button(label="Server", emoji=Q_AUDIT, style=discord.ButtonStyle.primary)
+    async def server_scope(self, interaction, button):
+        await interaction.response.defer()
+        try:
+            stats = await asyncio.to_thread(get_scoped_economy_audit, self.local_user_ids, self.ctx.guild.id if self.ctx.guild else None)
+        except Exception:
+            return await interaction.followup.send("Database unavailable. Try again shortly.", ephemeral=True)
+        await interaction.message.edit(embed=build_economy_audit_embed(stats, "Server"), view=self, allowed_mentions=discord.AllowedMentions.none())
+
+    @discord.ui.button(label="Global", emoji=Q_DATABASE, style=discord.ButtonStyle.secondary)
+    async def global_scope(self, interaction, button):
+        await interaction.response.defer()
+        try:
+            stats = await asyncio.to_thread(get_economy_audit)
+        except Exception:
+            return await interaction.followup.send("Database unavailable. Try again shortly.", ephemeral=True)
+        await interaction.message.edit(embed=build_economy_audit_embed(stats, "Global"), view=self, allowed_mentions=discord.AllowedMentions.none())
+
 @commands.command(name="economyaudit", aliases=["audit", "qaudit", "econaudit"])
 async def economyaudit(ctx, member: discord.Member = None):
     if not await ensure_db_ready(ctx):
@@ -12186,17 +13049,31 @@ async def economyaudit(ctx, member: discord.Member = None):
             color=discord.Color.gold(),
             timestamp=datetime.now(timezone.utc),
         )
-        embed.add_field(name="Balance", value=format_balance(data["balance"]), inline=True)
-        embed.add_field(name="Level", value=f"{int(data['level'] or 1):,}", inline=True)
-        embed.add_field(name="XP", value=f"{int(data['xp'] or 0):,}", inline=True)
-        embed.add_field(name="Total Earned", value=format_balance(data["total_earned"]), inline=True)
-        embed.add_field(name="Total Won", value=format_balance(data["total_won"]), inline=True)
-        embed.add_field(name="Total Lost", value=format_balance(data["total_lost"]), inline=True)
-        embed.add_field(name="Net Gambling", value=format_balance(net), inline=True)
-        embed.add_field(name="Lost Today", value=f"{format_balance(loss['lost_today'])}\nRemaining: {format_balance(loss['remaining'])}", inline=True)
-        embed.add_field(name="Gambling Streak", value=f"{int(data.get('gamble_streak', 0) or 0):,}", inline=True)
+        embed.add_field(
+            name="Snapshot",
+            value=(
+                f"Balance: **{format_balance(data['balance'])}**\n"
+                f"Level: **{int(data['level'] or 1):,}** | XP **{int(data['xp'] or 0):,}**\n"
+                f"Streak: **{int(data.get('gamble_streak', 0) or 0):,}**"
+            ),
+            inline=True,
+        )
+        embed.add_field(
+            name="Flow",
+            value=(
+                f"Earned: **{format_balance(data['total_earned'])}**\n"
+                f"Won/Lost: **{format_balance(data['total_won'])}** / **{format_balance(data['total_lost'])}**\n"
+                f"Net: **{format_balance(net)}**"
+            ),
+            inline=True,
+        )
+        embed.add_field(
+            name="Today",
+            value=f"Lost: **{format_balance(loss['lost_today'])}**\nRemaining: **{format_balance(loss['remaining'])}**",
+            inline=True,
+        )
         game_lines = []
-        for row in rows[:8]:
+        for row in rows[:5]:
             played = int(row["played"] or 0)
             wins = int(row["wins"] or 0)
             win_rate = wins / played * 100 if played else 0
@@ -12215,7 +13092,7 @@ async def economyaudit(ctx, member: discord.Member = None):
             history_lines.append(f"**{game_display_name(row['game_key'])}** - {result} `{sign}{net_amount:,}` <t:{int(ts.timestamp())}:R>")
         add_split_embed_field(embed, "Recent Games", history_lines or ["No tracked games yet."], inline=False)
         tx_lines = []
-        for row in tx_rows:
+        for row in tx_rows[:5]:
             ts = row["created_at"]
             if ts.tzinfo is None:
                 ts = ts.replace(tzinfo=timezone.utc)
@@ -12231,83 +13108,20 @@ async def economyaudit(ctx, member: discord.Member = None):
         add_split_embed_field(embed, "Warnings", warnings or [f"{Q_SUCCESS} No obvious user audit warnings."], inline=False)
         await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
         return
+    local_ids = economy_audit_member_ids(ctx.guild)
     try:
-        stats = await asyncio.to_thread(get_economy_audit)
+        if is_superowner_id(ctx.author.id) and ctx.guild is None:
+            stats = await asyncio.to_thread(get_economy_audit)
+            embed = build_economy_audit_embed(stats, "Global")
+            await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+            return
+        stats = await asyncio.to_thread(get_scoped_economy_audit, local_ids, ctx.guild.id if ctx.guild else None)
     except Exception:
         await send_error(ctx, "Database unavailable. Try again shortly.")
         return
-    net_gambling = stats["total_won"] - stats["total_lost"]
-    embed = discord.Embed(
-        title=f"{Q_AUDIT} Economy Audit",
-        description="Money flow, risk, and balancing signals.",
-        color=discord.Color.gold(),
-        timestamp=datetime.now(timezone.utc),
-    )
-    embed.add_field(name="Money Supply", value=format_balance(stats["total_balance"]), inline=True)
-    embed.add_field(name="Total Earned", value=format_balance(stats["total_earned"]), inline=True)
-    embed.add_field(name="Net Gambling", value=format_balance(net_gambling), inline=True)
-    embed.add_field(name="Lost Today", value=format_balance(stats["lost_today"]), inline=True)
-    embed.add_field(name="24h Transactions", value=f"{stats['transactions_24h']:,}", inline=True)
-    embed.add_field(name="24h Net Tx Amount", value=format_balance(stats["transaction_amount_24h"]), inline=True)
-    tx = stats["transaction_totals"]
-    tracked_sink = abs(tx.get("shop_purchase", 0)) + tx.get("transfer_tax", 0) + tx.get("lottery_house_cut", 0)
-    embed.add_field(name="Tracked Taxes / Payments", value=format_balance(tracked_sink), inline=True)
-    embed.add_field(name="Lottery Pots", value=format_balance(stats["lottery_pots"]), inline=True)
-    embed.add_field(name="Lottery Tickets", value=f"{stats['lottery_tickets']:,}", inline=True)
-    source_lines = [
-        f"Total earned: **{format_balance(stats['total_earned'])}**",
-        f"Gambling won: **{format_balance(stats['total_won'])}**",
-        f"Shop payments to {QUE_OWNER_DISPLAY}: **{format_balance(tx.get('shop_payment', 0))}**",
-    ]
-    sink_lines = [
-        f"Gambling lost: **{format_balance(stats['total_lost'])}**",
-        f"Shop purchases: **{format_balance(abs(tx.get('shop_purchase', 0)))}**",
-        f"Lottery cuts: **{format_balance(tx.get('lottery_house_cut', 0))}**",
-        f"Transfer taxes: **{format_balance(tx.get('transfer_tax', 0))}**",
-    ]
-    add_split_embed_field(embed, "Money Sources", source_lines, inline=False)
-    add_split_embed_field(embed, "Money Sinks / Tax Flow", sink_lines, inline=False)
-    supply = max(1, int(stats["total_balance"] or 0))
-    sink_ratio = tracked_sink / supply
-    flow_ratio = abs(stats["transaction_amount_24h"]) / supply
-    if sink_ratio >= 0.12 and flow_ratio <= 0.20:
-        health = f"{Q_SUCCESS} Stable"
-    elif flow_ratio > 0.35 or stats["lost_today"] > supply * 0.12:
-        health = f"{Q_WARNING} Hot"
-    else:
-        health = f"{Q_THINKING} Watch"
-    tx_sources = {
-        "Shop Payments": tx.get("shop_payment", 0),
-        "Lottery House Cut": tx.get("lottery_house_cut", 0),
-        "Transfer Tax": tx.get("transfer_tax", 0),
-    }
-    biggest_flow = max(tx_sources.items(), key=lambda item: abs(item[1])) if tx_sources else ("None", 0)
-    embed.add_field(name="Health", value=f"{health}\n24h flow: **{flow_ratio * 100:.1f}%** of supply", inline=True)
-    embed.add_field(name="Biggest Tracked Flow", value=f"{biggest_flow[0]}\n{format_balance(biggest_flow[1])}", inline=True)
-    game_lines = []
-    for row in stats["games"]:
-        played = int(row["played"] or 0)
-        wins = int(row["wins"] or 0)
-        win_rate = wins / played * 100 if played else 0
-        profit = int(row["profit"] or 0)
-        game_lines.append(
-            f"**{game_display_name(row['game_key'])}** - {played:,} played, {win_rate:.1f}% win, profit {format_balance(profit)}"
-        )
-    add_split_embed_field(embed, "Game Signals", game_lines or ["No game stats yet."], inline=False)
-    warnings = []
-    if stats["lost_today"] > supply * 0.08:
-        warnings.append(f"{Q_WARNING} Daily gambling losses are high versus current supply.")
-    if abs(stats["transaction_amount_24h"]) > supply * 0.15:
-        warnings.append(f"{Q_WARNING} 24h transaction flow is high versus current supply.")
-    for row in stats["games"]:
-        played = int(row["played"] or 0)
-        profit = int(row["profit"] or 0)
-        if played >= 50 and profit > 0:
-            warnings.append(f"{Q_WARNING} {game_display_name(row['game_key'])} is net-positive for players; review odds.")
-        if len(warnings) >= 4:
-            break
-    add_split_embed_field(embed, "Warnings", warnings or [f"{Q_SUCCESS} No obvious audit warnings."], inline=False)
-    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+    embed = build_economy_audit_embed(stats, "Server")
+    view = EconomyAuditScopeView(ctx, local_ids) if is_superowner_id(ctx.author.id) else None
+    await ctx.send(embed=embed, view=view, allowed_mentions=discord.AllowedMentions.none())
 
 @commands.command(name="guide", aliases=["start", "begin", "gettingstarted"])
 async def guide(ctx):
@@ -13110,7 +13924,11 @@ async def replay_double_or_nothing_game(interaction, game_key, stake):
         return
     _cooldowns.pop((interaction.user.id, "quewo"), None)
     replay_ctx = ReplayContext(interaction)
-    await command.callback(replay_ctx, str(int(stake)))
+    _double_or_nothing_bet_caps[interaction.user.id] = int(stake)
+    try:
+        await command.callback(replay_ctx, str(int(stake)))
+    finally:
+        _double_or_nothing_bet_caps.pop(interaction.user.id, None)
 
 
 # =====================
@@ -13121,7 +13939,21 @@ EXPLANATIONS = {
     "settings": "Admin-power command. Opens the server setup/control panel for prefix, logs, birthdays, activity reports, lottery status, disabled commands, and operations checks.",
     "setup": "Alias for `.settings`. Opens the server setup dashboard.",
     "controlpanel": "Alias for `.settings`. Opens the server setup/control panel.",
-    "jobs": "Admin-power command. Shows background jobs and longer maintenance work started by Pro𝚀𝚞𝚎.",
+    "jobs": "Shows career tracks and lets you switch jobs. Use `.work` to do mini tasks, earn pay, gain career XP, and promote.",
+    "career": "Shows your career profile: active track, job title, career XP, work cooldown, streak, and promotion progress.",
+    "job": "Alias for `.career`. Shows your career profile.",
+    "profession": "Alias for `.career`. Shows your career profile.",
+    "workprofile": "Alias for `.career`. Shows your career profile.",
+    "careers": "Alias for `.jobs`. Shows career tracks.",
+    "careerpaths": "Alias for `.jobs`. Shows career tracks.",
+    "joblist": "Alias for `.jobs`. Shows career tracks.",
+    "apply": "Alias for `.jobs <track>`. Switches your career track.",
+    "work": "Starts an interactive career task. Pick the best option to earn pay, career XP, streak progress, and promotions.",
+    "shift": "Alias for `.work`. Starts a career task.",
+    "worktask": "Alias for `.work`. Starts a career task.",
+    "clockin": "Alias for `.work`. Starts a career task.",
+    "backgroundjobs": "Admin-power command. Shows background jobs and longer maintenance work started by Pro𝚀𝚞𝚎.",
+    "bgjobs": "Alias for `.backgroundjobs`. Shows background jobs.",
     "recover": "Admin-power command. Manually reruns recovery for persisted timers, polls, game sessions, and lottery panels.",
     "errors": "Admin-power command. Shows recent command errors and saved error receipts.",
     "dbaudit": "Admin-power command. Scans for database calls that could block the bot and reports DB worker settings.",
@@ -13310,7 +14142,7 @@ EXPLANATIONS = {
     "supply": "Alias for `.qstats`. Shows global 𝚀𝚞𝚎wo economy health.",
     "economystats": "Alias for `.qstats`. Shows global 𝚀𝚞𝚎wo economy health.",
     "qstatus": "Alias for `.qstats`. Shows global 𝚀𝚞𝚎wo economy health.",
-    "economyaudit": "Admin-power command. Shows global economy audit signals, or use `.economyaudit @user` for one user's audit.",
+    "economyaudit": "Admin-power command. Shows this server's economy audit signals. 𝚀𝚞𝚎 can switch between server and global scope, or use `.economyaudit @user` for one user's audit.",
     "audit": "Alias for `.economyaudit`. Shows economy audit signals.",
     "qaudit": "Alias for `.economyaudit`. Shows economy audit signals.",
     "econaudit": "Alias for `.economyaudit`. Shows economy audit signals.",
@@ -13582,7 +14414,7 @@ DETAILED_EXPLANATIONS = {
     "leaderboard": "Alias for `.lb`. Shows local/global paginated rankings with selectable ranking types and your rank.",
     "qstats": "Admin-power command for checking the global 𝚀𝚞𝚎wo economy. It shows total money supply, total earned, gambling won/lost/net, active lotteries, lottery pots, ticket count, tracked taxes/payments, richest user, and tracked messages. If you pass a member, it redirects to that user's economy audit.",
     "economyhealth": "Alias for `.qstats`. Use it when you want the global money-supply health view instead of a specific user's audit.",
-    "economyaudit": "Admin-power economy audit page. Without a member, it adds balancing signals on top of qstats: daily losses, recent transaction volume, tracked sink/payment totals, and per-game play/win/profit signals sorted by biggest impact. With a member, it shows that user's balance, level, net gambling, daily loss usage, game signals, recent games, recent transactions, and warnings.",
+    "economyaudit": "Admin-power economy audit page. Without a member, it shows a compact server-scoped audit: supply, 24h flow, lottery, tax/sink notes, game signals, and warnings. 𝚀𝚞𝚎 gets Server and Global buttons. With a member, it shows that user's compact balance, level, net gambling, daily loss usage, game signals, recent games, recent transactions, and warnings.",
     "add": f"{QUE_OWNER_DISPLAY}-only command. Adds new quesos to a user. `.add @user <amount>` and `.add <amount> @user` both work. {QUE_OWNER_DISPLAY} can use @everyone or a role. It does not support `all`. Sensitive changes generate a receipt ID.",
     "remove": f"{QUE_OWNER_DISPLAY}-only command. Removes quesos from a user. `.remove @user <amount>` and `.remove <amount> @user` both work. Use `all` to remove their full balance. Sensitive changes generate a receipt ID.",
     "addtick": f"{QUE_OWNER_DISPLAY}-only lottery admin command. Adds free entries to the current lottery. `.addtick @user <tickets>` and `.addtick <tickets> @user` both work, including roles and @everyone.",
@@ -13618,7 +14450,12 @@ DETAILED_EXPLANATIONS = {
     "aidoctor": "Admin-power bot doctor panel. Shows task health, 𝚀𝚞𝚎wo DB status, slash sync status, active sessions, disabled commands, and slow command stats. Useful when replying to errors and asking the AI to diagnose them.",
     "translate": "Translates provided text or the message you reply to. Friendly forms work: `.translate hello to Italian`, `.translate to Spanish hello`, `.translate it hello`, or reply to a message with `.translate to Spanish`. If no target is given, it translates to English.",
     "settings": "Admin-power server setup/control panel. It summarizes prefix, logs, reaction logs, birthday channel, activity reports, lottery, disabled command count, and operations commands. Buttons let admins refresh the dashboard, change the prefix, set logs, set birthdays/activity to the current channel, open a setup guide, and find recovery/performance tools.",
-    "jobs": "Shows background jobs started by Pro𝚀𝚞𝚎 during this process, including manual recovery and future maintenance jobs. Use `.jobs clear` to remove finished jobs from the panel.",
+    "career": "Your career profile stores one active track, tier, career XP, work streak, work count, perfect work count, and cooldown. Career work pays real 𝚀𝚞𝚎wo balance, updates total earned, and can promote you into higher titles with better base pay. Use `.work` for tasks and `.jobs` to switch tracks.",
+    "job": "Alias for `.career`. Shows your career profile.",
+    "jobs": "Shows all career tracks: Service, Tech, Trade, Creative, and Investigator. Switching tracks keeps your career XP and tier, but changes titles and work task flavor. Use `.jobs tech` or the dropdown to switch.",
+    "careers": "Alias for `.jobs`. Shows career tracks.",
+    "work": "Starts a timed interactive career task. Pick the best option from the buttons. Correct work pays the full tier amount, perfect work pays extra, messy work still gives a small payout and XP, and promotions add bonus pay. Work has a separate cooldown, so it is not just another daily claim.",
+    "backgroundjobs": "Shows background jobs started by Pro𝚀𝚞𝚎 during this process, including manual recovery and future maintenance jobs. Use `.backgroundjobs clear` to remove finished jobs from the panel.",
     "recover": "Starts a background recovery job. It reruns timer/poll recovery, restores saved Tic Tac Toe, Connect 4, and chess sessions, and refreshes lottery persistent views. Use this after reconnect weirdness or if a panel/game did not restore cleanly.",
     "errors": "Shows recent command failures from this restart plus saved command-error receipts from the database. Use `.receipt <id>` for a full saved receipt when one exists.",
     "dbaudit": "Runs a lightweight code scan for direct database calls inside async paths and shows the DB worker setting. Use it with `.perf` to find commands that may block the event loop.",
@@ -13636,7 +14473,7 @@ DETAILED_EXPLANATIONS = {
 }
 
 ECONHELP_COMMANDS = [
-    ("Start", ["guide", "onboard", "tutorial", "recommendgame", "bal", "profile", "bank", "inventory"]),
+    ("Start", ["guide", "onboard", "tutorial", "recommendgame", "bal", "profile", "bank", "inventory", "career", "jobs", "work"]),
     ("Claims", ["daily", "weekly", "monthly", "streaks", "claimreminders", "cooldowns", "quests", "dailychallenge"]),
     ("Shop", ["shop", "settheme", "achievements", "setbadge", "seasonpass"]),
     ("Lottery", ["lottery", "buytick", "lotterystats"]),
@@ -13905,7 +14742,7 @@ async def setup(bot_ref, log_callback=None):
     print(f"𝚀𝚞𝚎wo db_ready = {db_ready}")
 
     economy_commands = [
-        bal, bank, tutorial, recommendgame, robsettings, quewochannel, levelupchannel, rob, profile, inventory, settheme, quests, dailychallenge, streaks, guide, onboard, shop, claimreminders, cooldowns, transactions, limits, lottery, editlottery, stoplottery, lotterystats, buytick,
+        bal, bank, tutorial, recommendgame, career, jobs, work, robsettings, quewochannel, levelupchannel, rob, profile, inventory, settheme, quests, dailychallenge, streaks, guide, onboard, shop, claimreminders, cooldowns, transactions, limits, lottery, editlottery, stoplottery, lotterystats, buytick,
         daily, weekly, monthly, gamble, roulette, slots, blackjack,
         scratch, tower, vault, memory_game, card_ladder, lockpick, heist, dice_duel, cases, plinko, lucky_number, jackpot_spin, dungeon, minesweeper, wheel, give, lb, gamestats, achievements, setbadge, gamebalance, gameaudit, balanceaudit, balancedashboard, event, gamehistory, season, seasonpass, endseason, qstats, economyhealth, economyaudit, abuseaudit, riskprofile, add, remove, addtick, removetick, settick, lotterypot, setquesos, econhelp, explain
     ]

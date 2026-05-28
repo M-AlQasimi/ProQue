@@ -2497,7 +2497,7 @@ async def on_ready():
     try:
         await economy_setup(bot, send_log)
         economy_command_names = [
-            "bal", "bank", "tutorial", "recommendgame", "robsettings", "quewochannel", "levelupchannel", "rob", "profile", "inventory", "settheme", "quests", "dailychallenge", "streaks", "guide", "onboard", "shop", "claimreminders", "cooldowns", "transactions", "limits", "lottery", "editlottery", "stoplottery", "lotterystats", "buytick",
+            "bal", "bank", "tutorial", "recommendgame", "career", "jobs", "work", "robsettings", "quewochannel", "levelupchannel", "rob", "profile", "inventory", "settheme", "quests", "dailychallenge", "streaks", "guide", "onboard", "shop", "claimreminders", "cooldowns", "transactions", "limits", "lottery", "editlottery", "stoplottery", "lotterystats", "buytick",
             "daily", "weekly", "monthly", "cf", "roulette", "slots",
             "blackjack", "scratch", "tower", "vault", "memory", "cardladder", "lockpick", "heist", "diceduel", "cases", "plinko", "luckynumber", "jackpotspin", "dungeon", "ms", "wheel", "give", "lb", "gamestats", "achievements", "setbadge", "gamebalance", "gamehistory", "seasonpass",
             "qstats", "economyaudit", "abuseaudit", "season", "endseason", "add", "remove", "addtick", "removetick", "settick", "lotterypot", "setquesos", "econhelp", "explain"
@@ -3841,11 +3841,13 @@ async def apply_activity_edit(guild, author, config, setting, value, send, chann
     return False
 
 class ActivityEditValueModal(Modal):
-    def __init__(self, author_id, guild_id, setting, label, placeholder):
+    def __init__(self, author_id, guild_id, setting, label, placeholder, panel_message=None, command_message=None):
         super().__init__(title=f"Edit activity {label.lower()}")
         self.author_id = author_id
         self.guild_id = guild_id
         self.setting = setting
+        self.panel_message = panel_message
+        self.command_message = command_message
         self.value_input = TextInput(label=label, placeholder=placeholder, min_length=1, max_length=100)
         self.add_item(self.value_input)
 
@@ -3868,7 +3870,7 @@ class ActivityEditValueModal(Modal):
             kwargs.setdefault("ephemeral", True)
             return await interaction.followup.send(content, **kwargs)
 
-        await apply_activity_edit(
+        changed = await apply_activity_edit(
             interaction.guild,
             interaction.user,
             config,
@@ -3876,6 +3878,9 @@ class ActivityEditValueModal(Modal):
             str(self.value_input.value).strip(),
             send,
         )
+        if changed:
+            await safe_delete_message(self.panel_message)
+            await safe_delete_message(self.command_message)
 
 class ActivityEditSettingSelect(Select):
     def __init__(self):
@@ -3896,16 +3901,34 @@ class ActivityEditSettingSelect(Select):
             return await interaction.response.send_message("This setup UI belongs to another server.", ephemeral=True)
         setting = self.values[0]
         if setting == "channel":
-            modal = ActivityEditValueModal(self.view.author_id, self.view.guild_id, setting, "Channel mention or ID", "#activity or 123456789012345678")
+            modal = ActivityEditValueModal(
+                self.view.author_id,
+                self.view.guild_id,
+                setting,
+                "Channel mention or ID",
+                "#activity or 123456789012345678",
+                getattr(self.view, "panel_message", None) or interaction.message,
+                getattr(self.view, "command_message", None),
+            )
         else:
-            modal = ActivityEditValueModal(self.view.author_id, self.view.guild_id, setting, "Time until next report", "12h")
+            modal = ActivityEditValueModal(
+                self.view.author_id,
+                self.view.guild_id,
+                setting,
+                "Time until next report",
+                "12h",
+                getattr(self.view, "panel_message", None) or interaction.message,
+                getattr(self.view, "command_message", None),
+            )
         await interaction.response.send_modal(modal)
 
 class ActivityEditView(View):
-    def __init__(self, author_id, guild_id):
+    def __init__(self, author_id, guild_id, command_message=None):
         super().__init__(timeout=LONG_SETUP_VIEW_TIMEOUT)
         self.author_id = author_id
         self.guild_id = guild_id
+        self.command_message = command_message
+        self.panel_message = None
         self.add_item(ActivityEditSettingSelect())
 
 async def send_activity_edit_ui(ctx, selected_setting=None):
@@ -3917,7 +3940,9 @@ async def send_activity_edit_ui(ctx, selected_setting=None):
     )
     embed.add_field(name="Report Channel", value="Paste a channel mention or ID.", inline=False)
     embed.add_field(name="Next Report", value="Reset the next report timer, like `12h` or `1d`.", inline=False)
-    await ctx.send(embed=embed, view=ActivityEditView(ctx.author.id, ctx.guild.id), allowed_mentions=discord.AllowedMentions.none())
+    view = ActivityEditView(ctx.author.id, ctx.guild.id, command_message=getattr(ctx, "message", None))
+    panel = await ctx.send(embed=embed, view=view, allowed_mentions=discord.AllowedMentions.none())
+    view.panel_message = panel
 
 @bot.command(name="editactivity", aliases=["activityedit"])
 async def editactivity(ctx, setting: str = None, *, value: str = None):
@@ -3942,7 +3967,9 @@ async def editactivity(ctx, setting: str = None, *, value: str = None):
     async def send(content=None, **kwargs):
         return await ctx.send(content, **kwargs)
 
-    await apply_activity_edit(ctx.guild, ctx.author, config, setting, value, send, ctx.message.channel_mentions)
+    changed = await apply_activity_edit(ctx.guild, ctx.author, config, setting, value, send, ctx.message.channel_mentions)
+    if changed:
+        await safe_delete_message(ctx.message)
 
 @bot.command(name="stopactivity", aliases=["activitystop"])
 async def stopactivity(ctx):
@@ -4246,6 +4273,7 @@ COMMAND_EXAMPLE_OVERRIDES = {
     "balancedashboard": ".balancedashboard 14",
     "bulkqueue": ".bulkqueue",
     "jobs": ".jobs",
+    "backgroundjobs": ".backgroundjobs",
     "errors": ".errors",
     "recover": ".recover",
     "dbaudit": ".dbaudit",
@@ -4667,7 +4695,7 @@ async def handle_returning_status(message):
 
 AI_SAFE_COMMANDS = {
     "help", "commands", "cmds", "games", "howtoplay", "how", "rules",
-    "bal", "balance", "cash", "bank", "safe", "vaultcash", "deposit", "withdraw", "tutorial", "tutorialmode", "tips", "recommendgame", "recgame", "whatgame", "suggestgame", "profile", "level", "lvl", "inventory", "inv",
+    "bal", "balance", "cash", "bank", "safe", "vaultcash", "deposit", "withdraw", "tutorial", "tutorialmode", "tips", "recommendgame", "recgame", "whatgame", "suggestgame", "career", "job", "profession", "workprofile", "jobs", "careers", "careerpaths", "joblist", "apply", "work", "shift", "worktask", "clockin", "profile", "level", "lvl", "inventory", "inv",
     "shop", "claimreminders", "claimreminder", "reminders", "dmreminders", "cooldowns", "cds", "quests", "transactions", "tx", "lb",
     "leaderboard", "gamestats", "achievements", "gamebalance", "gamehistory",
     "season", "seasonpass", "monthlychallenges", "pass", "spass", "limits", "riskprofile", "risk", "userrisk", "riskcheck", "economyhealth", "ecohealth", "moneyhealth", "supply",
@@ -4699,7 +4727,7 @@ AI_SUPEROWNER_ONLY_COMMANDS = {
     "add", "remove", "addtick", "removetick", "remtick", "deltick", "settick", "lotterypot", "lotteryprize", "prizepool", "setpot", "addpot", "removepot", "setquesos",
     "editlottery", "stoplottery", "qstats", "economystats", "qstatus", "economyhealth", "ecohealth", "moneyhealth", "supply", "balancedashboard", "ecodashboard", "moneydashboard", "sinkdashboard", "endseason", "rewardseason",
     "disable", "enable", "disableall", "enableall", "prefix", "preifx", "setprefix",
-    "settings", "setup", "setupbot", "config", "controlpanel", "panel", "setlogs", "slashsync", "auditcommands", "cmdaudit", "commandaudit", "styleaudit", "uiaudit", "messageaudit", "commandcleanup", "cleanupcommands", "cmdcleanup", "dbaudit", "databaseaudit", "jobs", "backgroundjobs", "tasks", "errors", "errorlog", "recover", "restorestate", "recovery", "aihistory", "aiactions", "actionhistory",
+    "settings", "setup", "setupbot", "config", "controlpanel", "panel", "setlogs", "slashsync", "auditcommands", "cmdaudit", "commandaudit", "styleaudit", "uiaudit", "messageaudit", "commandcleanup", "cleanupcommands", "cmdcleanup", "dbaudit", "databaseaudit", "backgroundjobs", "tasks", "bgjobs", "errors", "errorlog", "recover", "restorestate", "recovery", "aihistory", "aiactions", "actionhistory",
     "aisettings", "aiconfig", "aicontrols", "aiperms", "aipermissions", "aicapabilities", "aiauthority", "aiguard", "aicommandsafety", "aiignore", "ignoreai", "aiunignore", "unignoreai", "aistyle", "aipersonality",
     "block", "unblock", "shut", "unshut", "rshut", "unrshut", "lockdown", "reopen",
     "rlockdown", "runlock", "lock", "unlock", "clearwatchlist", "ban", "unban", "kick", "addrole",
@@ -6235,7 +6263,7 @@ async def on_command_error(ctx, error):
 HELP_CATEGORIES = {
     "Start Here": ["help", "games", "econhelp", "guide", "onboard", "tutorial", "recommendgame", "explain", "usersettings"],
     "𝚀𝚞𝚎wo Basics": [
-        "bal", "bank", "profile", "inventory", "settheme", "shop", "quests", "dailychallenge",
+        "bal", "bank", "career", "jobs", "work", "profile", "inventory", "settheme", "shop", "quests", "dailychallenge",
         "daily", "weekly", "monthly", "streaks", "cooldowns", "claimreminders", "transactions", "limits", "give",
     ],
     "𝚀𝚞𝚎wo Games": [
@@ -6262,7 +6290,7 @@ HELP_CATEGORIES = {
         "disable", "enable", "disableall", "enableall", "dclist", "listbans", "listblocks", "listtargets", "listcensors", "lists",
     ],
     "Diagnostics": [
-        "health", "perms", "sessions", "recover", "jobs", "errors", "dbaudit", "aidoctor", "perf",
+        "health", "perms", "sessions", "recover", "backgroundjobs", "bgjobs", "errors", "dbaudit", "aidoctor", "perf",
         "bulkqueue", "commandstats", "receipt", "aichannel",
     ],
 }
@@ -6305,7 +6333,7 @@ HELP_CATEGORY_ALIASES = {
 }
 HELP_CATEGORY_DESCRIPTIONS = {
     "Start Here": "Main menus and beginner guides.",
-    "𝚀𝚞𝚎wo Basics": "Money, claims, shop, profile, inventory, and transfers.",
+    "𝚀𝚞𝚎wo Basics": "Money, careers, claims, shop, profile, inventory, and transfers.",
     "𝚀𝚞𝚎wo Games": "Gambling, skill games, solo games, and robbing.",
     "𝚀𝚞𝚎wo Stats": "Leaderboards, achievements, lottery, seasons, and history.",
     "Social Games": "Party games, PvP games, flags, chess, and picker.",
@@ -7660,7 +7688,7 @@ async def bulkqueue_command(ctx):
     embed.set_footer(text="Bulk commands run through a shared queue so they do not block normal commands.")
     await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
-@bot.command(name="jobs", aliases=["backgroundjobs", "tasks"])
+@bot.command(name="backgroundjobs", aliases=["tasks", "bgjobs"])
 @is_admin_power()
 async def jobs_command(ctx, action: str = None):
     """Shows background jobs started by Pro𝚀𝚞𝚎."""
@@ -7677,7 +7705,7 @@ async def jobs_command(ctx, action: str = None):
         icon=economy_q_history,
     )
     embed.add_field(name="Jobs", value=joined_embed_value([public_job_snapshot(job) for job in rows[:12]], empty="No jobs tracked this restart.", limit=2500), inline=False)
-    embed.set_footer(text=f"Use {prefix_for_guild(ctx.guild)}jobs clear to remove finished jobs from this view.")
+    embed.set_footer(text=f"Use {prefix_for_guild(ctx.guild)}backgroundjobs clear to remove finished jobs from this view.")
     await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
 @bot.command(name="recover", aliases=["restorestate", "recovery"])
