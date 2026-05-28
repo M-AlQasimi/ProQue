@@ -5239,7 +5239,7 @@ async def send_error(ctx, text):
         pass
 
 async def send_owner_only(ctx):
-    await ctx.send(f"{Q_DENIED} Only {QUE_OWNER_DISPLAY} can use this.", allowed_mentions=discord.AllowedMentions.none())
+    await ctx.send(f"{Q_DENIED} You can't use that heh.", allowed_mentions=discord.AllowedMentions.none())
 
 async def send_bulk_progress(ctx, action, count):
     if int(count or 0) < 20:
@@ -9157,7 +9157,7 @@ async def add(ctx, *, args: str = None):
 
     if ctx.guild and is_everyone:
         if ctx.author.id != 885548126365171824:
-            await ctx.send(f"{Q_DENIED} Bulk `.add @everyone` is only for {QUE_OWNER_DISPLAY}.", allowed_mentions=discord.AllowedMentions.none())
+            await ctx.send(f"{Q_DENIED} You can't use that heh.", allowed_mentions=discord.AllowedMentions.none())
             return
         members = list(ctx.guild.members)
         user_ids = [m.id for m in members]
@@ -9202,7 +9202,7 @@ async def add(ctx, *, args: str = None):
 
     if role is not None:
         if ctx.author.id != 885548126365171824:
-            await ctx.send(f"{Q_DENIED} Bulk `.add @role` is only for {QUE_OWNER_DISPLAY}.", allowed_mentions=discord.AllowedMentions.none())
+            await ctx.send(f"{Q_DENIED} You can't use that heh.", allowed_mentions=discord.AllowedMentions.none())
             return
         members = list(role.members)
         if not members:
@@ -13434,7 +13434,7 @@ class EconomyAuditScopeView(discord.ui.View):
     async def interaction_check(self, interaction):
         if is_superowner_id(interaction.user.id):
             return True
-        await interaction.response.send_message("Only 𝚀𝚞𝚎 can switch audit scope.", ephemeral=True)
+        await interaction.response.send_message("You can't switch this audit scope.", ephemeral=True)
         return False
 
     @discord.ui.button(label="Server", emoji=Q_AUDIT, style=discord.ButtonStyle.primary)
@@ -14371,7 +14371,7 @@ async def replay_double_or_nothing_game(interaction, game_key, stake):
 # EXPLAIN
 # =====================
 EXPLANATIONS = {
-    "admin": f"Admin power means {QUE_OWNER_DISPLAY}, actual server owner, or Discord Administrator. Server owner outranks admins, and {QUE_OWNER_DISPLAY} is highest.",
+    "admin": "Admin power means the actual server owner or Discord Administrator for server tools.",
     "settings": "Admin-power command. Opens the server setup/control panel for prefix, logs, birthdays, activity reports, lottery status, disabled commands, and operations checks.",
     "setup": "Alias for `.settings`. Opens the server setup dashboard.",
     "controlpanel": "Alias for `.settings`. Opens the server setup/control panel.",
@@ -14481,8 +14481,8 @@ EXPLANATIONS = {
     "reminders": "Alias for `.claimreminders`. Manages DM claim reminders.",
     "transactions": "Shows recent 𝚀𝚞𝚎wo transactions. Use `.transactions` or `.transactions @user`.",
     "lottery": "Shows and refreshes the lottery ticket panel. First server run sets channel and draw period.",
-    "editlottery": "Server owner/admin command. Edits lottery price, duration, house cut, or channel, then refreshes the panel.",
-    "stoplottery": "Server owner/admin command. Stops this server's lottery and clears its tickets/config.",
+    "editlottery": f"{QUE_OWNER_DISPLAY} command. Edits lottery price, duration, house cut, or channel, then refreshes the panel.",
+    "stoplottery": f"{QUE_OWNER_DISPLAY} command. Stops this server's lottery and clears its tickets/config.",
     "lotterystats": "Shows lottery prize, tickets, players, next draw, paginated ticket holders, and panel link.",
     "tickets": "Shows your current lottery entries, odds, rank, and next draw.",
     "mytickets": "Alias for `.tickets`. Shows your current lottery entries.",
@@ -14575,14 +14575,14 @@ EXPLANATIONS = {
     "give": "Transfers quesos to another user. Target and amount can be in either order.",
     "lb": "Shows a paginated local/global leaderboard with ranking types for quesos, level, earnings, wins, losses, net gambling, and messages.",
     "leaderboard": "Shows a paginated local/global leaderboard with ranking types for quesos, level, earnings, wins, losses, net gambling, and messages.",
-    "qstats": "Admin-power command. Shows global 𝚀𝚞𝚎wo economy health, or use `.qstats @user` for that user's audit.",
+    "qstats": f"{QUE_OWNER_DISPLAY} command. Shows global 𝚀𝚞𝚎wo economy health, or use `.qstats @user` for that user's audit.",
     "economyhealth": "Alias for `.qstats`. Shows global 𝚀𝚞𝚎wo economy health.",
     "ecohealth": "Alias for `.qstats`. Shows global 𝚀𝚞𝚎wo economy health.",
     "moneyhealth": "Alias for `.qstats`. Shows global 𝚀𝚞𝚎wo economy health.",
     "supply": "Alias for `.qstats`. Shows global 𝚀𝚞𝚎wo economy health.",
     "economystats": "Alias for `.qstats`. Shows global 𝚀𝚞𝚎wo economy health.",
     "qstatus": "Alias for `.qstats`. Shows global 𝚀𝚞𝚎wo economy health.",
-    "economyaudit": "Admin-power command. Shows this server's economy audit signals. 𝚀𝚞𝚎 can switch between server and global scope, or use `.economyaudit @user` for one user's audit.",
+    "economyaudit": "Admin-power command. Shows this server's economy audit signals, or use `.economyaudit @user` for one user's audit.",
     "audit": "Alias for `.economyaudit`. Shows economy audit signals.",
     "qaudit": "Alias for `.economyaudit`. Shows economy audit signals.",
     "econaudit": "Alias for `.economyaudit`. Shows economy audit signals.",
@@ -14629,7 +14629,7 @@ EXPLANATIONS = {
     "dellevel": "Alias for `.removelvl`. Removes levels from users.",
     "setlvl": f"{QUE_OWNER_DISPLAY} command. Sets exact user levels and resets current XP to 0.",
     "setlevel": "Alias for `.setlvl`. Sets exact user levels.",
-    "disable": f"Admin-power command. Disables one bot command. {QUE_OWNER_DISPLAY} can still bypass disabled commands.",
+    "disable": "Admin-power command. Disables one bot command for the server.",
     "enable": "Admin-power command. Enables one disabled command.",
     "disableall": "Admin-power command. Disables all commands except enableall.",
     "enableall": "Admin-power command. Enables all commands again.",
@@ -14736,7 +14736,7 @@ EXPLANATIONS = {
     "authenticity": "Alias for `.aidetect`. Checks writing authenticity signals.",
     "authcheck": "Alias for `.aidetect`. Checks writing authenticity signals.",
     "essaycheck": "Alias for `.aidetect`. Checks AI-like essay patterns.",
-    "aimemory": f"Shows AI memory. Use `.aimemory`; {QUE_OWNER_DISPLAY} can inspect another user with `.aimemory @user`.",
+    "aimemory": "Shows your saved AI memory and bot profile context.",
     "aime": "Alias for `.aimemory`. Shows AI memory.",
     "memoryai": "Alias for `.aimemory`. Shows AI memory.",
     "whatyouknow": "Alias for `.aimemory`. Shows what the AI knows about a user.",
@@ -14798,10 +14798,10 @@ DETAILED_EXPLANATIONS = {
     "transactions": "Shows recent money movement including shop purchases, quest rewards, level rewards, transfer tax, admin changes, and lottery activity.",
     "limits": f"Shows your daily gambling loss safety limit. The bot warns near {int(DAILY_LOSS_WARNING_RATIO * 100)}% and blocks bets before daily losses exceed {int(DAILY_LOSS_HARD_RATIO * 100)}% of your current daily gambling bankroll. It also shows lottery round spending, your personal gambling cap, and any active gambling pause. Use `.limits set 50k`, `.limits pause 2h`, `.limits resume`, or `.limits clear`.",
     "lottery": f"Server lottery. First run asks the server owner or an admin for a channel and draw period, locks the channel, and posts a persistent ticket panel with buy buttons. Existing active lottery data is preserved when the panel is refreshed. The prize is the full current pot. Tickets cost {format_balance(LOTTERY_TICKET_COST)} and {int(LOTTERY_HOUSE_CUT * 100)}% is burned as a money sink. Users can spend up to {int(LOTTERY_MAX_BALANCE_SPEND_RATIO * 100)}% of their lottery-adjusted balance per round.",
-    "editlottery": "Server owner/admin command. Run `.editlottery` to open the edit UI, or use `.editlottery price 250000`, `.editlottery duration 12h`, `.editlottery cut 5`, or `.editlottery channel #lottery`. Duration resets the next draw timer. Channel posts a fresh lottery panel. Updates ping the lottery participant role.",
-    "stoplottery": "Server owner/admin command. Use `.stoplottery` to remove the lottery setup for this server, clear the current pot/tickets, and delete the participant role if the bot can. It leaves channels and panel messages alone.",
+    "editlottery": f"{QUE_OWNER_DISPLAY} command. Run `.editlottery` to open the edit UI, or use `.editlottery price 250000`, `.editlottery duration 12h`, `.editlottery cut 5`, or `.editlottery channel #lottery`. Duration resets the next draw timer. Channel posts a fresh lottery panel. Updates ping the lottery participant role.",
+    "stoplottery": f"{QUE_OWNER_DISPLAY} command. Use `.stoplottery` to remove the lottery setup for this server, clear the current pot/tickets, and delete the participant role if the bot can. It leaves channels and panel messages alone.",
     "lotterystats": "Shows the current lottery prize pot, total ticket count, number of players, participant role, next draw time, panel link, and paginated ticket holders with approximate odds.",
-    "tickets": f"Shows your current lottery entries, rank, current odds, round total entries, and next draw. {QUE_OWNER_DISPLAY} can inspect another user with `.tickets @user` or `.tickets <user id>`, which also shows how much that user spent in the current lottery round.",
+    "tickets": "Shows your current lottery entries, rank, current odds, round total entries, and next draw.",
     "buytick": f"Legacy text command for buying tickets for the configured server lottery. The lottery panel buttons are preferred because they send private confirmations and update the panel automatically. Each ticket costs {format_balance(LOTTERY_TICKET_COST)}. The prize is the full current lottery pot; every ticket is one entry. Ticket spending is capped at {int(LOTTERY_MAX_BALANCE_SPEND_RATIO * 100)}% of your lottery-adjusted balance for the current round, so earning or spending quesos changes how many more tickets you can buy.",
     "weekly": f"Gives a reward once every 7 days. Base reward is 20,000-30,000 {CURRENCY_EMOJI}. Your weekly streak adds a bonus after week 1.",
     "monthly": f"Gives a reward once every 30 days. Base reward is 40,000-60,000 {CURRENCY_EMOJI}. Your monthly streak adds a bigger bonus after month 1.",
@@ -14869,7 +14869,7 @@ DETAILED_EXPLANATIONS = {
     "leaderboard": "Alias for `.lb`. Shows local/global paginated rankings with selectable ranking types and your rank.",
     "qstats": "Admin-power command for checking the global 𝚀𝚞𝚎wo economy. It shows total money supply, total earned, gambling won/lost/net, active lotteries, lottery pots, ticket count, tracked taxes/payments, richest user, and tracked messages. If you pass a member, it redirects to that user's economy audit.",
     "economyhealth": "Alias for `.qstats`. Use it when you want the global money-supply health view instead of a specific user's audit.",
-    "economyaudit": "Admin-power economy audit page. Without a member, it shows a compact server-scoped audit: supply, 24h flow, lottery, tax/sink notes, game signals, and warnings. 𝚀𝚞𝚎 gets Server and Global buttons. With a member, it shows that user's compact balance, level, net gambling, daily loss usage, game signals, recent games, recent transactions, and warnings.",
+    "economyaudit": "Admin-power economy audit page. Without a member, it shows a compact server-scoped audit: supply, 24h flow, lottery, tax/sink notes, game signals, and warnings. With a member, it shows that user's compact balance, level, net gambling, daily loss usage, game signals, recent games, recent transactions, and warnings.",
     "add": f"{QUE_OWNER_DISPLAY}-only command. Adds new quesos to a user. `.add @user <amount>` and `.add <amount> @user` both work. {QUE_OWNER_DISPLAY} can use @everyone or a role. It does not support `all`. Sensitive changes generate a receipt ID.",
     "remove": f"{QUE_OWNER_DISPLAY}-only command. Removes quesos from a user. `.remove @user <amount>` and `.remove <amount> @user` both work. Use `all` to remove their full balance. Sensitive changes generate a receipt ID.",
     "addtick": f"{QUE_OWNER_DISPLAY}-only lottery admin command. Adds free entries to the current lottery. `.addtick @user <tickets>` and `.addtick <tickets> @user` both work, including roles and @everyone.",
@@ -14882,7 +14882,7 @@ DETAILED_EXPLANATIONS = {
     "addlvl": f"{QUE_OWNER_DISPLAY}-only level admin command. Adds whole levels while keeping current XP safely under the new level threshold. `.addlvl @user 2` and `.addlvl @role 1` work.",
     "removelvl": f"{QUE_OWNER_DISPLAY}-only level admin command. Removes whole levels without going below level 1. `.removelvl @user 2` and `.removelvl @role 1` work.",
     "setlvl": f"{QUE_OWNER_DISPLAY}-only level admin command. Sets the exact level and resets current XP to 0 for a clean profile state. `.setlvl @user 10`, `.setlvl @role 5`, and `.setlvl @user1 @user2 12` work.",
-    "prefix": f"Changes the command prefix for this server. Use `.prefix !` or `.preifx !`. If {QUE_OWNER_DISPLAY} is in the server, only {QUE_OWNER_DISPLAY} can change it. If not, the server owner or admins can change it.",
+    "prefix": "Changes the command prefix for this server. Use `.prefix !` or `.preifx !`. Prefix changes are permission-gated.",
     "preifx": "Typo alias for `.prefix`. Changes the command prefix for this server.",
     "setbdaychannel": "Sets the birthday announcement channel for this server. Use `.setbdaychannel #birthdays` or `.setbdaychannel <channel id>`. Users keep one birthday date globally, and the bot announces it in every server where they are still a member and a birthday channel is configured.",
     "activity": "Shows the daily activity report status for this server, including report channel, next report time, and current top 5. Use `.activity setup` to set or change the report channel. Every 24 hours, the bot posts the top 5 members by tracked messages since the last report, then resets that server's activity window.",
@@ -14893,7 +14893,7 @@ DETAILED_EXPLANATIONS = {
     "endactivity": "Admin command. Use `.endactivity` to finish the current report immediately. It clears the report channel, posts the previous activity winners, starts a fresh 24-hour activity window, and keeps activity reports enabled.",
     "stopactivity": "Admin command. Use `.stopactivity` to disable daily activity reports for this server and clear the current tracked activity window.",
     "timer": "Starts a live countdown and pings you when it ends. The time can come before or after the title: `.timer 10m study`, `.timer study 10m`, `.timer 1h 20m`, or `.timer 30s`. Use `.ctimer` to cancel one of your active timers.",
-    "ctimer": f"Opens a menu of your active timers so you can cancel one. {QUE_OWNER_DISPLAY} can cancel any active timer.",
+    "ctimer": "Opens a menu of your active timers so you can cancel one.",
     "alarm": "Sets a one-off alarm and pings you when it is due. Relative times work, like `.alarm 1h feed cat`; dates work too, like `.alarm 25/12`, `.alarm 25/12 18:00`, or `.alarm 25/12/2026 18:30 travel`. Absolute dates/times use UTC.",
     "poll": "Creates a reaction poll. For a yes/no poll, use `.poll Is this good?`. For custom choices, use `.poll Best color? blue red`, `.poll Best color? \"light blue\" red`, or `.poll Best color? | Blue | Red | 10m`. A final time like `10m`, `2h`, or `1d` makes the poll end automatically.",
     "epoll": "Opens a menu to end one of your active polls. Admin-power users can end any active poll in the server.",
@@ -14905,7 +14905,7 @@ DETAILED_EXPLANATIONS = {
     "ask": "Asks Pro𝚀𝚞𝚎's AI a question. The AI answers from its model knowledge, bot context, reply context, and saved memory; live web search is not connected.",
     "summarize": "Summarizes recent messages from the current channel, a mentioned channel, a specific user, or a time/message window. Examples: `.summarize`, `.summarize 50 messages`, `.summarize @user today`, `.summarize #general last 2 hours`. Mention or reply to Pro𝚀𝚞𝚎 with a natural request like `summarize what @user said today` and it will run directly without asking for confirmation.",
     "aidetect": "Writing authenticity check for essays and long text. Use `.aidetect <text>` or reply to text with `.aidetect`. It returns Low/Medium/High AI-like likelihood, a score, signals, and next-step suggestions. It never treats the result as proof because AI detectors can falsely flag human writing and miss edited AI writing.",
-    "aimemory": f"Shows the AI memory attached to a Discord user, including explicit remembered facts and bot-saved profile details. AI memory stays on so Pro𝚀𝚞𝚎 can keep context and bot help consistent. Normal users can use `.aimemory` for themselves. {QUE_OWNER_DISPLAY} can inspect another user with `.aimemory @user` or `.aimemory <user id>`.",
+    "aimemory": "Shows the AI memory attached to your Discord user, including explicit remembered facts and bot-saved profile details. AI memory stays on so Pro𝚀𝚞𝚎 can keep context and bot help consistent.",
     "aiknow": "Debug/helper command that shows exactly what Pro𝚀𝚞𝚎's AI knows about a command from the live command registry, aliases, help text, permission note, and detailed explanation data.",
     "aidoctor": "Admin-power bot doctor panel. Shows task health, 𝚀𝚞𝚎wo DB status, slash sync status, active sessions, disabled commands, and slow command stats. Useful when replying to errors and asking the AI to diagnose them.",
     "translate": "Translates provided text or the message you reply to. Friendly forms work: `.translate hello to Italian`, `.translate to Spanish hello`, `.translate it hello`, or reply to a message with `.translate to Spanish`. If no target is given, it translates to English.",
@@ -14934,17 +14934,15 @@ DETAILED_EXPLANATIONS = {
 
 ECONHELP_COMMANDS = [
     ("Start", ["guide", "onboard", "tutorial", "recommendgame", "bal", "profile", "bank", "inventory", "career", "jobs", "work"]),
-    ("Claims", ["daily", "weekly", "monthly", "streaks", "claimreminders", "cooldowns", "quests", "dailychallenge"]),
-    ("Shop", ["shop", "settheme", "achievements", "setbadge", "seasonpass"]),
+    ("Money", ["daily", "weekly", "monthly", "streaks", "claimreminders", "cooldowns", "quests", "dailychallenge", "shop", "settheme", "give"]),
     ("Lottery", ["lottery", "tickets", "buytick", "lotterystats"]),
     ("Games", ["cf", "roulette", "slots", "blackjack", "scratch", "tower", "vault", "memory", "cardladder", "lockpick", "heist", "diceduel", "cases", "plinko", "luckynumber", "jackpotspin", "dungeon", "ms", "wheel", "rob"]),
-    ("Stats", ["lb", "gamestats", "gamehistory", "season", "transactions", "limits", "riskprofile", "gamebalance"]),
-    ("Transfers", ["give"]),
+    ("Progress", ["lb", "gamestats", "achievements", "setbadge", "gamehistory", "season", "seasonpass", "transactions", "limits", "riskprofile", "gamebalance"]),
     ("Help", ["econhelp", "explain"]),
 ]
 ECONHELP_ADMIN_COMMANDS = [
-    "quewochannel", "levelupchannel", "robsettings", "editlottery", "stoplottery",
-    "event", "gameaudit", "balanceaudit", "economyaudit", "abuseaudit",
+    "quewochannel", "levelupchannel", "robsettings", "event",
+    "gameaudit", "balanceaudit", "economyaudit", "abuseaudit",
 ]
 ECONHELP_SUPEROWNER_COMMANDS = [
     "add", "remove", "addtick", "removetick", "settick", "lotterypot", "setquesos",
@@ -15025,9 +15023,11 @@ async def econhelp(ctx):
         if filtered:
             visible_econhelp_commands.append((category, filtered))
     if is_admin or is_que:
-        visible_econhelp_commands.append(("Server Settings", ECONHELP_ADMIN_COMMANDS))
+        admin_filtered = [name for name in ECONHELP_ADMIN_COMMANDS if is_que or not is_econ_superowner_hidden(name)]
+        if admin_filtered:
+            visible_econhelp_commands.append(("Server Settings", admin_filtered))
     if is_que:
-        visible_econhelp_commands.append(("Superowner", ECONHELP_SUPEROWNER_COMMANDS))
+        visible_econhelp_commands.append(("𝚀𝚞𝚎 Only", ECONHELP_SUPEROWNER_COMMANDS))
 
     def build_embed(category_name="Core", page=0):
         selected = next(

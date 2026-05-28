@@ -834,7 +834,7 @@ def command_permission_note(command):
     names = {name, *aliases}
     if names & SUPEROWNER_HIDDEN_COMMANDS:
         return f"{QUE_OWNER_DISPLAY} only."
-    if name in set(HELP_CATEGORIES.get("Admin", [])) or name in set(HELP_CATEGORIES.get("Server Tools", [])):
+    if any(name in {item.casefold() for item in HELP_CATEGORIES.get(category, [])} for category in ADMIN_HELP_CATEGORIES):
         return "Requires admin/server-owner power unless the command itself says otherwise."
     if name in {"editlottery", "stoplottery", "editactivity", "endactivity", "stopactivity"}:
         return "Server owner/admin command."
@@ -1328,9 +1328,9 @@ def command_denial_detail(ctx, error=None):
         "aihistory", "auditcommands", "styleaudit", "commandcleanup", "permaudit", "receipts", "aiguard",
     }
     if command_name in que_only:
-        return f"Only {QUE_OWNER_DISPLAY} can use this."
+        return "This command is not available here."
     if ctx.guild:
-        return f"Only admins, the server owner, or {QUE_OWNER_DISPLAY} can use this."
+        return "Admin power only."
     return "This command can only be used somewhere you have permission."
 
 active_timers = load_active_timers()
@@ -3150,7 +3150,7 @@ async def set_birthday_channel(ctx, *, channel_arg: str = None):
     if ctx.guild is None:
         return await ctx.send("Birthday channels only work in servers.")
     if not await can_manage_birthday_channel(ctx.author, ctx.guild):
-        return await ctx.send(f"Only the person who added me, an admin, the server owner, or {QUE_OWNER_DISPLAY} can set the birthday channel.", allowed_mentions=discord.AllowedMentions.none())
+        return await ctx.send("Only the person who added me, the server owner, or an admin can set the birthday channel.", allowed_mentions=discord.AllowedMentions.none())
 
     if channel_arg:
         channel = await resolve_server_channel(ctx.guild, channel_arg, ctx.message.channel_mentions)
@@ -3193,7 +3193,7 @@ async def activity(ctx, action: str = None):
         return
 
     if not await can_manage_activity_channel(ctx.author, ctx.guild):
-        return await ctx.send(f"Only the person who added me, an admin, the server owner, or {QUE_OWNER_DISPLAY} can set the activity channel.", allowed_mentions=discord.AllowedMentions.none())
+        return await ctx.send("Only the person who added me, the server owner, or an admin can set the activity channel.", allowed_mentions=discord.AllowedMentions.none())
 
     async def save_activity_channel(selected_channel, user_id):
         return await save_activity_report_config(ctx.guild, selected_channel, user_id)
@@ -3958,7 +3958,7 @@ async def editactivity(ctx, setting: str = None, *, value: str = None):
     if ctx.guild is None:
         return await ctx.send("Activity report editing only works in servers.")
     if not await can_manage_activity_channel(ctx.author, ctx.guild):
-        return await ctx.send(f"Only the person who added me, an admin, the server owner, or {QUE_OWNER_DISPLAY} can edit activity reports.", allowed_mentions=discord.AllowedMentions.none())
+        return await ctx.send("Only the person who added me, the server owner, or an admin can edit activity reports.", allowed_mentions=discord.AllowedMentions.none())
 
     config = guild_activity_channels.get(ctx.guild.id)
     if config is None:
@@ -3985,7 +3985,7 @@ async def stopactivity(ctx):
     if ctx.guild is None:
         return await ctx.send("Activity report stopping only works in servers.")
     if not await can_manage_activity_channel(ctx.author, ctx.guild):
-        return await ctx.send(f"Only the person who added me, an admin, the server owner, or {QUE_OWNER_DISPLAY} can stop activity reports.", allowed_mentions=discord.AllowedMentions.none())
+        return await ctx.send("Only the person who added me, the server owner, or an admin can stop activity reports.", allowed_mentions=discord.AllowedMentions.none())
 
     saved_configs = await asyncio.to_thread(load_guild_activity_channels)
     if saved_configs:
@@ -4022,7 +4022,7 @@ async def endactivity(ctx):
     if ctx.guild is None:
         return await ctx.send("Activity report ending only works in servers.")
     if not await can_manage_activity_channel(ctx.author, ctx.guild):
-        return await ctx.send(f"Only the person who added me, an admin, the server owner, or {QUE_OWNER_DISPLAY} can end the current activity report.", allowed_mentions=discord.AllowedMentions.none())
+        return await ctx.send("Only the person who added me, the server owner, or an admin can end the current activity report.", allowed_mentions=discord.AllowedMentions.none())
 
     saved_configs = await asyncio.to_thread(load_guild_activity_channels)
     if saved_configs:
@@ -4952,7 +4952,7 @@ async def maybe_run_ai_command(message, question):
     command_keys = {command.name.casefold(), *(alias.casefold() for alias in getattr(command, "aliases", []) or [])}
     if command_keys & AI_SUPEROWNER_ONLY_COMMANDS and not has_super_owner_power(message.author, message.guild):
         await message.reply(
-            denial_message(f"Only {QUE_OWNER_DISPLAY} can make me change bot/server controls through AI."),
+            denial_message("This bot control is not available here."),
             mention_author=False,
             allowed_mentions=discord.AllowedMentions.none(),
         )
@@ -5784,7 +5784,7 @@ async def maybe_run_ai_batch_action(message, question):
         clear_ai_batch_draft(message)
         record_ai_action(message, "batch reward denied", "not superowner", False)
         await message.reply(
-            f"Only {QUE_OWNER_DISPLAY} can make me do batch 𝚀𝚞𝚎wo edits.",
+            denial_message("Batch 𝚀𝚞𝚎wo edits are not available here."),
             mention_author=False,
             allowed_mentions=discord.AllowedMentions.none(),
         )
@@ -6000,7 +6000,7 @@ async def on_message(message):
                         target = mentioned_users[0]
                     else:
                         await message.reply(
-                            denial_message(f"Only {QUE_OWNER_DISPLAY} can inspect someone else's AI memory."),
+                            denial_message("You can only inspect your own AI memory."),
                             mention_author=False,
                             allowed_mentions=discord.AllowedMentions.none(),
                         )
@@ -6269,41 +6269,41 @@ async def on_command_error(ctx, error):
             await ctx.send(denial_message("Something went wrong while running this command. Try the help command for the right usage."), allowed_mentions=discord.AllowedMentions.none())
 
 HELP_CATEGORIES = {
-    "Start Here": ["help", "games", "econhelp", "guide", "onboard", "tutorial", "recommendgame", "explain", "usersettings"],
-    "𝚀𝚞𝚎wo Basics": [
-        "bal", "bank", "career", "jobs", "work", "profile", "inventory", "settheme", "shop", "quests", "dailychallenge",
-        "daily", "weekly", "monthly", "streaks", "cooldowns", "claimreminders", "transactions", "limits", "give",
+    "Start Here": ["help", "games", "econhelp", "guide", "onboard", "tutorial", "recommendgame", "explain"],
+    "𝚀𝚞𝚎wo": [
+        "bal", "bank", "profile", "inventory", "shop", "career", "jobs", "work",
+        "daily", "weekly", "monthly", "quests", "dailychallenge", "give", "lottery", "tickets", "buytick",
     ],
-    "𝚀𝚞𝚎wo Games": [
+    "Games": [
         "cf", "roulette", "slots", "blackjack", "scratch", "tower", "vault", "memory", "cardladder", "lockpick",
         "heist", "diceduel", "cases", "plinko", "luckynumber", "jackpotspin", "ms", "wheel", "dungeon", "rob",
     ],
-    "𝚀𝚞𝚎wo Stats": [
+    "Progress": [
         "lb", "gamestats", "achievements", "setbadge", "gamehistory", "season", "seasonpass",
-        "lottery", "buytick", "lotterystats", "riskprofile",
+        "transactions", "limits", "riskprofile", "cooldowns", "streaks", "claimreminders",
     ],
-    "Social Games": ["games", "howtoplay", "truthordare", "flagquiz", "flagstats", "ttt", "c4", "chess", "move", "resign", "q", "picker"],
-    "Utility": ["userinfo", "pfp", "calc", "define", "timer", "ctimer", "alarm", "poll", "epoll", "translate", "find"],
+    "Social": ["truthordare", "flagquiz", "flagstats", "ttt", "c4", "chess", "move", "resign", "q", "picker"],
+    "Tools": ["userinfo", "pfp", "calc", "define", "timer", "ctimer", "alarm", "poll", "epoll", "translate", "find", "snipe"],
     "AI": ["ask", "summarize", "aidetect", "generate", "analyse", "aimemory", "aiknow", "usersettings"],
     "Community": ["afk", "sleep", "wake", "away", "setbday", "removebday", "activity", "activitystats", "messages"],
-    "Snipes": ["snipe", "dsnipe", "esnipe", "rsnipe"],
-    "Server Setup": [
-        "settings", "setlogs", "prefix", "setbdaychannel", "activity", "editactivity", "endactivity", "stopactivity",
-        "messageevent", "todchannel", "quewochannel", "levelupchannel", "robsettings", "editlottery", "stoplottery",
+    "Admin Setup": [
+        "settings", "setlogs", "prefix", "setbdaychannel", "editactivity", "endactivity", "stopactivity",
+        "messageevent", "todchannel", "quewochannel", "levelupchannel", "robsettings", "aichannel",
     ],
     "Moderation": [
         "rolesinfo", "roleinfo", "purge", "rpurge", "steal", "fwd", "quote", "archive",
         "giveaway", "setnick", "unmute", "kick", "ban", "unban", "addrole", "removerole", "deleterole",
         "lock", "unlock", "lockdown", "reopen", "rlockdown", "runlock", "shut", "unshut",
-        "disable", "enable", "disableall", "enableall", "dclist", "listbans", "listblocks", "listtargets", "listcensors", "lists",
+        "disable", "enable", "disableall", "enableall", "dclist",
     ],
     "Diagnostics": [
-        "health", "perms", "sessions", "recover", "backgroundjobs", "bgjobs", "errors", "dbaudit", "aidoctor", "perf",
-        "bulkqueue", "commandstats", "receipt", "aichannel",
+        "health", "perms", "sessions", "recover", "backgroundjobs", "errors", "dbaudit", "aidoctor", "perf",
+        "bulkqueue", "commandstats", "receipt",
     ],
 }
 SUPEROWNER_HELP_COMMANDS = [
     "add", "remove", "addtick", "removetick", "settick", "lotterypot", "setquesos",
+    "addxp", "removexp", "addlvl", "removelvl", "setlvl",
     "editlottery", "stoplottery", "qstats", "economyhealth", "balancedashboard", "endseason",
     "send", "reply", "fsleep", "wake", "clearwatchlist",
         "aisettings", "aiperms", "aiignore", "aiunignore", "aistyle",
@@ -6312,49 +6312,50 @@ SUPEROWNER_HELP_COMMANDS = [
 SUPEROWNER_HIDDEN_COMMANDS = {
     *SUPEROWNER_HELP_COMMANDS,
     "remtick", "deltick", "lotteryprize", "prizepool", "setpot", "addpot", "removepot",
+    "givexp", "remxp", "delxp", "addlevel", "removelvls", "remlevel", "removelevel", "dellvl", "dellevel", "setlevel",
     "economystats", "qstatus", "ecohealth", "moneyhealth", "supply", "rewardseason",
-    "ignoreai", "unignoreai", "aipermissions", "aicapabilities", "aiauthority", "aipersonality",
+    "aiconfig", "aicontrols", "ignoreai", "unignoreai", "aipermissions", "aicapabilities", "aiauthority", "aipersonality",
     "aiactions", "actionhistory", "cmdaudit", "commandaudit", "uiaudit", "messageaudit", "cleanupcommands", "cmdcleanup", "ecodashboard", "moneydashboard", "sinkdashboard", "permsaudit", "permissionaudit", "sensitiveaudit", "receiptlist", "txreceipts", "aicommandsafety",
 }
 HELP_CATEGORY_ALIASES = {
-    "quewo": "𝚀𝚞𝚎wo Basics",
-    "𝚀𝚞𝚎wo": "𝚀𝚞𝚎wo Basics",
-    "gambling": "𝚀𝚞𝚎wo Games",
-    "economy": "𝚀𝚞𝚎wo Basics",
-    "eco": "𝚀𝚞𝚎wo Basics",
-    "money": "𝚀𝚞𝚎wo Basics",
-    "casino": "𝚀𝚞𝚎wo Games",
-    "betting": "𝚀𝚞𝚎wo Games",
-    "stats": "𝚀𝚞𝚎wo Stats",
-    "leaderboards": "𝚀𝚞𝚎wo Stats",
-    "social": "Social Games",
-    "snipe": "Snipes",
-    "snipes": "Snipes",
-    "setup": "Server Setup",
-    "config": "Server Setup",
-    "admin": "Server Setup",
+    "quewo": "𝚀𝚞𝚎wo",
+    "𝚀𝚞𝚎wo": "𝚀𝚞𝚎wo",
+    "economy": "𝚀𝚞𝚎wo",
+    "eco": "𝚀𝚞𝚎wo",
+    "money": "𝚀𝚞𝚎wo",
+    "gambling": "Games",
+    "casino": "Games",
+    "betting": "Games",
+    "stats": "Progress",
+    "leaderboards": "Progress",
+    "social": "Social",
+    "fun": "Social",
+    "snipe": "Tools",
+    "snipes": "Tools",
+    "setup": "Admin Setup",
+    "config": "Admin Setup",
+    "admin": "Admin Setup",
     "mod": "Moderation",
     "moderation": "Moderation",
-    "tools": "Utility",
+    "tools": "Tools",
     "doctor": "Diagnostics",
     "debug": "Diagnostics",
 }
 HELP_CATEGORY_DESCRIPTIONS = {
     "Start Here": "Main menus and beginner guides.",
-    "𝚀𝚞𝚎wo Basics": "Money, careers, claims, shop, profile, inventory, and transfers.",
-    "𝚀𝚞𝚎wo Games": "Gambling, skill games, solo games, and robbing.",
-    "𝚀𝚞𝚎wo Stats": "Leaderboards, achievements, lottery, seasons, and history.",
-    "Social Games": "Party games, PvP games, flags, chess, and picker.",
-    "Utility": "Timers, polls, calculator, definitions, translation, and message tools.",
+    "𝚀𝚞𝚎wo": "Money, careers, claims, shop, profile, lottery, and transfers.",
+    "Games": "Gambling, skill games, solo games, and robbing.",
+    "Progress": "Leaderboards, achievements, seasons, history, limits, and reminders.",
+    "Social": "Party games, PvP games, flags, chess, and picker.",
+    "Tools": "Timers, polls, snipes, calculator, definitions, translation, and user lookup.",
     "AI": "Chat, summaries, image analysis, AI detector, and AI memory.",
     "Community": "AFK, sleep, birthdays, activity, and message stats.",
-    "Snipes": "Deleted, edited, and reaction snipes.",
-    "Server Setup": "Server configuration for admins.",
+    "Admin Setup": "Server configuration for admins.",
     "Moderation": "Moderation, snipes, roles, locks, and cleanup.",
     "Diagnostics": "Health, recovery, errors, performance, and audit tools.",
-    "Superowner": "Hidden 𝚀𝚞𝚎-only controls.",
+    "𝚀𝚞𝚎 Only": "Hidden owner controls shown only to 𝚀𝚞𝚎.",
 }
-ADMIN_HELP_CATEGORIES = {"Server Setup", "Moderation", "Diagnostics"}
+ADMIN_HELP_CATEGORIES = {"Admin Setup", "Moderation", "Diagnostics"}
 
 def is_superowner_help_command(command_or_name):
     names = {str(command_or_name).casefold()}
@@ -6389,7 +6390,7 @@ def help_categories_for(user=None, guild=None):
         if filtered:
             visible[category] = filtered
     if can_see_superowner_help(user, guild):
-        visible["Superowner"] = SUPEROWNER_HELP_COMMANDS
+        visible["𝚀𝚞𝚎 Only"] = SUPEROWNER_HELP_COMMANDS
     return visible
 
 def prefix_for_guild(guild):
@@ -6445,11 +6446,14 @@ def _render_help_embed_uncached(guild=None, category_name=None, page=0, per_page
         color=discord.Color.blurple(),
         icon=economy_q_book,
     )
+    ai_starts = [f"`{current_prefix}ask`", f"`{current_prefix}aimemory`", f"`{current_prefix}aiknow <command>`"]
+    if viewer and guild and has_owner_power(viewer, guild):
+        ai_starts.append(f"`{current_prefix}aidoctor`")
     embed.add_field(
         name="AI Chatbot",
         value=(
-            f"Mention or reply to Pro𝚀𝚞𝚎 for natural chat, bot help, command planning, memory, and troubleshooting. "
-            f"Try `{current_prefix}ask`, `{current_prefix}aimemory`, `{current_prefix}aiknow <command>`, or `{current_prefix}aidoctor`."
+            "Mention or reply to Pro𝚀𝚞𝚎 for natural chat, bot help, command planning, memory, and troubleshooting. "
+            f"Try {', '.join(ai_starts)}."
         ),
         inline=False,
     )
@@ -6467,8 +6471,9 @@ def _render_help_embed_uncached(guild=None, category_name=None, page=0, per_page
 def render_help_embed(guild=None, category_name=None, page=0, per_page=10, viewer=None):
     prefix = prefix_for_guild(guild)
     is_que = can_see_superowner_help(viewer, guild) if viewer else False
+    is_admin_view = bool(viewer and guild and has_owner_power(viewer, guild))
     command_count = len(bot.commands)
-    key = (getattr(guild, "id", 0), prefix, bool(is_que), category_name or "", int(page or 0), int(per_page or 10), command_count)
+    key = (getattr(guild, "id", 0), prefix, bool(is_que), bool(is_admin_view), category_name or "", int(page or 0), int(per_page or 10), command_count)
     now = time.monotonic()
     cached = help_render_cache.get(key)
     if cached and now - cached[0] < HELP_RENDER_CACHE_TTL:
@@ -6533,7 +6538,7 @@ def command_permission_label(command):
     aliases = set(getattr(command, "aliases", []) or [])
     names = {name, *aliases}
     admin_names = (
-        set(HELP_CATEGORIES.get("Server Setup", []))
+        set(HELP_CATEGORIES.get("Admin Setup", []))
         | set(HELP_CATEGORIES.get("Moderation", []))
         | set(HELP_CATEGORIES.get("Diagnostics", []))
     )
@@ -6554,18 +6559,29 @@ def command_input_label(command):
         return f"`{command.signature}`"
     return "No input needed"
 
-class HelpCategoryButton(Button):
-    def __init__(self, category_name):
-        super().__init__(label=category_name, style=discord.ButtonStyle.secondary)
-        self.category_name = category_name
+class HelpCategorySelect(Select):
+    def __init__(self, viewer, guild, selected=None):
+        options = []
+        for category, names in help_categories_for(viewer, guild).items():
+            options.append(discord.SelectOption(
+                label=category,
+                value=category,
+                description=HELP_CATEGORY_DESCRIPTIONS.get(category, "Command category.")[:100],
+                default=category == selected,
+            ))
+        super().__init__(placeholder="Choose a help category", min_values=1, max_values=1, options=options[:25])
 
     async def callback(self, interaction: discord.Interaction):
         view = self.view
         if interaction.user.id != view.author_id:
             return await interaction.response.send_message("Use your own help menu.", ephemeral=True)
-        view.category_name = self.category_name
+        view.category_name = self.values[0]
         view.page = 0
-        await interaction.response.edit_message(embed=render_help_embed(interaction.guild, self.category_name, view.page, viewer=interaction.user), view=view)
+        view.rebuild(interaction.user, interaction.guild)
+        await interaction.response.edit_message(
+            embed=render_help_embed(interaction.guild, view.category_name, view.page, viewer=interaction.user),
+            view=view,
+        )
 
 class HelpHomeButton(Button):
     def __init__(self):
@@ -6577,6 +6593,7 @@ class HelpHomeButton(Button):
             return await interaction.response.send_message("Use your own help menu.", ephemeral=True)
         view.category_name = None
         view.page = 0
+        view.rebuild(interaction.user, interaction.guild)
         await interaction.response.edit_message(embed=render_help_embed(interaction.guild, viewer=interaction.user), view=view)
 
 class HelpPageButton(Button):
@@ -6607,6 +6624,7 @@ class HelpRefreshButton(Button):
         if interaction.user.id != view.author_id:
             return await interaction.response.send_message("Use your own help menu.", ephemeral=True)
         clear_help_cache()
+        view.rebuild(interaction.user, interaction.guild)
         await interaction.response.edit_message(
             embed=render_help_embed(interaction.guild, view.category_name, view.page, viewer=interaction.user),
             view=view,
@@ -6619,12 +6637,15 @@ class HelpView(View):
         self.category_name = category_name
         self.page = 0
         viewer = bot.get_user(author_id) or discord.Object(id=author_id)
+        self.rebuild(viewer, guild)
+
+    def rebuild(self, viewer, guild):
+        self.clear_items()
+        self.add_item(HelpCategorySelect(viewer, guild, self.category_name))
         self.add_item(HelpHomeButton())
         self.add_item(HelpPageButton(-1))
         self.add_item(HelpPageButton(1))
         self.add_item(HelpRefreshButton())
-        for category in help_categories_for(viewer, guild):
-            self.add_item(HelpCategoryButton(category))
 
 def command_search_results(query, viewer=None, guild=None):
     query = (query or "").strip().casefold()
@@ -6824,7 +6845,7 @@ class SettingsView(View):
     @discord.ui.button(label="Logs", emoji=economy_q_archive, style=discord.ButtonStyle.secondary)
     async def logs_button(self, interaction, button):
         if not has_owner_power(interaction.user, interaction.guild):
-            return await interaction.response.send_message(denial_message(f"Only admins, the server owner, or {QUE_OWNER_DISPLAY} can use this."), ephemeral=True)
+            return await interaction.response.send_message(denial_message("Admin power only."), ephemeral=True)
         await interaction.response.defer()
         current = get_guild_log_config(interaction.guild.id) or {}
         reaction_id = current.get("reaction_log_channel_id") or interaction.channel.id
@@ -6838,7 +6859,7 @@ class SettingsView(View):
     @discord.ui.button(label="Reaction Logs Here", emoji=economy_q_reaction, style=discord.ButtonStyle.secondary)
     async def reaction_logs_button(self, interaction, button):
         if not has_owner_power(interaction.user, interaction.guild):
-            return await interaction.response.send_message(denial_message(f"Only admins, the server owner, or {QUE_OWNER_DISPLAY} can use this."), ephemeral=True)
+            return await interaction.response.send_message(denial_message("Admin power only."), ephemeral=True)
         await interaction.response.defer()
         current = get_guild_log_config(interaction.guild.id) or {}
         log_id = current.get("log_channel_id") or interaction.channel.id
@@ -6927,35 +6948,39 @@ class SettingsView(View):
     @discord.ui.button(label="Lottery Panel", emoji=economy_q_ticket, style=discord.ButtonStyle.secondary)
     async def lottery_button(self, interaction, button):
         prefix = prefix_for_guild(interaction.guild)
-        await interaction.response.send_message(
-            f"Use `{prefix}lottery` to open or create the lottery panel.\n"
-            f"Use `{prefix}editlottery channel #{interaction.channel.name}` to move the current lottery here.",
-            ephemeral=True,
-            allowed_mentions=discord.AllowedMentions.none(),
-        )
+        lines = [f"Use `{prefix}lottery` to open or create the lottery panel."]
+        if can_see_superowner_help(interaction.user, interaction.guild):
+            lines.append(f"Use `{prefix}editlottery channel #{interaction.channel.name}` to move the current lottery here.")
+        await interaction.response.send_message("\n".join(lines), ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
 
     @discord.ui.button(label="Admin Commands", emoji=economy_q_command_check, style=discord.ButtonStyle.secondary)
     async def admin_commands_button(self, interaction, button):
         prefix = prefix_for_guild(interaction.guild)
+        lines = [
+            "Quick setup guide:",
+            f"`{prefix}prefix <new>` - change prefix",
+            f"`{prefix}setlogs` - setup logs",
+            f"`{prefix}setbdaychannel #channel` - birthdays",
+            f"`{prefix}activity setup` - activity reports",
+            f"`{prefix}todchannel set #channel` - Truth or Dare channels",
+            f"`{prefix}lottery` - lottery panel",
+            f"`{prefix}quewochannel here/off` - restrict 𝚀𝚞𝚎wo channel",
+            f"{economy_q_bank} `{prefix}bank` - protected cash",
+            f"{economy_q_rob} `{prefix}robsettings on/off` - server robbing",
+            f"`{prefix}disable <command>` / `{prefix}enable <command>` - command access",
+            f"`{prefix}commandstats` - command usage",
+            f"`{prefix}jobs` / `{prefix}errors` - operations checks",
+            f"`{prefix}receipt <id>` - review sensitive action receipts",
+            f"`{prefix}economyaudit` - economy audit",
+            f"`{prefix}aichannel on/off` - server AI replies",
+        ]
+        if can_see_superowner_help(interaction.user, interaction.guild):
+            lines.extend([
+                f"`{prefix}editlottery <setting> <value>` - lottery settings",
+                f"`{prefix}aisettings` - AI controls",
+            ])
         await interaction.response.send_message(
-            "Quick setup guide:\n"
-            f"`{prefix}prefix <new>` - change prefix\n"
-            f"`{prefix}setlogs` - setup logs\n"
-            f"`{prefix}setbdaychannel #channel` - birthdays\n"
-            f"`{prefix}activity setup` - activity reports\n"
-            f"`{prefix}todchannel set #channel` - Truth or Dare channels\n"
-            f"`{prefix}lottery` - lottery panel\n"
-            f"`{prefix}editlottery <setting> <value>` - lottery settings\n"
-            f"`{prefix}quewochannel here/off` - restrict 𝚀𝚞𝚎wo channel\n"
-            f"{economy_q_bank} `{prefix}bank` - protected cash\n"
-            f"{economy_q_rob} `{prefix}robsettings on/off` - server robbing\n"
-            f"`{prefix}disable <command>` / `{prefix}enable <command>` - command access\n"
-            f"`{prefix}commandstats` - command usage\n"
-            f"`{prefix}jobs` / `{prefix}errors` - operations checks\n"
-            f"`{prefix}receipt <id>` - review sensitive action receipts\n"
-            f"`{prefix}economyaudit` - economy audit\n"
-            f"`{prefix}aichannel on/off` - server AI replies\n"
-            f"`{prefix}aisettings` - AI controls for {QUE_OWNER_DISPLAY}",
+            "\n".join(lines),
             ephemeral=True,
         )
 
@@ -6969,22 +6994,28 @@ class SettingsView(View):
         )
         embed.add_field(name="Core", value=f"`{prefix}prefix <new>`\n`{prefix}setlogs`\n`{prefix}settings`\n{economy_q_tutorial} `{prefix}tutorial`", inline=True)
         embed.add_field(name="Community", value=f"`{prefix}setbdaychannel #channel`\n`{prefix}activity setup`\n`{prefix}todchannel`\n`{prefix}messages`", inline=True)
+        quewo_lines = [
+            f"`{prefix}lottery`",
+            f"`{prefix}quewochannel`",
+            f"{economy_q_bank} `{prefix}bank`",
+            f"{economy_q_rob} `{prefix}robsettings`",
+            f"`{prefix}balanceaudit`",
+            f"{economy_q_recommend} `{prefix}recommendgame`",
+            f"{economy_q_season_pass} `{prefix}seasonpass`",
+        ]
+        safety_lines = [f"`{prefix}disable <command>`", f"`{prefix}errors`"]
+        ai_lines = [f"`{prefix}aichannel on/off`", f"`{prefix}aiknow <command>`", f"`{prefix}aimemory`", f"`{prefix}aidoctor`"]
+        if can_see_superowner_help(interaction.user, interaction.guild):
+            quewo_lines.insert(1, f"`{prefix}editlottery`")
+            safety_lines[1:1] = [f"`{prefix}permaudit`", f"`{prefix}receipts latest`"]
+            ai_lines.append(f"`{prefix}aiguard`")
         embed.add_field(
             name="𝚀𝚞𝚎wo",
-            value=(
-                f"`{prefix}lottery`\n"
-                f"`{prefix}editlottery`\n"
-                f"`{prefix}quewochannel`\n"
-                f"{economy_q_bank} `{prefix}bank`\n"
-                f"{economy_q_rob} `{prefix}robsettings`\n"
-                f"`{prefix}balanceaudit`\n"
-                f"{economy_q_recommend} `{prefix}recommendgame`\n"
-                f"{economy_q_season_pass} `{prefix}seasonpass`"
-            ),
+            value="\n".join(quewo_lines),
             inline=True,
         )
-        embed.add_field(name="Safety", value=f"`{prefix}disable <command>`\n`{prefix}permaudit`\n`{prefix}receipts latest`\n`{prefix}errors`", inline=True)
-        embed.add_field(name="AI", value=f"`{prefix}aichannel on/off`\n`{prefix}aiknow <command>`\n`{prefix}aimemory`\n`{prefix}aidoctor`\n`{prefix}aiguard`", inline=True)
+        embed.add_field(name="Safety", value="\n".join(safety_lines), inline=True)
+        embed.add_field(name="AI", value="\n".join(ai_lines), inline=True)
         embed.add_field(name="Recovery", value=f"`{prefix}health`\n`{prefix}jobs`\n`{prefix}recover`\n`{prefix}dbaudit`", inline=True)
         await interaction.response.send_message(embed=embed, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
 
@@ -7038,7 +7069,7 @@ async def aimemory_command(ctx, *, args: str = None):
     except commands.BadArgument:
         return await ctx.send("Use `.aimemory` or `.aimemory @user`.")
     if target.id != ctx.author.id and not has_super_owner_power(ctx.author, ctx.guild):
-        return await ctx.send(denial_message(f"Only {QUE_OWNER_DISPLAY} can inspect someone else's AI memory."), allowed_mentions=discord.AllowedMentions.none())
+        return await ctx.send(denial_message("You can only inspect your own AI memory."), allowed_mentions=discord.AllowedMentions.none())
     if action_key in {"clear", "delete", "forget", "remove", "reset"}:
         return await ctx.send("AI memory stays on now, so `.aimemory clear` is disabled.")
     await send_ai_memory_summary(ctx, ctx.guild, target)
@@ -7071,7 +7102,7 @@ async def aiknow_command(ctx, *, command_name: str = None):
 async def aihistory_command(ctx, member: discord.User = None):
     """Shows recent actions the AI ran or attempted."""
     if not has_super_owner_power(ctx.author, ctx.guild):
-        return await ctx.send(denial_message(f"Only {QUE_OWNER_DISPLAY} can inspect AI action history."), allowed_mentions=discord.AllowedMentions.none())
+        return await ctx.send(denial_message("This AI history is not available here."), allowed_mentions=discord.AllowedMentions.none())
     rows = list(ai_action_history)
     if member:
         rows = [row for row in rows if int(row.get("user_id") or 0) == member.id]
@@ -7098,7 +7129,7 @@ async def aihistory_command(ctx, member: discord.User = None):
 async def aisettings_command(ctx):
     """Shows AI control settings."""
     if not has_super_owner_power(ctx.author, ctx.guild):
-        return await ctx.send(denial_message(f"Only {QUE_OWNER_DISPLAY} can change AI controls."), allowed_mentions=discord.AllowedMentions.none())
+        return await ctx.send(denial_message("AI control settings are not available here."), allowed_mentions=discord.AllowedMentions.none())
     global_settings = await ai_settings_for("global", 0)
     guild_settings = await ai_settings_for("guild", ctx.guild.id if ctx.guild else 0)
     embed = discord.Embed(
@@ -7114,7 +7145,7 @@ async def aisettings_command(ctx):
 async def aiperms_command(ctx):
     """Shows what the AI is allowed to do."""
     if not has_super_owner_power(ctx.author, ctx.guild):
-        return await ctx.send(denial_message(f"Only {QUE_OWNER_DISPLAY} can inspect AI control permissions."), allowed_mentions=discord.AllowedMentions.none())
+        return await ctx.send(denial_message("AI control permissions are not available here."), allowed_mentions=discord.AllowedMentions.none())
     global_settings = await ai_settings_for("global", 0)
     guild_settings = await ai_settings_for("guild", ctx.guild.id if ctx.guild else 0)
     ignored = [part for part in global_settings.get("ignored_users", "").split(",") if part.strip()]
@@ -7143,7 +7174,7 @@ async def aiperms_command(ctx):
 async def aiignore_command(ctx, member: discord.User = None):
     """Makes the AI ignore a user globally."""
     if not has_super_owner_power(ctx.author, ctx.guild):
-        return await ctx.send(denial_message(f"Only {QUE_OWNER_DISPLAY} can change AI controls."), allowed_mentions=discord.AllowedMentions.none())
+        return await ctx.send(denial_message("AI control settings are not available here."), allowed_mentions=discord.AllowedMentions.none())
     if not member:
         return await ctx.send("Use `.aiignore @user`.")
     settings = await ai_settings_for("global", 0)
@@ -7156,7 +7187,7 @@ async def aiignore_command(ctx, member: discord.User = None):
 async def aiunignore_command(ctx, member: discord.User = None):
     """Allows the AI to respond to an ignored user again."""
     if not has_super_owner_power(ctx.author, ctx.guild):
-        return await ctx.send(denial_message(f"Only {QUE_OWNER_DISPLAY} can change AI controls."), allowed_mentions=discord.AllowedMentions.none())
+        return await ctx.send(denial_message("AI control settings are not available here."), allowed_mentions=discord.AllowedMentions.none())
     if not member:
         return await ctx.send("Use `.aiunignore @user`.")
     settings = await ai_settings_for("global", 0)
@@ -7190,7 +7221,7 @@ async def aichannel_command(ctx, mode: str = None):
 async def aistyle_command(ctx, *, style: str = None):
     """Changes the AI's global style note."""
     if not has_super_owner_power(ctx.author, ctx.guild):
-        return await ctx.send(denial_message(f"Only {QUE_OWNER_DISPLAY} can change AI controls."), allowed_mentions=discord.AllowedMentions.none())
+        return await ctx.send(denial_message("AI control settings are not available here."), allowed_mentions=discord.AllowedMentions.none())
     if not style:
         return await ctx.send("Use `.aistyle casual`, `.aistyle serious`, `.aistyle short`, or any short style note.")
     ok = await asyncio.to_thread(set_ai_control_setting, "global", 0, "style", style[:200], ctx.author.id)
@@ -7236,7 +7267,7 @@ async def usersettings_command(ctx, key: str = None, *, value: str = None):
 async def auditcommands_command(ctx):
     """Checks command registry coverage for help, explanations, aliases, and UI fallbacks."""
     if not has_super_owner_power(ctx.author, ctx.guild):
-        return await ctx.send(denial_message(f"Only {QUE_OWNER_DISPLAY} can audit the full command registry."), allowed_mentions=discord.AllowedMentions.none())
+        return await ctx.send(denial_message("This command audit is not available here."), allowed_mentions=discord.AllowedMentions.none())
     category_map = {}
     for category, names in HELP_CATEGORIES.items():
         for name in names:
@@ -7349,11 +7380,11 @@ def command_style_expectation(category):
         return "Use board/game UI where possible, turn ownership checks, timeouts, and short result text that stays under Discord limits."
     if category == "AI":
         return "Reply naturally, include context, avoid oversized prompts, and confirm only when the AI is about to run a bot action."
-    if category in {"Admin", "Server Tools"}:
+    if category in {"Admin Setup", "Moderation", "Diagnostics"}:
         return "Use no-ping mentions, receipts for sensitive actions, concise embeds, and clear permission denial text."
-    if category == "Status":
+    if category == "Community":
         return "Use compact themed embeds, no unwanted everyone pings, and mention summaries with jump links."
-    if category == "Utility":
+    if category == "Tools":
         return "Prefer setup/input UI when arguments are missing and keep results readable on mobile."
     return "Keep copy short, themed, and consistent."
 
@@ -7361,7 +7392,7 @@ def command_style_expectation(category):
 async def styleaudit_command(ctx):
     """Audits output style expectations by command category."""
     if not has_super_owner_power(ctx.author, ctx.guild):
-        return await ctx.send(denial_message(f"Only {QUE_OWNER_DISPLAY} can audit bot output style."), allowed_mentions=discord.AllowedMentions.none())
+        return await ctx.send(denial_message("This style audit is not available here."), allowed_mentions=discord.AllowedMentions.none())
     categories = help_categories_for(ctx.author, ctx.guild)
     embed = discord.Embed(
         title=f"{economy_q_filter} Style Audit",
@@ -7399,7 +7430,7 @@ async def styleaudit_command(ctx):
 async def commandcleanup_command(ctx):
     """Shows a focused cleanup plan for command discoverability and duplicates."""
     if not has_super_owner_power(ctx.author, ctx.guild):
-        return await ctx.send(denial_message(f"Only {QUE_OWNER_DISPLAY} can audit command cleanup."), allowed_mentions=discord.AllowedMentions.none())
+        return await ctx.send(denial_message("This command cleanup audit is not available here."), allowed_mentions=discord.AllowedMentions.none())
     category_map = command_category_lookup()
     missing_category = []
     missing_example = []
@@ -7448,7 +7479,7 @@ async def commandcleanup_command(ctx):
 async def permaudit_command(ctx):
     """Audits sensitive commands and where they are exposed."""
     if not has_super_owner_power(ctx.author, ctx.guild):
-        return await ctx.send(denial_message(f"Only {QUE_OWNER_DISPLAY} can audit sensitive command exposure."), allowed_mentions=discord.AllowedMentions.none())
+        return await ctx.send(denial_message("This permission audit is not available here."), allowed_mentions=discord.AllowedMentions.none())
     lines = []
     missing = []
     for name in sorted(SUPEROWNER_HELP_COMMANDS):
@@ -7545,7 +7576,7 @@ async def receipt_command(ctx, receipt_id: str = None):
 async def receipts_command(ctx, target: str = "latest"):
     """Lists recent sensitive action receipts."""
     if not has_super_owner_power(ctx.author, ctx.guild):
-        return await ctx.send(denial_message(f"Only {QUE_OWNER_DISPLAY} can inspect receipt lists."), allowed_mentions=discord.AllowedMentions.none())
+        return await ctx.send(denial_message("Receipt lists are not available here."), allowed_mentions=discord.AllowedMentions.none())
     user = None
     if target and str(target).casefold() not in {"latest", "recent", "all"}:
         try:
@@ -7803,7 +7834,7 @@ async def dbaudit_command(ctx):
 async def aiguard_command(ctx):
     """Shows how AI command execution is guarded."""
     if not has_super_owner_power(ctx.author, ctx.guild):
-        return await ctx.send(denial_message(f"Only {QUE_OWNER_DISPLAY} can inspect AI command guards."), allowed_mentions=discord.AllowedMentions.none())
+        return await ctx.send(denial_message("AI command guard details are not available here."), allowed_mentions=discord.AllowedMentions.none())
     embed = standard_embed(
         "AI Command Guard",
         description="How Pro𝚀𝚞𝚎 decides whether the AI can run, preview, or refuse bot actions.",
@@ -12186,7 +12217,7 @@ async def unshut(ctx, members: commands.Greedy[discord.Member]):
 @is_admin_power()
 async def clearwatchlist(ctx):
     if not has_super_owner_power(ctx.author, ctx.guild):
-        return await ctx.send("Only 𝚀𝚞𝚎 can clear the watchlist.")
+        return await ctx.send(denial_message("This command is not available here."))
     guild_watchlist(ctx.guild).clear()
     await asyncio.to_thread(save_watchlist, scoped_id(ctx.guild), guild_watchlist(ctx.guild))
     await ctx.send("Watchlist cleared.")
@@ -13211,7 +13242,7 @@ class ConfirmEndPollView(View):
     async def interaction_check(self, interaction):
         if interaction.user.id == self.ctx.author.id or interaction.user.id == super_owner_id:
             return True
-        await interaction.response.send_message(f"Only the poll owner or {QUE_OWNER_DISPLAY} can use this.", ephemeral=True)
+        await interaction.response.send_message("Only the poll owner can use this.", ephemeral=True)
         return False
 
     @discord.ui.button(label="Yes", style=discord.ButtonStyle.danger)
@@ -13801,7 +13832,7 @@ class CancelConfirmView(View):
     async def interaction_check(self, interaction):
         if interaction.user.id == self.ctx.author.id or interaction.user.id == super_owner_id:
             return True
-        await interaction.response.send_message(f"Only the timer owner or {QUE_OWNER_DISPLAY} can use this.", ephemeral=True)
+        await interaction.response.send_message("Only the timer owner can use this.", ephemeral=True)
         return False
 
     @discord.ui.button(label="Yes", style=discord.ButtonStyle.danger)
