@@ -231,6 +231,29 @@ def _create_tables(cur):
     """)
 
     cur.execute("""
+        CREATE TABLE IF NOT EXISTS active_giveaways (
+            message_id BIGINT PRIMARY KEY,
+            channel_id BIGINT NOT NULL,
+            guild_id BIGINT NOT NULL,
+            prize TEXT NOT NULL,
+            end_time TIMESTAMP NOT NULL
+        )
+    """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS active_alarms (
+            alarm_id BIGSERIAL PRIMARY KEY,
+            channel_id BIGINT NOT NULL,
+            guild_id BIGINT,
+            user_id BIGINT NOT NULL,
+            title TEXT,
+            alarm_time TIMESTAMP NOT NULL,
+            created_at TIMESTAMP NOT NULL DEFAULT NOW()
+        )
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_active_alarms_time ON active_alarms (alarm_time)")
+
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS ai_channel_memory (
             id BIGSERIAL PRIMARY KEY,
             guild_id BIGINT NOT NULL,
@@ -1035,6 +1058,134 @@ def remove_active_timer(message_id):
             return
         cur = conn.cursor()
         cur.execute("DELETE FROM active_timers WHERE message_id = %s", (int(message_id),))
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception:
+        pass
+
+def load_active_giveaways():
+    _ensure_ready()
+    if not pg_ready:
+        return {}
+    try:
+        conn = pg_conn()
+        if conn is None:
+            return {}
+        cur = conn.cursor()
+        cur.execute("SELECT message_id, channel_id, guild_id, prize, end_time FROM active_giveaways")
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        return {
+            int(message_id): {
+                "channel_id": int(channel_id),
+                "guild_id": int(guild_id),
+                "prize": prize,
+                "end_time": end_time,
+            }
+            for message_id, channel_id, guild_id, prize, end_time in rows
+        }
+    except Exception:
+        return {}
+
+def save_active_giveaway(message_id, channel_id, guild_id, prize, end_time):
+    _ensure_ready()
+    if not pg_ready:
+        return
+    try:
+        conn = pg_conn()
+        if conn is None:
+            return
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO active_giveaways (message_id, channel_id, guild_id, prize, end_time) "
+            "VALUES (%s, %s, %s, %s, %s) "
+            "ON CONFLICT (message_id) DO UPDATE SET "
+            "channel_id = EXCLUDED.channel_id, guild_id = EXCLUDED.guild_id, "
+            "prize = EXCLUDED.prize, end_time = EXCLUDED.end_time",
+            (int(message_id), int(channel_id), int(guild_id), prize, end_time),
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception:
+        pass
+
+def remove_active_giveaway(message_id):
+    _ensure_ready()
+    if not pg_ready:
+        return
+    try:
+        conn = pg_conn()
+        if conn is None:
+            return
+        cur = conn.cursor()
+        cur.execute("DELETE FROM active_giveaways WHERE message_id = %s", (int(message_id),))
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception:
+        pass
+
+def load_active_alarms():
+    _ensure_ready()
+    if not pg_ready:
+        return {}
+    try:
+        conn = pg_conn()
+        if conn is None:
+            return {}
+        cur = conn.cursor()
+        cur.execute("SELECT alarm_id, channel_id, guild_id, user_id, title, alarm_time FROM active_alarms")
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        return {
+            int(alarm_id): {
+                "channel_id": int(channel_id),
+                "guild_id": int(guild_id) if guild_id is not None else 0,
+                "user_id": int(user_id),
+                "title": title,
+                "alarm_time": alarm_time,
+            }
+            for alarm_id, channel_id, guild_id, user_id, title, alarm_time in rows
+        }
+    except Exception:
+        return {}
+
+def save_active_alarm(channel_id, guild_id, user_id, title, alarm_time):
+    _ensure_ready()
+    if not pg_ready:
+        return None
+    try:
+        conn = pg_conn()
+        if conn is None:
+            return None
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO active_alarms (channel_id, guild_id, user_id, title, alarm_time) "
+            "VALUES (%s, %s, %s, %s, %s) RETURNING alarm_id",
+            (int(channel_id), int(guild_id) if guild_id else None, int(user_id), title, alarm_time),
+        )
+        row = cur.fetchone()
+        conn.commit()
+        cur.close()
+        conn.close()
+        return int(row[0]) if row else None
+    except Exception:
+        return None
+
+def remove_active_alarm(alarm_id):
+    _ensure_ready()
+    if not pg_ready:
+        return
+    try:
+        conn = pg_conn()
+        if conn is None:
+            return
+        cur = conn.cursor()
+        cur.execute("DELETE FROM active_alarms WHERE alarm_id = %s", (int(alarm_id),))
         conn.commit()
         cur.close()
         conn.close()

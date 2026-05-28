@@ -455,6 +455,7 @@ economy_log_callback = None
 lottery_task = None
 db_keepalive_task = None
 claim_reminder_task = None
+economy_event_task = None
 lottery_view_registered = False
 lottery_status_messages = {}
 
@@ -1696,10 +1697,8 @@ def start_economy_event(guild_id, event_key, started_by, channel_id, seconds):
 def get_economy_event(guild_id):
     conn = get_db_connection()
     cur = conn.cursor()
-    cur.execute("DELETE FROM economy_events WHERE guild_id = %s AND ends_at <= NOW()", (guild_id,))
-    cur.execute("SELECT * FROM economy_events WHERE guild_id = %s", (guild_id,))
+    cur.execute("SELECT * FROM economy_events WHERE guild_id = %s AND ends_at > %s", (guild_id, datetime.utcnow()))
     row = cur.fetchone()
-    conn.commit()
     cur.close()
     conn.close()
     return row
@@ -1732,7 +1731,7 @@ def donate_to_economy_event(guild_id, user_id, amount):
         raise ValueError("amount_positive")
     conn = get_db_connection()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM economy_events WHERE guild_id = %s AND ends_at > NOW() FOR UPDATE", (guild_id,))
+    cur.execute("SELECT * FROM economy_events WHERE guild_id = %s AND ends_at > %s FOR UPDATE", (guild_id, datetime.utcnow()))
     event = cur.fetchone()
     if not event:
         conn.rollback()
@@ -1760,6 +1759,31 @@ def donate_to_economy_event(guild_id, user_id, amount):
     cur.close()
     conn.close()
     return balance, new_balance, event
+
+def due_economy_events(limit=50):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT * FROM economy_events WHERE ends_at <= %s ORDER BY ends_at ASC LIMIT %s",
+        (datetime.utcnow(), int(limit)),
+    )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
+
+def delete_due_economy_event(guild_id):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "DELETE FROM economy_events WHERE guild_id = %s AND ends_at <= %s RETURNING *",
+        (int(guild_id), datetime.utcnow()),
+    )
+    row = cur.fetchone()
+    conn.commit()
+    cur.close()
+    conn.close()
+    return row
 
 def create_receipt(guild_id, channel_id, actor_id, target_ids, action, amount=None, details=None):
     receipt_id = f"QTX-{int(time.time())}-{random.randint(1000, 9999)}"
@@ -2644,7 +2668,7 @@ def lottery_ticket_rows(guild_id):
 def all_lotteries_due():
     conn = get_db_connection()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM lottery_config WHERE next_draw <= %s", (datetime.now(timezone.utc),))
+    cur.execute("SELECT * FROM lottery_config WHERE next_draw <= %s ORDER BY next_draw ASC", (datetime.utcnow(),))
     rows = cur.fetchall()
     cur.close()
     conn.close()
@@ -7418,16 +7442,19 @@ async def buytick(ctx, amount: str = None):
     )
 
 async def process_lottery_draw(config):
-    guild = bot.get_guild(config["guild_id"]) if bot else None
+    guild_id = int(config["guild_id"])
+    guild = bot.get_guild(guild_id) if bot else None
     if guild is None:
+        print(f"Lottery draw skipped: guild {guild_id} is not available in bot cache.")
         return
 
     next_draw = datetime.now(timezone.utc) + timedelta(seconds=int(config["period_seconds"]))
     rows = await asyncio.to_thread(lottery_ticket_rows, guild.id)
-    channel = guild.get_channel(config["channel_id"])
+    channel_id = int(config["channel_id"])
+    channel = guild.get_channel(channel_id)
     if channel is None:
         try:
-            channel = await bot.fetch_channel(config["channel_id"])
+            channel = await bot.fetch_channel(channel_id)
         except Exception:
             channel = None
 
@@ -7523,7 +7550,19 @@ async def lottery_draw_loop():
                     await process_lottery_draw(config)
             except Exception as e:
                 print(f"Lottery loop error: {type(e).__name__} - {e}")
-        await asyncio.sleep(60)
+        await asyncio.sleep(15)
+
+async def catch_up_due_lotteries(reason="startup"):
+    if not db_ready:
+        return
+    try:
+        due = await asyncio.to_thread(all_lotteries_due)
+        if due:
+            print(f"Lottery catch-up ({reason}): processing {len(due)} overdue lottery draw(s).")
+        for config in due:
+            await process_lottery_draw(config)
+    except Exception as e:
+        print(f"Lottery catch-up error ({reason}): {type(e).__name__} - {e}")
 
 async def db_keepalive_loop():
     await bot.wait_until_ready()
@@ -13002,6 +13041,73 @@ def economy_event_embed(guild, row):
     embed.set_footer(text="Donate with .event donate 50k. Stop with .event stop.")
     return embed
 
+def economy_event_ended_embed(guild, row):
+    event_key = str(row.get("event_key") or "event").casefold()
+    ended_at = row.get("ends_at")
+    if ended_at and ended_at.tzinfo is None:
+        ended_at = ended_at.replace(tzinfo=timezone.utc)
+    embed = discord.Embed(
+        title=f"{Q_EVENT} Server Event Ended",
+        description=f"**{event_key.title()}**\n{EVENT_TYPES.get(event_key, 'Server event')}",
+        color=discord.Color.dark_blue(),
+    )
+    embed.add_field(name="Final Pot / Burned", value=format_balance(int(row.get("pot") or 0)), inline=True)
+    if ended_at:
+        embed.add_field(name="Ended", value=discord_relative_time(ended_at), inline=True)
+        embed.timestamp = ended_at
+    return embed
+
+async def process_due_economy_event(row):
+    deleted = await asyncio.to_thread(delete_due_economy_event, int(row["guild_id"]))
+    if not deleted:
+        return False
+    guild = bot.get_guild(int(deleted["guild_id"])) if bot else None
+    channel = None
+    channel_id = deleted.get("channel_id")
+    if channel_id and bot:
+        if guild:
+            channel = guild.get_channel(int(channel_id))
+        if channel is None:
+            try:
+                channel = await bot.fetch_channel(int(channel_id))
+            except Exception:
+                channel = None
+    if channel:
+        try:
+            await channel.send(
+                embed=economy_event_ended_embed(guild, deleted),
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        except Exception as e:
+            print(f"Economy event end announcement failed for guild {deleted['guild_id']}: {type(e).__name__} - {e}")
+    return True
+
+async def catch_up_due_economy_events(reason="loop"):
+    if not db_ready:
+        return 0
+    try:
+        rows = await asyncio.to_thread(due_economy_events, 50)
+    except Exception as e:
+        print(f"Economy event catch-up failed during {reason}: {type(e).__name__} - {e}")
+        return 0
+    processed = 0
+    for row in rows:
+        try:
+            if await process_due_economy_event(row):
+                processed += 1
+        except Exception as e:
+            print(f"Economy event processing failed for guild {row.get('guild_id')}: {type(e).__name__} - {e}")
+        await asyncio.sleep(0.25)
+    if processed:
+        print(f"Economy event catch-up processed {processed} due event(s) during {reason}.")
+    return processed
+
+async def economy_event_loop():
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        await catch_up_due_economy_events("loop")
+        await asyncio.sleep(15)
+
 @commands.command(name="event", aliases=["qevent", "events"])
 async def event(ctx, action: str = None, event_key: str = None, duration: str = None):
     if not await ensure_db_ready(ctx):
@@ -15090,7 +15196,7 @@ async def explain(ctx, command_name: str = None):
 # SETUP
 # =====================
 async def setup(bot_ref, log_callback=None):
-    global bot, economy_log_callback, lottery_task, db_keepalive_task, claim_reminder_task
+    global bot, economy_log_callback, lottery_task, db_keepalive_task, claim_reminder_task, economy_event_task
     bot = bot_ref
     economy_log_callback = log_callback
     print("Initializing 𝚀𝚞𝚎wo system...")
@@ -15114,6 +15220,8 @@ async def setup(bot_ref, log_callback=None):
         pass
 
     await restore_lottery_panels()
+    await catch_up_due_lotteries("startup")
+    await catch_up_due_economy_events("startup")
 
     if lottery_task is None or lottery_task.done():
         lottery_task = asyncio.create_task(lottery_draw_loop())
@@ -15121,3 +15229,5 @@ async def setup(bot_ref, log_callback=None):
         db_keepalive_task = asyncio.create_task(db_keepalive_loop())
     if claim_reminder_task is None or claim_reminder_task.done():
         claim_reminder_task = asyncio.create_task(claim_reminder_loop())
+    if economy_event_task is None or economy_event_task.done():
+        economy_event_task = asyncio.create_task(economy_event_loop())

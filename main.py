@@ -144,6 +144,8 @@ from pgdata import (
     load_afk_users as pg_load_afk_users,
     load_active_polls,
     load_active_timers,
+    load_active_giveaways,
+    load_active_alarms,
     load_ai_channel_memory,
     load_ai_user_memory,
     load_active_game_sessions,
@@ -168,12 +170,16 @@ from pgdata import (
     remove_afk_user,
     remove_active_poll,
     remove_active_timer,
+    remove_active_giveaway,
+    remove_active_alarm,
     remove_birthday,
     remove_sleeping_user,
     delete_message_event,
     save_afk_user,
     save_active_poll,
     save_active_timer,
+    save_active_giveaway,
+    save_active_alarm,
     save_active_game_session,
     save_autoban_ids,
     save_ai_channel_memory,
@@ -1329,6 +1335,8 @@ def command_denial_detail(ctx, error=None):
 
 active_timers = load_active_timers()
 active_polls = load_active_polls()
+active_giveaways = load_active_giveaways()
+active_alarms = load_active_alarms()
 runtime_state_restored = False
 user_mentions = {}
 activity_buffer = Counter()
@@ -7717,7 +7725,9 @@ async def recover_command(ctx):
         restored, expired = await restore_active_game_sessions()
         try:
             await economy_module.restore_lottery_panels()
-            lottery_text = "lottery panels refreshed"
+            await economy_module.catch_up_due_lotteries("manual recovery")
+            await economy_module.catch_up_due_economy_events("manual recovery")
+            lottery_text = "lottery panels/events refreshed"
         except Exception as exc:
             lottery_text = f"lottery refresh skipped: {clean_user_error(exc)}"
         return f"Recovered games: {restored} restored, {expired} expired; {lottery_text}."
@@ -9737,9 +9747,37 @@ async def finalize_poll(msg, poll_data):
         await asyncio.to_thread(remove_active_poll, msg.id)
 
 async def restore_persistent_runtime_state():
+    global active_polls, active_timers, active_giveaways, active_alarms
+    for poll_id, poll_data in load_active_polls().items():
+        current = active_polls.get(poll_id)
+        task = current.get("end_task") if current else None
+        if current and task and not task.done():
+            continue
+        active_polls[poll_id] = poll_data
+    for timer_id, timer_data in load_active_timers().items():
+        current = active_timers.get(timer_id)
+        task = current.get("task") if current else None
+        if current and task and not task.done():
+            continue
+        active_timers[timer_id] = timer_data
+    for giveaway_id, giveaway_data in load_active_giveaways().items():
+        current = active_giveaways.get(giveaway_id)
+        task = current.get("task") if current else None
+        if current and task and not task.done():
+            continue
+        active_giveaways[giveaway_id] = giveaway_data
+    for alarm_id, alarm_data in load_active_alarms().items():
+        current = active_alarms.get(alarm_id)
+        task = current.get("task") if current else None
+        if current and task and not task.done():
+            continue
+        active_alarms[alarm_id] = alarm_data
     now = datetime.now(timezone.utc)
 
     for poll_id, poll_data in list(active_polls.items()):
+        existing_task = poll_data.get("end_task")
+        if existing_task and not existing_task.done():
+            continue
         channel = bot.get_channel(poll_data["channel_id"])
         if channel is None:
             try:
@@ -9784,6 +9822,9 @@ async def restore_persistent_runtime_state():
         poll_data["end_task"] = asyncio.create_task(restored_poll_task())
 
     for timer_id, timer_data in list(active_timers.items()):
+        existing_task = timer_data.get("task")
+        if existing_task and not existing_task.done():
+            continue
         channel = bot.get_channel(timer_data["channel_id"])
         if channel is None:
             try:
@@ -9814,6 +9855,59 @@ async def restore_persistent_runtime_state():
                 timer_data["title"],
                 timer_data["owner_id"],
             )
+        )
+
+    for giveaway_id, giveaway_data in list(active_giveaways.items()):
+        existing_task = giveaway_data.get("task")
+        if existing_task and not existing_task.done():
+            continue
+        channel = bot.get_channel(giveaway_data["channel_id"])
+        if channel is None:
+            try:
+                channel = await bot.fetch_channel(giveaway_data["channel_id"])
+            except Exception:
+                active_giveaways.pop(giveaway_id, None)
+                await asyncio.to_thread(remove_active_giveaway, giveaway_id)
+                continue
+        try:
+            message = await channel.fetch_message(giveaway_id)
+        except Exception:
+            active_giveaways.pop(giveaway_id, None)
+            await asyncio.to_thread(remove_active_giveaway, giveaway_id)
+            continue
+
+        end_time = giveaway_data["end_time"]
+        if end_time.tzinfo is None:
+            end_time = end_time.replace(tzinfo=timezone.utc)
+            giveaway_data["end_time"] = end_time
+        giveaway_data["task"] = asyncio.create_task(
+            run_giveaway(
+                channel,
+                max(0, int((end_time - datetime.now(timezone.utc)).total_seconds())),
+                giveaway_data["prize"],
+                message=message,
+                end_time=end_time,
+            )
+        )
+
+    for alarm_id, alarm_data in list(active_alarms.items()):
+        existing_task = alarm_data.get("task")
+        if existing_task and not existing_task.done():
+            continue
+        channel = bot.get_channel(alarm_data["channel_id"])
+        if channel is None:
+            try:
+                channel = await bot.fetch_channel(alarm_data["channel_id"])
+            except Exception:
+                active_alarms.pop(alarm_id, None)
+                await asyncio.to_thread(remove_active_alarm, alarm_id)
+                continue
+        alarm_time = alarm_data["alarm_time"]
+        if alarm_time.tzinfo is None:
+            alarm_time = alarm_time.replace(tzinfo=timezone.utc)
+            alarm_data["alarm_time"] = alarm_time
+        alarm_data["task"] = asyncio.create_task(
+            alarm_wait_and_send(channel, alarm_data["user_id"], alarm_time, alarm_data.get("title"), alarm_id=alarm_id)
         )
 
 @bot.event
@@ -13232,8 +13326,31 @@ async def epoll(ctx):
     sent_msg = await ctx.send(f"Select a poll to end:{note}", view=view)
     view.message = sent_msg
 
-async def run_giveaway(channel, seconds, prize):
-    end_time = datetime.now(timezone.utc) + timedelta(seconds=seconds)
+async def finish_giveaway(channel, message_id, prize):
+    try:
+        new_msg = await channel.fetch_message(int(message_id))
+    except discord.HTTPException:
+        active_giveaways.pop(int(message_id), None)
+        await asyncio.to_thread(remove_active_giveaway, int(message_id))
+        return
+    entry_reaction = next((r for r in new_msg.reactions if same_emoji(r.emoji, economy_q_confetti)), None)
+    users = [u async for u in entry_reaction.users() if not u.bot] if entry_reaction else []
+    if users:
+        winner = random.choice(users)
+        await channel.send(f"{economy_q_confetti} Congratulations {winner.mention}! You won **{prize}**!")
+    else:
+        await channel.send("No one entered the giveaway.")
+    try:
+        await new_msg.clear_reactions()
+    except discord.HTTPException:
+        pass
+    active_giveaways.pop(int(message_id), None)
+    await asyncio.to_thread(remove_active_giveaway, int(message_id))
+
+async def run_giveaway(channel, seconds, prize, message=None, end_time=None):
+    end_time = end_time or (datetime.now(timezone.utc) + timedelta(seconds=seconds))
+    if end_time.tzinfo is None:
+        end_time = end_time.replace(tzinfo=timezone.utc)
     embed = discord.Embed(
         title=f"{economy_q_gift} Giveaway!",
         description=(
@@ -13245,10 +13362,20 @@ async def run_giveaway(channel, seconds, prize):
     )
     embed.timestamp = end_time
     embed.set_footer(text="Ends at")
-    msg = await channel.send(embed=embed)
-    await msg.add_reaction(reaction_emoji(economy_q_confetti))
+    if message is None:
+        msg = await channel.send(embed=embed)
+        await msg.add_reaction(reaction_emoji(economy_q_confetti))
+        active_giveaways[msg.id] = {
+            "channel_id": channel.id,
+            "guild_id": channel.guild.id if channel.guild else 0,
+            "prize": prize,
+            "end_time": end_time,
+        }
+        await asyncio.to_thread(save_active_giveaway, msg.id, channel.id, channel.guild.id if channel.guild else 0, prize, end_time)
+    else:
+        msg = message
 
-    remaining = seconds
+    remaining = int((end_time - datetime.now(timezone.utc)).total_seconds())
     while remaining > 0:
         if remaining <= 60:
             embed.set_footer(text=f"Ends in {remaining}s")
@@ -13259,21 +13386,7 @@ async def run_giveaway(channel, seconds, prize):
         await asyncio.sleep(1)
         remaining = int((end_time - datetime.now(timezone.utc)).total_seconds())
 
-    try:
-        new_msg = await channel.fetch_message(msg.id)
-    except discord.HTTPException:
-        return
-    entry_reaction = next((r for r in new_msg.reactions if same_emoji(r.emoji, economy_q_confetti)), None)
-    users = [u async for u in entry_reaction.users() if not u.bot] if entry_reaction else []
-    if users:
-        winner = random.choice(users)
-        await channel.send(f"{economy_q_confetti} Congratulations {winner.mention}! You won **{prize}**!")
-    else:
-        await channel.send("No one entered the giveaway.")
-    try:
-        await msg.clear_reactions()
-    except discord.HTTPException:
-        pass
+    await finish_giveaway(channel, msg.id, prize)
 
 async def start_giveaway(channel, raw):
     duration_text, prize = split_edge_duration(raw)
@@ -13846,12 +13959,15 @@ async def ctimer(ctx):
     sent_msg = await ctx.send("Select a timer to cancel:", view=view)
     view.message = sent_msg
 
-async def alarm_wait_and_send(channel, user_id, alarm_time, title):
+async def alarm_wait_and_send(channel, user_id, alarm_time, title, alarm_id=None):
     await asyncio.sleep(max(0, (alarm_time - datetime.now(timezone.utc)).total_seconds()))
     if title:
         await channel.send(f"{economy_q_bell} <@{user_id}> **{title}**")
     else:
         await channel.send(f"{economy_q_bell} <@{user_id}> Here's your alarm.")
+    if alarm_id is not None:
+        active_alarms.pop(int(alarm_id), None)
+        await asyncio.to_thread(remove_active_alarm, int(alarm_id))
 
 async def schedule_alarm_for_user(channel, author, raw):
     raw = (raw or "").strip()
@@ -13881,7 +13997,23 @@ async def schedule_alarm_for_user(channel, author, raw):
     if alarm_time <= datetime.now(timezone.utc):
         raise ValueError("Alarm time must be in the future.")
 
-    asyncio.create_task(alarm_wait_and_send(channel, author.id, alarm_time, title))
+    alarm_id = await asyncio.to_thread(
+        save_active_alarm,
+        channel.id,
+        channel.guild.id if channel.guild else None,
+        author.id,
+        title,
+        alarm_time,
+    )
+    if alarm_id is not None:
+        active_alarms[int(alarm_id)] = {
+            "channel_id": channel.id,
+            "guild_id": channel.guild.id if channel.guild else 0,
+            "user_id": author.id,
+            "title": title,
+            "alarm_time": alarm_time,
+        }
+    asyncio.create_task(alarm_wait_and_send(channel, author.id, alarm_time, title, alarm_id=alarm_id))
     return alarm_time, title
 
 class AlarmSetupModal(Modal):
