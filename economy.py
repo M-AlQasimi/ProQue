@@ -199,7 +199,7 @@ Q_WORK = "<:QWork:1509556652456673280>"
 
 CUSTOM_EMOJI_FALLBACKS = {
     # This emoji currently renders as raw markdown in some servers.
-    "1500878493309866206": "🟧",
+    "1500878493309866206": "ORANGE",
 }
 
 def safe_custom_emoji(markdown, fallback=None):
@@ -519,7 +519,7 @@ def ping_db():
 def init_db():
     global db_ready
     if not os.getenv("DATABASE_URL"):
-        print("⚠️ DATABASE_URL not set - 𝚀𝚞𝚎wo system disabled")
+        print("[WARN] DATABASE_URL not set - 𝚀𝚞𝚎wo system disabled")
         return
 
     for attempt in range(1, 11):
@@ -788,17 +788,17 @@ def init_db():
             cur.close()
             conn.close()
             db_ready = True
-            print(f"✅ 𝚀𝚞𝚎wo DB initialized (PostgreSQL) on attempt {attempt}")
+            print(f"[OK] 𝚀𝚞𝚎wo DB initialized (PostgreSQL) on attempt {attempt}")
             return
         except psycopg2.OperationalError as e:
             if attempt < 10:
                 print(f"⏳ 𝚀𝚞𝚎wo DB attempt {attempt}/10 failed (DB starting up), retrying in 5s...")
                 time.sleep(5)
             else:
-                print(f"❌ 𝚀𝚞𝚎wo DB init failed after 10 attempts: {e}")
+                print(f"[ERROR] 𝚀𝚞𝚎wo DB init failed after 10 attempts: {e}")
                 db_ready = False
         except Exception as e:
-            print(f"❌ 𝚀𝚞𝚎wo DB init failed: {e}")
+            print(f"[ERROR] 𝚀𝚞𝚎wo DB init failed: {e}")
             db_ready = False
             return
 

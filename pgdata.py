@@ -22,7 +22,7 @@ def pg_init():
     global pg_ready
     url = os.getenv("DATABASE_URL")
     if not url:
-        print("⚠️ DATABASE_URL not set - persistent bot data disabled")
+        print("[WARN] DATABASE_URL not set - persistent bot data disabled")
         return
 
     for attempt in range(1, 11):
@@ -37,17 +37,17 @@ def pg_init():
             cur.close()
             conn.close()
             pg_ready = True
-            print(f"✅ Bot config DB initialized (PostgreSQL) on attempt {attempt}")
+            print(f"[OK] Bot config DB initialized (PostgreSQL) on attempt {attempt}")
             return
         except psycopg2.OperationalError as e:
             if attempt < 10:
                 print(f"⏳ Bot config DB attempt {attempt}/10 failed (DB starting up), retrying in 5s...")
                 time.sleep(5)
             else:
-                print(f"❌ Bot config DB init failed after 10 attempts: {e}")
+                print(f"[ERROR] Bot config DB init failed after 10 attempts: {e}")
                 pg_ready = False
         except Exception as e:
-            print(f"❌ Bot config DB init failed: {e}")
+            print(f"[ERROR] Bot config DB init failed: {e}")
             pg_ready = False
             return
 
