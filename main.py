@@ -23,6 +23,10 @@ try:
     import chess as chess_lib
 except ImportError:
     chess_lib = None
+try:
+    from PIL import Image
+except ImportError:
+    Image = None
 from collections import Counter, defaultdict, deque
 from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
@@ -14318,6 +14322,34 @@ def colour_swatch_png(r, g, b, a=255, width=256, height=160):
         + chunk(b"IEND", b"")
     )
 
+def colour_palette_png(colours, width=360, height=120):
+    colours = colours or [(119, 160, 123, 255)]
+    block_width = max(1, width // len(colours))
+    rows = []
+    for _ in range(height):
+        row = bytearray(b"\x00")
+        for x in range(width):
+            idx = min(len(colours) - 1, x // block_width)
+            r, g, b, a = colours[idx]
+            row.extend([r, g, b, a])
+        rows.append(bytes(row))
+    raw = b"".join(rows)
+
+    def chunk(kind, data):
+        return (
+            struct.pack(">I", len(data))
+            + kind
+            + data
+            + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+        )
+
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(raw))
+        + chunk(b"IEND", b"")
+    )
+
 def colour_embed_and_file(raw):
     parsed = parse_colour_value(raw)
     if parsed is None:
@@ -14368,6 +14400,215 @@ def colour_embed_and_file(raw):
     file = discord.File(BytesIO(colour_swatch_png(r, g, b, a)), filename=filename)
     return embed, file
 
+def colour_info_line(r, g, b, a=255):
+    luminance = relative_luminance(r, g, b)
+    black_contrast = contrast_ratio(luminance, 0)
+    white_contrast = contrast_ratio(luminance, 1)
+    text_choice = "black" if black_contrast >= white_contrast else "white"
+    return f"`{colour_hex(r, g, b, a, include_alpha=(a != 255))}` • RGB `{r}, {g}, {b}` • text **{text_choice}**"
+
+async def find_image_source_for_colour(ctx):
+    candidates = list(getattr(ctx.message, "attachments", []) or [])
+    ref = getattr(ctx.message, "reference", None)
+    if ref and getattr(ref, "resolved", None):
+        ref_msg = ref.resolved
+        candidates.extend(getattr(ref_msg, "attachments", []) or [])
+        for emb in getattr(ref_msg, "embeds", []) or []:
+            if getattr(emb, "image", None) and emb.image.url:
+                return emb.image.url
+            if getattr(emb, "thumbnail", None) and emb.thumbnail.url:
+                return emb.thumbnail.url
+    for att in candidates:
+        content_type = (getattr(att, "content_type", "") or "").lower()
+        filename = (getattr(att, "filename", "") or "").lower()
+        if content_type.startswith("image/") or filename.endswith((".png", ".jpg", ".jpeg", ".webp", ".gif")):
+            return att.url
+    return None
+
+async def read_image_bytes(url):
+    session = await get_http_session()
+    async with session.get(url) as resp:
+        if resp.status != 200:
+            raise ValueError(f"image download failed: {resp.status}")
+        data = await resp.read()
+        if len(data) > 8 * 1024 * 1024:
+            raise ValueError("image is too large")
+        return data
+
+def extract_image_palette(image_bytes, colour_count=6):
+    if Image is None:
+        raise RuntimeError("Image colour finder is not installed yet")
+    with Image.open(BytesIO(image_bytes)) as img:
+        img = img.convert("RGBA")
+        img.thumbnail((160, 160))
+        background = Image.new("RGBA", img.size, (255, 255, 255, 255))
+        background.alpha_composite(img)
+        rgb_img = background.convert("RGB")
+        quantized = rgb_img.quantize(colors=colour_count, method=Image.Quantize.MEDIANCUT)
+        palette = quantized.getpalette() or []
+        counts = quantized.getcolors(maxcolors=colour_count * 256) or []
+        counts.sort(reverse=True, key=lambda item: item[0])
+        total = max(1, sum(count for count, _ in counts))
+        result = []
+        for count, index in counts:
+            offset = index * 3
+            if offset + 2 >= len(palette):
+                continue
+            r, g, b = palette[offset], palette[offset + 1], palette[offset + 2]
+            if any(abs(r - pr) + abs(g - pg) + abs(b - pb) < 24 for pr, pg, pb, _, _ in result):
+                continue
+            result.append((r, g, b, 255, count / total))
+            if len(result) >= colour_count:
+                break
+        return result
+
+def colour_palette_embed_and_file(colours, *, source_url=None):
+    if not colours:
+        return None, None
+    dominant = colours[0]
+    embed = standard_embed(
+        "Colour Finder",
+        description="Most visible colours from the image.",
+        color=discord.Color.from_rgb(dominant[0], dominant[1], dominant[2]),
+        icon=economy_q_image,
+    )
+    lines = []
+    for idx, (r, g, b, a, pct) in enumerate(colours, 1):
+        lines.append(f"**{idx}.** {colour_info_line(r, g, b, a)} • **{pct * 100:.1f}%**")
+    embed.add_field(name="Palette", value="\n".join(lines), inline=False)
+    if source_url:
+        embed.add_field(name="Source", value=f"[image]({source_url})", inline=False)
+    filename = "palette.png"
+    embed.set_image(url=f"attachment://{filename}")
+    file = discord.File(BytesIO(colour_palette_png([(r, g, b, a) for r, g, b, a, _ in colours])), filename=filename)
+    return embed, file
+
+async def send_colour_palette_from_image(ctx, image_url):
+    if Image is None:
+        return await ctx.send("Image colour finder needs Pillow installed. Deploy with the updated requirements first.")
+    try:
+        image_bytes = await read_image_bytes(image_url)
+        colours = await asyncio.to_thread(extract_image_palette, image_bytes, 6)
+    except Exception as e:
+        return await ctx.send(f"Could not read image colours: {clean_user_error(e)}")
+    embed, file = colour_palette_embed_and_file(colours, source_url=image_url)
+    if embed is None:
+        return await ctx.send("I could not find readable colours in that image.")
+    await ctx.send(embed=embed, file=file)
+
+COLOUR_PICKER_HUES = [
+    ("Red", 0), ("Orange", 30), ("Yellow", 55), ("Green", 120),
+    ("Teal", 170), ("Blue", 215), ("Purple", 270), ("Pink", 325),
+]
+COLOUR_PICKER_TONES = {
+    "soft": ("Soft", 0.42, 0.78),
+    "clean": ("Clean", 0.58, 0.58),
+    "bold": ("Bold", 0.82, 0.50),
+    "deep": ("Deep", 0.72, 0.32),
+    "pastel": ("Pastel", 0.35, 0.84),
+    "neutral": ("Neutral", 0.18, 0.62),
+}
+
+class ColourHueSelect(Select):
+    def __init__(self, parent):
+        options = [
+            discord.SelectOption(label=label, value=str(hue), default=(hue == parent.hue))
+            for label, hue in COLOUR_PICKER_HUES
+        ]
+        super().__init__(placeholder="Hue", options=options, min_values=1, max_values=1, row=0)
+        self.parent_picker = parent
+
+    async def callback(self, interaction: discord.Interaction):
+        await self.parent_picker.set_hue(interaction, int(self.values[0]))
+
+class ColourToneSelect(Select):
+    def __init__(self, parent):
+        tone_items = list(COLOUR_PICKER_TONES.items())
+        if parent.tone_key == "custom":
+            tone_items.append(("custom", ("Custom", parent.custom_saturation, parent.custom_lightness)))
+        options = [
+            discord.SelectOption(label=label, value=key, default=(key == parent.tone_key))
+            for key, (label, _, _) in tone_items
+        ]
+        super().__init__(placeholder="Tone", options=options, min_values=1, max_values=1, row=1)
+        self.parent_picker = parent
+
+    async def callback(self, interaction: discord.Interaction):
+        await self.parent_picker.set_tone(interaction, self.values[0])
+
+class ColourPickerView(View):
+    def __init__(self, author_id, hue=170, tone_key="clean"):
+        super().__init__(timeout=600)
+        self.author_id = author_id
+        self.hue = hue
+        self.tone_key = tone_key
+        self.custom_saturation = COLOUR_PICKER_TONES["clean"][1]
+        self.custom_lightness = COLOUR_PICKER_TONES["clean"][2]
+        self.refresh_items()
+
+    def refresh_items(self):
+        self.clear_items()
+        self.add_item(ColourHueSelect(self))
+        self.add_item(ColourToneSelect(self))
+        self.add_item(ColourShiftButton("Darker", "darker", self, row=2))
+        self.add_item(ColourShiftButton("Lighter", "lighter", self, row=2))
+        self.add_item(ColourShiftButton("Less Saturated", "less_sat", self, row=3))
+        self.add_item(ColourShiftButton("More Saturated", "more_sat", self, row=3))
+
+    def current_rgba(self):
+        _, saturation, lightness = self.current_tone_values()
+        r, g, b = colorsys.hls_to_rgb((self.hue % 360) / 360, lightness, saturation)
+        return round(r * 255), round(g * 255), round(b * 255), 255
+
+    def current_tone_values(self):
+        if self.tone_key == "custom":
+            return "Custom", self.custom_saturation, self.custom_lightness
+        return COLOUR_PICKER_TONES.get(self.tone_key, COLOUR_PICKER_TONES["clean"])
+
+    def current_embed_file(self):
+        r, g, b, a = self.current_rgba()
+        embed, file = colour_embed_and_file(colour_hex(r, g, b, a))
+        tone_label = self.current_tone_values()[0]
+        embed.title = "Colour Picker"
+        embed.add_field(name="Picker", value=f"Hue: **{self.hue}°**\nTone: **{tone_label}**", inline=False)
+        return embed, file
+
+    async def update_picker(self, interaction):
+        if interaction.user.id != self.author_id:
+            return await interaction.response.send_message("Use your own colour picker.", ephemeral=True)
+        self.refresh_items()
+        embed, file = self.current_embed_file()
+        await interaction.response.edit_message(embed=embed, attachments=[file], view=self)
+
+    async def set_hue(self, interaction, hue):
+        self.hue = hue
+        await self.update_picker(interaction)
+
+    async def set_tone(self, interaction, tone_key):
+        self.tone_key = tone_key
+        await self.update_picker(interaction)
+
+class ColourShiftButton(Button):
+    def __init__(self, label, action, parent, row=2):
+        super().__init__(label=label, style=discord.ButtonStyle.secondary, row=row)
+        self.action = action
+        self.parent_picker = parent
+
+    async def callback(self, interaction: discord.Interaction):
+        label, saturation, lightness = self.parent_picker.current_tone_values()
+        if self.action == "darker":
+            lightness = max(0.12, lightness - 0.08)
+        elif self.action == "lighter":
+            lightness = min(0.92, lightness + 0.08)
+        elif self.action == "less_sat":
+            saturation = max(0.05, saturation - 0.12)
+        elif self.action == "more_sat":
+            saturation = min(1.0, saturation + 0.12)
+        self.parent_picker.custom_saturation = saturation
+        self.parent_picker.custom_lightness = lightness
+        self.parent_picker.tone_key = "custom"
+        await self.parent_picker.update_picker(interaction)
+
 class ColourSetupModal(Modal):
     def __init__(self, author_id):
         super().__init__(title="Colour Info")
@@ -14392,12 +14633,53 @@ class OpenColourSetupButton(Button):
             return await interaction.response.send_message("Use your own setup UI.", ephemeral=True)
         await interaction.response.send_modal(ColourSetupModal(self.view.author_id))
 
+class OpenColourPickerButton(Button):
+    def __init__(self):
+        super().__init__(label="Open Picker", style=discord.ButtonStyle.primary, emoji=reaction_emoji(economy_q_image))
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.view.author_id:
+            return await interaction.response.send_message("Use your own setup UI.", ephemeral=True)
+        view = ColourPickerView(interaction.user.id)
+        embed, file = view.current_embed_file()
+        await interaction.response.send_message(embed=embed, file=file, view=view)
+
+class ColourImageHelpButton(Button):
+    def __init__(self):
+        super().__init__(label="Find From Image", style=discord.ButtonStyle.secondary, emoji=reaction_emoji(economy_q_attachment))
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.view.author_id:
+            return await interaction.response.send_message("Use your own setup UI.", ephemeral=True)
+        await interaction.response.send_message(
+            "Reply to an image with `.colour`, or upload an image with `.colour image`, and I’ll pull the main colours.",
+            ephemeral=True,
+        )
+
+class ColourStartView(View):
+    def __init__(self, author_id):
+        super().__init__(timeout=600)
+        self.author_id = author_id
+        self.add_item(OpenColourSetupButton())
+        self.add_item(OpenColourPickerButton())
+        self.add_item(ColourImageHelpButton())
+
 @bot.command(name="colour", aliases=["color", "hex", "colourinfo", "colorinfo"])
 async def colour(ctx, *, value: str = None):
+    image_url = await find_image_source_for_colour(ctx)
+    mode = (value or "").strip().casefold()
+    if image_url and (not mode or mode in {"image", "img", "photo", "palette", "find", "finder", "fromimage"}):
+        return await send_colour_palette_from_image(ctx, image_url)
+    if mode in {"picker", "pick", "browse", "choose"}:
+        view = ColourPickerView(ctx.author.id)
+        embed, file = view.current_embed_file()
+        return await ctx.send(embed=embed, file=file, view=view)
+    if mode in {"image", "img", "photo", "palette", "find", "finder", "fromimage"}:
+        return await ctx.send("Reply to an image with `.colour`, or upload an image with `.colour image`.")
     if not value:
         return await ctx.send(
-            "Enter a hex colour here, or type `.colour #77A07BFF`.",
-            view=SingleUserSetupView(ctx.author.id, OpenColourSetupButton())
+            "Enter a hex colour, open the picker, or reply to an image to find its colours.",
+            view=ColourStartView(ctx.author.id)
         )
     embed, file = colour_embed_and_file(value)
     if embed is None:
