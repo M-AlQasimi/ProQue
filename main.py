@@ -1,6 +1,7 @@
 import asyncio
 import ast
 import concurrent.futures
+import colorsys
 import json
 import logging
 import math
@@ -9,8 +10,10 @@ import os
 import random
 import re
 import shlex
+import struct
 import time
 import traceback
+import zlib
 
 import aiohttp
 import discord
@@ -239,7 +242,7 @@ AI_COMMAND_NAMES = {
     "authenticity", "authcheck", "essaycheck",
 }
 BULK_COMMAND_NAMES = {
-    "add", "remove", "setquesos", "addtick", "removetick", "settick", "purge",
+    "add", "remove", "move", "setquesos", "addtick", "removetick", "movetick", "settick", "purge",
     "rpurge", "archive", "fwd", "forward", "send", "reply",
 }
 HEAVY_COMMAND_NAMES = {
@@ -844,7 +847,7 @@ def command_risk_note(command):
     names = {command.name.casefold(), *(alias.casefold() for alias in getattr(command, "aliases", []) or [])}
     if names & {"ban", "kick", "purge", "rpurge", "lock", "unlock", "lockdown", "reopen", "block", "unblock", "send", "reply"}:
         return "High impact moderation/server action."
-    if names & {"add", "remove", "give", "addtick", "removetick", "settick", "lotterypot", "lotteryprize", "prizepool", "setpot", "addpot", "removepot", "setquesos"}:
+    if names & {"add", "remove", "move", "give", "addtick", "removetick", "movetick", "settick", "lotterypot", "lotteryprize", "prizepool", "setpot", "addpot", "removepot", "setquesos"}:
         return "Changes 𝚀𝚞𝚎wo money or lottery entries."
     if names & GAMBLING_AMOUNT_COMMANDS:
         return "Gambling/game action; may spend 𝚀𝚞𝚎wo balance."
@@ -1321,7 +1324,7 @@ def denial_message(detail=None):
 def command_denial_detail(ctx, error=None):
     command_name = ctx.command.qualified_name if getattr(ctx, "command", None) else ""
     que_only = {
-        "add", "remove", "addtick", "removetick", "settick", "lotterypot", "setquesos",
+        "add", "remove", "move", "addtick", "removetick", "movetick", "settick", "lotterypot", "setquesos",
         "editlottery", "stoplottery", "qstats", "economyhealth", "balancedashboard", "endseason",
         "send", "reply", "fsleep", "wake", "clearwatchlist",
     "aisettings", "aiperms", "aiignore", "aiunignore", "aistyle",
@@ -2508,7 +2511,7 @@ async def on_ready():
             "bal", "bank", "tutorial", "recommendgame", "career", "jobs", "work", "robsettings", "quewochannel", "levelupchannel", "rob", "profile", "inventory", "settheme", "quests", "dailychallenge", "streaks", "guide", "onboard", "shop", "claimreminders", "cooldowns", "transactions", "limits", "lottery", "editlottery", "stoplottery", "lotterystats", "buytick",
             "daily", "weekly", "monthly", "cf", "roulette", "slots",
             "blackjack", "scratch", "tower", "vault", "memory", "cardladder", "lockpick", "heist", "diceduel", "cases", "plinko", "luckynumber", "jackpotspin", "dungeon", "ms", "wheel", "give", "lb", "gamestats", "achievements", "setbadge", "gamebalance", "gamehistory", "seasonpass",
-            "qstats", "economyaudit", "abuseaudit", "season", "endseason", "add", "remove", "addtick", "removetick", "settick", "lotterypot", "setquesos", "econhelp", "explain"
+            "qstats", "economyaudit", "abuseaudit", "season", "endseason", "add", "remove", "move", "addtick", "removetick", "movetick", "settick", "lotterypot", "setquesos", "econhelp", "explain"
         ]
         loaded_economy_commands = [name for name in economy_command_names if bot.get_command(name)]
         print(f"𝚀𝚞𝚎wo system loaded ({len(loaded_economy_commands)}/{len(economy_command_names)} commands)")
@@ -4304,6 +4307,8 @@ COMMAND_EXAMPLE_OVERRIDES = {
     "cardladder": ".cardladder 1000",
     "cf": ".cf 1000 h",
     "chess": ".chess @user 1000",
+    "colour": ".colour #77A07BFF",
+    "color": ".color #77A07BFF",
     "define": ".define example",
     "deleterole": ".deleterole @role",
     "disable": ".disable command",
@@ -4355,7 +4360,9 @@ COMMAND_EXAMPLE_OVERRIDES = {
     "permaudit": ".permaudit",
     "perms": ".perms @user",
     "sessions": ".sessions",
-    "move": ".move e2e4",
+    "move": ".move @from @to 1m",
+    "movetick": ".movetick @from @to 10",
+    "chessmove": ".chessmove e2e4",
     "ms": ".ms 1000",
     "poll": ".poll Best color? | Blue | Red | 10m",
     "prefix": ".prefix !",
@@ -4435,7 +4442,7 @@ GAMBLING_AMOUNT_COMMANDS = {
 GENERIC_INPUT_UI_COMMANDS = {
     "prefix", "preifx", "setprefix", "disable", "enable", "roleinfo", "deleterole",
     "howtoplay", "how", "rules", "flagquiz", "flags", "fq", "ttt", "c4", "chess",
-    "move", "chessmove", "setnick", "shut", "unshut", "rshut", "unrshut", "purge",
+    "move", "movetick", "chessmove", "setnick", "shut", "unshut", "rshut", "unrshut", "purge",
     "rpurge", "unmute", "ban", "unban", "kick", "addrole", "removerole", "send",
     "reply", "fwd", "forward", "fw", "quote", "archive", "aban", "raban", "summon2", "block", "unblock", "fsleep", "wake",
     "find", "censor", "uncensor", "ask", "generate", "summarize", "summarise", "summary", "aisummary", "tldr", "recap",
@@ -4708,7 +4715,7 @@ AI_SAFE_COMMANDS = {
     "leaderboard", "gamestats", "achievements", "gamebalance", "gamehistory",
     "season", "seasonpass", "monthlychallenges", "pass", "spass", "limits", "riskprofile", "risk", "userrisk", "riskcheck", "economyhealth", "ecohealth", "moneyhealth", "supply",
     "messages", "msgstats", "messagestats", "mstats",
-    "activitystats", "astats", "away", "userinfo", "pfp", "avatar", "calc",
+    "activitystats", "astats", "away", "userinfo", "pfp", "avatar", "calc", "colour", "color",
     "define", "timer", "ctimer", "alarm", "find", "econhelp", "quewohelp",
     "economyhelp", "ehelp", "explain", "lottery", "lotterystats",
     "summarize", "summarise", "summary", "aisummary", "tldr", "recap",
@@ -4732,7 +4739,7 @@ AI_CONFIRM_COMMANDS = {
 }
 
 AI_SUPEROWNER_ONLY_COMMANDS = {
-    "add", "remove", "addtick", "removetick", "remtick", "deltick", "settick", "lotterypot", "lotteryprize", "prizepool", "setpot", "addpot", "removepot", "setquesos",
+    "add", "remove", "move", "moveqs", "movequesos", "addtick", "removetick", "remtick", "deltick", "movetick", "moveticks", "ticketmove", "moveticket", "settick", "lotterypot", "lotteryprize", "prizepool", "setpot", "addpot", "removepot", "setquesos",
     "editlottery", "stoplottery", "qstats", "economystats", "qstatus", "economyhealth", "ecohealth", "moneyhealth", "supply", "balancedashboard", "ecodashboard", "moneydashboard", "sinkdashboard", "endseason", "rewardseason",
     "disable", "enable", "disableall", "enableall", "prefix", "preifx", "setprefix",
     "settings", "setup", "setupbot", "config", "controlpanel", "panel", "setlogs", "slashsync", "auditcommands", "cmdaudit", "commandaudit", "styleaudit", "uiaudit", "messageaudit", "commandcleanup", "cleanupcommands", "cmdcleanup", "dbaudit", "databaseaudit", "backgroundjobs", "tasks", "bgjobs", "errors", "errorlog", "recover", "restorestate", "recovery", "aihistory", "aiactions", "actionhistory",
@@ -6282,8 +6289,8 @@ HELP_CATEGORIES = {
         "lb", "gamestats", "achievements", "setbadge", "gamehistory", "season", "seasonpass",
         "transactions", "limits", "riskprofile", "cooldowns", "streaks", "claimreminders",
     ],
-    "Social": ["truthordare", "flagquiz", "flagstats", "ttt", "c4", "chess", "move", "resign", "q", "picker"],
-    "Tools": ["userinfo", "pfp", "calc", "define", "timer", "ctimer", "alarm", "poll", "epoll", "translate", "find", "snipe"],
+    "Social": ["truthordare", "flagquiz", "flagstats", "ttt", "c4", "chess", "chessmove", "resign", "q", "picker"],
+    "Tools": ["userinfo", "pfp", "calc", "colour", "define", "timer", "ctimer", "alarm", "poll", "epoll", "translate", "find", "snipe"],
     "AI": ["ask", "summarize", "aidetect", "generate", "analyse", "aimemory", "aiknow", "usersettings"],
     "Community": ["afk", "sleep", "wake", "away", "setbday", "removebday", "activity", "activitystats", "messages"],
     "Admin Setup": [
@@ -6303,6 +6310,7 @@ HELP_CATEGORIES = {
 }
 SUPEROWNER_HELP_COMMANDS = [
     "add", "remove", "addtick", "removetick", "settick", "lotterypot", "setquesos",
+    "move", "movetick",
     "addxp", "removexp", "addlvl", "removelvl", "setlvl",
     "editlottery", "stoplottery", "qstats", "economyhealth", "balancedashboard", "endseason",
     "send", "reply", "fsleep", "wake", "clearwatchlist",
@@ -6312,6 +6320,7 @@ SUPEROWNER_HELP_COMMANDS = [
 SUPEROWNER_HIDDEN_COMMANDS = {
     *SUPEROWNER_HELP_COMMANDS,
     "remtick", "deltick", "lotteryprize", "prizepool", "setpot", "addpot", "removepot",
+    "moveqs", "movequesos", "moveticks", "ticketmove", "moveticket",
     "givexp", "remxp", "delxp", "addlevel", "removelvls", "remlevel", "removelevel", "dellvl", "dellevel", "setlevel",
     "economystats", "qstatus", "ecohealth", "moneyhealth", "supply", "rewardseason",
     "aiconfig", "aicontrols", "ignoreai", "unignoreai", "aipermissions", "aicapabilities", "aiauthority", "aipersonality",
@@ -11805,7 +11814,7 @@ async def chess(ctx, opponent: discord.Member):
     await start_chess_clock(game)
     await start_chess_live_clock(game)
 
-@bot.command(name="move", aliases=["chessmove"])
+@bot.command(name="chessmove", aliases=["cmove"])
 async def chess_move(ctx, *, move: str):
     game = chess_games.get(ctx.channel.id)
     if not game:
@@ -11818,7 +11827,7 @@ async def chess_move(ctx, *, move: str):
 
     parsed = parse_chess_move(board, move)
     if parsed is None:
-        return await ctx.send(f"Illegal move. Use the chess UI or something like `{ctx.prefix}move e2e4`.")
+        return await ctx.send(f"Illegal move. Use the chess UI or something like `{ctx.prefix}chessmove e2e4`.")
 
     apply_chess_elapsed(game)
     board.push(parsed)
@@ -14256,6 +14265,145 @@ async def calc(ctx, *, expression: str = None):
     except Exception as e:
         await ctx.send(clean_user_error(e))
 
+def parse_colour_value(raw):
+    text = str(raw or "").strip()
+    text = text.removeprefix("#")
+    if text.lower().startswith("0x"):
+        text = text[2:]
+    text = re.sub(r"[^0-9a-fA-F]", "", text)
+    if len(text) in {3, 4}:
+        text = "".join(ch * 2 for ch in text)
+    if len(text) not in {6, 8}:
+        return None
+    try:
+        r = int(text[0:2], 16)
+        g = int(text[2:4], 16)
+        b = int(text[4:6], 16)
+        a = int(text[6:8], 16) if len(text) == 8 else 255
+    except ValueError:
+        return None
+    return r, g, b, a
+
+def colour_hex(r, g, b, a=255, include_alpha=False):
+    base = f"#{r:02X}{g:02X}{b:02X}"
+    return f"{base}{a:02X}" if include_alpha or a != 255 else base
+
+def relative_luminance(r, g, b):
+    def channel(value):
+        value = value / 255
+        return value / 12.92 if value <= 0.03928 else ((value + 0.055) / 1.055) ** 2.4
+    return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
+
+def contrast_ratio(l1, l2):
+    lighter = max(l1, l2)
+    darker = min(l1, l2)
+    return (lighter + 0.05) / (darker + 0.05)
+
+def colour_swatch_png(r, g, b, a=255, width=256, height=160):
+    row = b"\x00" + bytes([r, g, b, a]) * width
+    raw = row * height
+
+    def chunk(kind, data):
+        return (
+            struct.pack(">I", len(data))
+            + kind
+            + data
+            + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+        )
+
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(raw))
+        + chunk(b"IEND", b"")
+    )
+
+def colour_embed_and_file(raw):
+    parsed = parse_colour_value(raw)
+    if parsed is None:
+        return None, None
+    r, g, b, a = parsed
+    rf, gf, bf = r / 255, g / 255, b / 255
+    h_hls, l_hls, s_hls = colorsys.rgb_to_hls(rf, gf, bf)
+    h_hsv, s_hsv, v_hsv = colorsys.rgb_to_hsv(rf, gf, bf)
+    cmax = max(rf, gf, bf)
+    cmyk_k = 1 - cmax
+    if cmyk_k >= 1:
+        cmyk = (0, 0, 0, 100)
+    else:
+        cmyk = tuple(round(value * 100) for value in (
+            (1 - rf - cmyk_k) / (1 - cmyk_k),
+            (1 - gf - cmyk_k) / (1 - cmyk_k),
+            (1 - bf - cmyk_k) / (1 - cmyk_k),
+            cmyk_k,
+        ))
+    luminance = relative_luminance(r, g, b)
+    black_contrast = contrast_ratio(luminance, 0)
+    white_contrast = contrast_ratio(luminance, 1)
+    text_choice = "black" if black_contrast >= white_contrast else "white"
+    alpha_percent = a / 255 * 100
+    embed = standard_embed(
+        "Colour",
+        description=f"`{colour_hex(r, g, b, a, include_alpha=(a != 255))}`",
+        color=discord.Color.from_rgb(r, g, b),
+        icon=economy_q_image,
+    )
+    embed.add_field(name="RGB", value=f"`rgb({r}, {g}, {b})`", inline=True)
+    embed.add_field(name="RGBA", value=f"`rgba({r}, {g}, {b}, {alpha_percent:.1f}%)`", inline=True)
+    embed.add_field(name="Alpha", value=f"**{a}** / 255 (**{alpha_percent:.1f}%**)", inline=True)
+    embed.add_field(name="HSL", value=f"`hsl({round(h_hls * 360)}, {round(s_hls * 100)}%, {round(l_hls * 100)}%)`", inline=True)
+    embed.add_field(name="HSV", value=f"`hsv({round(h_hsv * 360)}, {round(s_hsv * 100)}%, {round(v_hsv * 100)}%)`", inline=True)
+    embed.add_field(name="CMYK", value=f"`cmyk({cmyk[0]}%, {cmyk[1]}%, {cmyk[2]}%, {cmyk[3]}%)`", inline=True)
+    embed.add_field(
+        name="Readability",
+        value=(
+            f"Suggested text: **{text_choice}**\n"
+            f"Contrast vs black: **{black_contrast:.2f}:1**\n"
+            f"Contrast vs white: **{white_contrast:.2f}:1**"
+        ),
+        inline=False,
+    )
+    filename = "colour.png"
+    embed.set_image(url=f"attachment://{filename}")
+    file = discord.File(BytesIO(colour_swatch_png(r, g, b, a)), filename=filename)
+    return embed, file
+
+class ColourSetupModal(Modal):
+    def __init__(self, author_id):
+        super().__init__(title="Colour Info")
+        self.author_id = author_id
+        self.value = TextInput(label="Hex colour", placeholder="#77A07BFF", max_length=20)
+        self.add_item(self.value)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if interaction.user.id != self.author_id:
+            return await interaction.response.send_message("Use your own setup UI.", ephemeral=True)
+        embed, file = colour_embed_and_file(str(self.value.value))
+        if embed is None:
+            return await interaction.response.send_message("Use a hex colour like `#77A07B`, `#77A07BFF`, `77A07B`, or `#7A8`.", ephemeral=True)
+        await interaction.response.send_message(embed=embed, file=file)
+
+class OpenColourSetupButton(Button):
+    def __init__(self):
+        super().__init__(label="Check Colour", style=discord.ButtonStyle.primary, emoji=reaction_emoji(economy_q_image))
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.view.author_id:
+            return await interaction.response.send_message("Use your own setup UI.", ephemeral=True)
+        await interaction.response.send_modal(ColourSetupModal(self.view.author_id))
+
+@bot.command(name="colour", aliases=["color", "hex", "colourinfo", "colorinfo"])
+async def colour(ctx, *, value: str = None):
+    if not value:
+        return await ctx.send(
+            "Enter a hex colour here, or type `.colour #77A07BFF`.",
+            view=SingleUserSetupView(ctx.author.id, OpenColourSetupButton())
+        )
+    embed, file = colour_embed_and_file(value)
+    if embed is None:
+        return await ctx.send("Use a hex colour like `#77A07B`, `#77A07BFF`, `77A07B`, or `#7A8`.")
+    await ctx.send(embed=embed, file=file)
+
 async def define_word_text(word):
     session = await get_http_session()
     url = f"https://api.dictionaryapi.dev/api/v2/entries/en/{word}"
@@ -15171,7 +15319,7 @@ class OpenGenericCommandInputButton(Button):
             return await interaction.response.send_message("Use your own setup UI.", ephemeral=True)
         await interaction.response.send_modal(GenericCommandInputModal(self.view.author_id, self.command_name))
 
-SPECIALIZED_SETUP_UI_COMMANDS = {"poll", "timer", "alarm", "picker", "giveaway", "calc", "define", "setbday", "translate", "messageevent"}
+SPECIALIZED_SETUP_UI_COMMANDS = {"poll", "timer", "alarm", "picker", "giveaway", "calc", "colour", "color", "hex", "define", "setbday", "translate", "messageevent"}
 SETUP_UI_COMMANDS = SPECIALIZED_SETUP_UI_COMMANDS | GENERIC_INPUT_UI_COMMANDS
 
 def command_setup_view(author_id, command_name):
@@ -15182,6 +15330,9 @@ def command_setup_view(author_id, command_name):
         "picker": OpenPickerSetupButton,
         "giveaway": OpenGiveawaySetupButton,
         "calc": OpenCalcSetupButton,
+        "colour": OpenColourSetupButton,
+        "color": OpenColourSetupButton,
+        "hex": OpenColourSetupButton,
         "define": OpenDefineSetupButton,
         "setbday": OpenBirthdaySetupButton,
         "translate": OpenTranslateSetupButton,

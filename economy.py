@@ -193,6 +193,25 @@ Q_BRIEFCASE = "<:QBriefcase:1509556589340790927>"
 Q_CAREER = "<:QCareer:1509556591630749736>"
 Q_PROMOTION = "<:QPromotion:1509556626045009950>"
 Q_WORK = "<:QWork:1509556652456673280>"
+
+CUSTOM_EMOJI_FALLBACKS = {
+    # This emoji currently renders as raw markdown in some servers.
+    "1500878493309866206": "🟧",
+}
+
+def safe_custom_emoji(markdown, fallback=None):
+    text = str(markdown or "")
+    match = re.fullmatch(r"<a?:[A-Za-z0-9_]{2,32}:([0-9]{17,22})>", text)
+    if not match:
+        return text
+    emoji_id = int(match.group(1))
+    if bot is not None:
+        try:
+            if bot.get_emoji(emoji_id):
+                return text
+        except Exception:
+            pass
+    return fallback or CUSTOM_EMOJI_FALLBACKS.get(str(emoji_id), text)
 INTERNAL_SUPEROWNER_TRANSACTION_KINDS = {"transfer_tax", "lottery_house_cut", "shop_payment"}
 SLOT_SYMBOL_PAYOUTS = [
     (Q_SLOT_STAR, 2),
@@ -2759,6 +2778,76 @@ def bulk_adjust_lottery_tickets(guild_id, user_ids, tickets, mode, actor_id):
     conn.close()
     return len(unique_ids)
 
+def move_lottery_tickets(guild_id, source_user_id, target_user_id, tickets, actor_id):
+    guild_id = int(guild_id)
+    source_user_id = int(source_user_id)
+    target_user_id = int(target_user_id)
+    tickets = int(tickets)
+    if tickets <= 0:
+        raise ValueError("nonpositive_tickets")
+    if source_user_id == target_user_id:
+        raise ValueError("same_user")
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        user_ids = sorted({source_user_id, target_user_id})
+        cur.execute(
+            """
+            INSERT INTO lottery_tickets (guild_id, user_id, tickets, spent, pot_add)
+            SELECT %s, user_id, 0, 0, 0 FROM unnest(%s::bigint[]) AS user_id
+            ON CONFLICT (guild_id, user_id) DO NOTHING
+            """,
+            (guild_id, user_ids),
+        )
+        cur.execute(
+            """
+            SELECT user_id, tickets
+            FROM lottery_tickets
+            WHERE guild_id = %s AND user_id = ANY(%s::bigint[])
+            ORDER BY user_id
+            FOR UPDATE
+            """,
+            (guild_id, user_ids),
+        )
+        rows = {int(row["user_id"]): int(row["tickets"] or 0) for row in cur.fetchall()}
+        old_source = int(rows.get(source_user_id, 0))
+        old_target = int(rows.get(target_user_id, 0))
+        if old_source < tickets:
+            raise ValueError("insufficient_tickets")
+        new_source = old_source - tickets
+        new_target = old_target + tickets
+        cur.execute(
+            "UPDATE lottery_tickets SET tickets = %s WHERE guild_id = %s AND user_id = %s",
+            (new_source, guild_id, source_user_id),
+        )
+        cur.execute(
+            "UPDATE lottery_tickets SET tickets = %s WHERE guild_id = %s AND user_id = %s",
+            (new_target, guild_id, target_user_id),
+        )
+        cur.execute(
+            "INSERT INTO economy_transactions (user_id, kind, amount, note) VALUES (%s, %s, %s, %s)",
+            (source_user_id, "ticket_move_sent", -tickets, f"Moved to {target_user_id} by {actor_id} in guild {guild_id}"),
+        )
+        cur.execute(
+            "INSERT INTO economy_transactions (user_id, kind, amount, note) VALUES (%s, %s, %s, %s)",
+            (target_user_id, "ticket_move_received", tickets, f"Moved from {source_user_id} by {actor_id} in guild {guild_id}"),
+        )
+        conn.commit()
+        return {
+            "old_source": old_source,
+            "new_source": new_source,
+            "old_target": old_target,
+            "new_target": new_target,
+            "tickets": tickets,
+        }
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cur.close()
+        conn.close()
+
 def reset_lottery_round(guild_id, next_draw):
     conn = get_db_connection()
     cur = conn.cursor()
@@ -5216,6 +5305,41 @@ def parse_target_amount_args(raw_args, *, allow_all=False):
         return None, None
     return target, amount
 
+def parse_two_targets_amount_args(raw_args, *, allow_all=False):
+    try:
+        tokens = shlex.split(str(raw_args or ""))
+    except ValueError:
+        return None, None, None
+    if len(tokens) < 3:
+        return None, None, None
+
+    amount_indexes = []
+    for index, token in enumerate(tokens):
+        if allow_all and token.casefold() == "all":
+            amount_indexes.append(index)
+            continue
+        if parse_whole_number(token) is not None:
+            amount_indexes.append(index)
+    if not amount_indexes:
+        return None, None, None
+
+    amount_index = len(tokens) - 1 if len(tokens) - 1 in amount_indexes else amount_indexes[0]
+    amount = tokens[amount_index]
+    targets = tokens[:amount_index] + tokens[amount_index + 1:]
+    if len(targets) != 2:
+        return None, None, None
+    return targets[0], targets[1], amount
+
+async def resolve_transfer_user(ctx, token):
+    try:
+        return await commands.MemberConverter().convert(ctx, token)
+    except Exception:
+        pass
+    try:
+        return await commands.UserConverter().convert(ctx, token)
+    except Exception as exc:
+        raise commands.BadArgument("Could not resolve user") from exc
+
 async def send_nonpositive_amount_error(ctx, raw_amount):
     if str(raw_amount).lower() == "all":
         await ctx.send(f"{Q_DENIED} You don't have any {CURRENCY_EMOJI} to use.")
@@ -5302,7 +5426,7 @@ def public_error_text(error, fallback="That action failed."):
     return text[:220] if text else fallback
 
 ECONOMY_INPUT_UI_COMMANDS = {
-    "buytick", "give", "add", "remove", "addtick", "removetick", "settick", "setquesos",
+    "buytick", "give", "add", "remove", "move", "addtick", "removetick", "movetick", "settick", "setquesos",
     "addxp", "removexp", "addlvl", "removelvl", "setlvl", "levelupchannel",
 }
 
@@ -5311,8 +5435,10 @@ ECONOMY_INPUT_PLACEHOLDERS = {
     "give": "@user 10k",
     "add": "@user 1m",
     "remove": "@user 10k",
+    "move": "@from @to 100k",
     "addtick": "@user 10",
     "removetick": "@user 10",
+    "movetick": "@from @to 10",
     "settick": "@user 10",
     "setquesos": "@user 1m",
     "addxp": "@user 500",
@@ -5398,7 +5524,7 @@ ECONOMY_CHANNEL_EXEMPT_COMMANDS = {
     "economyaudit", "econaudit", "qaudit", "audit", "abuseaudit", "riskwatch", "antiexploit",
     "balancedashboard", "ecodashboard", "moneydashboard", "sinkdashboard",
     "gameaudit", "balanceaudit", "event", "qevent", "events",
-    "add", "remove", "addtick", "removetick", "settick", "setquesos",
+    "add", "remove", "move", "moveqs", "movequesos", "addtick", "removetick", "movetick", "moveticks", "ticketmove", "moveticket", "settick", "setquesos",
     "addxp", "removexp", "addlvl", "removelvl", "setlvl",
 }
 
@@ -8832,8 +8958,6 @@ async def give(ctx, *, args: str = None):
         if total_amount > data['balance'] and not has_economy_owner_power(ctx.author.id, ctx.guild):
             await ctx.send(f"{Q_DENIED} You need {format_balance(total_amount)} to send {format_balance(amount)} to **{len(recipient_ids)}** users.")
             return
-        if not await check_daily_loss_limit(ctx, data, total_amount):
-            return
 
         old_sender_balance = data["balance"]
         new_sender_balance = old_sender_balance
@@ -8917,9 +9041,6 @@ async def give(ctx, *, args: str = None):
         await ctx.send(f"{Q_DENIED} You only have {format_balance(data['balance'])}")
         return
 
-    if not await check_daily_loss_limit(ctx, data, amount):
-        return
-
     try:
         def run_single_give():
             tax_rate = event_transfer_tax_rate(ctx.guild.id if ctx.guild else None)
@@ -8978,6 +9099,168 @@ async def give(ctx, *, args: str = None):
             ("Sender Balance", f"{format_balance(old_sender_balance)} → {format_balance(new_sender_balance)}", False),
             ("Recipient Balance", f"{format_balance(old_receiver_balance)} → {format_balance(new_receiver_balance)}", False),
         ])
+
+@commands.command(name="move", aliases=["moveqs", "movequesos"])
+async def move_quesos(ctx, *, args: str = None):
+    """𝚀𝚞𝚎 owner only. Moves quesos from one user to another without creating new money."""
+    if not await ensure_db_ready(ctx):
+        return
+    if not is_superowner_id(ctx.author.id):
+        await send_owner_only(ctx)
+        return
+
+    source_token, target_token, amount_text = parse_two_targets_amount_args(args, allow_all=True)
+    if not source_token:
+        await send_economy_command_input_ui(ctx, "move", "Enter source user, destination user, and amount. Example: .move @from @to 100k")
+        return
+    try:
+        source = await resolve_transfer_user(ctx, source_token)
+        target = await resolve_transfer_user(ctx, target_token)
+    except commands.BadArgument:
+        await ctx.send(f"{Q_DENIED} Use `.move @from @to <amount>` or `.move @from @to all`.")
+        return
+    if source.id == target.id:
+        await ctx.send(f"{Q_DENIED} Source and destination must be different users.")
+        return
+
+    try:
+        source_data = await asyncio.to_thread(get_user, source.id)
+    except Exception:
+        await send_error(ctx, "Database unavailable. Try again shortly.")
+        return
+    if str(amount_text).casefold() == "all":
+        amount = max(0, int(source_data.get("balance") or 0))
+    else:
+        amount = parse_whole_number(amount_text)
+    if amount is None:
+        await ctx.send(f"{Q_DENIED} Use `.move @from @to <amount>`, like `.move @from @to 100k`.")
+        return
+    if amount <= 0:
+        await send_nonpositive_amount_error(ctx, amount_text)
+        return
+
+    try:
+        def run_move():
+            transfer = transfer_user_balance(source.id, target.id, amount, tax=0, allow_overdraft=False)
+            log_transaction(source.id, "owner_move_sent", -amount, f"Moved to {target.id} by {ctx.author.id}")
+            log_transaction(target.id, "owner_move_received", amount, f"Moved from {source.id} by {ctx.author.id}")
+            receipt = create_receipt(
+                ctx.guild.id if ctx.guild else 0,
+                ctx.channel.id,
+                ctx.author.id,
+                [source.id, target.id],
+                "move",
+                amount,
+                f"from={source.id}; to={target.id}",
+            )
+            return transfer, receipt
+        transfer, receipt_id = await asyncio.to_thread(run_move)
+    except ValueError:
+        await ctx.send(f"{Q_DENIED} {user_mention(source.id)} only has {format_balance(source_data.get('balance') or 0)}.")
+        return
+    except Exception:
+        await send_error(ctx, "Database unavailable. Try again shortly.")
+        return
+
+    await ctx.send(
+        f"{QOIN_TRANSFER} Moved **{format_balance(amount)}** from **{user_mention(source.id)}** to **{user_mention(target.id)}**.\n"
+        f"Source: **{format_balance(transfer['old_sender_balance'])}** → **{format_balance(transfer['new_sender_balance'])}**\n"
+        f"Destination: **{format_balance(transfer['old_receiver_balance'])}** → **{format_balance(transfer['new_receiver_balance'])}**"
+        f"{receipt_line(receipt_id)}",
+        allowed_mentions=discord.AllowedMentions.none(),
+    )
+    await send_economy_log(ctx, "𝚀𝚞𝚎wo Move", [
+        ("From", f"{user_mention(source.id)} ({source.id})", False),
+        ("To", f"{user_mention(target.id)} ({target.id})", False),
+        ("Amount", format_balance(amount), True),
+        ("Source Balance", f"{format_balance(transfer['old_sender_balance'])} → {format_balance(transfer['new_sender_balance'])}", False),
+        ("Destination Balance", f"{format_balance(transfer['old_receiver_balance'])} → {format_balance(transfer['new_receiver_balance'])}", False),
+    ], color=discord.Color.gold())
+
+@commands.command(name="movetick", aliases=["moveticks", "ticketmove", "moveticket"])
+async def move_tickets(ctx, *, args: str = None):
+    """𝚀𝚞𝚎 owner only. Moves current lottery tickets from one user to another."""
+    if ctx.guild is None:
+        await ctx.send(f"{Q_DENIED} `.movetick` only works in servers.")
+        return
+    if not await ensure_db_ready(ctx):
+        return
+    if not is_superowner_id(ctx.author.id):
+        await send_owner_only(ctx)
+        return
+
+    source_token, target_token, amount_text = parse_two_targets_amount_args(args, allow_all=True)
+    if not source_token:
+        await send_economy_command_input_ui(ctx, "movetick", "Enter source user, destination user, and ticket amount. Example: .movetick @from @to 10")
+        return
+    try:
+        source = await resolve_transfer_user(ctx, source_token)
+        target = await resolve_transfer_user(ctx, target_token)
+    except commands.BadArgument:
+        await ctx.send(f"{Q_DENIED} Use `.movetick @from @to <tickets>` or `.movetick @from @to all`.")
+        return
+    if source.id == target.id:
+        await ctx.send(f"{Q_DENIED} Source and destination must be different users.")
+        return
+
+    config = await asyncio.to_thread(get_lottery_config, ctx.guild.id)
+    if config is None:
+        await ctx.send("Lottery is not set up yet.")
+        return
+    before_counts = await asyncio.to_thread(get_lottery_ticket_counts, ctx.guild.id, [source.id, target.id])
+    if str(amount_text).casefold() == "all":
+        amount = max(0, int(before_counts.get(source.id, 0) or 0))
+    else:
+        amount = parse_whole_number(amount_text)
+    if amount is None:
+        await ctx.send(f"{Q_DENIED} Use `.movetick @from @to <tickets>`, like `.movetick @from @to 10`.")
+        return
+    if amount <= 0:
+        await ctx.send(f"{Q_DENIED} Ticket amount must be positive.")
+        return
+
+    try:
+        def run_ticket_move():
+            result = move_lottery_tickets(ctx.guild.id, source.id, target.id, amount, ctx.author.id)
+            updated = get_lottery_config(ctx.guild.id)
+            receipt = create_receipt(
+                ctx.guild.id,
+                ctx.channel.id,
+                ctx.author.id,
+                [source.id, target.id],
+                "movetick",
+                amount,
+                f"from={source.id}; to={target.id}",
+            )
+            return result, updated, receipt
+        result, updated_config, receipt_id = await asyncio.to_thread(run_ticket_move)
+    except ValueError as exc:
+        if str(exc) == "insufficient_tickets":
+            await ctx.send(f"{Q_DENIED} {user_mention(source.id)} only has **{before_counts.get(source.id, 0):,}** tickets.")
+        else:
+            await ctx.send(f"{Q_DENIED} Could not move those tickets.")
+        return
+    except Exception:
+        await send_error(ctx, "Database unavailable. Try again shortly.")
+        return
+
+    schedule_lottery_refresh(ctx.guild, updated_config)
+    if result["new_target"] > 0:
+        await assign_lottery_role(ctx.guild, target.id, updated_config.get("role_id") if updated_config else None)
+    await ctx.send(
+        f"{Q_TICKET} Moved **{amount:,}** tickets from **{user_mention(source.id)}** to **{user_mention(target.id)}**.\n"
+        f"Source Entries: **{result['old_source']:,}** → **{result['new_source']:,}**\n"
+        f"Destination Entries: **{result['old_target']:,}** → **{result['new_target']:,}**"
+        f"{receipt_line(receipt_id)}",
+        allowed_mentions=discord.AllowedMentions.none(),
+    )
+    await send_economy_log(ctx, "Lottery Tickets Moved", [
+        ("From", f"{user_mention(source.id)} ({source.id})", False),
+        ("To", f"{user_mention(target.id)} ({target.id})", False),
+        ("Tickets", f"{amount:,}", True),
+        ("Source Entries", f"{result['old_source']:,} → {result['new_source']:,}", False),
+        ("Destination Entries", f"{result['old_target']:,} → {result['new_target']:,}", False),
+    ], color=discord.Color.gold())
 
 # =====================
 # LEADERBOARD
@@ -11359,7 +11642,7 @@ def plinko_board(ball_row=None, ball_col=None):
         for col in range(5):
             cells.append(QOIN_BAG if row == ball_row and col == ball_col else Q_MS_HIDDEN)
         rows.append(" ".join(cells))
-    slots = " ".join(f"{emoji}×{mult:g}" for emoji, mult, _ in PLINKO_SLOTS)
+    slots = " ".join(f"{safe_custom_emoji(emoji)}×{mult:g}" for emoji, mult, _ in PLINKO_SLOTS)
     return "\n".join(rows) + "\n" + slots
 
 def plinko_landing_from_drop(drop_col):
@@ -14175,7 +14458,7 @@ def scratch_tier_help_text():
     return ", ".join(f"{symbol} 5/5 pays ×{multiplier}" for symbol, multiplier, _ in SCRATCH_TIERS)
 
 def wheel_segment_help_text():
-    return ", ".join(f"{emoji} {label}" for label, _, emoji in WHEEL_SEGMENTS)
+    return ", ".join(f"{safe_custom_emoji(emoji)} {label}" for label, _, emoji in WHEEL_SEGMENTS)
 
 @commands.command(aliases=["spin"])
 async def wheel(ctx, amount: str):
@@ -14224,15 +14507,17 @@ async def wheel(ctx, amount: str):
     else:
         segment_idx = random.choices(range(len(WHEEL_SEGMENTS)), weights=WHEEL_WEIGHTS)[0]
     label, color_hex, emoji = WHEEL_SEGMENTS[segment_idx]
+    display_emoji = safe_custom_emoji(emoji)
 
     def render_wheel(spinning=True, offset=0, landed_idx=None):
         n = len(WHEEL_SEGMENTS)
         center_idx = landed_idx if landed_idx is not None else (offset + 2) % n
-        top = WHEEL_SEGMENTS[(offset + 0) % n][2]
-        left = WHEEL_SEGMENTS[(offset + 1) % n][2]
+        top = safe_custom_emoji(WHEEL_SEGMENTS[(offset + 0) % n][2])
+        left = safe_custom_emoji(WHEEL_SEGMENTS[(offset + 1) % n][2])
         center_label, center_color, center_emoji = WHEEL_SEGMENTS[center_idx]
-        right = WHEEL_SEGMENTS[(offset + 3) % n][2]
-        bottom = WHEEL_SEGMENTS[(offset + 4) % n][2]
+        center_emoji = safe_custom_emoji(center_emoji)
+        right = safe_custom_emoji(WHEEL_SEGMENTS[(offset + 3) % n][2])
+        bottom = safe_custom_emoji(WHEEL_SEGMENTS[(offset + 4) % n][2])
         wheel_art = f"      {top}\n   {left}  {center_emoji}  {right}\n      {bottom}"
         header = (
             f"{Q_WHEEL_SPIN if spinning else Q_WHEEL} **FORTUNE WHEEL**  |  Bet **{format_balance(amount)}**\n"
@@ -14240,10 +14525,10 @@ async def wheel(ctx, amount: str):
         )
         if not spinning:
             if label == 'BLANK':
-                header += f"\n> {emoji} **{label}** — nothing lost, nothing won"
+                header += f"\n> {display_emoji} **{label}** — nothing lost, nothing won"
             else:
                 mult_val = float(label.replace('×', ''))
-                header += f"\n> {Q_WHEEL} Landed on: **{emoji} {label}**"
+                header += f"\n> {Q_WHEEL} Landed on: **{display_emoji} {label}**"
         else:
             header += "\n> _Spinning..._"
         return header + "\n" + wheel_art
@@ -14603,10 +14888,17 @@ EXPLANATIONS = {
     "events": "Alias for `.event`. Shows or manages server 𝚀𝚞𝚎wo events.",
     "add": f"{QUE_OWNER_DISPLAY} command. Adds quesos. Target and amount can be in either order.",
     "remove": f"{QUE_OWNER_DISPLAY} command. Removes quesos. Target and amount can be in either order.",
+    "move": f"{QUE_OWNER_DISPLAY} command. Moves quesos from one user to another without creating new money.",
+    "moveqs": "Alias for `.move`. Moves quesos from one user to another.",
+    "movequesos": "Alias for `.move`. Moves quesos from one user to another.",
     "addtick": f"{QUE_OWNER_DISPLAY} command. Adds free lottery tickets. Target and tickets can be in either order.",
     "removetick": f"{QUE_OWNER_DISPLAY} command. Removes lottery tickets. Target and tickets can be in either order.",
     "remtick": "Alias for `.removetick`. Removes lottery tickets.",
     "deltick": "Alias for `.removetick`. Removes lottery tickets.",
+    "movetick": f"{QUE_OWNER_DISPLAY} command. Moves current lottery tickets from one user to another.",
+    "moveticks": "Alias for `.movetick`. Moves current lottery tickets from one user to another.",
+    "ticketmove": "Alias for `.movetick`. Moves current lottery tickets from one user to another.",
+    "moveticket": "Alias for `.movetick`. Moves current lottery tickets from one user to another.",
     "settick": f"{QUE_OWNER_DISPLAY} command. Sets lottery tickets. Target and tickets can be in either order.",
     "lotterypot": f"{QUE_OWNER_DISPLAY} command. Adds, removes, or sets the current lottery prize pool.",
     "lotteryprize": "Alias for `.lotterypot`. Edits the lottery prize pool.",
@@ -14711,6 +15003,11 @@ EXPLANATIONS = {
     "away": "Shows a live board of AFK and sleeping users.",
     "listbans": "Admin-power command. Lists blacklisted users.",
     "calc": "Calculates a math expression. Use `.calc 2+2*5`, or run `.calc` to open a setup UI.",
+    "colour": "Shows a colour swatch and stats from a hex value like `.colour #77A07BFF`.",
+    "color": "Alias for `.colour`. Shows a colour swatch and stats.",
+    "hex": "Alias for `.colour`. Shows a colour swatch and stats.",
+    "colourinfo": "Alias for `.colour`. Shows a colour swatch and stats.",
+    "colorinfo": "Alias for `.colour`. Shows a colour swatch and stats.",
     "define": "Looks up a word definition. Use `.define example`, or run `.define` to open a setup UI.",
     "timer": "Starts a timer. Use `.timer 10m`, `.timer 10m study`, `.timer study 10m`, or run `.timer` to open a setup UI.",
     "ctimer": "Cancels one of your active timers from a menu.",
@@ -14765,8 +15062,8 @@ EXPLANATIONS = {
     "ttt": "Starts Tic Tac Toe against another user. If the challenger sets a bet, the opponent must accept that bet too.",
     "c4": "Starts Connect 4 against another user. If the challenger sets a bet, the opponent must accept that bet too.",
     "chess": "Starts a chess game against another user with move confirmation, optional bets, live 10-minute player clocks, and a board that flips by turn.",
-    "move": "Fallback chess command. Makes a chess move with notation like `.move e2e4` or `.move Nf3`.",
-    "chessmove": "Alias for `.move`. Makes a chess move with notation like `.move e2e4` or `.move Nf3`.",
+    "chessmove": "Fallback chess command. Makes a chess move with notation like `.chessmove e2e4` or `.chessmove Nf3`.",
+    "cmove": "Alias for `.chessmove`. Makes a chess move with notation like `.chessmove e2e4` or `.chessmove Nf3`.",
     "resign": "Resigns the active chess game in this channel.",
 }
 
@@ -14872,8 +15169,10 @@ DETAILED_EXPLANATIONS = {
     "economyaudit": "Admin-power economy audit page. Without a member, it shows a compact server-scoped audit: supply, 24h flow, lottery, tax/sink notes, game signals, and warnings. With a member, it shows that user's compact balance, level, net gambling, daily loss usage, game signals, recent games, recent transactions, and warnings.",
     "add": f"{QUE_OWNER_DISPLAY}-only command. Adds new quesos to a user. `.add @user <amount>` and `.add <amount> @user` both work. {QUE_OWNER_DISPLAY} can use @everyone or a role. It does not support `all`. Sensitive changes generate a receipt ID.",
     "remove": f"{QUE_OWNER_DISPLAY}-only command. Removes quesos from a user. `.remove @user <amount>` and `.remove <amount> @user` both work. Use `all` to remove their full balance. Sensitive changes generate a receipt ID.",
+    "move": f"{QUE_OWNER_DISPLAY}-only command. Moves existing quesos from one user to another without tax and without creating new money. Use `.move @from @to 100k` or `.move @from @to all`. It shows both before/after balances and generates a receipt ID.",
     "addtick": f"{QUE_OWNER_DISPLAY}-only lottery admin command. Adds free entries to the current lottery. `.addtick @user <tickets>` and `.addtick <tickets> @user` both work, including roles and @everyone.",
     "removetick": f"{QUE_OWNER_DISPLAY}-only lottery admin command. Removes entries from the current lottery. `.removetick @user <tickets>` and `.removetick <tickets> @user` both work, including roles and @everyone. Tickets never go below 0.",
+    "movetick": f"{QUE_OWNER_DISPLAY}-only lottery admin command. Moves current-round lottery entries from one user to another. Use `.movetick @from @to 10` or `.movetick @from @to all`. It refreshes the lottery panel/status messages after the move.",
     "settick": f"{QUE_OWNER_DISPLAY}-only lottery admin command. Sets current lottery entries to an exact number. `.settick @user <tickets>` and `.settick <tickets> @user` both work, including roles and @everyone.",
     "lotterypot": f"{QUE_OWNER_DISPLAY}-only lottery admin command. Edits the current lottery prize pool directly without changing tickets. Use `.lotterypot add 1m`, `.lotterypot remove 500k`, or `.lotterypot set 10m`. Aliases also work: `.addpot 1m`, `.removepot 500k`, `.setpot 10m`. The lottery panel and status messages refresh after the change.",
     "setquesos": f"{QUE_OWNER_DISPLAY}-only 𝚀𝚞𝚎wo admin command. Sets balances directly. `.setquesos @user <amount>` and `.setquesos <amount> @user` both work, including roles and @everyone.",
@@ -14900,6 +15199,11 @@ DETAILED_EXPLANATIONS = {
     "picker": "Randomly chooses one option. Use `.picker apple banana orange`, comma-separated options, pipes, or quotes for multi-word options like `.picker \"ice cream\" pizza sushi`.",
     "giveaway": "Admin-power command. Starts a reaction giveaway. The time can come before or after the prize: `.giveaway 10m Nitro` or `.giveaway Nitro 10m`. Users react with the confetti emoji to enter.",
     "calc": "Safely evaluates math expressions. Supports normal operators plus functions like `sqrt`, `sin`, `cos`, `log`, and constants like `pi`. Use `.calc 2+2*5`, or run `.calc` to open the calculator UI.",
+    "colour": "Accepts #RGB, #RGBA, #RRGGBB, #RRGGBBAA, plain hex, and 0x hex. Shows a swatch image, HEX, RGB, RGBA, HSL, HSV, CMYK, alpha, a black/white text suggestion, and contrast ratios. Example: `.colour #77A07BFF`.",
+    "color": "Alias for `.colour`. Accepts #RGB, #RGBA, #RRGGBB, #RRGGBBAA, plain hex, and 0x hex.",
+    "hex": "Alias for `.colour`. Shows colour stats from a hex value.",
+    "colourinfo": "Alias for `.colour`. Shows colour stats from a hex value.",
+    "colorinfo": "Alias for `.colour`. Shows colour stats from a hex value.",
     "define": "Looks up English dictionary definitions. Use `.define example`, or run `.define` to enter the word through a UI.",
     "setbday": "Saves your birthday as day/month. Use `.setbday 25/12`, or run `.setbday` to enter it through a UI. Birthday announcements use the server's configured birthday channel.",
     "ask": "Asks Pro𝚀𝚞𝚎's AI a question. The AI answers from its model knowledge, bot context, reply context, and saved memory; live web search is not connected.",
@@ -14927,7 +15231,6 @@ DETAILED_EXPLANATIONS = {
     "ttt": "Challenge a user to Tic Tac Toe. The opponent accepts the game first. If the challenger enables a bet and enters an amount, the opponent gets a second accept/decline prompt for that exact bet before the game starts.",
     "c4": "Challenge a user to Connect 4. The opponent accepts the game first. If the challenger enables a bet and enters an amount, the opponent gets a second accept/decline prompt for that exact bet before the game starts. The board shows column numbers below the grid.",
     "chess": "Challenge a user to chess. The opponent accepts first. If the challenger enables a bet and enters an amount, the opponent gets a second accept/decline prompt. The board uses dropdown UI controls: choose one of your pieces, choose a legal move, then confirm or cancel. Each player has a live 10-minute total clock, and the board flips to the current player's perspective. Movement legality, check, checkmate, stalemate, draw detection, and time-loss handling are enforced.",
-    "move": "Fallback chess command for manual notation. Use UCI like `.move e2e4` or SAN like `.move Nf3`. The clickable chess UI is preferred.",
     "chessmove": "Fallback chess command for manual notation. Use UCI like `.chessmove e2e4` or SAN like `.chessmove Nf3`. The clickable chess UI is preferred.",
     "resign": "Ends the active chess game in this channel and awards the win to the other player.",
 }
@@ -14945,13 +15248,14 @@ ECONHELP_ADMIN_COMMANDS = [
     "gameaudit", "balanceaudit", "economyaudit", "abuseaudit",
 ]
 ECONHELP_SUPEROWNER_COMMANDS = [
-    "add", "remove", "addtick", "removetick", "settick", "lotterypot", "setquesos",
+    "add", "remove", "move", "addtick", "removetick", "movetick", "settick", "lotterypot", "setquesos",
     "addxp", "removexp", "addlvl", "removelvl", "setlvl",
     "editlottery", "stoplottery", "qstats", "economyhealth", "balancedashboard", "endseason",
 ]
 ECONHELP_SUPEROWNER_HIDDEN = {
     *ECONHELP_SUPEROWNER_COMMANDS,
     "remtick", "deltick", "lotteryprize", "prizepool", "setpot", "addpot", "removepot",
+    "moveqs", "movequesos", "moveticks", "ticketmove", "moveticket",
     "givexp", "remxp", "delxp", "addlevel", "removelvls", "remlevel", "removelevel", "dellvl", "dellevel", "setlevel",
     "economystats", "qstatus", "ecohealth", "moneyhealth", "supply", "ecodashboard", "moneydashboard", "sinkdashboard", "rewardseason",
     "send", "reply", "fsleep", "wake", "clearwatchlist",
@@ -15206,7 +15510,7 @@ async def setup(bot_ref, log_callback=None):
     economy_commands = [
         bal, bank, tutorial, recommendgame, career, jobs, work, robsettings, quewochannel, levelupchannel, rob, profile, inventory, settheme, quests, dailychallenge, streaks, guide, onboard, shop, claimreminders, cooldowns, transactions, limits, lottery, editlottery, stoplottery, lotterystats, tickets, buytick,
         daily, weekly, monthly, gamble, roulette, slots, blackjack,
-        scratch, tower, vault, memory_game, card_ladder, lockpick, heist, dice_duel, cases, plinko, lucky_number, jackpot_spin, dungeon, minesweeper, wheel, give, lb, gamestats, achievements, setbadge, gamebalance, gameaudit, balanceaudit, balancedashboard, event, gamehistory, season, seasonpass, endseason, qstats, economyhealth, economyaudit, abuseaudit, riskprofile, add, remove, addtick, removetick, settick, lotterypot, setquesos, addxp, removexp, addlvl, removelvl, setlvl, econhelp, explain
+        scratch, tower, vault, memory_game, card_ladder, lockpick, heist, dice_duel, cases, plinko, lucky_number, jackpot_spin, dungeon, minesweeper, wheel, give, move_quesos, move_tickets, lb, gamestats, achievements, setbadge, gamebalance, gameaudit, balanceaudit, balancedashboard, event, gamehistory, season, seasonpass, endseason, qstats, economyhealth, economyaudit, abuseaudit, riskprofile, add, remove, addtick, removetick, settick, lotterypot, setquesos, addxp, removexp, addlvl, removelvl, setlvl, econhelp, explain
     ]
     for command in economy_commands:
         if bot.get_command(command.name):
