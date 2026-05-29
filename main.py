@@ -73,6 +73,8 @@ from economy import (
     Q_BOOK as economy_q_book,
     Q_BROOM as economy_q_broom,
     Q_CARDS as economy_q_cards,
+    Q_COLOUR as economy_q_colour,
+    Q_COLOUR_PICKER as economy_q_colour_picker,
     Q_CONFETTI as economy_q_confetti,
     Q_CONNECT_BLACK as economy_q_connect_black,
     Q_CONNECT_WHITE as economy_q_connect_white,
@@ -97,6 +99,7 @@ from economy import (
     Q_PERMISSIONS as economy_q_permissions,
     Q_PERF as economy_q_perf,
     Q_POLL as economy_q_poll,
+    Q_PALETTE as economy_q_palette,
     Q_DATABASE as economy_q_database,
     Q_ERROR_LOG as economy_q_error_log,
     Q_REACTION as economy_q_reaction,
@@ -9758,6 +9761,19 @@ class SingleUserSetupView(View):
         self.author_id = author_id
         self.add_item(button)
 
+async def edit_setup_source_message(interaction, source_message_id, *, content=None, embed=None, file=None, view=None):
+    if not source_message_id:
+        return False
+    try:
+        message = interaction.message
+        if message is None or message.id != source_message_id:
+            message = await interaction.channel.fetch_message(source_message_id)
+        attachments = [file] if file is not None else []
+        await message.edit(content=content, embed=embed, attachments=attachments, view=view)
+        return True
+    except Exception:
+        return False
+
 async def finalize_poll(msg, poll_data):
     """Updates the poll embed with final results."""
     poll_msg = None
@@ -13486,9 +13502,10 @@ async def giveaway(ctx, time: str = None, *, prize: str = None):
     await ctx.send(f"{economy_q_accept} Giveaway started for **{parsed_prize}**. Ends in {format_remaining(seconds)}.", delete_after=5)
 
 class PickerSetupModal(Modal):
-    def __init__(self, author_id):
+    def __init__(self, author_id, source_message_id=None):
         super().__init__(title="Pick Random Option")
         self.author_id = author_id
+        self.source_message_id = source_message_id
         self.options = TextInput(
             label="Options",
             placeholder='apple banana orange, or "ice cream", pizza, sushi',
@@ -13503,7 +13520,10 @@ class PickerSetupModal(Modal):
         opts = split_simple_options(str(self.options.value))
         if len(opts) < 2:
             return await interaction.response.send_message("Add at least 2 options.", ephemeral=True)
-        await interaction.response.send_message(f"**{random.choice(opts)}**")
+        response = f"**{random.choice(opts)}**"
+        if await edit_setup_source_message(interaction, self.source_message_id, content=response, view=None):
+            return await interaction.response.send_message("Picked.", ephemeral=True)
+        await interaction.response.send_message(response)
 
 class OpenPickerSetupButton(Button):
     def __init__(self):
@@ -13512,7 +13532,7 @@ class OpenPickerSetupButton(Button):
     async def callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.view.author_id:
             return await interaction.response.send_message("Use your own setup UI.", ephemeral=True)
-        await interaction.response.send_modal(PickerSetupModal(self.view.author_id))
+        await interaction.response.send_modal(PickerSetupModal(self.view.author_id, getattr(interaction.message, "id", None)))
 
 @bot.command()
 async def picker(ctx, *, options: str = None):
@@ -14233,9 +14253,10 @@ def calculate_expression_text(expression):
     return f"Input: `{expression}`\nResult: `{resa}`"
 
 class CalcSetupModal(Modal):
-    def __init__(self, author_id):
+    def __init__(self, author_id, source_message_id=None):
         super().__init__(title="Calculator")
         self.author_id = author_id
+        self.source_message_id = source_message_id
         self.expression = TextInput(label="Expression", placeholder="2+2*5, sqrt(144), sin(pi/2)", max_length=300)
         self.add_item(self.expression)
 
@@ -14246,6 +14267,8 @@ class CalcSetupModal(Modal):
             response = calculate_expression_text(str(self.expression.value))
         except Exception as e:
             response = clean_user_error(e)
+        if await edit_setup_source_message(interaction, self.source_message_id, content=response, view=None):
+            return await interaction.response.send_message("Calculated.", ephemeral=True)
         await interaction.response.send_message(response)
 
 class OpenCalcSetupButton(Button):
@@ -14255,7 +14278,7 @@ class OpenCalcSetupButton(Button):
     async def callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.view.author_id:
             return await interaction.response.send_message("Use your own setup UI.", ephemeral=True)
-        await interaction.response.send_modal(CalcSetupModal(self.view.author_id))
+        await interaction.response.send_modal(CalcSetupModal(self.view.author_id, getattr(interaction.message, "id", None)))
 
 @bot.command(name="calc")
 async def calc(ctx, *, expression: str = None):
@@ -14375,10 +14398,10 @@ def colour_embed_and_file(raw):
     text_choice = "black" if black_contrast >= white_contrast else "white"
     alpha_percent = a / 255 * 100
     embed = standard_embed(
-        "Colour",
+        f"{economy_q_colour} Colour",
         description=f"`{colour_hex(r, g, b, a, include_alpha=(a != 255))}`",
         color=discord.Color.from_rgb(r, g, b),
-        icon=economy_q_image,
+        icon=economy_q_colour,
     )
     embed.add_field(name="RGB", value=f"`rgb({r}, {g}, {b})`", inline=True)
     embed.add_field(name="RGBA", value=f"`rgba({r}, {g}, {b}, {alpha_percent:.1f}%)`", inline=True)
@@ -14467,10 +14490,10 @@ def colour_palette_embed_and_file(colours, *, source_url=None):
         return None, None
     dominant = colours[0]
     embed = standard_embed(
-        "Colour Finder",
+        f"{economy_q_palette} Colour Finder",
         description="Most visible colours from the image.",
         color=discord.Color.from_rgb(dominant[0], dominant[1], dominant[2]),
-        icon=economy_q_image,
+        icon=economy_q_palette,
     )
     lines = []
     for idx, (r, g, b, a, pct) in enumerate(colours, 1):
@@ -14569,7 +14592,7 @@ class ColourPickerView(View):
         r, g, b, a = self.current_rgba()
         embed, file = colour_embed_and_file(colour_hex(r, g, b, a))
         tone_label = self.current_tone_values()[0]
-        embed.title = "Colour Picker"
+        embed.title = f"{economy_q_colour_picker} Colour Picker"
         embed.add_field(name="Picker", value=f"Hue: **{self.hue}°**\nTone: **{tone_label}**", inline=False)
         return embed, file
 
@@ -14610,9 +14633,10 @@ class ColourShiftButton(Button):
         await self.parent_picker.update_picker(interaction)
 
 class ColourSetupModal(Modal):
-    def __init__(self, author_id):
+    def __init__(self, author_id, source_message_id=None):
         super().__init__(title="Colour Info")
         self.author_id = author_id
+        self.source_message_id = source_message_id
         self.value = TextInput(label="Hex colour", placeholder="#77A07BFF", max_length=20)
         self.add_item(self.value)
 
@@ -14622,31 +14646,33 @@ class ColourSetupModal(Modal):
         embed, file = colour_embed_and_file(str(self.value.value))
         if embed is None:
             return await interaction.response.send_message("Use a hex colour like `#77A07B`, `#77A07BFF`, `77A07B`, or `#7A8`.", ephemeral=True)
+        if await edit_setup_source_message(interaction, self.source_message_id, embed=embed, file=file, view=None, content=None):
+            return await interaction.response.send_message("Updated.", ephemeral=True)
         await interaction.response.send_message(embed=embed, file=file)
 
 class OpenColourSetupButton(Button):
     def __init__(self):
-        super().__init__(label="Check Colour", style=discord.ButtonStyle.primary, emoji=reaction_emoji(economy_q_image))
+        super().__init__(label="Check Colour", style=discord.ButtonStyle.primary, emoji=reaction_emoji(economy_q_colour))
 
     async def callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.view.author_id:
             return await interaction.response.send_message("Use your own setup UI.", ephemeral=True)
-        await interaction.response.send_modal(ColourSetupModal(self.view.author_id))
+        await interaction.response.send_modal(ColourSetupModal(self.view.author_id, getattr(interaction.message, "id", None)))
 
 class OpenColourPickerButton(Button):
     def __init__(self):
-        super().__init__(label="Open Picker", style=discord.ButtonStyle.primary, emoji=reaction_emoji(economy_q_image))
+        super().__init__(label="Open Picker", style=discord.ButtonStyle.primary, emoji=reaction_emoji(economy_q_colour_picker))
 
     async def callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.view.author_id:
             return await interaction.response.send_message("Use your own setup UI.", ephemeral=True)
         view = ColourPickerView(interaction.user.id)
         embed, file = view.current_embed_file()
-        await interaction.response.send_message(embed=embed, file=file, view=view)
+        await interaction.response.edit_message(content=None, embed=embed, attachments=[file], view=view)
 
 class ColourImageHelpButton(Button):
     def __init__(self):
-        super().__init__(label="Find From Image", style=discord.ButtonStyle.secondary, emoji=reaction_emoji(economy_q_attachment))
+        super().__init__(label="Find From Image", style=discord.ButtonStyle.secondary, emoji=reaction_emoji(economy_q_palette))
 
     async def callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.view.author_id:
@@ -14703,9 +14729,10 @@ async def define_word_text(word):
     return f"{economy_q_book} **Definition of `{word}`:**\n" + "\n".join(unique_defs[:3])
 
 class DefineSetupModal(Modal):
-    def __init__(self, author_id):
+    def __init__(self, author_id, source_message_id=None):
         super().__init__(title="Define Word")
         self.author_id = author_id
+        self.source_message_id = source_message_id
         self.word = TextInput(label="Word", placeholder="example", max_length=80)
         self.add_item(self.word)
 
@@ -14714,7 +14741,10 @@ class DefineSetupModal(Modal):
             return await interaction.response.send_message("Use your own setup UI.", ephemeral=True)
         await interaction.response.defer()
         response = await define_word_text(str(self.word.value).strip())
-        await interaction.followup.send(response or "Couldn't find that word.")
+        content = response or "Couldn't find that word."
+        if await edit_setup_source_message(interaction, self.source_message_id, content=content, view=None):
+            return await interaction.followup.send("Defined.", ephemeral=True)
+        await interaction.followup.send(content)
 
 class OpenDefineSetupButton(Button):
     def __init__(self):
@@ -14723,7 +14753,7 @@ class OpenDefineSetupButton(Button):
     async def callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.view.author_id:
             return await interaction.response.send_message("Use your own setup UI.", ephemeral=True)
-        await interaction.response.send_modal(DefineSetupModal(self.view.author_id))
+        await interaction.response.send_modal(DefineSetupModal(self.view.author_id, getattr(interaction.message, "id", None)))
 
 @bot.command()
 async def define(ctx, *, word: str = None):
@@ -15605,6 +15635,8 @@ SPECIALIZED_SETUP_UI_COMMANDS = {"poll", "timer", "alarm", "picker", "giveaway",
 SETUP_UI_COMMANDS = SPECIALIZED_SETUP_UI_COMMANDS | GENERIC_INPUT_UI_COMMANDS
 
 def command_setup_view(author_id, command_name):
+    if command_name in {"colour", "color", "hex"}:
+        return ColourStartView(author_id)
     buttons = {
         "poll": OpenPollSetupButton,
         "timer": OpenTimerSetupButton,
@@ -15612,9 +15644,6 @@ def command_setup_view(author_id, command_name):
         "picker": OpenPickerSetupButton,
         "giveaway": OpenGiveawaySetupButton,
         "calc": OpenCalcSetupButton,
-        "colour": OpenColourSetupButton,
-        "color": OpenColourSetupButton,
-        "hex": OpenColourSetupButton,
         "define": OpenDefineSetupButton,
         "setbday": OpenBirthdaySetupButton,
         "translate": OpenTranslateSetupButton,
