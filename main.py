@@ -6035,6 +6035,31 @@ async def maybe_run_ai_batch_action(message, question):
     )
     return True
 
+async def invoke_logged_command(ctx):
+    print(
+        f"Command received: {ctx.command} by {ctx.author} "
+        f"({ctx.author.id}) in guild {ctx.guild.id if ctx.guild else 'DM'}"
+    )
+    started = time.perf_counter()
+    await bot.invoke(ctx)
+    elapsed_ms = int((time.perf_counter() - started) * 1000)
+    name = ctx.command.qualified_name if ctx.command else "unknown"
+    stats = command_timing_stats.setdefault(name, {"count": 0, "total_ms": 0, "max_ms": 0})
+    stats["count"] += 1
+    stats["total_ms"] += elapsed_ms
+    stats["max_ms"] = max(stats["max_ms"], elapsed_ms)
+    if elapsed_ms >= 1500:
+        slow_command_events.append({
+            "name": name,
+            "elapsed_ms": elapsed_ms,
+            "guild_id": ctx.guild.id if ctx.guild else 0,
+            "channel_id": ctx.channel.id,
+            "user_id": ctx.author.id,
+            "message_id": ctx.message.id,
+            "created_at": datetime.now(timezone.utc),
+        })
+        print(f"Slow command: {name} took {elapsed_ms}ms in guild {ctx.guild.id if ctx.guild else 'DM'}")
+
 @bot.event
 async def on_message(message):
     if message.author.bot:
@@ -6077,30 +6102,16 @@ async def on_message(message):
 
         track_message_activity(message)
         ctx = await bot.get_context(message)
+        active_speak_dm = (
+            message.guild is None
+            and has_super_owner_power(message.author)
+            and speak_session_channel(message.author.id) is not None
+        )
+        if active_speak_dm and not (ctx.valid and ctx.command.name == "speak"):
+            await send_speak_command_choice(message, ctx)
+            return
         if ctx.valid:
-            print(
-                f"Command received: {ctx.command} by {message.author} "
-                f"({message.author.id}) in guild {message.guild.id if message.guild else 'DM'}"
-            )
-            started = time.perf_counter()
-            await bot.invoke(ctx)
-            elapsed_ms = int((time.perf_counter() - started) * 1000)
-            name = ctx.command.qualified_name if ctx.command else "unknown"
-            stats = command_timing_stats.setdefault(name, {"count": 0, "total_ms": 0, "max_ms": 0})
-            stats["count"] += 1
-            stats["total_ms"] += elapsed_ms
-            stats["max_ms"] = max(stats["max_ms"], elapsed_ms)
-            if elapsed_ms >= 1500:
-                slow_command_events.append({
-                    "name": name,
-                    "elapsed_ms": elapsed_ms,
-                    "guild_id": message.guild.id if message.guild else 0,
-                    "channel_id": message.channel.id,
-                    "user_id": message.author.id,
-                    "message_id": message.id,
-                    "created_at": datetime.now(timezone.utc),
-                })
-                print(f"Slow command: {name} took {elapsed_ms}ms in guild {message.guild.id if message.guild else 'DM'}")
+            await invoke_logged_command(ctx)
         return
 
     if message.guild is None and has_super_owner_power(message.author) and await handle_speak_dm_message(message):
@@ -13590,9 +13601,6 @@ async def send_speak_payload(channel, source_message, *, reply_to=None):
             )
         else:
             sent = await channel.send(content=content, files=files, allowed_mentions=discord.AllowedMentions.none())
-        session = speak_sessions.get(int(source_message.author.id))
-        if session is not None:
-            session.setdefault("channel_message_ids", []).append(int(sent.id))
         return True
     except Exception as e:
         await source_message.reply(
@@ -13629,6 +13637,87 @@ async def handle_speak_dm_message(message):
         return False
     return await send_speak_payload(channel, message)
 
+class SpeakCommandChoiceView(discord.ui.View):
+    def __init__(self, message, ctx):
+        super().__init__(timeout=120)
+        self.message = message
+        self.ctx = ctx
+        self.owner_id = int(message.author.id)
+        if not getattr(ctx, "valid", False):
+            self.run_command_button.disabled = True
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id == self.owner_id:
+            return True
+        await interaction.response.send_message("This relay choice is not yours.", ephemeral=True)
+        return False
+
+    def disable_all(self):
+        for item in self.children:
+            item.disabled = True
+
+    @discord.ui.button(label="Run Command", emoji=economy_q_command_check, style=discord.ButtonStyle.primary)
+    async def run_command_button(self, interaction, button):
+        if not getattr(self.ctx, "valid", False):
+            self.disable_all()
+            return await interaction.response.edit_message(
+                content=f"{economy_q_warning} I do not recognize that as a command.",
+                view=self,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        self.disable_all()
+        await interaction.response.edit_message(
+            content=f"{economy_q_command_check} Running it as a command.",
+            view=self,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+        await invoke_logged_command(self.ctx)
+
+    @discord.ui.button(label="Relay Message", emoji=economy_q_quote, style=discord.ButtonStyle.secondary)
+    async def relay_button(self, interaction, button):
+        channel = speak_session_channel(self.owner_id)
+        if channel is None:
+            self.disable_all()
+            return await interaction.response.edit_message(
+                content=f"{economy_q_warning} Speak mode is off now.",
+                view=self,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        sent = await send_speak_payload(channel, self.message)
+        self.disable_all()
+        await interaction.response.edit_message(
+            content=(f"{economy_q_accept} Relayed it as a normal message." if sent else f"{economy_q_warning} Could not relay it."),
+            view=self,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger)
+    async def cancel_button(self, interaction, button):
+        self.disable_all()
+        await interaction.response.edit_message(
+            content=f"{economy_q_accept} Cancelled.",
+            view=self,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+async def send_speak_command_choice(message, ctx):
+    channel = speak_session_channel(message.author.id)
+    if channel is None:
+        return False
+    guild_name = getattr(channel.guild, "name", "Unknown server")
+    command_note = "Run it as a bot command, or relay it" if getattr(ctx, "valid", False) else "I do not recognize it as a command, but you can relay it"
+    prompt = (
+        f"{economy_q_thinking} Speak mode is on and that looks like a command.\n"
+        f"{command_note} as text to **{guild_name}** · {channel.mention}?"
+    )
+    await message.reply(
+        prompt,
+        view=SpeakCommandChoiceView(message, ctx),
+        mention_author=False,
+        allowed_mentions=discord.AllowedMentions.none(),
+    )
+    return True
+
 class SpeakCleanupView(discord.ui.View):
     def __init__(self, owner_id, session):
         super().__init__(timeout=180)
@@ -13655,31 +13744,10 @@ class SpeakCleanupView(discord.ui.View):
                 pass
         return deleted
 
-    async def delete_channel_messages(self):
-        deleted = 0
-        channel_id = int(self.session.get("channel_id") or 0)
-        channel = bot.get_channel(channel_id)
-        if channel is None and channel_id:
-            try:
-                channel = await bot.fetch_channel(channel_id)
-            except Exception:
-                channel = None
-        if channel is None:
-            return deleted
-        for message_id in [int(mid) for mid in self.session.get("channel_message_ids", []) if mid][-300:]:
-            try:
-                msg = await channel.fetch_message(message_id)
-                await msg.delete()
-                deleted += 1
-            except Exception:
-                pass
-        return deleted
-
     @discord.ui.button(label="Delete Session Messages", emoji=economy_q_trash, style=discord.ButtonStyle.danger)
     async def delete_button(self, interaction, button):
         await interaction.response.defer(ephemeral=True)
         dm_deleted = await self.delete_dm_messages(interaction)
-        channel_deleted = await self.delete_channel_messages()
         self.done = True
         for item in self.children:
             item.disabled = True
@@ -13687,7 +13755,7 @@ class SpeakCleanupView(discord.ui.View):
             content=(
                 f"{economy_q_accept} Relay cleanup done.\n"
                 f"Deleted DM feed messages: **{dm_deleted:,}**\n"
-                f"Deleted bot-sent channel messages: **{channel_deleted:,}**"
+                "Messages sent through the relay were kept in the relayed channel."
             ),
             view=self,
             allowed_mentions=discord.AllowedMentions.none(),
@@ -13717,8 +13785,8 @@ async def speak(ctx, *, target: str = None):
         cleanup_text = (
             f"{economy_q_accept} Speak mode stopped.\n"
             "Delete the messages related to this relay session?\n"
-            "This can delete the bot's DM feed messages and the bot messages sent into the relayed channel. "
-            "It cannot delete your own DM replies."
+            "This only deletes the bot's DM feed/control messages. "
+            "It keeps messages sent through the relay in the relayed channel, and cannot delete your own DM replies."
         )
         view = SpeakCleanupView(ctx.author.id, session)
         try:
@@ -13753,7 +13821,6 @@ async def speak(ctx, *, target: str = None):
         "channel_id": int(channel.id),
         "started_at": datetime.now(timezone.utc),
         "dm_message_ids": [],
-        "channel_message_ids": [],
     }
     if ctx.guild:
         await safe_delete_message(ctx.message)
