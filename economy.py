@@ -3278,7 +3278,15 @@ def lottery_purchase_message(result):
         f"New Balance: **{format_balance(result['new_balance'])}**"
     )
 
-async def refresh_lottery_message(guild, config=None, create_if_missing=True):
+async def channel_latest_message_matches(channel, message_id):
+    try:
+        async for latest in channel.history(limit=1):
+            return int(latest.id) == int(message_id)
+    except Exception:
+        return None
+    return None
+
+async def refresh_lottery_message(guild, config=None, create_if_missing=True, force_repost=False):
     if not guild:
         return None
     if config is None:
@@ -3302,9 +3310,26 @@ async def refresh_lottery_message(guild, config=None, create_if_missing=True):
     if message_id:
         try:
             message = await channel.fetch_message(message_id)
-            await message.edit(embed=embed, view=view, allowed_mentions=discord.AllowedMentions.none())
-            await refresh_lottery_status_messages(guild, config, message)
-            return message
+            if force_repost:
+                latest_matches = await channel_latest_message_matches(channel, message.id)
+                if latest_matches is True:
+                    await message.edit(embed=embed, view=view, allowed_mentions=discord.AllowedMentions.none())
+                    await refresh_lottery_status_messages(guild, config, message)
+                    return message
+                if latest_matches is False:
+                    try:
+                        await message.delete()
+                    except Exception:
+                        pass
+                    message = None
+                else:
+                    await message.edit(embed=embed, view=view, allowed_mentions=discord.AllowedMentions.none())
+                    await refresh_lottery_status_messages(guild, config, message)
+                    return message
+            else:
+                await message.edit(embed=embed, view=view, allowed_mentions=discord.AllowedMentions.none())
+                await refresh_lottery_status_messages(guild, config, message)
+                return message
         except Exception as e:
             print(f"Lottery panel refresh will recreate message: {type(e).__name__} - {e}")
 
@@ -5422,7 +5447,10 @@ async def send_error(ctx, text):
         pass
 
 async def send_owner_only(ctx):
-    await ctx.send(f"{Q_DENIED} You can't use that heh.", allowed_mentions=discord.AllowedMentions.none())
+    await ctx.send(
+        f"{Q_DENIED} You can't use that heh.\nOnly {QUE_OWNER_DISPLAY} can touch that button.",
+        allowed_mentions=discord.AllowedMentions.none(),
+    )
 
 async def send_bulk_progress(ctx, action, count):
     if int(count or 0) < 20:
@@ -13907,24 +13935,71 @@ async def economyaudit(ctx, member: discord.Member = None):
     view = EconomyAuditScopeView(ctx, local_ids) if is_superowner_id(ctx.author.id) else None
     await ctx.send(embed=embed, view=view, allowed_mentions=discord.AllowedMentions.none())
 
+class GuideChoiceView(discord.ui.View):
+    def __init__(self, author_id, prefix, can_setup):
+        super().__init__(timeout=LONG_HELP_VIEW_TIMEOUT)
+        self.author_id = int(author_id)
+        self.prefix = prefix
+        self.can_setup = bool(can_setup)
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id == self.author_id:
+            return True
+        await interaction.response.send_message("Open your own guide with `.guide`.", ephemeral=True)
+        return False
+
+    @discord.ui.button(label="Earn", emoji=QASH_EMOJI, style=discord.ButtonStyle.success)
+    async def earn_button(self, interaction, button):
+        await interaction.response.send_message(
+            f"Start with `{self.prefix}daily`, `{self.prefix}work`, quests, Flag Quiz, Dungeon, and chat XP. Easy money first, chaos later.",
+            ephemeral=True,
+        )
+
+    @discord.ui.button(label="Play", emoji=Q_GAME_WIN, style=discord.ButtonStyle.primary)
+    async def play_button(self, interaction, button):
+        await interaction.response.send_message(
+            f"Use `{self.prefix}games` for the menu. Safer starts: `{self.prefix}dungeon`, `{self.prefix}flagquiz`, `{self.prefix}memory 1k`, or tiny bets.",
+            ephemeral=True,
+        )
+
+    @discord.ui.button(label="Setup Server", emoji=Q_SETUP, style=discord.ButtonStyle.secondary)
+    async def setup_button(self, interaction, button):
+        if not self.can_setup:
+            return await interaction.response.send_message(
+                "Setup is admin/server-owner territory. The velvet rope is up.",
+                ephemeral=True,
+            )
+        await interaction.response.send_message(
+            f"Use `{self.prefix}settings` for the dashboard. Good first buttons: logs, birthdays, activity, 𝚀𝚞𝚎wo channel, and AI on/off.",
+            ephemeral=True,
+        )
+
+    @discord.ui.button(label="My Stuff", emoji=Q_XP, style=discord.ButtonStyle.secondary)
+    async def profile_button(self, interaction, button):
+        await interaction.response.send_message(
+            f"Check `{self.prefix}profile`, `{self.prefix}inventory`, `{self.prefix}tickets`, `{self.prefix}limits`, and `{self.prefix}streaks`.",
+            ephemeral=True,
+        )
+
 @commands.command(name="guide", aliases=["start", "begin", "gettingstarted"])
 async def guide(ctx):
     if not await ensure_db_ready(ctx):
         return
     prefix = getattr(ctx, "prefix", ".")
+    can_setup = ctx.guild is not None and has_economy_owner_power(ctx.author.id, ctx.guild)
     embed = discord.Embed(
         title=f"{Q_BOOK} Pro𝚀𝚞𝚎 Guide",
-        description="Quick path for new users.",
+        description="Pick what you’re trying to do. The bot is huge; this is the map so nobody gets lost in the sauce.",
         color=discord.Color.blurple(),
     )
     embed.add_field(
         name="Earn",
-        value=f"`{prefix}daily`, `{prefix}weekly`, `{prefix}monthly`, chat XP, Flag Quiz, Dungeon, quests, and achievements.",
+        value=f"`{prefix}daily`, `{prefix}work`, quests, Flag Quiz, Dungeon, achievements, and chat XP.",
         inline=False,
     )
     embed.add_field(
         name="Play",
-        value=f"`{prefix}games` for filters. Start safe with `{prefix}dungeon`, `{prefix}flagquiz`, or small bets.",
+        value=f"`{prefix}games` opens the game list. Start safe, then raise risk when your balance can handle it.",
         inline=False,
     )
     embed.add_field(
@@ -13933,12 +14008,17 @@ async def guide(ctx):
         inline=False,
     )
     embed.add_field(
-        name="Stay Safe",
-        value=f"`{prefix}limits` shows daily gambling risk, lottery spend, max bet, and cooldowns.",
+        name="Setup",
+        value=(f"`{prefix}settings` is available to you." if can_setup else "Server setup needs admin/server-owner permissions."),
         inline=False,
     )
     embed.set_footer(text=f"More: {prefix}econhelp, {prefix}help, {prefix}explain <command>")
-    await ctx.reply(embed=embed, mention_author=False, allowed_mentions=discord.AllowedMentions.none())
+    await ctx.reply(
+        embed=embed,
+        view=GuideChoiceView(ctx.author.id, prefix, can_setup),
+        mention_author=False,
+        allowed_mentions=discord.AllowedMentions.none(),
+    )
 
 class OnboardingView(discord.ui.View):
     def __init__(self, author_id):
@@ -14728,9 +14808,8 @@ async def replay_double_or_nothing_game(interaction, game_key, stake):
 # =====================
 EXPLANATIONS = {
     "admin": "Admin power means the actual server owner or Discord Administrator for server tools.",
-    "settings": "Admin-power command. Opens the server setup/control panel for prefix, logs, birthdays, activity reports, lottery status, disabled commands, and operations checks.",
+    "settings": "Admin-power command. Opens the server settings dashboard for prefix, logs, birthdays, activity reports, lottery status, disabled commands, and operations checks.",
     "setup": "Alias for `.settings`. Opens the server setup dashboard.",
-    "controlpanel": "Alias for `.settings`. Opens the server setup/control panel.",
     "jobs": "Shows jobs. Pick one, then use `.work` to earn money and level up.",
     "career": "Shows your current job, progress, cooldown, and buttons for Work / Change Job.",
     "job": "Alias for `.career`. Shows your current job.",
@@ -14750,7 +14829,6 @@ EXPLANATIONS = {
     "errors": "Admin-power command. Shows recent command errors and saved error receipts.",
     "dbaudit": "Admin-power command. Scans for database calls that could block the bot and reports DB worker settings.",
     "aiguard": f"{QUE_OWNER_DISPLAY}-only command. Shows which commands the AI can run safely, which require confirmation, and which are restricted.",
-    "config": "Alias for `.settings`. Opens the server setup dashboard.",
     "games": "Shows the bot's games, short rules, bet support, and how to start each one.",
     "gamelist": "Alias for `.games`. Shows available games.",
     "truthordare": "Starts a party-style Truth or Dare prompt with Truth, Dare, and Random buttons.",
@@ -15292,7 +15370,7 @@ DETAILED_EXPLANATIONS = {
     "aiknow": "Debug/helper command that shows exactly what Pro𝚀𝚞𝚎's AI knows about a command from the live command registry, aliases, help text, permission note, and detailed explanation data.",
     "aidoctor": "Admin-power bot doctor panel. Shows task health, 𝚀𝚞𝚎wo DB status, slash sync status, active sessions, disabled commands, and slow command stats. Useful when replying to errors and asking the AI to diagnose them.",
     "translate": "Translates provided text or the message you reply to. Friendly forms work: `.translate hello to Italian`, `.translate to Spanish hello`, `.translate it hello`, or reply to a message with `.translate to Spanish`. If no target is given, it translates to English.",
-    "settings": "Admin-power server setup/control panel. It summarizes prefix, logs, reaction logs, birthday channel, activity reports, lottery, disabled command count, and operations commands. Buttons let admins refresh the dashboard, change the prefix, set logs, set birthdays/activity to the current channel, open a setup guide, and find recovery/performance tools.",
+    "settings": "Admin-power server settings dashboard. It summarizes prefix, logs, reaction logs, birthday channel, activity reports, lottery, disabled command count, and operations commands. Buttons let admins refresh the dashboard, change the prefix, set logs, set birthdays/activity to the current channel, open a setup guide, and find recovery/performance tools. `.setup` is the clean short alias.",
     "career": "Shows your current job in a simple panel: job title, level, XP, next promotion, cooldown, and buttons. The loop is simple: `.jobs` picks a job, `.work` earns money, `.career` checks progress.",
     "job": "Alias for `.career`. Shows your current job.",
     "jobs": "Shows all jobs: Service, Tech, Trade, Creative, and Investigator. Pick one from the dropdown or use `.jobs tech`. Switching jobs keeps your level and XP.",
@@ -15359,10 +15437,36 @@ def is_econ_superowner_hidden(command_or_name):
 def apply_prefix_to_help_text(text, prefix):
     return text.replace("`.", f"`{prefix}")
 
+ECON_PREFERRED_ALIAS_OVERRIDES = {
+    "bal": ["balance"],
+    "profile": ["level"],
+    "inventory": ["inv"],
+    "shop": [],
+    "recommendgame": ["whatgame"],
+    "lottery": [],
+    "tickets": ["mytickets"],
+    "cf": ["flip"],
+    "roulette": ["rl"],
+    "blackjack": ["bj"],
+    "memory": ["mem"],
+    "luckynumber": ["ln"],
+    "jackpotspin": ["jps"],
+    "econhelp": ["quewohelp"],
+}
+
+def econ_visible_aliases(command, limit=1):
+    if not command:
+        return []
+    aliases = list(getattr(command, "aliases", []) or [])
+    preferred = ECON_PREFERRED_ALIAS_OVERRIDES.get(command.name)
+    if preferred is not None:
+        return [alias for alias in preferred if alias in aliases][:limit]
+    return [alias for alias in aliases if len(alias) <= 14][:limit]
+
 def command_help_line(command_name, prefix="."):
     command = bot.get_command(command_name) if bot else None
     usage_name = command.qualified_name if command else command_name
-    aliases = command.aliases if command else []
+    aliases = econ_visible_aliases(command, 1) if command else []
     alias_text = f" aliases: `{', '.join(aliases)}`" if aliases else ""
     text = EXPLANATIONS.get(command_name)
     if command and not text:
@@ -15373,7 +15477,7 @@ def command_help_line(command_name, prefix="."):
     risk = risk_text(command.name if command and command.name in GAME_RISK_LABELS else command_name)
     if risk:
         text = f"{risk}\n{text}"
-    return f"`{prefix}{usage_name}`{alias_text}\n{text}"
+    return f"`{prefix}{usage_name}`{alias_text}\n{embed_value(text, 260)}"
 
 def add_split_embed_field(embed, name, lines, inline=False, limit=1024):
     chunks = []

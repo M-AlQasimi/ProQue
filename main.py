@@ -852,7 +852,7 @@ def command_permission_note(command):
 
 def command_risk_note(command):
     names = {command.name.casefold(), *(alias.casefold() for alias in getattr(command, "aliases", []) or [])}
-    if names & {"ban", "kick", "purge", "rpurge", "lock", "unlock", "lockdown", "reopen", "block", "unblock", "send", "reply"}:
+    if names & {"ban", "kick", "purge", "rpurge", "lock", "unlock", "lockdown", "reopen", "block", "unblock", "send", "reply", "speak", "relay"}:
         return "High impact moderation/server action."
     if names & {"add", "remove", "move", "give", "addtick", "removetick", "movetick", "settick", "lotterypot", "lotteryprize", "prizepool", "setpot", "addpot", "removepot", "setquesos"}:
         return "Changes 𝚀𝚞𝚎wo money or lottery entries."
@@ -1228,7 +1228,7 @@ def should_use_full_bot_context(text):
     return bool(BOT_KNOWLEDGE_RE.search(text))
 
 def command_ai_summary(command, prefix):
-    aliases = ", ".join(getattr(command, "aliases", []) or [])
+    aliases = ", ".join(visible_aliases_for(command, 1))
     signature = getattr(command, "signature", "") or ""
     usage = f"{prefix}{command.qualified_name}" + (f" {signature}" if signature else "")
     key = command.name.casefold()
@@ -1243,10 +1243,10 @@ def command_ai_summary(command, prefix):
     bits = [f"`{usage}`"]
     if aliases:
         bits.append(f"aliases: {aliases}")
-    bits.append(compact_ai_text(explanation, 260))
+    bits.append(compact_ai_text(explanation, 180))
     return " - ".join(bits)
 
-def bot_command_knowledge_index(guild, viewer=None, max_chars=3200):
+def bot_command_knowledge_index(guild, viewer=None, max_chars=1900):
     prefix = prefix_for_guild(guild)
     viewer_key = getattr(viewer, "id", 0) if can_see_superowner_help(viewer, guild) else 0
     key = (getattr(guild, "id", 0), prefix, int(max_chars), len(bot.commands), viewer_key)
@@ -1285,13 +1285,15 @@ def bot_command_knowledge_index(guild, viewer=None, max_chars=3200):
 
     details = []
     for key in sorted(economy_detailed_explanations):
+        if len(details) >= 12:
+            break
         command = get_command_case_insensitive(key)
         if command and not command_is_visible_to(command, viewer, guild):
             continue
         if key in economy_explanations or command:
-            details.append(f"{key}: {compact_ai_text(economy_detailed_explanations[key], 180)}")
+            details.append(f"{key}: {compact_ai_text(economy_detailed_explanations[key], 120)}")
     if details:
-        sections.append("Detailed mechanics snippets:\n" + "\n".join(details))
+        sections.append("Key mechanics snippets:\n" + "\n".join(details))
 
     index = "\n\n".join(sections)
     if len(index) > max_chars:
@@ -1333,7 +1335,7 @@ def command_denial_detail(ctx, error=None):
     que_only = {
         "add", "remove", "move", "addtick", "removetick", "movetick", "settick", "lotterypot", "setquesos",
         "editlottery", "stoplottery", "qstats", "economyhealth", "balancedashboard", "endseason",
-        "send", "reply", "fsleep", "wake", "clearwatchlist",
+        "send", "reply", "speak", "fsleep", "wake", "clearwatchlist",
     "aisettings", "aiperms", "aiignore", "aiunignore", "aistyle",
         "aihistory", "auditcommands", "styleaudit", "commandcleanup", "permaudit", "receipts", "aiguard",
     }
@@ -1355,6 +1357,12 @@ active_activity_status_messages = {}
 message_event_tasks = {}
 active_message_event_cache = {}
 message_event_count_buffer = Counter()
+sticky_panel_tasks = {}
+sticky_panel_last_seen = {}
+sticky_lottery_config_cache = {}
+sticky_lottery_config_locks = {}
+speak_sessions = {}
+speak_forwarded_messages = {}
 tracked_message_activity_ids = set()
 tracked_message_activity_order = deque()
 command_timing_stats = {}
@@ -1371,6 +1379,95 @@ monthly_cooldown = {}
 chat_xp_memory = {}
 activity_recent_messages = {}
 ACTIVITY_DUPLICATE_WINDOW_SECONDS = 10 * 60
+STICKY_PANEL_IDLE_SECONDS = 90
+
+async def channel_latest_message_matches(channel, message_id):
+    try:
+        async for latest in channel.history(limit=1):
+            return int(latest.id) == int(message_id)
+    except Exception:
+        return None
+    return None
+
+def schedule_sticky_panel(kind, guild_id, channel_id, callback, *, idle_seconds=STICKY_PANEL_IDLE_SECONDS):
+    key = (str(kind), int(guild_id), int(channel_id))
+    sticky_panel_last_seen[key] = time.monotonic()
+    task = sticky_panel_tasks.get(key)
+    if task and not task.done():
+        return
+
+    async def runner():
+        try:
+            while True:
+                last_seen = sticky_panel_last_seen.get(key, time.monotonic())
+                remaining = idle_seconds - (time.monotonic() - last_seen)
+                if remaining > 0:
+                    await asyncio.sleep(min(remaining, idle_seconds))
+                    continue
+                await callback()
+                return
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            print(f"Sticky panel refresh failed for {kind} in guild {guild_id}: {type(e).__name__} - {e}")
+        finally:
+            sticky_panel_tasks.pop(key, None)
+            sticky_panel_last_seen.pop(key, None)
+
+    sticky_panel_tasks[key] = asyncio.create_task(runner())
+
+async def cached_lottery_sticky_config(guild_id):
+    guild_id = int(guild_id)
+    now = time.monotonic()
+    cached = sticky_lottery_config_cache.get(guild_id)
+    if cached and cached[0] > now:
+        return cached[1]
+    lock = sticky_lottery_config_locks.get(guild_id)
+    if lock is None:
+        lock = sticky_lottery_config_locks[guild_id] = asyncio.Lock()
+    async with lock:
+        now = time.monotonic()
+        cached = sticky_lottery_config_cache.get(guild_id)
+        if cached and cached[0] > now:
+            return cached[1]
+        config = await asyncio.to_thread(economy_get_lottery_config, guild_id)
+        sticky_lottery_config_cache[guild_id] = (now + 45, config)
+        return config
+
+async def schedule_channel_sticky_panels(message):
+    if not message.guild:
+        return
+    if bot.user and message.author.id == bot.user.id:
+        return
+    guild_id = int(message.guild.id)
+    channel_id = int(message.channel.id)
+
+    activity_config = guild_activity_channels.get(guild_id)
+    if activity_config and int(activity_config.get("channel_id") or 0) == channel_id and activity_config.get("current_message_id"):
+        schedule_sticky_panel(
+            "activity",
+            guild_id,
+            channel_id,
+            lambda: refresh_activity_live_message(guild_id, activity_config, force_repost=True),
+        )
+
+    event_row = active_message_event_cache.get(guild_id)
+    if event_row and int(event_row.get("channel_id") or 0) == channel_id and event_row.get("message_id"):
+        schedule_sticky_panel(
+            "messageevent",
+            guild_id,
+            channel_id,
+            lambda: refresh_message_event_message(guild_id, force_repost=True),
+        )
+
+    lottery_config = await cached_lottery_sticky_config(guild_id)
+    if lottery_config and int(lottery_config.get("channel_id") or 0) == channel_id and lottery_config.get("message_id"):
+        schedule_sticky_panel(
+            "lottery",
+            guild_id,
+            channel_id,
+            lambda: economy_module.refresh_lottery_message(message.guild, None, force_repost=True),
+        )
 ACTIVITY_NEAR_DUPLICATE_RATIO = 0.88
 ACTIVITY_RECENT_MESSAGE_LIMIT = 8
 TRACKED_MESSAGE_ACTIVITY_ID_LIMIT = 10000
@@ -2858,7 +2955,7 @@ async def save_activity_live_message_id(guild_id, config, message_id):
     if not updated:
         print(f"Activity live message id save failed for guild {guild_id}.")
 
-async def refresh_activity_live_message(guild_id, config, rows=None):
+async def refresh_activity_live_message(guild_id, config, rows=None, force_repost=False):
     guild = bot.get_guild(int(guild_id))
     if guild is None:
         return None
@@ -2877,8 +2974,22 @@ async def refresh_activity_live_message(guild_id, config, rows=None):
             message = None
     if message is not None:
         try:
-            await message.edit(embed=embed, allowed_mentions=discord.AllowedMentions.none())
-            return message
+            if force_repost:
+                latest_matches = await channel_latest_message_matches(channel, message.id)
+                if latest_matches is False:
+                    try:
+                        await message.delete()
+                    except Exception:
+                        pass
+                    message = None
+                elif latest_matches is None:
+                    await message.edit(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+                    return message
+            if message is not None:
+                await message.edit(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+                return message
+        except discord.NotFound:
+            message = None
         except discord.HTTPException as e:
             print(f"Activity live message edit failed for guild {guild.id}: {type(e).__name__} - {e}")
     try:
@@ -3557,24 +3668,63 @@ async def finalize_message_event(guild_id, *, cancelled=False):
         task.cancel()
     return True
 
-async def refresh_message_event_message(guild_id):
+async def refresh_message_event_message(guild_id, force_repost=False):
     row = await asyncio.to_thread(get_message_event, int(guild_id))
     if not row:
         row = active_message_event_cache.get(int(guild_id))
     if not row or not row.get("message_id"):
         return False
+    row = dict(row)
     guild = bot.get_guild(int(guild_id))
     if guild is None:
         return False
     channel = guild.get_channel(int(row["channel_id"])) or bot.get_channel(int(row["channel_id"]))
     if channel is None:
         return False
+    async def save_reposted_event_message(message_id):
+        row["message_id"] = int(message_id)
+        active_message_event_cache[int(guild_id)] = dict(row)
+        return await asyncio.to_thread(
+            save_message_event,
+            int(guild_id),
+            int(row["channel_id"]),
+            int(message_id),
+            row.get("title") or "Message Event",
+            int(row.get("started_by") or 0),
+            db_event_datetime(normalize_event_datetime(row["starts_at"])),
+            db_event_datetime(normalize_event_datetime(row["ends_at"])),
+        )
     try:
         message = await channel.fetch_message(int(row["message_id"]))
         rows = await message_event_current_rows(guild_id, row)
-        await message.edit(embed=message_event_embed(guild, row, rows), allowed_mentions=discord.AllowedMentions.none())
+        embed = message_event_embed(guild, row, rows)
+        if force_repost:
+            latest_matches = await channel_latest_message_matches(channel, message.id)
+            if latest_matches is False:
+                try:
+                    await message.delete()
+                except Exception:
+                    pass
+                message = await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+                await save_reposted_event_message(message.id)
+                return True
+            if latest_matches is None:
+                await message.edit(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+                return True
+        await message.edit(embed=embed, allowed_mentions=discord.AllowedMentions.none())
         return True
-    except (discord.NotFound, discord.Forbidden):
+    except discord.NotFound:
+        if not force_repost:
+            return False
+        try:
+            rows = await message_event_current_rows(guild_id, row)
+            message = await channel.send(embed=message_event_embed(guild, row, rows), allowed_mentions=discord.AllowedMentions.none())
+            await save_reposted_event_message(message.id)
+            return True
+        except Exception as e:
+            print(f"Message event live repost failed for guild {guild_id}: {type(e).__name__} - {e}")
+            return False
+    except discord.Forbidden:
         return False
     except Exception as e:
         print(f"Message event live refresh failed for guild {guild_id}: {type(e).__name__} - {e}")
@@ -4749,16 +4899,16 @@ AI_SUPEROWNER_ONLY_COMMANDS = {
     "add", "remove", "move", "moveqs", "movequesos", "addtick", "removetick", "remtick", "deltick", "movetick", "moveticks", "ticketmove", "moveticket", "settick", "lotterypot", "lotteryprize", "prizepool", "setpot", "addpot", "removepot", "setquesos",
     "editlottery", "stoplottery", "qstats", "economystats", "qstatus", "economyhealth", "ecohealth", "moneyhealth", "supply", "balancedashboard", "ecodashboard", "moneydashboard", "sinkdashboard", "endseason", "rewardseason",
     "disable", "enable", "disableall", "enableall", "prefix", "preifx", "setprefix",
-    "settings", "setup", "setupbot", "config", "controlpanel", "panel", "setlogs", "slashsync", "auditcommands", "cmdaudit", "commandaudit", "styleaudit", "uiaudit", "messageaudit", "commandcleanup", "cleanupcommands", "cmdcleanup", "dbaudit", "databaseaudit", "backgroundjobs", "tasks", "bgjobs", "errors", "errorlog", "recover", "restorestate", "recovery", "aihistory", "aiactions", "actionhistory",
+    "settings", "setup", "setlogs", "slashsync", "auditcommands", "cmdaudit", "commandaudit", "styleaudit", "uiaudit", "messageaudit", "commandcleanup", "cleanupcommands", "cmdcleanup", "dbaudit", "databaseaudit", "backgroundjobs", "tasks", "bgjobs", "errors", "errorlog", "recover", "restorestate", "recovery", "aihistory", "aiactions", "actionhistory",
     "aisettings", "aiconfig", "aicontrols", "aiperms", "aipermissions", "aicapabilities", "aiauthority", "aiguard", "aicommandsafety", "aiignore", "ignoreai", "aiunignore", "unignoreai", "aistyle", "aipersonality",
     "block", "unblock", "shut", "unshut", "rshut", "unrshut", "lockdown", "reopen",
     "rlockdown", "runlock", "lock", "unlock", "clearwatchlist", "ban", "unban", "kick", "addrole",
-    "removerole", "deleterole", "send", "reply", "fwd", "forward", "fw", "quote", "archive", "censor", "uncensor", "clearcensors",
+    "removerole", "deleterole", "send", "reply", "speak", "relay", "talkthrough", "fwd", "forward", "fw", "quote", "archive", "censor", "uncensor", "clearcensors",
     "editlottery", "stoplottery", "editactivity", "endactivity", "stopactivity", "robsettings", "robbing", "setrob", "robconfig", "balancedashboard", "ecodashboard", "moneydashboard", "sinkdashboard",
 }
 
 AI_BLOCKED_COMMANDS = {
-    "ask", "send", "reply",
+    "ask", "send", "reply", "speak", "relay", "talkthrough",
 }
 
 def extract_ai_command_request(question, guild=None):
@@ -5888,10 +6038,14 @@ async def maybe_run_ai_batch_action(message, question):
 @bot.event
 async def on_message(message):
     if message.author.bot:
+        if message.guild and bot.user and message.author.id != bot.user.id:
+            asyncio.create_task(schedule_channel_sticky_panels(message))
         return
 
     if message.guild:
         track_message_activity(message)
+        asyncio.create_task(schedule_channel_sticky_panels(message))
+        asyncio.create_task(forward_speak_feed_message(message))
 
     await handle_returning_status(message)
     is_command = looks_like_command_message(message)
@@ -5947,6 +6101,9 @@ async def on_message(message):
                     "created_at": datetime.now(timezone.utc),
                 })
                 print(f"Slow command: {name} took {elapsed_ms}ms in guild {message.guild.id if message.guild else 'DM'}")
+        return
+
+    if message.guild is None and has_super_owner_power(message.author) and await handle_speak_dm_message(message):
         return
 
     # AI mention/reply handling
@@ -6234,7 +6391,7 @@ async def on_command_error(ctx, error):
 
     elif isinstance(error, CommandDisabledError):
         print(f"Command disabled: {error.command_name} for {ctx.author} ({ctx.author.id})")
-        await ctx.send(f"**{error.command_name}** is disabled.")
+        await ctx.send(f"{economy_q_warning} `{error.command_name}` is taking a nap here. An admin disabled it.")
 
     elif isinstance(error, commands.CheckFailure):
         print(f"Command check failed: {ctx.command} for {ctx.author} ({ctx.author.id}) - {type(error).__name__}: {error}")
@@ -6247,7 +6404,7 @@ async def on_command_error(ctx, error):
 
     elif isinstance(error, commands.MissingPermissions):
         print(f"Command missing permissions: {ctx.command} for {ctx.author} ({ctx.author.id}) - {error}")
-        await ctx.send("You don’t have permission to do that.")
+        await ctx.send(f"{economy_q_reject} Discord said no. You’re missing the needed permission for that one.")
 
     elif isinstance(error, commands.MissingRequiredArgument):
         print(f"Command missing argument: {ctx.command} for {ctx.author} ({ctx.author.id}) - {error}")
@@ -6275,12 +6432,12 @@ async def on_command_error(ctx, error):
         if ctx.guild is None:
             text = clean_user_error(error)
             if "guild" in str(error).casefold() or "server" in str(error).casefold():
-                text = "That command needs to be used in a server. DM-safe commands still work here, like help, AI, summaries, and simple utilities."
+                text = "That one needs a server, not DMs. DM-safe stuff still works here: help, AI, summaries, and simple tools."
             return await ctx.send(fit_discord_content(text))
         if has_owner_power(ctx.author, ctx.guild):
             await ctx.send(fit_discord_content(clean_user_error(error)))
         else:
-            await ctx.send(denial_message("Something went wrong while running this command. Try the help command for the right usage."), allowed_mentions=discord.AllowedMentions.none())
+            await ctx.send(denial_message("Something tripped while running that. Try the help page for the right usage."), allowed_mentions=discord.AllowedMentions.none())
 
 HELP_CATEGORIES = {
     "Start Here": ["help", "games", "econhelp", "guide", "onboard", "tutorial", "recommendgame", "explain"],
@@ -6297,7 +6454,8 @@ HELP_CATEGORIES = {
         "transactions", "limits", "riskprofile", "cooldowns", "streaks", "claimreminders",
     ],
     "Social": ["truthordare", "flagquiz", "flagstats", "ttt", "c4", "chess", "chessmove", "resign", "q", "picker"],
-    "Tools": ["userinfo", "pfp", "calc", "colour", "define", "timer", "ctimer", "alarm", "poll", "epoll", "translate", "find", "snipe"],
+    "Tools": ["userinfo", "pfp", "calc", "colour", "define", "timer", "ctimer", "alarm", "poll", "epoll", "translate", "find"],
+    "Snipes": ["snipe", "dsnipe", "esnipe", "rsnipe"],
     "AI": ["ask", "summarize", "aidetect", "generate", "analyse", "aimemory", "aiknow", "usersettings"],
     "Community": ["afk", "sleep", "wake", "away", "setbday", "removebday", "activity", "activitystats", "messages"],
     "Admin Setup": [
@@ -6320,12 +6478,13 @@ SUPEROWNER_HELP_COMMANDS = [
     "move", "movetick",
     "addxp", "removexp", "addlvl", "removelvl", "setlvl",
     "editlottery", "stoplottery", "qstats", "economyhealth", "balancedashboard", "endseason",
-    "send", "reply", "fsleep", "wake", "clearwatchlist",
+    "send", "reply", "speak", "fsleep", "wake", "clearwatchlist",
         "aisettings", "aiperms", "aiignore", "aiunignore", "aistyle",
     "aihistory", "auditcommands", "styleaudit", "commandcleanup", "permaudit", "receipts", "aiguard",
 ]
 SUPEROWNER_HIDDEN_COMMANDS = {
     *SUPEROWNER_HELP_COMMANDS,
+    "relay", "talkthrough",
     "remtick", "deltick", "lotteryprize", "prizepool", "setpot", "addpot", "removepot",
     "moveqs", "movequesos", "moveticks", "ticketmove", "moveticket",
     "givexp", "remxp", "delxp", "addlevel", "removelvls", "remlevel", "removelevel", "dellvl", "dellevel", "setlevel",
@@ -6346,8 +6505,11 @@ HELP_CATEGORY_ALIASES = {
     "leaderboards": "Progress",
     "social": "Social",
     "fun": "Social",
-    "snipe": "Tools",
-    "snipes": "Tools",
+    "snipe": "Snipes",
+    "snipes": "Snipes",
+    "dsnipe": "Snipes",
+    "esnipe": "Snipes",
+    "rsnipe": "Snipes",
     "setup": "Admin Setup",
     "config": "Admin Setup",
     "admin": "Admin Setup",
@@ -6363,7 +6525,8 @@ HELP_CATEGORY_DESCRIPTIONS = {
     "Games": "Gambling, skill games, solo games, and robbing.",
     "Progress": "Leaderboards, achievements, seasons, history, limits, and reminders.",
     "Social": "Party games, PvP games, flags, chess, and picker.",
-    "Tools": "Timers, polls, snipes, calculator, definitions, translation, and user lookup.",
+    "Tools": "Timers, polls, calculator, definitions, translation, colors, and user lookup.",
+    "Snipes": "Deleted messages, edited messages, and removed reactions in one clean place.",
     "AI": "Chat, summaries, image analysis, AI detector, and AI memory.",
     "Community": "AFK, sleep, birthdays, activity, and message stats.",
     "Admin Setup": "Server configuration for admins.",
@@ -6372,6 +6535,44 @@ HELP_CATEGORY_DESCRIPTIONS = {
     "𝚀𝚞𝚎 Only": "Hidden owner controls shown only to 𝚀𝚞𝚎.",
 }
 ADMIN_HELP_CATEGORIES = {"Admin Setup", "Moderation", "Diagnostics"}
+PREFERRED_ALIAS_OVERRIDES = {
+    "help": ["commands"],
+    "settings": ["setup"],
+    "bal": ["balance"],
+    "profile": ["level"],
+    "inventory": ["inv"],
+    "recommendgame": ["whatgame"],
+    "truthordare": ["tod"],
+    "colour": ["color"],
+    "snipe": ["snipes"],
+    "esnipe": ["editsnipe"],
+    "rsnipe": ["reactionsnipe"],
+    "messages": ["mstats"],
+    "activitystats": ["astats"],
+    "economyaudit": ["econaudit"],
+    "econhelp": ["quewohelp"],
+    "blackjack": ["bj"],
+    "roulette": ["rl"],
+    "slots": ["slot"],
+    "memory": ["mem"],
+    "luckynumber": ["ln"],
+    "jackpotspin": ["jps"],
+}
+
+def visible_aliases_for(command, limit=1):
+    if not command:
+        return []
+    aliases = list(getattr(command, "aliases", []) or [])
+    preferred = PREFERRED_ALIAS_OVERRIDES.get(command.name)
+    if preferred is not None:
+        return [alias for alias in preferred if alias in aliases][:limit]
+    clean = [
+        alias for alias in aliases
+        if len(alias) <= 14
+        and alias.casefold() not in SUPEROWNER_HIDDEN_COMMANDS
+        and not alias.casefold().endswith(("config", "status"))
+    ]
+    return clean[:limit]
 
 def is_superowner_help_command(command_or_name):
     names = {str(command_or_name).casefold()}
@@ -6421,7 +6622,7 @@ def _render_help_embed_uncached(guild=None, category_name=None, page=0, per_page
         page = max(0, int(page or 0))
         embed = standard_embed(
             f"Help: {category_name}",
-            description=f"Use `{current_prefix}help <command>` for usage or `{current_prefix}explain <command>` for details.",
+            description=f"Pick what you need, no command soup. Use `{current_prefix}help <command>` for usage or `{current_prefix}explain <command>` for details.",
             color=discord.Color.blurple(),
             icon=economy_q_book,
         )
@@ -6457,7 +6658,7 @@ def _render_help_embed_uncached(guild=None, category_name=None, page=0, per_page
         "Help",
         description=(
             f"Pick a category below, use `{current_prefix}help <command>`, or search with `{current_prefix}help search <word>`.\n"
-            f"Fast starts: {', '.join(fast_starts)}."
+            f"Fast starts: {', '.join(fast_starts)}. Tiny map, huge bot."
         ),
         color=discord.Color.blurple(),
         icon=economy_q_book,
@@ -6468,7 +6669,7 @@ def _render_help_embed_uncached(guild=None, category_name=None, page=0, per_page
     embed.add_field(
         name="AI Chatbot",
         value=(
-            "Mention or reply to Pro𝚀𝚞𝚎 for natural chat, bot help, command planning, memory, and troubleshooting. "
+            "Mention or reply to Pro𝚀𝚞𝚎 for chat, bot help, command planning, memory, and troubleshooting. "
             f"Try {', '.join(ai_starts)}."
         ),
         inline=False,
@@ -6729,7 +6930,11 @@ async def help_command(ctx, *, command_name: str = None):
             icon=economy_q_book,
         )
         embed.add_field(name="Usage", value=f"`{usage}`", inline=False)
-        embed.add_field(name="Aliases", value=", ".join(command.aliases) if command.aliases else "None", inline=True)
+        shown_aliases = visible_aliases_for(command, 2)
+        alias_value = ", ".join(f"`{current_prefix}{alias}`" for alias in shown_aliases) if shown_aliases else "None"
+        if command.aliases and len(shown_aliases) < len(command.aliases):
+            alias_value += "\nMore aliases still work, but this is the clean one."
+        embed.add_field(name="Alias", value=alias_value, inline=True)
         embed.add_field(name="Permission", value=command_permission_label(command), inline=True)
         embed.add_field(name="Input", value=command_input_label(command), inline=True)
         if command.name in SETUP_UI_COMMANDS:
@@ -6766,7 +6971,7 @@ async def build_settings_embed(guild):
 
     embed = discord.Embed(
         title=f"{economy_q_setup} Server Settings",
-        description="Current bot setup for this server.",
+        description="The server control room. Green-ish means handled, warning means worth setting up.",
         color=discord.Color.blurple(),
         timestamp=datetime.now(timezone.utc)
     )
@@ -6812,7 +7017,7 @@ async def build_settings_embed(guild):
         f"{economy_q_accept} Truth/Dare: {truth_or_dare_channel_text(guild)}",
     ]
     embed.add_field(name=f"{economy_q_command_check} Setup Checklist", value="\n".join(checklist), inline=False)
-    embed.set_footer(text="Use the buttons below for quick setup actions.")
+    embed.set_footer(text="Buttons edit the server setup directly when you have permission.")
     return embed
 
 class PrefixSettingsModal(Modal):
@@ -7005,7 +7210,7 @@ class SettingsView(View):
         prefix = prefix_for_guild(interaction.guild)
         embed = discord.Embed(
             title=f"{economy_q_setup} Setup Guide",
-            description="Clean setup checklist for this server.",
+            description="The short version: set logs, choose community channels, then tune 𝚀𝚞𝚎wo.",
             color=discord.Color.green(),
         )
         embed.add_field(name="Core", value=f"`{prefix}prefix <new>`\n`{prefix}setlogs`\n`{prefix}settings`\n{economy_q_tutorial} `{prefix}tutorial`", inline=True)
@@ -7035,7 +7240,7 @@ class SettingsView(View):
         embed.add_field(name="Recovery", value=f"`{prefix}health`\n`{prefix}jobs`\n`{prefix}recover`\n`{prefix}dbaudit`", inline=True)
         await interaction.response.send_message(embed=embed, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
 
-@bot.command(name="settings", aliases=["setup", "setupbot", "config", "controlpanel", "panel"])
+@bot.command(name="settings", aliases=["setup"])
 @is_admin_power()
 async def settings_command(ctx):
     """Shows the server settings dashboard."""
@@ -7369,17 +7574,32 @@ async def auditcommands_command(ctx):
         top_actions.append("Review UI callbacks that may not acknowledge interactions directly; global UI error handling still catches failures.")
     if not top_actions:
         top_actions.append("No high-impact cleanup needed right now.")
-    embed.add_field(name="Next Fixes", value=embed_value("\n".join(f"- {item}" for item in top_actions), 1000), inline=False)
-    embed.add_field(name="Missing Help Category", value=embed_value(", ".join(missing_category) or "None", 1000), inline=False)
-    embed.add_field(name="Missing Explain Text", value=embed_value(", ".join(missing_explain) or "None", 1000), inline=False)
-    embed.add_field(name="Missing Detailed Text", value=embed_value(", ".join(missing_detail[:40]) or "None", 1000), inline=False)
-    embed.add_field(name="Missing Examples", value=embed_value(", ".join(missing_example[:40]) or "None", 1000), inline=False)
-    embed.add_field(name="Input Commands Without UI/Example", value=embed_value(", ".join(input_without_ui[:40]) or "None", 1000), inline=False)
-    embed.add_field(name="Generic Explain Text", value=embed_value(", ".join(stale_explain[:40]) or "None", 1000), inline=False)
-    embed.add_field(name="Sync DB Calls In Async Paths", value=embed_value("\n".join(sync_db_findings[:12]) or "None", 1000), inline=False)
-    embed.add_field(name="UI Callback Audit", value=embed_value("\n".join(ui_findings[:12]) or "None", 1000), inline=False)
-    embed.add_field(name="Duplicate Aliases", value=embed_value("\n".join(duplicate_alias_lines) or "None", 1000), inline=False)
-    embed.add_field(name="Near-Duplicate Commands", value=embed_value("\n".join(near_duplicate_lines) or "None", 1000), inline=False)
+    embed.add_field(name="Next Fixes", value=embed_value("\n".join(f"- {item}" for item in top_actions[:6]), 1000), inline=False)
+    embed.add_field(
+        name="Counts",
+        value=(
+            f"Missing category: **{len(missing_category)}**\n"
+            f"Missing explain: **{len(missing_explain)}**\n"
+            f"Missing details/examples: **{len(missing_detail) + len(missing_example)}**\n"
+            f"Input without UI/example: **{len(input_without_ui)}**\n"
+            f"Generic explain: **{len(stale_explain)}**\n"
+            f"DB hot-path warnings: **{len(sync_db_findings)}**\n"
+            f"UI warnings: **{len(ui_findings)}**\n"
+            f"Alias/name duplicates: **{len(duplicate_alias_lines) + len(near_duplicate_lines)}**"
+        ),
+        inline=False,
+    )
+    compact_samples = [
+        f"Help: {', '.join(missing_category[:6]) or 'None'}",
+        f"Explain: {', '.join(missing_explain[:6]) or 'None'}",
+        f"Input: {', '.join(input_without_ui[:6]) or 'None'}",
+        f"DB: {'; '.join(sync_db_findings[:3]) or 'None'}",
+        f"UI: {'; '.join(ui_findings[:3]) or 'None'}",
+        f"Aliases: {'; '.join(duplicate_alias_lines[:3]) or 'None'}",
+        f"Near names: {'; '.join(near_duplicate_lines[:3]) or 'None'}",
+    ]
+    embed.add_field(name="Samples", value=embed_value("\n".join(compact_samples), 1000), inline=False)
+    embed.set_footer(text="Compact audit to avoid Discord walls. Run .commandcleanup for a focused cleanup summary too.")
     await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
 def command_category_lookup():
@@ -7484,11 +7704,25 @@ async def commandcleanup_command(ctx):
         color=discord.Color.orange(),
         timestamp=datetime.now(timezone.utc),
     )
-    embed.add_field(name="Missing Help Category", value=embed_value(", ".join(missing_category[:40]) or "None", 1000), inline=False)
-    embed.add_field(name="Missing Input UI / Example", value=embed_value(", ".join(missing_example[:40]) or "None", 1000), inline=False)
-    embed.add_field(name="Generic Explain Text", value=embed_value(", ".join(generic_explain[:40]) or "None", 1000), inline=False)
-    embed.add_field(name="Duplicate Aliases", value=embed_value("\n".join(duplicate_aliases[:20]) or "None", 1000), inline=False)
-    embed.add_field(name="Near-Duplicate Names", value=embed_value("\n".join(near_duplicates) or "None", 1000), inline=False)
+    embed.add_field(
+        name="Counts",
+        value=(
+            f"Missing category: **{len(missing_category)}**\n"
+            f"Missing UI/example: **{len(missing_example)}**\n"
+            f"Generic explain: **{len(generic_explain)}**\n"
+            f"Duplicate aliases: **{len(duplicate_aliases)}**\n"
+            f"Near-duplicates: **{len(near_duplicates)}**"
+        ),
+        inline=False,
+    )
+    embed.add_field(name="Top Fixes", value=embed_value("\n".join([
+        f"Categories: {', '.join(missing_category[:8]) or 'None'}",
+        f"Input help: {', '.join(missing_example[:8]) or 'None'}",
+        f"Generic explain: {', '.join(generic_explain[:8]) or 'None'}",
+        f"Duplicate aliases: {'; '.join(duplicate_aliases[:5]) or 'None'}",
+        f"Near-duplicates: {'; '.join(near_duplicates[:5]) or 'None'}",
+    ]), 1000), inline=False)
+    embed.set_footer(text="Compact view. Use .auditcommands for the deeper scan when you actually need the wall.")
     await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
 @bot.command(name="permaudit", aliases=["permsaudit", "permissionaudit", "sensitiveaudit"])
@@ -7930,15 +8164,17 @@ async def sessions_command(ctx, action: str = None, message_id: int = None):
 async def health_command(ctx):
     """Shows bot process and background task health."""
     sessions = await asyncio.to_thread(load_active_game_sessions)
+    db_status = "Ready" if getattr(economy_module, "db_ready", False) else "Loading"
     embed = discord.Embed(
         title=f"{economy_q_perf} Bot Health",
-        description="Runtime status for Pro𝚀𝚞𝚎.",
+        description="Runtime status for Pro𝚀𝚞𝚎. If something feels haunted, start here.",
         color=discord.Color.green(),
         timestamp=datetime.now(timezone.utc),
     )
     embed.add_field(name="Latency", value=f"{round(bot.latency * 1000):,}ms", inline=True)
     embed.add_field(name="Guilds", value=f"{len(bot.guilds):,}", inline=True)
     embed.add_field(name="Commands", value=f"{len(list(bot.commands)):,}", inline=True)
+    embed.add_field(name="𝚀𝚞𝚎wo DB", value=db_status, inline=True)
     embed.add_field(name="Birthday Task", value="Running" if birthday_task and not birthday_task.done() else "Stopped", inline=True)
     embed.add_field(name="Activity Task", value="Running" if activity_task and not activity_task.done() else "Stopped", inline=True)
     embed.add_field(name="Presence Task", value="Running" if presence_rotation_task.is_running() else "Stopped", inline=True)
@@ -7949,11 +8185,20 @@ async def health_command(ctx):
     failed_jobs = len([job for job in background_jobs.values() if job.get("status") == "failed"])
     embed.add_field(name="Background Jobs", value=f"{running_jobs:,} running · {failed_jobs:,} failed", inline=True)
     embed.add_field(name="Recent Errors", value=f"{len(command_error_events):,}", inline=True)
+    slow_count = len(slow_command_events)
+    queue_count = len(recent_queue_events)
+    embed.add_field(name="Performance Watch", value=f"{slow_count:,} slow · {queue_count:,} queued", inline=True)
     try:
         lottery_configs = await asyncio.to_thread(lambda: len([g for g in bot.guilds if economy_get_lottery_config(g.id)]))
     except Exception:
         lottery_configs = "DB unavailable"
     embed.add_field(name="Active Lotteries", value=str(lottery_configs), inline=True)
+    embed.add_field(
+        name="Recovery Covers",
+        value="Timers, polls, giveaways, alarms, game sessions, lottery panels/draws, and economy events.",
+        inline=False,
+    )
+    embed.set_footer(text=f"Use {prefix_for_guild(ctx.guild)}recover after reconnect weirdness, {prefix_for_guild(ctx.guild)}perf for speed, {prefix_for_guild(ctx.guild)}errors for failures.")
     await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
 TRUTH_OR_DARE_TRUTHS = [
@@ -8487,8 +8732,9 @@ GAME_FILTERS = {
     "No Bet": lambda item: item[2] in {"dungeon"} or item[1] in {"Flag Quiz", "Picker"},
 }
 
-def games_embed(prefix=".", selected_filter="All"):
-    key = (prefix, selected_filter)
+def games_embed(prefix=".", selected_filter="All", balance=None):
+    balance_bucket = "unknown" if balance is None else ("low" if int(balance or 0) < 250_000 else "mid" if int(balance or 0) < 2_000_000 else "high")
+    key = (prefix, selected_filter, balance_bucket)
     now = time.monotonic()
     cached = games_render_cache.get(key)
     if cached and now - cached[0] < HELP_RENDER_CACHE_TTL:
@@ -8496,10 +8742,18 @@ def games_embed(prefix=".", selected_filter="All"):
     filter_fn = GAME_FILTERS.get(selected_filter, GAME_FILTERS["All"])
     embed = standard_embed(
         f"Games - {selected_filter}",
-        description="Filter by solo, multiplayer, skill, luck, free, high risk, or no-bet games.",
+        description="Pick a vibe, then pick a game. Free/skill games first if your balance is crying.",
         color=discord.Color.green(),
         icon=economy_q_game_win,
     )
+    if balance is not None:
+        if int(balance or 0) < 250_000:
+            recs = [f"`{prefix}dungeon`", f"`{prefix}flagquiz`", f"`{prefix}memory 1k`"]
+        elif int(balance or 0) < 2_000_000:
+            recs = [f"`{prefix}tower 25k`", f"`{prefix}memory 25k`", f"`{prefix}blackjack 25k`"]
+        else:
+            recs = [f"`{prefix}tower 100k`", f"`{prefix}plinko 100k`", f"`{prefix}jackpotspin 100k`"]
+        embed.add_field(name="Recommended For You", value=" · ".join(recs), inline=False)
     for category in ["PvP", "Party", "Skill", "Luck", "Solo", "Utility"]:
         lines = []
         for item in GAME_MENU:
@@ -8514,7 +8768,7 @@ def games_embed(prefix=".", selected_filter="All"):
             embed.add_field(name=category, value=joined_embed_value(lines), inline=False)
     if not embed.fields:
         embed.add_field(name="Games", value="No games match this filter.", inline=False)
-    embed.set_footer(text="Use .explain <game> for full rules.")
+    embed.set_footer(text=f"Use {prefix}howtoplay <game> or the buttons for rules. Keep bets sane; future you is watching.")
     games_render_cache[key] = (now, clone_embed(embed))
     return embed
 
@@ -8531,7 +8785,7 @@ class GamesFilterButton(Button):
         for item in view.children:
             if isinstance(item, GamesFilterButton):
                 item.style = discord.ButtonStyle.primary if item.filter_name == self.filter_name else discord.ButtonStyle.secondary
-        await interaction.response.edit_message(embed=games_embed(view.prefix, self.filter_name), view=view)
+        await interaction.response.edit_message(embed=games_embed(view.prefix, self.filter_name, view.balance), view=view)
 
 class GamesRefreshButton(Button):
     def __init__(self):
@@ -8542,13 +8796,14 @@ class GamesRefreshButton(Button):
         if interaction.user.id != view.author_id:
             return await interaction.response.send_message("Use your own games menu.", ephemeral=True)
         games_render_cache.clear()
-        await interaction.response.edit_message(embed=games_embed(view.prefix, view.selected_filter), view=view)
+        await interaction.response.edit_message(embed=games_embed(view.prefix, view.selected_filter, view.balance), view=view)
 
 class GamesView(View):
-    def __init__(self, author_id, prefix):
+    def __init__(self, author_id, prefix, balance=None):
         super().__init__(timeout=LONG_HELP_VIEW_TIMEOUT)
         self.author_id = author_id
         self.prefix = prefix
+        self.balance = balance
         self.selected_filter = "All"
         self.add_item(GamesRefreshButton())
         for filter_name in ["All", "Solo", "PvP", "Party", "Skill", "Luck", "Free", "High Risk", "No Bet"]:
@@ -8619,16 +8874,22 @@ class GamesView(View):
     @discord.ui.button(label="Refresh", emoji=economy_q_refresh, style=discord.ButtonStyle.secondary)
     async def refresh_button(self, interaction, button):
         games_render_cache.clear()
-        await interaction.response.edit_message(embed=games_embed(self.prefix, self.selected_filter), view=self)
+        await interaction.response.edit_message(embed=games_embed(self.prefix, self.selected_filter, self.balance), view=self)
 
 @bot.command(name="games", aliases=["gamelist"])
 async def games_command(ctx):
     """Shows available games and how to start them."""
     prefix = prefix_for_guild(ctx.guild)
-    await ctx.send(embed=games_embed(prefix), view=GamesView(ctx.author.id, prefix))
+    balance = None
     try:
         data = await asyncio.to_thread(economy_get_user, ctx.author.id)
-        await economy_module.maybe_send_tutorial(ctx, data, "games")
+        balance = int(data.get("balance") or 0)
+    except Exception:
+        data = None
+    await ctx.send(embed=games_embed(prefix, balance=balance), view=GamesView(ctx.author.id, prefix, balance))
+    try:
+        if data:
+            await economy_module.maybe_send_tutorial(ctx, data, "games")
     except Exception:
         pass
 
@@ -13227,6 +13488,292 @@ async def reply(ctx, message_id: int, *, text=None):
             delete_after=3,
             allowed_mentions=discord.AllowedMentions.none()
         )
+
+async def resolve_speak_channel(ctx, raw=None):
+    raw = str(raw or "").strip()
+    if not raw and ctx.guild is not None:
+        return ctx.channel if hasattr(ctx.channel, "send") else None
+    if not raw:
+        return None
+
+    match = FORWARD_MESSAGE_LINK_RE.search(raw.strip("<>"))
+    if match:
+        raw = match.group("channel")
+    elif raw.startswith("<#") and raw.endswith(">"):
+        raw = raw[2:-1]
+
+    if raw.isdigit():
+        try:
+            channel = bot.get_channel(int(raw)) or await bot.fetch_channel(int(raw))
+        except Exception:
+            return None
+        return channel if hasattr(channel, "send") and getattr(channel, "guild", None) is not None else None
+
+    if ctx.guild is None:
+        return None
+    try:
+        channel = await commands.TextChannelConverter().convert(ctx, raw)
+    except commands.BadArgument:
+        return None
+    return channel if hasattr(channel, "send") else None
+
+def speak_session_channel(user_id):
+    session = speak_sessions.get(int(user_id))
+    if not session:
+        return None
+    channel_id = int(session.get("channel_id") or 0)
+    channel = bot.get_channel(channel_id)
+    if channel is None:
+        return None
+    return channel if hasattr(channel, "send") else None
+
+def render_speak_feed_message(message):
+    guild_name = getattr(message.guild, "name", "DM")
+    channel_name = f"#{getattr(message.channel, 'name', message.channel.id)}"
+    author_name = getattr(message.author, "display_name", message.author.name)
+    header = (
+        f"{economy_q_quote} **{guild_name}** · **{channel_name}**\n"
+        f"**{author_name}** (`{message.author.id}`) · [jump]({message.jump_url})"
+    )
+    body = message.content or ""
+    extras = []
+    if message.attachments:
+        extras.append("Attachments:\n" + "\n".join(a.url for a in message.attachments[:6]))
+    if message.stickers:
+        extras.append("Stickers:\n" + "\n".join(f"{s.name}: {getattr(s, 'url', '')}".strip() for s in message.stickers[:3]))
+    if message.embeds and not body:
+        embed_bits = []
+        for embed in message.embeds[:2]:
+            if embed.title:
+                embed_bits.append(embed.title)
+            elif embed.description:
+                embed_bits.append(embed.description[:120])
+        if embed_bits:
+            extras.append("Embeds: " + ", ".join(embed_bits))
+    return fit_discord_content("\n".join(part for part in [header, body, *extras] if part), 2000)
+
+async def forward_speak_feed_message(message):
+    if not message.guild or message.author.bot:
+        return
+    owner_id = int(super_owner_id)
+    session = speak_sessions.get(owner_id)
+    if not session or int(session.get("channel_id") or 0) != int(message.channel.id):
+        return
+    try:
+        owner = bot.get_user(owner_id) or await bot.fetch_user(owner_id)
+        sent = await owner.send(render_speak_feed_message(message), allowed_mentions=discord.AllowedMentions.none())
+        session.setdefault("dm_message_ids", []).append(int(sent.id))
+        speak_forwarded_messages[sent.id] = {
+            "guild_id": int(message.guild.id),
+            "channel_id": int(message.channel.id),
+            "message_id": int(message.id),
+        }
+        if len(speak_forwarded_messages) > 1000:
+            for old_id in list(speak_forwarded_messages)[:200]:
+                speak_forwarded_messages.pop(old_id, None)
+    except Exception as e:
+        print(f"Speak feed forward failed: {type(e).__name__} - {e}")
+
+async def send_speak_payload(channel, source_message, *, reply_to=None):
+    content = source_message.content or None
+    files = [await attachment.to_file() for attachment in source_message.attachments] if source_message.attachments else None
+    if not content and not files:
+        await source_message.reply("Send text or an attachment for speak mode.", mention_author=False)
+        return False
+    try:
+        if reply_to is not None:
+            sent = await reply_to.reply(
+                content=content,
+                files=files,
+                mention_author=False,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        else:
+            sent = await channel.send(content=content, files=files, allowed_mentions=discord.AllowedMentions.none())
+        session = speak_sessions.get(int(source_message.author.id))
+        if session is not None:
+            session.setdefault("channel_message_ids", []).append(int(sent.id))
+        return True
+    except Exception as e:
+        await source_message.reply(
+            f"{economy_q_warning} Speak send failed: {clean_user_error(e)}",
+            mention_author=False,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+        return False
+
+async def handle_speak_dm_message(message):
+    if looks_like_command_message(message):
+        return False
+
+    reply_to_original = None
+    if message.reference and getattr(message.reference, "message_id", None):
+        mapping = speak_forwarded_messages.get(int(message.reference.message_id))
+        if mapping:
+            channel = bot.get_channel(int(mapping["channel_id"]))
+            if channel is None:
+                try:
+                    channel = await bot.fetch_channel(int(mapping["channel_id"]))
+                except Exception:
+                    channel = None
+            if channel and hasattr(channel, "fetch_message"):
+                try:
+                    reply_to_original = await channel.fetch_message(int(mapping["message_id"]))
+                except Exception:
+                    reply_to_original = None
+            if reply_to_original is not None:
+                return await send_speak_payload(reply_to_original.channel, message, reply_to=reply_to_original)
+
+    channel = speak_session_channel(message.author.id)
+    if channel is None:
+        return False
+    return await send_speak_payload(channel, message)
+
+class SpeakCleanupView(discord.ui.View):
+    def __init__(self, owner_id, session):
+        super().__init__(timeout=180)
+        self.owner_id = int(owner_id)
+        self.session = dict(session or {})
+        self.done = False
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id == self.owner_id:
+            return True
+        await interaction.response.send_message("This cleanup prompt is not yours.", ephemeral=True)
+        return False
+
+    async def delete_dm_messages(self, interaction):
+        deleted = 0
+        dm_ids = [int(mid) for mid in self.session.get("dm_message_ids", []) if mid]
+        for message_id in dm_ids[-300:]:
+            speak_forwarded_messages.pop(message_id, None)
+            try:
+                msg = await interaction.channel.fetch_message(message_id)
+                await msg.delete()
+                deleted += 1
+            except Exception:
+                pass
+        return deleted
+
+    async def delete_channel_messages(self):
+        deleted = 0
+        channel_id = int(self.session.get("channel_id") or 0)
+        channel = bot.get_channel(channel_id)
+        if channel is None and channel_id:
+            try:
+                channel = await bot.fetch_channel(channel_id)
+            except Exception:
+                channel = None
+        if channel is None:
+            return deleted
+        for message_id in [int(mid) for mid in self.session.get("channel_message_ids", []) if mid][-300:]:
+            try:
+                msg = await channel.fetch_message(message_id)
+                await msg.delete()
+                deleted += 1
+            except Exception:
+                pass
+        return deleted
+
+    @discord.ui.button(label="Delete Session Messages", emoji=economy_q_trash, style=discord.ButtonStyle.danger)
+    async def delete_button(self, interaction, button):
+        await interaction.response.defer(ephemeral=True)
+        dm_deleted = await self.delete_dm_messages(interaction)
+        channel_deleted = await self.delete_channel_messages()
+        self.done = True
+        for item in self.children:
+            item.disabled = True
+        await interaction.message.edit(
+            content=(
+                f"{economy_q_accept} Relay cleanup done.\n"
+                f"Deleted DM feed messages: **{dm_deleted:,}**\n"
+                f"Deleted bot-sent channel messages: **{channel_deleted:,}**"
+            ),
+            view=self,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+        await interaction.followup.send("Cleaned up.", ephemeral=True)
+
+    @discord.ui.button(label="Keep Them", style=discord.ButtonStyle.secondary)
+    async def keep_button(self, interaction, button):
+        self.done = True
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(content=f"{economy_q_accept} Relay stopped. Messages kept.", view=self)
+
+@bot.command(name="speak", aliases=["relay", "talkthrough"])
+@is_super_owner()
+async def speak(ctx, *, target: str = None):
+    """Superowner-only live DM relay for talking through the bot."""
+    raw = str(target or "").strip()
+    lowered = raw.casefold()
+
+    if lowered in {"stop", "off", "end", "close"}:
+        session = speak_sessions.pop(ctx.author.id, None)
+        if ctx.guild:
+            await safe_delete_message(ctx.message)
+        if not session:
+            return await ctx.send(f"{economy_q_warning} Speak mode is already off.", delete_after=6)
+        cleanup_text = (
+            f"{economy_q_accept} Speak mode stopped.\n"
+            "Delete the messages related to this relay session?\n"
+            "This can delete the bot's DM feed messages and the bot messages sent into the relayed channel. "
+            "It cannot delete your own DM replies."
+        )
+        view = SpeakCleanupView(ctx.author.id, session)
+        try:
+            if ctx.guild is None:
+                return await ctx.send(cleanup_text, view=view, allowed_mentions=discord.AllowedMentions.none())
+            await ctx.author.send(cleanup_text, view=view, allowed_mentions=discord.AllowedMentions.none())
+            return await ctx.send(f"{economy_q_accept} Speak mode stopped. Cleanup prompt sent to your DMs.", delete_after=8)
+        except Exception:
+            return await ctx.send(cleanup_text, view=view, allowed_mentions=discord.AllowedMentions.none())
+
+    if lowered in {"status", "where"}:
+        channel = speak_session_channel(ctx.author.id)
+        if channel is None:
+            return await ctx.send(f"{economy_q_warning} Speak mode is off.")
+        guild_name = getattr(channel.guild, "name", "Unknown server")
+        return await ctx.send(f"{economy_q_quote} Speak mode is watching **{guild_name}** · {channel.mention}.")
+
+    if lowered.startswith("channel "):
+        raw = raw.split(None, 1)[1].strip()
+
+    channel = await resolve_speak_channel(ctx, raw)
+    if channel is None:
+        note = "Use `.speak` in a server channel, or DM me `.speak <channel id/link>`."
+        return await ctx.send(f"{economy_q_warning} Channel not found. {note}", allowed_mentions=discord.AllowedMentions.none())
+
+    perms = channel.permissions_for(channel.guild.me)
+    if not perms.view_channel or not perms.send_messages:
+        return await ctx.send(f"{economy_q_warning} I cannot view/send in that channel.")
+
+    speak_sessions[ctx.author.id] = {
+        "guild_id": int(channel.guild.id),
+        "channel_id": int(channel.id),
+        "started_at": datetime.now(timezone.utc),
+        "dm_message_ids": [],
+        "channel_message_ids": [],
+    }
+    if ctx.guild:
+        await safe_delete_message(ctx.message)
+    live_text = (
+        f"{economy_q_quote} Speak mode is live.\n"
+        f"Watching: **{channel.guild.name}** · {channel.mention}\n"
+        "Reply to forwarded DM messages to reply there, or DM normally to send a new message there.\n"
+        "Stop with `.speak stop`."
+    )
+    if ctx.guild is None:
+        return await ctx.send(live_text, allowed_mentions=discord.AllowedMentions.none())
+    try:
+        await ctx.author.send(live_text, allowed_mentions=discord.AllowedMentions.none())
+    except Exception:
+        pass
+    await ctx.send(
+        f"{economy_q_accept} Speak mode started for {channel.mention}. Check your DMs.",
+        delete_after=8,
+        allowed_mentions=discord.AllowedMentions.none(),
+    )
 
 @bot.command()
 async def poll(ctx, *, args: str = None):

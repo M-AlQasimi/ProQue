@@ -146,8 +146,8 @@ Run:
 - `.messageevent status`
 - `.messageevent end`
 - `.settings`
-- `.controlpanel`
-- In `.settings` / `.controlpanel`, test Refresh, Prefix, Birthdays Here, Activity Here, Admin Commands, Setup Guide, and Lottery Panel if safe.
+- `.setup`
+- In `.settings` / `.setup`, test Refresh, Prefix, Birthdays Here, Activity Here, Admin Commands, Setup Guide, and Lottery Panel if safe.
 - `.perf`
 - `.bulkqueue`
 - `.jobs`
