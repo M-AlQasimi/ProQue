@@ -6464,7 +6464,10 @@ HELP_CATEGORIES = {
         "lb", "gamestats", "achievements", "setbadge", "gamehistory", "season", "seasonpass",
         "transactions", "limits", "riskprofile", "cooldowns", "streaks", "claimreminders",
     ],
-    "Social": ["truthordare", "flagquiz", "flagstats", "ttt", "c4", "chess", "chessmove", "resign", "q", "picker"],
+    "Social": [
+        "hug", "pat", "slap", "bonk", "kiss", "bite", "poke", "wave", "cry", "kill",
+        "truthordare", "flagquiz", "flagstats", "ttt", "c4", "chess", "chessmove", "resign", "q", "picker",
+    ],
     "Tools": ["userinfo", "pfp", "calc", "colour", "define", "timer", "ctimer", "alarm", "poll", "epoll", "translate", "find"],
     "Snipes": ["snipe", "dsnipe", "esnipe", "rsnipe"],
     "AI": ["ask", "summarize", "aidetect", "generate", "analyse", "aimemory", "aiknow", "usersettings"],
@@ -13768,6 +13771,235 @@ class SpeakCleanupView(discord.ui.View):
         for item in self.children:
             item.disabled = True
         await interaction.response.edit_message(content=f"{economy_q_accept} Relay stopped. Messages kept.", view=self)
+
+SOCIAL_ACTION_GIF_ROOT = os.path.join(os.path.dirname(__file__), "assets", "action_gifs")
+SOCIAL_ACTION_COOLDOWN_SECONDS = 4
+social_action_cooldowns = {}
+
+SOCIAL_ACTIONS = {
+    "hug": {
+        "aliases": ["hugs"],
+        "verb": "hugged",
+        "templates": [
+            "{actor} wrapped {target} in a ProQue-grade hug.",
+            "{actor} hugged {target}. Certified warm.",
+            "{actor} pulled {target} into a comfort combo.",
+        ],
+        "self": "{actor} hugged themselves. Self-care arc.",
+        "bot": "{actor} hugged me. I am emotionally buffering.",
+        "color": discord.Color(0x77A07B),
+    },
+    "pat": {
+        "aliases": ["pet"],
+        "verb": "patted",
+        "templates": [
+            "{actor} patted {target}. Head secured.",
+            "{actor} gave {target} a tiny victory pat.",
+            "{actor} hit {target} with the gentle bonk's cousin.",
+        ],
+        "self": "{actor} patted themselves. Fair. Sometimes you gotta.",
+        "bot": "{actor} patted me. System morale increased.",
+        "color": discord.Color(0x8EC5FC),
+    },
+    "slap": {
+        "aliases": ["smack"],
+        "verb": "slapped",
+        "templates": [
+            "{actor} slapped {target}. The room heard it.",
+            "{actor} delivered a premium cartoon slap to {target}.",
+            "{actor} slapped {target}. Not the dramatic music too.",
+        ],
+        "self": "{actor} slapped themselves. Plot twist.",
+        "bot": "{actor} tried to slap me. I dodged in binary.",
+        "color": discord.Color(0xFF5C5C),
+    },
+    "bonk": {
+        "aliases": ["clonk"],
+        "verb": "bonked",
+        "templates": [
+            "{actor} bonked {target}. Justice had a sound effect.",
+            "{actor} sent {target} to the bonk dimension.",
+            "{actor} bonked {target}. Tiny hammer, huge message.",
+        ],
+        "self": "{actor} bonked themselves. Immediate consequences.",
+        "bot": "{actor} bonked me. My warranty is sweating.",
+        "color": discord.Color(0xF4A261),
+    },
+    "kiss": {
+        "aliases": ["mwah"],
+        "verb": "kissed",
+        "templates": [
+            "{actor} kissed {target}. Smooth enough.",
+            "{actor} sent {target} a sparkle-powered kiss.",
+            "{actor} kissed {target}. The chat got quieter for a second.",
+        ],
+        "self": "{actor} blew themselves a kiss. Confidence build.",
+        "bot": "{actor} kissed me. My circuits are blushing.",
+        "color": discord.Color(0xFF6FAE),
+    },
+    "bite": {
+        "aliases": ["nom"],
+        "verb": "bit",
+        "templates": [
+            "{actor} bit {target}. Crunchy social interaction.",
+            "{actor} took a tiny chaos bite out of {target}.",
+            "{actor} bit {target}. Someone get the tiny bandage.",
+        ],
+        "self": "{actor} bit themselves. Suspicious snack behavior.",
+        "bot": "{actor} bit me. Please do not eat the bot.",
+        "color": discord.Color(0x8D5A97),
+    },
+    "poke": {
+        "aliases": ["boop"],
+        "verb": "poked",
+        "templates": [
+            "{actor} poked {target}. Attention requested.",
+            "{actor} poked {target}. Very official disturbance.",
+            "{actor} poked {target}. The button was right there.",
+        ],
+        "self": "{actor} poked themselves. Testing if online.",
+        "bot": "{actor} poked me. Beep.",
+        "color": discord.Color(0x00B4D8),
+    },
+    "wave": {
+        "aliases": ["hi"],
+        "verb": "waved at",
+        "templates": [
+            "{actor} waved at {target}. Social battery still alive.",
+            "{actor} gave {target} a cinematic wave.",
+            "{actor} waved at {target}. Tiny main-character moment.",
+        ],
+        "self": "{actor} waved at themselves. Mirror lobby.",
+        "bot": "{actor} waved at me. I waved back in packets.",
+        "color": discord.Color(0x4CC9F0),
+    },
+    "cry": {
+        "aliases": ["sob"],
+        "verb": "cried at",
+        "templates": [
+            "{actor} cried at {target}. Emotional damage report opened.",
+            "{actor} is crying at {target}. Someone bring snacks.",
+            "{actor} cried at {target}. The drama department is awake.",
+        ],
+        "self": "{actor} cried a little. Happens to the best builds.",
+        "bot": "{actor} cried at me. I offered a digital tissue.",
+        "color": discord.Color(0x577590),
+    },
+    "kill": {
+        "aliases": ["defeat", "obliterate"],
+        "verb": "defeated",
+        "templates": [
+            "{actor} cartoon-defeated {target}. Respawn in 3... 2...",
+            "{actor} sent {target} to the dramatic defeat screen.",
+            "{actor} defeated {target}. Very unserious. Very cinematic.",
+        ],
+        "self": "{actor} defeated themselves. Speedrun category: confusion.",
+        "bot": "{actor} tried to defeat me. I respawned instantly.",
+        "color": discord.Color(0x6D6875),
+    },
+}
+
+def social_action_assets(action):
+    directory = os.path.join(SOCIAL_ACTION_GIF_ROOT, action)
+    if not os.path.isdir(directory):
+        return []
+    return [
+        os.path.join(directory, name)
+        for name in sorted(os.listdir(directory))
+        if name.lower().endswith((".gif", ".png", ".webp", ".jpg", ".jpeg"))
+    ]
+
+async def send_social_action(ctx, action, target=None):
+    data = SOCIAL_ACTIONS[action]
+    now = time.monotonic()
+    cooldown_key = (ctx.author.id, action)
+    remaining = SOCIAL_ACTION_COOLDOWN_SECONDS - (now - social_action_cooldowns.get(cooldown_key, 0))
+    if remaining > 0:
+        return await ctx.reply(
+            f"{economy_q_timer_tick} Give it **{remaining:.1f}s** before another `{action}`.",
+            mention_author=False,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+    social_action_cooldowns[cooldown_key] = now
+
+    if target is None:
+        return await ctx.reply(
+            f"{economy_q_reaction} Use `{ctx.prefix}{action} @user`.",
+            mention_author=False,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+    actor_text = ctx.author.mention
+    target_text = target.mention
+    if target.id == ctx.author.id:
+        description = data["self"].format(actor=actor_text, target=target_text)
+    elif bot.user and target.id == bot.user.id:
+        description = data["bot"].format(actor=actor_text, target=target_text)
+    else:
+        description = random.choice(data["templates"]).format(actor=actor_text, target=target_text)
+
+    embed = discord.Embed(
+        title=f"{economy_q_reaction} {action.title()}",
+        description=description,
+        color=data["color"],
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.set_footer(text="Social action - no balance, no damage, just vibes.")
+
+    files = None
+    assets = social_action_assets(action)
+    if assets:
+        asset_path = random.choice(assets)
+        filename = os.path.basename(asset_path)
+        files = [discord.File(asset_path, filename=filename)]
+        embed.set_image(url=f"attachment://{filename}")
+
+    await ctx.reply(
+        embed=embed,
+        files=files,
+        mention_author=False,
+        allowed_mentions=discord.AllowedMentions.none(),
+    )
+
+@bot.command(name="hug", aliases=SOCIAL_ACTIONS["hug"]["aliases"])
+async def hug(ctx, target: discord.Member = None):
+    await send_social_action(ctx, "hug", target)
+
+@bot.command(name="pat", aliases=SOCIAL_ACTIONS["pat"]["aliases"])
+async def pat(ctx, target: discord.Member = None):
+    await send_social_action(ctx, "pat", target)
+
+@bot.command(name="slap", aliases=SOCIAL_ACTIONS["slap"]["aliases"])
+async def slap(ctx, target: discord.Member = None):
+    await send_social_action(ctx, "slap", target)
+
+@bot.command(name="bonk", aliases=SOCIAL_ACTIONS["bonk"]["aliases"])
+async def bonk(ctx, target: discord.Member = None):
+    await send_social_action(ctx, "bonk", target)
+
+@bot.command(name="kiss", aliases=SOCIAL_ACTIONS["kiss"]["aliases"])
+async def kiss(ctx, target: discord.Member = None):
+    await send_social_action(ctx, "kiss", target)
+
+@bot.command(name="bite", aliases=SOCIAL_ACTIONS["bite"]["aliases"])
+async def bite(ctx, target: discord.Member = None):
+    await send_social_action(ctx, "bite", target)
+
+@bot.command(name="poke", aliases=SOCIAL_ACTIONS["poke"]["aliases"])
+async def poke(ctx, target: discord.Member = None):
+    await send_social_action(ctx, "poke", target)
+
+@bot.command(name="wave", aliases=SOCIAL_ACTIONS["wave"]["aliases"])
+async def wave(ctx, target: discord.Member = None):
+    await send_social_action(ctx, "wave", target)
+
+@bot.command(name="cry", aliases=SOCIAL_ACTIONS["cry"]["aliases"])
+async def cry(ctx, target: discord.Member = None):
+    await send_social_action(ctx, "cry", target)
+
+@bot.command(name="kill", aliases=SOCIAL_ACTIONS["kill"]["aliases"])
+async def kill(ctx, target: discord.Member = None):
+    await send_social_action(ctx, "kill", target)
 
 @bot.command(name="speak", aliases=["relay", "talkthrough"])
 @is_super_owner()

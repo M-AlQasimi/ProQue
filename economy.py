@@ -230,6 +230,7 @@ TRANSFER_TAX_RATE = 0.05
 LOTTERY_TICKET_COST = 100_000
 LOTTERY_HOUSE_CUT = 0.10
 LOTTERY_MAX_BALANCE_SPEND_RATIO = 0.60
+LOTTERY_FAIRNESS_EXPONENT = 0.65
 MAIN_QUESTS = {
     "daily_30": {
         "name": "Daily Devotee",
@@ -2743,6 +2744,38 @@ def lottery_ticket_rows(guild_id):
     conn.close()
     return rows
 
+def lottery_effective_weight(tickets):
+    tickets = max(0, int(tickets or 0))
+    if tickets <= 0:
+        return 0.0
+    return max(1.0, tickets ** LOTTERY_FAIRNESS_EXPONENT)
+
+def lottery_effective_total(rows):
+    return sum(lottery_effective_weight(row.get("tickets", 0)) for row in rows)
+
+def lottery_fair_odds_percent(tickets, rows_or_total):
+    total_weight = rows_or_total if isinstance(rows_or_total, (int, float)) else lottery_effective_total(rows_or_total)
+    if total_weight <= 0:
+        return 0.0
+    return (lottery_effective_weight(tickets) / total_weight) * 100
+
+def pick_lottery_winner_id(rows):
+    weighted_rows = [
+        (int(row["user_id"]), lottery_effective_weight(row.get("tickets", 0)))
+        for row in rows
+        if lottery_effective_weight(row.get("tickets", 0)) > 0
+    ]
+    total_weight = sum(weight for _, weight in weighted_rows)
+    if total_weight <= 0:
+        return None
+    pick = random.uniform(0, total_weight)
+    running = 0.0
+    for user_id, weight in weighted_rows:
+        running += weight
+        if running >= pick:
+            return user_id
+    return weighted_rows[-1][0]
+
 def all_lotteries_due():
     conn = get_db_connection()
     cur = conn.cursor()
@@ -2971,7 +3004,7 @@ def lottery_instructions(period_seconds, ticket_cost=LOTTERY_TICKET_COST, house_
         "Buy tickets with the buttons on the lottery panel.\n"
         f"Each ticket costs **{format_balance(ticket_cost)}**.\n"
         f"**{house_cut * 100:.1f}%** of ticket sales is burned and the rest goes into the pot.\n"
-        "Each ticket is one entry; more tickets means better odds.\n"
+        "More tickets means better odds, with fair odds that soften huge ticket leads.\n"
         "At least **5 unique players** must join or the draw restarts with no winner.\n"
         f"Draws happen every **{format_duration(period_seconds)}**."
     )
@@ -3025,6 +3058,7 @@ def lottery_role_mention(config):
 def build_lottery_embed(guild, config):
     rows = lottery_ticket_rows(config["guild_id"])
     total_tickets = sum(int(row["tickets"]) for row in rows)
+    total_fair_weight = lottery_effective_total(rows)
     unique_players = len(rows)
     ticket_cost = lottery_ticket_cost(config)
     house_cut = lottery_house_cut(config)
@@ -3045,6 +3079,7 @@ def build_lottery_embed(guild, config):
     embed.add_field(name="Players", value=f"{unique_players:,}/5 minimum", inline=True)
     embed.add_field(name=f"{Q_TICKET} Ticket Price", value=format_balance(ticket_cost), inline=True)
     embed.add_field(name="House Cut", value=f"{house_cut * 100:.1f}% burned", inline=True)
+    embed.add_field(name="Fair Odds", value="Diminishing returns on huge ticket stacks", inline=True)
     embed.add_field(name="Next Draw", value=f"<t:{int(next_draw.timestamp())}:R>", inline=True)
     if config.get("role_id"):
         embed.add_field(name="Participant Role", value=f"<@&{config['role_id']}>", inline=True)
@@ -3052,13 +3087,13 @@ def build_lottery_embed(guild, config):
     if rows:
         leaders = []
         for index, row in enumerate(sorted(rows, key=lambda row: row["tickets"], reverse=True)[:5], 1):
-            odds = (int(row["tickets"]) / total_tickets * 100) if total_tickets else 0
-            leaders.append(f"{index}. {user_mention(row['user_id'])} - **{int(row['tickets']):,}** tickets ({odds:.1f}%)")
+            fair_odds = lottery_fair_odds_percent(row["tickets"], total_fair_weight)
+            leaders.append(f"{index}. {user_mention(row['user_id'])} - **{int(row['tickets']):,}** tickets ({fair_odds:.1f}% fair odds)")
         embed.add_field(name=f"{Q_TICKET} Top Holders", value="\n".join(leaders), inline=False)
     else:
         embed.add_field(name=f"{Q_TICKET} Top Holders", value="No tickets bought this round.", inline=False)
 
-    embed.set_footer(text="At least 5 unique players are needed, or tickets are refunded.")
+    embed.set_footer(text="At least 5 unique players are needed. Big stacks still help, but each extra ticket has softer odds.")
     return embed
 
 def remember_lottery_status_message(guild_id, message):
@@ -3230,6 +3265,8 @@ def buy_lottery_tickets_sync(guild_id, user_id, tickets):
         user_total_entries = int(cur.fetchone()["tickets"])
         cur.execute("SELECT COALESCE(SUM(tickets), 0) AS total FROM lottery_tickets WHERE guild_id = %s", (guild_id,))
         round_total_entries = int(cur.fetchone()["total"] or 0)
+        cur.execute("SELECT user_id, tickets FROM lottery_tickets WHERE guild_id = %s AND tickets > 0", (guild_id,))
+        fair_odds = lottery_fair_odds_percent(user_total_entries, cur.fetchall())
         cur.execute("UPDATE lottery_config SET pot = %s WHERE guild_id = %s", (new_pot, guild_id))
         if burned > 0:
             cur.execute(
@@ -3255,6 +3292,7 @@ def buy_lottery_tickets_sync(guild_id, user_id, tickets):
             "total_entries": total_entries,
             "user_total_entries": user_total_entries,
             "round_total_entries": round_total_entries,
+            "fair_odds": fair_odds,
             "total_cost": total_cost,
             "pot_add": pot_add,
             "burned": burned,
@@ -3268,11 +3306,11 @@ def buy_lottery_tickets_sync(guild_id, user_id, tickets):
 def lottery_purchase_message(result):
     user_total_entries = result.get("user_total_entries", result["total_entries"])
     round_total_entries = max(1, int(result.get("round_total_entries") or user_total_entries))
-    odds = (user_total_entries / round_total_entries) * 100
+    odds = float(result.get("fair_odds") or 0)
     return (
         f"{Q_TICKET} Bought **{result['tickets']:,}** lottery tickets for **{format_balance(result['total_cost'])}**.\n"
         f"Bonus Tickets: **+{result['bonus_tickets']:,}** | Your Total Entries: **{user_total_entries:,}**\n"
-        f"{Q_TARGET} Odds Now: **{odds:.2f}%** ({user_total_entries:,}/{round_total_entries:,} entries)\n"
+        f"{Q_TARGET} Fair Odds Now: **{odds:.2f}%** ({user_total_entries:,}/{round_total_entries:,} entries)\n"
         f"Prize Pot +**{format_balance(result['pot_add'])}** | Burned **{format_balance(result['burned'])}**\n"
         f"Current Prize: **{format_balance(result['new_pot'])}**\n"
         f"New Balance: **{format_balance(result['new_balance'])}**"
@@ -3432,9 +3470,9 @@ async def send_lottery_stats(interaction):
         max_more_tickets = remaining_lottery_spend // max(1, ticket_cost)
         total_tickets = sum(int(row["tickets"]) for row in rows)
         own_tickets = int(own["tickets"]) if own else 0
-        odds = (own_tickets / total_tickets * 100) if total_tickets else 0
+        odds = lottery_fair_odds_percent(own_tickets, rows)
         own_text = (
-            f"{Q_TICKET} Your Entries: **{own_tickets:,}** ({odds:.2f}% current chance)\n"
+            f"{Q_TICKET} Your Entries: **{own_tickets:,}** ({odds:.2f}% fair chance)\n"
             f"Spent This Round: **{format_balance(round_spent)}**\n"
             f"Max More Tickets Now: **{max_more_tickets:,}**"
         )
@@ -7436,6 +7474,7 @@ async def lotterypot(ctx, action: str = None, amount: str = None):
 
 def build_lottery_stats_embed(ctx, config, rows, panel_value, page=0, per_page=10):
     total_tickets = sum(row["tickets"] for row in rows)
+    total_fair_weight = lottery_effective_total(rows)
     unique_players = len(rows)
     ticket_cost = lottery_ticket_cost(config)
     house_cut = lottery_house_cut(config)
@@ -7450,6 +7489,7 @@ def build_lottery_stats_embed(ctx, config, rows, panel_value, page=0, per_page=1
     embed.add_field(name="Players", value=f"{unique_players:,}", inline=True)
     embed.add_field(name=f"{Q_TICKET} Ticket Price", value=format_balance(ticket_cost), inline=True)
     embed.add_field(name="House Cut", value=f"{house_cut * 100:.1f}%", inline=True)
+    embed.add_field(name="Fair Odds", value="Diminishing returns on huge stacks", inline=True)
     if config.get("role_id"):
         embed.add_field(name="Participant Role", value=f"<@&{config['role_id']}>", inline=True)
     embed.add_field(name="Next Draw", value=f"<t:{int(next_draw.timestamp())}:R>", inline=True)
@@ -7463,8 +7503,8 @@ def build_lottery_stats_embed(ctx, config, rows, panel_value, page=0, per_page=1
         page_rows = rows[start:start + per_page]
         leaders = []
         for index, row in enumerate(page_rows, start + 1):
-            odds = (row["tickets"] / total_tickets * 100) if total_tickets else 0
-            leaders.append(f"{index}. {user_mention(row['user_id'])} - **{row['tickets']:,}** tickets ({odds:.1f}%)")
+            fair_odds = lottery_fair_odds_percent(row["tickets"], total_fair_weight)
+            leaders.append(f"{index}. {user_mention(row['user_id'])} - **{row['tickets']:,}** tickets ({fair_odds:.1f}% fair odds)")
         embed.add_field(
             name=f"{Q_TICKET} Ticket Holders #{start + 1}-{start + len(page_rows)}",
             value="\n".join(leaders),
@@ -7599,7 +7639,7 @@ async def tickets(ctx, *, target: str = None):
     total_entries = sum(int(entry["tickets"] or 0) for entry in rows)
     sorted_rows = sorted(rows, key=lambda entry: int(entry["tickets"] or 0), reverse=True)
     rank = next((index for index, entry in enumerate(sorted_rows, 1) if int(entry["user_id"]) == int(user.id)), None)
-    odds = (entries / total_entries * 100) if total_entries else 0
+    odds = lottery_fair_odds_percent(entries, rows)
     next_draw = config["next_draw"]
     if next_draw and next_draw.tzinfo is None:
         next_draw = next_draw.replace(tzinfo=timezone.utc)
@@ -7610,7 +7650,7 @@ async def tickets(ctx, *, target: str = None):
         color=discord.Color.gold(),
     )
     embed.add_field(name="Your Entries" if not inspected_by_owner else "Entries", value=f"**{entries:,}**", inline=True)
-    embed.add_field(name="Current Odds", value=f"**{odds:.2f}%**", inline=True)
+    embed.add_field(name="Fair Odds", value=f"**{odds:.2f}%**", inline=True)
     embed.add_field(name="Rank", value=f"**#{rank:,}**" if rank else "No entries yet", inline=True)
     embed.add_field(name="Round Total", value=f"**{total_entries:,}** entries", inline=True)
     embed.add_field(name="Next Draw", value=discord_relative_time(next_draw) if next_draw else "Unknown", inline=True)
@@ -7726,14 +7766,13 @@ async def process_lottery_draw(config):
         await asyncio.to_thread(reset_lottery_round, guild.id, next_draw)
         await refresh_lottery_message(guild, await asyncio.to_thread(get_lottery_config, guild.id))
         return
-    pick = random.randint(1, total_tickets)
-    running = 0
-    winner_id = int(rows[-1]["user_id"])
-    for row in rows:
-        running += max(0, int(row["tickets"] or 0))
-        if running >= pick:
-            winner_id = int(row["user_id"])
-            break
+    winner_id = pick_lottery_winner_id(rows)
+    if winner_id is None:
+        await asyncio.to_thread(reset_lottery_round, guild.id, next_draw)
+        await refresh_lottery_message(guild, await asyncio.to_thread(get_lottery_config, guild.id))
+        return
+    winning_row = next((row for row in rows if int(row["user_id"]) == int(winner_id)), None)
+    winner_fair_odds = lottery_fair_odds_percent(int((winning_row or {}).get("tickets", 0) or 0), rows)
     pot = int(config["pot"])
     try:
         def pay_lottery_winner_sync():
@@ -7754,6 +7793,7 @@ async def process_lottery_draw(config):
         deleted_count = await clear_lottery_channel(channel)
         await channel.send(
             f"{Q_CONFETTI} Lottery winner: {user_mention(winner_id)} won the prize: **{format_balance(pot)}**!\n"
+            f"Winner Fair Odds: **{winner_fair_odds:.2f}%**\n"
             f"Next draw: <t:{int(next_draw.timestamp())}:R>\n"
             f"Cleared **{deleted_count:,}** old lottery messages.\n"
             "A fresh participant role has been created for the new round.",
@@ -14835,6 +14875,16 @@ EXPLANATIONS = {
     "tod": "Alias for `.truthordare`. Starts a Truth or Dare prompt.",
     "truth": "Alias for `.truthordare truth`. Rolls a truth prompt.",
     "dare": "Alias for `.truthordare dare`. Rolls a dare prompt.",
+    "hug": "Social action command. Use `.hug @user` for a playful randomized Pro𝚀𝚞𝚎-themed hug GIF.",
+    "pat": "Social action command. Use `.pat @user` for a playful randomized Pro𝚀𝚞𝚎-themed pat GIF.",
+    "slap": "Social action command. Use `.slap @user` for a playful randomized Pro𝚀𝚞𝚎-themed slap GIF.",
+    "bonk": "Social action command. Use `.bonk @user` for a playful randomized Pro𝚀𝚞𝚎-themed bonk GIF.",
+    "kiss": "Social action command. Use `.kiss @user` for a playful randomized Pro𝚀𝚞𝚎-themed kiss GIF.",
+    "bite": "Social action command. Use `.bite @user` for a playful randomized Pro𝚀𝚞𝚎-themed bite GIF.",
+    "poke": "Social action command. Use `.poke @user` for a playful randomized Pro𝚀𝚞𝚎-themed poke GIF.",
+    "wave": "Social action command. Use `.wave @user` for a playful randomized Pro𝚀𝚞𝚎-themed wave GIF.",
+    "cry": "Social action command. Use `.cry @user` for a playful randomized Pro𝚀𝚞𝚎-themed cry GIF.",
+    "kill": "Social action command. Use `.kill @user` for a cartoon defeat GIF. No moderation or economy effect.",
     "todchannel": "Admin command. Restricts Truth or Dare to one or more channels, or clears the restriction.",
     "todchannels": "Alias for `.todchannel`. Shows or changes Truth or Dare channels.",
     "truthdarechannel": "Alias for `.todchannel`. Shows or changes Truth or Dare channels.",
@@ -14917,8 +14967,8 @@ EXPLANATIONS = {
     "lottery": "Shows and refreshes the lottery ticket panel. First server run sets channel and draw period.",
     "editlottery": f"{QUE_OWNER_DISPLAY} command. Edits lottery price, duration, house cut, or channel, then refreshes the panel.",
     "stoplottery": f"{QUE_OWNER_DISPLAY} command. Stops this server's lottery and clears its tickets/config.",
-    "lotterystats": "Shows lottery prize, tickets, players, next draw, paginated ticket holders, and panel link.",
-    "tickets": "Shows your current lottery entries, odds, rank, and next draw.",
+    "lotterystats": "Shows lottery prize, tickets, players, next draw, fair odds, paginated ticket holders, and panel link.",
+    "tickets": "Shows your current lottery entries, fair odds, rank, and next draw.",
     "mytickets": "Alias for `.tickets`. Shows your current lottery entries.",
     "entries": "Alias for `.tickets`. Shows your current lottery entries.",
     "myentries": "Alias for `.tickets`. Shows your current lottery entries.",
@@ -15220,6 +15270,16 @@ EXPLANATIONS = {
 }
 
 DETAILED_EXPLANATIONS = {
+    "hug": "Playful social action. Use `.hug @user`; Pro𝚀𝚞𝚎 picks a random local GIF from `assets/action_gifs/hug/` when one exists. Social actions never change money, XP, roles, or moderation state.",
+    "pat": "Playful social action. Use `.pat @user`; Pro𝚀𝚞𝚎 picks a random local GIF from `assets/action_gifs/pat/` when one exists. Social actions never change money, XP, roles, or moderation state.",
+    "slap": "Playful social action. Use `.slap @user`; Pro𝚀𝚞𝚎 picks a random local GIF from `assets/action_gifs/slap/` when one exists. This is cartoon/social only.",
+    "bonk": "Playful social action. Use `.bonk @user`; Pro𝚀𝚞𝚎 picks a random local GIF from `assets/action_gifs/bonk/` when one exists. This is cartoon/social only.",
+    "kiss": "Playful social action. Use `.kiss @user`; Pro𝚀𝚞𝚎 picks a random local GIF from `assets/action_gifs/kiss/` when one exists. Social actions are just for fun.",
+    "bite": "Playful social action. Use `.bite @user`; Pro𝚀𝚞𝚎 picks a random local GIF from `assets/action_gifs/bite/` when one exists. Social actions are just for fun.",
+    "poke": "Playful social action. Use `.poke @user`; Pro𝚀𝚞𝚎 picks a random local GIF from `assets/action_gifs/poke/` when one exists. Social actions are just for fun.",
+    "wave": "Playful social action. Use `.wave @user`; Pro𝚀𝚞𝚎 picks a random local GIF from `assets/action_gifs/wave/` when one exists. Social actions are just for fun.",
+    "cry": "Playful social action. Use `.cry @user`; Pro𝚀𝚞𝚎 picks a random local GIF from `assets/action_gifs/cry/` when one exists. Social actions are just for fun.",
+    "kill": "Playful social action. Use `.kill @user`; Pro𝚀𝚞𝚎 treats it as a cartoon defeat action only. It does not punish, mute, damage, or affect the target.",
     "truthordare": "Party game with clean social prompts. Use `.tod`, `.tod truth`, `.tod dare`, `.truth`, or `.dare`. Mention someone like `.tod dare @user` if the prompt should point at a specific player. The message has Truth, Dare, and Random buttons so the group can keep rolling prompts without rerunning the command. Each channel tracks recent Truth and Dare prompts separately and avoids repeating the last 45 of each type when possible.",
     "todchannel": "Admin setting for Truth or Dare channels. Use `.todchannel` for status, `.todchannel set #channel #other-channel` to restrict it to one or more channels, `.todchannel add #channel` to add another allowed channel, `.todchannel remove #channel` to remove one, or `.todchannel clear` to allow all channels again.",
     "snipe": "Use `.snipe` or `.dsnipe` for deleted messages, `.esnipe` for edited messages, and `.rsnipe` for removed reactions. Add `@user` to filter and a number to view older saved entries, like `.esnipe @user 2`.",
@@ -15251,12 +15311,12 @@ DETAILED_EXPLANATIONS = {
     "claimreminders": "Manages DM reminders for timed claims. Use `.claimreminders` for status, `.claimreminders on` to enable, `.claimreminders off` to disable, or `.claimreminders test` to send yourself a test DM. Reminder DMs also include a button to turn them off. The reminder loop checks due daily, weekly, monthly, and bank interest reminders about once a minute.",
     "transactions": "Shows recent money movement including shop purchases, quest rewards, level rewards, transfer tax, admin changes, and lottery activity.",
     "limits": f"Shows your daily gambling loss safety limit. The bot warns near {int(DAILY_LOSS_WARNING_RATIO * 100)}% and blocks bets before daily losses exceed {int(DAILY_LOSS_HARD_RATIO * 100)}% of your current daily gambling bankroll. It also shows lottery round spending, your personal gambling cap, and any active gambling pause. Use `.limits set 50k`, `.limits pause 2h`, `.limits resume`, or `.limits clear`.",
-    "lottery": f"Server lottery. First run asks the server owner or an admin for a channel and draw period, locks the channel, and posts a persistent ticket panel with buy buttons. Existing active lottery data is preserved when the panel is refreshed. The prize is the full current pot. Tickets cost {format_balance(LOTTERY_TICKET_COST)} and {int(LOTTERY_HOUSE_CUT * 100)}% is burned as a money sink. Users can spend up to {int(LOTTERY_MAX_BALANCE_SPEND_RATIO * 100)}% of their lottery-adjusted balance per round.",
+    "lottery": f"Server lottery. First run asks the server owner or an admin for a channel and draw period, locks the channel, and posts a persistent ticket panel with buy buttons. Existing active lottery data is preserved when the panel is refreshed. The prize is the full current pot. Tickets cost {format_balance(LOTTERY_TICKET_COST)} and {int(LOTTERY_HOUSE_CUT * 100)}% is burned as a money sink. Users can spend up to {int(LOTTERY_MAX_BALANCE_SPEND_RATIO * 100)}% of their lottery-adjusted balance per round. Winner selection uses fair odds with diminishing returns so big ticket stacks still help without completely crushing smaller entries.",
     "editlottery": f"{QUE_OWNER_DISPLAY} command. Run `.editlottery` to open the edit UI, or use `.editlottery price 250000`, `.editlottery duration 12h`, `.editlottery cut 5`, or `.editlottery channel #lottery`. Duration resets the next draw timer. Channel posts a fresh lottery panel. Updates ping the lottery participant role.",
     "stoplottery": f"{QUE_OWNER_DISPLAY} command. Use `.stoplottery` to remove the lottery setup for this server, clear the current pot/tickets, and delete the participant role if the bot can. It leaves channels and panel messages alone.",
-    "lotterystats": "Shows the current lottery prize pot, total ticket count, number of players, participant role, next draw time, panel link, and paginated ticket holders with approximate odds.",
-    "tickets": "Shows your current lottery entries, rank, current odds, round total entries, and next draw.",
-    "buytick": f"Legacy text command for buying tickets for the configured server lottery. The lottery panel buttons are preferred because they send private confirmations and update the panel automatically. Each ticket costs {format_balance(LOTTERY_TICKET_COST)}. The prize is the full current lottery pot; every ticket is one entry. Ticket spending is capped at {int(LOTTERY_MAX_BALANCE_SPEND_RATIO * 100)}% of your lottery-adjusted balance for the current round, so earning or spending quesos changes how many more tickets you can buy.",
+    "lotterystats": "Shows the current lottery prize pot, total ticket count, number of players, participant role, next draw time, panel link, and paginated ticket holders with fair odds.",
+    "tickets": "Shows your current lottery entries, rank, fair odds, round total entries, and next draw.",
+    "buytick": f"Legacy text command for buying tickets for the configured server lottery. The lottery panel buttons are preferred because they send private confirmations and update the panel automatically. Each ticket costs {format_balance(LOTTERY_TICKET_COST)}. The prize is the full current lottery pot. More tickets improve your chance, but fair odds use diminishing returns so huge stacks are softened. Ticket spending is capped at {int(LOTTERY_MAX_BALANCE_SPEND_RATIO * 100)}% of your lottery-adjusted balance for the current round, so earning or spending quesos changes how many more tickets you can buy.",
     "weekly": f"Gives a reward once every 7 days. Base reward is 20,000-30,000 {CURRENCY_EMOJI}. Your weekly streak adds a bonus after week 1.",
     "monthly": f"Gives a reward once every 30 days. Base reward is 40,000-60,000 {CURRENCY_EMOJI}. Your monthly streak adds a bigger bonus after month 1.",
     "cf": "Pick heads or tails with `.cf <amount> h`, `.cf <amount> t`, `.flip <amount> heads`, or `.flip <amount> tails`. If you do not pick, the bot asks you. Winning pays ×2 before the universal gambling streak bonus, so betting 100 wins 200 total before bonuses. Losing removes the bet and resets the gambling streak.",
