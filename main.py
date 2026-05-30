@@ -4354,7 +4354,7 @@ COMMAND_EXAMPLE_OVERRIDES = {
     "rob": ".rob @user",
     "robsettings": ".robsettings on",
     "commandstats": ".commandstats",
-    "snipe": ".snipe edited @user 2",
+    "snipe": ".snipe @user 2",
     "dsnipe": ".dsnipe @user 2",
     "esnipe": ".esnipe @user",
     "rsnipe": ".rsnipe @user 2",
@@ -10500,11 +10500,11 @@ def snipe_empty_embed(ctx, snipe_type, user_id=None, show_guide=False):
 
 def snipe_usage_text(prefix="."):
     return (
-        f"`{prefix}snipe` deleted messages\n"
-        f"`{prefix}snipe edited` edited messages\n"
-        f"`{prefix}snipe reaction` removed reactions\n"
-        f"`{prefix}snipe @user` filter deleted snipes by user\n"
-        f"`{prefix}snipe edited @user 2` filter and jump to an older entry"
+        f"`{prefix}snipe` or `{prefix}dsnipe` deleted messages\n"
+        f"`{prefix}esnipe` edited messages\n"
+        f"`{prefix}rsnipe` removed reactions\n"
+        f"`{prefix}dsnipe @user` filter deleted snipes by user\n"
+        f"`{prefix}esnipe @user 2` filter and jump to an older edited entry"
     )
 
 def build_snipe_embed(ctx, snipe_type, index, user_id=None, show_guide=False):
