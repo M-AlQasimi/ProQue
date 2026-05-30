@@ -14,4 +14,4 @@ Each subfolder maps to a command name:
 - `kill`
 
 The bot randomly chooses a `.gif`, `.png`, `.webp`, `.jpg`, or `.jpeg` from the matching folder.
-You can replace these generated placeholders with higher-quality ProQue-themed GIFs without changing code.
+Use real animated action GIFs here; low-quality generated placeholders should be replaced per action.
