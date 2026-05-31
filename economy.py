@@ -5350,27 +5350,10 @@ def check_cooldown(user_id, command, data=None):
 
 def parse_amount(raw, user_id=None, guild=None, balance=None):
     raw_text = str(raw).strip().lower().replace(",", "").replace("_", "")
-    personal_limit = None
-    double_or_nothing_cap = 0
-    if user_id is not None:
-        try:
-            double_or_nothing_cap = int(_double_or_nothing_bet_caps.get(int(user_id), 0) or 0)
-        except Exception:
-            double_or_nothing_cap = 0
-    if user_id is not None and balance is None and not has_economy_owner_power(user_id, guild) and db_ready:
-        try:
-            data = get_user(user_id)
-            stored_limit = data.get("personal_bet_limit")
-            if stored_limit is not None and int(stored_limit) > 0:
-                personal_limit = int(stored_limit)
-        except Exception:
-            personal_limit = None
     if raw_text == "all":
         if balance is None:
-            return min(MAX_BET, personal_limit) if personal_limit else MAX_BET
-        balance = max(0, int(balance))
-        cap = min(balance, MAX_BET)
-        return min(cap, personal_limit) if personal_limit else cap
+            return None
+        return max(0, int(balance))
     multipliers = {"k": 1_000, "m": 1_000_000, "b": 1_000_000_000, "bn": 1_000_000_000}
     try:
         suffix = ""
@@ -5381,12 +5364,7 @@ def parse_amount(raw, user_id=None, guild=None, balance=None):
                 number = raw_text[:-len(candidate)]
                 break
         val = int(float(number) * multipliers.get(suffix, 1))
-        if user_id is not None and has_economy_owner_power(user_id, guild):
-            return val
-        if double_or_nothing_cap and 0 < val <= double_or_nothing_cap:
-            return val
-        cap = min(val, MAX_BET)
-        return min(cap, personal_limit) if personal_limit else cap
+        return val
     except (TypeError, ValueError):
         return None
 
@@ -13611,7 +13589,13 @@ async def event(ctx, action: str = None, event_key: str = None, duration: str = 
             return await ctx.send(f"{Q_DENIED} No active event to stop.")
         return await ctx.send(f"{Q_SUCCESS} Stopped **{row['event_key']}**. Final pot: **{format_balance(int(row.get('pot') or 0))}**.")
     if action_key in {"donate", "burn", "fund"}:
-        amount = parse_amount(event_key, ctx.author.id, ctx.guild, None) if event_key else None
+        source_balance = None
+        if event_key and str(event_key).strip().casefold() == "all":
+            try:
+                source_balance = int((await asyncio.to_thread(get_user, ctx.author.id)).get("balance") or 0)
+            except Exception:
+                return await send_error(ctx, "Database unavailable. Try again shortly.")
+        amount = parse_amount(event_key, ctx.author.id, ctx.guild, source_balance) if event_key else None
         if amount is None or amount <= 0:
             return await ctx.send(f"{Q_DENIED} Use `.event donate <amount>`.")
         try:
