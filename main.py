@@ -160,6 +160,7 @@ from economy import (
 from pgdata import (
     add_guild_activity_counts,
     add_message_activity_events,
+    clear_away_mentions,
     clear_guild_activity_counts,
     delete_guild_activity_channel,
     delete_guild_birthday_channel,
@@ -175,6 +176,7 @@ from pgdata import (
     load_afk_users as pg_load_afk_users,
     load_active_polls,
     load_active_timers,
+    load_away_mentions,
     load_active_giveaways,
     load_active_alarms,
     load_ai_channel_memory,
@@ -211,6 +213,7 @@ from pgdata import (
     save_afk_user,
     save_active_poll,
     save_active_timer,
+    save_away_mention,
     save_active_giveaway,
     save_active_alarm,
     save_active_game_session,
@@ -1490,7 +1493,7 @@ def command_denial_detail(ctx, error=None):
     que_only = {
         "add", "remove", "move", "addtick", "removetick", "movetick", "settick", "lotterypot", "setquesos",
         "editlottery", "stoplottery", "qstats", "economyhealth", "balancedashboard", "endseason",
-        "send", "reply", "speak", "fsleep", "wake", "clearwatchlist",
+        "send", "reply", "speak", "wake", "clearwatchlist",
     "aisettings", "aiperms", "aiignore", "aiunignore", "aistyle",
         "aihistory", "auditcommands", "styleaudit", "commandcleanup", "permaudit", "receipts", "aiguard",
     }
@@ -1506,6 +1509,7 @@ active_giveaways = load_active_giveaways()
 active_alarms = load_active_alarms()
 runtime_state_restored = False
 user_mentions = {}
+away_reaction_callouts = {}
 activity_buffer = Counter()
 message_history_buffer = []
 active_activity_status_messages = {}
@@ -4656,7 +4660,6 @@ COMMAND_EXAMPLE_OVERRIDES = {
     "fwd": ".fwd 5",
     "forward": ".forward #channel 5 @user",
     "fw": ".fw <message link>",
-    "fsleep": ".fsleep @user 1h",
     "give": ".give @user 1000",
     "generate": ".generate clean ProQue mascot holding queso coins",
     "imagine": ".imagine cozy server banner with queso coins",
@@ -4782,7 +4785,7 @@ GENERIC_INPUT_UI_COMMANDS = {
     "howtoplay", "how", "rules", "flagquiz", "flags", "fq", "ttt", "c4", "chess",
     "move", "movetick", "chessmove", "setnick", "shut", "unshut", "rshut", "unrshut", "purge",
     "rpurge", "unmute", "ban", "unban", "kick", "addrole", "removerole", "send",
-    "reply", "fwd", "forward", "fw", "quote", "archive", "aban", "raban", "summon2", "block", "unblock", "fsleep", "wake",
+    "reply", "fwd", "forward", "fw", "quote", "archive", "aban", "raban", "summon2", "block", "unblock", "wake",
     "find", "censor", "uncensor", "ask", "generate", "summarize", "summarise", "summary", "aisummary", "tldr", "recap",
     "aidetect", "aicheck", "detectai", "authenticity", "authcheck", "essaycheck",
     "buytick", "ticket", "tickets", "bank", "safe", "vaultcash", "deposit", "withdraw",
@@ -4896,6 +4899,28 @@ def split_status_mentions_for_guild(mentions_list, guild_id):
             other_servers.append(normalized)
     return same_server, other_servers
 
+async def pop_away_mentions(user_id):
+    memory_mentions = user_mentions.pop(int(user_id), [])
+    try:
+        saved_mentions = await asyncio.to_thread(load_away_mentions, int(user_id))
+    except Exception:
+        saved_mentions = []
+    try:
+        await asyncio.to_thread(clear_away_mentions, int(user_id))
+    except Exception:
+        pass
+
+    merged = []
+    seen = set()
+    for entry in [*saved_mentions, *memory_mentions]:
+        normalized = normalize_status_mention_entry(entry)
+        key = (normalized[0], normalized[1], normalized[2], normalized[3])
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(normalized)
+    return sorted(merged, key=lambda item: item[2])
+
 def mention_summary_lines(mentions_list):
     grouped = {}
     order = []
@@ -4993,7 +5018,7 @@ async def handle_returning_status(message):
         embed.add_field(name="Status", value=f"{economy_q_sleep} Sleep mode cleared", inline=True)
         embed.add_field(name="Away for", value=f"**{formatted}**", inline=True)
 
-        mentions_list = user_mentions.pop(message.author.id, [])
+        mentions_list = await pop_away_mentions(message.author.id)
         same_server_mentions, private_mentions = split_status_mentions_for_guild(mentions_list, message.guild.id if message.guild else None)
         mention_file = add_mentions_to_status_embed(embed, same_server_mentions)
         if private_mentions:
@@ -5029,7 +5054,7 @@ async def handle_returning_status(message):
         if reason:
             embed.add_field(name="Reason", value=embed_value(reason), inline=False)
 
-        mentions_list = user_mentions.pop(message.author.id, [])
+        mentions_list = await pop_away_mentions(message.author.id)
         same_server_mentions, private_mentions = split_status_mentions_for_guild(mentions_list, message.guild.id if message.guild else None)
         mention_file = add_mentions_to_status_embed(embed, same_server_mentions)
         if private_mentions:
@@ -6532,6 +6557,14 @@ async def on_message(message):
                 int(message.created_at.timestamp()),
                 message.guild.id if message.guild else None
             ))
+            asyncio.create_task(asyncio.to_thread(
+                save_away_mention,
+                mentioned_user.id,
+                message.author.id,
+                message.jump_url,
+                message.created_at,
+                message.guild.id if message.guild else None,
+            ))
 
     for uid in list(sleeping_users):
         if any(user.id == uid for user in message.mentions) or (
@@ -6676,7 +6709,7 @@ SUPEROWNER_HELP_COMMANDS = [
     "move", "movetick",
     "addxp", "removexp", "addlvl", "removelvl", "setlvl",
     "editlottery", "stoplottery", "qstats", "economyhealth", "balancedashboard", "endseason",
-    "send", "reply", "speak", "fsleep", "wake", "clearwatchlist",
+    "send", "reply", "speak", "wake", "clearwatchlist",
         "aisettings", "aiperms", "aiignore", "aiunignore", "aistyle",
     "aihistory", "auditcommands", "styleaudit", "commandcleanup", "permaudit", "receipts", "aiguard",
 ]
@@ -10471,6 +10504,59 @@ async def on_reaction_remove(reaction, user):
 
     # Reaction audit logs are sent from raw reaction events so uncached messages are covered too.
 
+async def maybe_send_away_reaction_callout(reaction, user):
+    if user.id in sleeping_users:
+        status = "sleep"
+        text = f"i see u reacting, <@{user.id}> get back to sleep kitten ᓚᘏᗢ zZ"
+    elif user.id in afk_users:
+        status = "afk"
+        text = f"caught u reacting, <@{user.id}>. AFK means away from keyboard, not away from the react button."
+    else:
+        return
+
+    channel = getattr(getattr(reaction, "message", None), "channel", None)
+    if channel is None:
+        return
+    key = (status, int(user.id), int(getattr(channel, "id", 0) or 0))
+    now = time.monotonic()
+    if now - away_reaction_callouts.get(key, 0) < 45:
+        return
+    away_reaction_callouts[key] = now
+    try:
+        await channel.send(text, allowed_mentions=discord.AllowedMentions.none())
+    except Exception:
+        pass
+
+async def maybe_send_raw_away_reaction_callout(payload):
+    user_id = int(getattr(payload, "user_id", 0) or 0)
+    if not user_id or (bot.user and user_id == bot.user.id):
+        return
+    if user_id in sleeping_users:
+        status = "sleep"
+        text = f"i see u reacting, <@{user_id}> get back to sleep kitten ᓚᘏᗢ zZ"
+    elif user_id in afk_users:
+        status = "afk"
+        text = f"caught u reacting, <@{user_id}>. AFK means away from keyboard, not away from the react button."
+    else:
+        return
+
+    channel_id = int(getattr(payload, "channel_id", 0) or 0)
+    key = (status, user_id, channel_id)
+    now = time.monotonic()
+    if now - away_reaction_callouts.get(key, 0) < 45:
+        return
+    channel = bot.get_channel(channel_id)
+    if channel is None:
+        try:
+            channel = await bot.fetch_channel(channel_id)
+        except Exception:
+            return
+    away_reaction_callouts[key] = now
+    try:
+        await channel.send(text, allowed_mentions=discord.AllowedMentions.none())
+    except Exception:
+        pass
+
 @bot.event
 async def on_reaction_add(reaction, user):
     if user.bot and user.id != super_owner_id:
@@ -10489,6 +10575,7 @@ async def on_reaction_add(reaction, user):
             pass
         return
 
+    await maybe_send_away_reaction_callout(reaction, user)
     await update_poll_counts(reaction.message)
 
     # Reaction audit logs are sent from raw reaction events so uncached messages are covered too.
@@ -10496,6 +10583,7 @@ async def on_reaction_add(reaction, user):
 @bot.event
 async def on_raw_reaction_add(payload):
     try:
+        await maybe_send_raw_away_reaction_callout(payload)
         await log_raw_reaction(payload, added=True)
     except Exception as e:
         print(f"Raw reaction-add log skipped: {type(e).__name__} - {e}")
@@ -16106,45 +16194,6 @@ async def sleep(ctx):
     embed.add_field(name="Since", value=f"<t:{int(sleeping_users[ctx.author.id].timestamp())}:R>", inline=True)
     embed.add_field(name="Return", value="Send any message to wake up.", inline=True)
     await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
-
-@bot.command()
-async def fsleep(ctx, members: commands.Greedy[discord.Member], *, time: str = None):
-    if not has_super_owner_power(ctx.author, ctx.guild):
-        return
-
-    if not members:
-        return await send_command_input_ui(ctx, "fsleep", note="Enter one or more members. You can optionally add how long ago sleep started.")
-
-    results = []
-
-    for member in members:
-        start_time = datetime.now(timezone.utc)
-
-        if time:
-            matches = re.findall(r'(\d+)\s*(h|m|s)', time.lower())
-            if not matches:
-                results.append(f"{economy_q_warning} Invalid time format: `{time}` (skipped {member.mention})")
-                continue
-
-            total_seconds = 0
-            for value, unit in matches:
-                v = int(value)
-                if unit == 'h':
-                    total_seconds += v * 3600
-                elif unit == 'm':
-                    total_seconds += v * 60
-                elif unit == 's':
-                    total_seconds += v
-
-            if total_seconds > 0:
-                start_time -= timedelta(seconds=total_seconds)
-
-        sleeping_users[member.id] = start_time
-        await asyncio.to_thread(save_sleeping_user, member.id, start_time)
-        results.append(f"{economy_q_sleep} <@{member.id}> asleep since <t:{int(start_time.timestamp())}:R>")
-
-    if results:
-        await send_paginated_lines(ctx, "Forced Sleep", results)
 
 @bot.command()
 async def wake(ctx, members: commands.Greedy[discord.Member]):

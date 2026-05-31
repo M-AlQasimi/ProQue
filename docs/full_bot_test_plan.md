@@ -132,7 +132,6 @@ Run:
 - `.away`
 - `.sleep`
 - `.wake @normal`
-- `.fsleep @normal 1m`
 - `.setbday 01/01`
 - `.setbday` then use the setup UI.
 - `.removebday`
@@ -409,7 +408,7 @@ Expected: can use admin-power commands, outranks admins, cannot bypass disabled 
 
 ### Public Commands
 
-Run the same public commands from Superowner Tests, except `.fsleep` should only work if internally allowed.
+Run the same public commands from Superowner Tests.
 
 Expected: public commands work.
 
@@ -514,7 +513,7 @@ Expected: can use admin-power commands, cannot bypass disabled commands, cannot 
 
 ### Public Commands
 
-Run the same public commands from Superowner Tests, except `.fsleep` should only work if internally allowed.
+Run the same public commands from Superowner Tests.
 
 Expected: public commands work.
 
@@ -773,7 +772,6 @@ Run:
 - `.addtick @normal 1` and `.addtick 1 @normal`
 - `.settick @normal 1` and `.settick 1 @normal`
 - `.setquesos @normal 1000` and `.setquesos 1000 @normal`
-- `.fsleep @other_user 1m`
 
 Expected: denied, unless this normal user is the person who added the bot for birthday/activity setup.
 

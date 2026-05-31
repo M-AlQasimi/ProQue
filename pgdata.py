@@ -163,6 +163,19 @@ def _create_tables(cur):
     """)
 
     cur.execute("""
+        CREATE TABLE IF NOT EXISTS away_mentions (
+            id BIGSERIAL PRIMARY KEY,
+            target_user_id BIGINT NOT NULL,
+            author_user_id BIGINT NOT NULL,
+            message_url TEXT NOT NULL,
+            mentioned_at TIMESTAMP NOT NULL,
+            guild_id BIGINT,
+            created_at TIMESTAMP NOT NULL DEFAULT NOW()
+        )
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_away_mentions_target_created ON away_mentions (target_user_id, created_at DESC)")
+
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS bot_blacklist (
             user_id BIGINT PRIMARY KEY
         )
@@ -2257,3 +2270,96 @@ def remove_sleeping_user(user_id):
         conn.close()
     except Exception:
         pass
+
+# === AWAY MENTIONS ===
+
+def save_away_mention(target_user_id, author_user_id, message_url, mentioned_at, guild_id=None):
+    _ensure_ready()
+    if not pg_ready:
+        return False
+    try:
+        conn = pg_conn()
+        if conn is None:
+            return False
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO away_mentions (target_user_id, author_user_id, message_url, mentioned_at, guild_id)
+            VALUES (%s, %s, %s, %s, %s)
+            """,
+            (
+                int(target_user_id),
+                int(author_user_id),
+                str(message_url or "")[:500],
+                mentioned_at,
+                int(guild_id) if guild_id else None,
+            )
+        )
+        cur.execute(
+            """
+            DELETE FROM away_mentions
+            WHERE target_user_id = %s
+              AND id NOT IN (
+                  SELECT id
+                  FROM away_mentions
+                  WHERE target_user_id = %s
+                  ORDER BY created_at DESC, id DESC
+                  LIMIT 300
+              )
+            """,
+            (int(target_user_id), int(target_user_id))
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+        return True
+    except Exception:
+        return False
+
+def load_away_mentions(user_id):
+    _ensure_ready()
+    if not pg_ready:
+        return []
+    try:
+        conn = pg_conn()
+        if conn is None:
+            return []
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT author_user_id, message_url, mentioned_at, guild_id
+            FROM away_mentions
+            WHERE target_user_id = %s
+            ORDER BY mentioned_at ASC, id ASC
+            """,
+            (int(user_id),)
+        )
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        from datetime import timezone
+        result = []
+        for author_user_id, message_url, mentioned_at, guild_id in rows:
+            if hasattr(mentioned_at, "tzinfo") and mentioned_at.tzinfo is None:
+                mentioned_at = mentioned_at.replace(tzinfo=timezone.utc)
+            result.append((int(author_user_id), str(message_url), int(mentioned_at.timestamp()), int(guild_id) if guild_id else None))
+        return result
+    except Exception:
+        return []
+
+def clear_away_mentions(user_id):
+    _ensure_ready()
+    if not pg_ready:
+        return False
+    try:
+        conn = pg_conn()
+        if conn is None:
+            return False
+        cur = conn.cursor()
+        cur.execute("DELETE FROM away_mentions WHERE target_user_id = %s", (int(user_id),))
+        conn.commit()
+        cur.close()
+        conn.close()
+        return True
+    except Exception:
+        return False
