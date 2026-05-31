@@ -5596,6 +5596,7 @@ ECONOMY_INPUT_PLACEHOLDERS = {
     "movetick": "@from @to 10",
     "settick": "@user 10",
     "setquesos": "@user 1m",
+    "lotterypot": "add 1m",
     "addxp": "@user 500",
     "removexp": "@user 500",
     "addlvl": "@user 2",
@@ -7453,13 +7454,19 @@ async def lotterypot(ctx, action: str = None, amount: str = None):
     if mode in {"sub", "subtract", "minus"}:
         mode = "remove"
     if mode not in {"add", "increase", "plus", "remove", "subtract", "minus", "take", "set", "exact"}:
-        await ctx.send(f"{Q_DENIED} Use `.lotterypot add <amount>`, `.lotterypot remove <amount>`, or `.lotterypot set <amount>`.")
-        return
+        return await send_economy_command_input_ui(
+            ctx,
+            "lotterypot",
+            "Choose what to do with the current lottery prize pool. Use `add`, `remove`, or `set`, then an amount.",
+        )
 
     parsed_amount = parse_whole_number(amount)
     if parsed_amount is None:
-        await ctx.send(f"{Q_DENIED} Use an amount like `500k`, `1m`, or `250000`.")
-        return
+        return await send_economy_command_input_ui(
+            ctx,
+            "lotterypot",
+            "Enter an amount like `500k`, `1m`, or `250000` after `add`, `remove`, or `set`.",
+        )
     if parsed_amount < 0:
         await ctx.send(f"{Q_DENIED} Amount cannot be negative.")
         return
@@ -15156,11 +15163,11 @@ EXPLANATIONS = {
     "dellevel": "Alias for `.removelvl`. Removes levels from users.",
     "setlvl": f"{QUE_OWNER_DISPLAY} command. Sets exact user levels and resets current XP to 0.",
     "setlevel": "Alias for `.setlvl`. Sets exact user levels.",
-    "disable": "Admin-power command. Disables one bot command for the server.",
-    "enable": "Admin-power command. Enables one disabled command.",
-    "disableall": "Admin-power command. Disables all commands except enableall.",
-    "enableall": "Admin-power command. Enables all commands again.",
-    "dclist": "Shows currently disabled commands.",
+    "disable": "Admin-power command. Use `.disable <command>` to disable one server command, or `.disable` with no input to open the command access panel. Recovery/help commands stay protected.",
+    "enable": "Admin-power command. Use `.enable <command>` to re-enable one server command, or `.enable` with no input to open the command access panel.",
+    "disableall": "Admin-power command. Disables manageable commands for the server while keeping help, settings, enable/disable, recovery, and diagnostic commands available.",
+    "enableall": "Admin-power command. Enables all disabled commands again.",
+    "dclist": "Shows currently disabled commands in a paged list.",
     "snipe": "Shows deleted-message snipes. Use `.esnipe` for edits and `.rsnipe` for removed reactions.",
     "snipes": "Alias for `.snipe`. Shows deleted-message snipes with a guide.",
     "dsnipe": "Shows a recently deleted message in this channel.",

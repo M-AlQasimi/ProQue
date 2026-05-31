@@ -7165,7 +7165,13 @@ async def build_settings_embed(guild):
         ai_config = await ai_settings_for("guild", guild.id) if guild else {}
     except Exception:
         ai_config = {}
-    disabled = sorted(guild_disabled_commands(guild)) if guild else []
+    disabled = []
+    if guild:
+        for name in sorted(guild_disabled_commands(guild)):
+            command = get_command_case_insensitive(name)
+            if command_disable_protected(command):
+                continue
+            disabled.append(name)
 
     embed = discord.Embed(
         title=f"{economy_q_setup} Server Settings",
@@ -7401,6 +7407,17 @@ class SettingsView(View):
         await interaction.response.send_message(
             "\n".join(lines),
             ephemeral=True,
+        )
+
+    @discord.ui.button(label="Command Access", emoji=economy_q_lock, style=discord.ButtonStyle.secondary)
+    async def command_access_button(self, interaction, button):
+        if not has_owner_power(interaction.user, interaction.guild):
+            return await interaction.response.send_message(denial_message("Admin power only."), ephemeral=True)
+        await interaction.response.send_message(
+            embed=build_command_access_embed(interaction.guild, interaction.user),
+            view=CommandAccessView(interaction.user.id),
+            ephemeral=True,
+            allowed_mentions=discord.AllowedMentions.none(),
         )
 
     @discord.ui.button(label="Setup Guide", emoji=economy_q_setup, style=discord.ButtonStyle.success)
@@ -9697,10 +9714,21 @@ async def run_flag_quiz(ctx, rounds, mode="solo"):
                 reward_lines.append(f"<@{user_id}>: **{points}** point(s), reward could not be paid.")
         total_points = sum(scores.values())
         accuracy = (total_points / max(1, len(countries))) * 100
+        finish_header = [
+            f"{economy_q_game_win} **FLAG QUIZ FINISHED**",
+            f"Mode: **{mode.title()}** | Total Score: **{total_points}/{len(countries)}** ({accuracy:.1f}%)",
+        ]
+        if len(reward_lines) > 20 or len("\n".join([*finish_header, *reward_lines])) > 1800:
+            await send_paginated_lines(
+                ctx,
+                "Flag Quiz Finished",
+                [*finish_header, *reward_lines],
+                per_page=12,
+                empty="No reward earned.",
+            )
+            return
         await ctx.send(
-            f"{economy_q_game_win} **FLAG QUIZ FINISHED**\n"
-            f"Mode: **{mode.title()}** | Total Score: **{total_points}/{len(countries)}** ({accuracy:.1f}%)\n"
-            + "\n".join(reward_lines),
+            "\n".join([*finish_header, *reward_lines]),
             allowed_mentions=discord.AllowedMentions.none()
         )
     finally:
@@ -10718,7 +10746,12 @@ async def on_voice_state_update(member, before, after):
 @bot.check
 async def globally_block_disabled(ctx):
     disabled = guild_disabled_commands(ctx.guild)
-    if ctx.command and ctx.command.name in disabled and not has_super_owner_power(ctx.author, ctx.guild):
+    if (
+        ctx.command
+        and ctx.command.name in disabled
+        and not command_disable_protected(ctx.command)
+        and not has_super_owner_power(ctx.author, ctx.guild)
+    ):
         print(f"Disabled command blocked: {ctx.command.name} for {ctx.author} ({ctx.author.id}); disabled={sorted(disabled)}")
         raise CommandDisabledError(ctx.command.name)
     return True
@@ -10818,78 +10851,243 @@ async def prefix_command(ctx, new_prefix: str = None):
     games_render_cache.clear()
     await ctx.send(f"Prefix changed to `{new_prefix}`")
 
+DISABLE_PROTECTED_COMMANDS = {
+    "disable", "enable", "disableall", "enableall", "dclist",
+    "help", "settings", "prefix", "setlogs", "health", "errors",
+    "recover", "dbaudit", "perms", "aidoctor",
+}
+
+def command_disable_protected(command):
+    return not command or command.name in DISABLE_PROTECTED_COMMANDS
+
+def disable_manageable_commands(user, guild):
+    return sorted(
+        (
+            command for command in bot.walk_commands()
+            if not getattr(command, "parent", None)
+            and command_is_visible_to(command, user, guild)
+            and not command_disable_protected(command)
+        ),
+        key=lambda command: command.name.casefold(),
+    )
+
+def disabled_command_lines(guild, viewer):
+    lines = []
+    for name in sorted(guild_disabled_commands(guild)):
+        command = get_command_case_insensitive(name)
+        if command_disable_protected(command):
+            continue
+        if not command_is_visible_to(command, viewer, guild):
+            continue
+        aliases = visible_aliases_for(command, 1) if command else []
+        alias_text = f" · alias `{aliases[0]}`" if aliases else ""
+        lines.append(f"`{name}`{alias_text}")
+    return lines
+
+def build_command_access_embed(guild, viewer):
+    prefix = prefix_for_guild(guild)
+    disabled_lines = disabled_command_lines(guild, viewer)
+    manageable_count = len(disable_manageable_commands(viewer, guild))
+    embed = standard_embed(
+        "Command Access",
+        description="Turn server commands on or off without hiding the recovery tools.",
+        color=discord.Color.blurple(),
+        icon=economy_q_lock,
+    )
+    embed.add_field(name="Disabled", value=f"**{len(disabled_lines)}** command(s)", inline=True)
+    embed.add_field(name="Can Manage", value=f"**{manageable_count}** command(s)", inline=True)
+    embed.add_field(name="Use", value=f"`{prefix}disable <command>`\n`{prefix}enable <command>`\n`{prefix}dclist`", inline=True)
+    embed.add_field(
+        name="Disabled Commands",
+        value=joined_embed_value(disabled_lines[:12], empty="None. Everything is currently open.", limit=900),
+        inline=False,
+    )
+    if len(disabled_lines) > 12:
+        embed.set_footer(text=f"{len(disabled_lines) - 12:,} more disabled command(s). Use .dclist for the full list.")
+    else:
+        embed.set_footer(text="Run .disable without input anytime to reopen this panel.")
+    return embed
+
+def resolve_command_access_target(raw, user, guild):
+    command = get_command_case_insensitive(raw)
+    if not command or not command_is_visible_to(command, user, guild):
+        return None, "Command not found. Try the command name or one of its aliases."
+    if command_disable_protected(command):
+        return None, f"`{command.name}` stays available so the server can recover settings."
+    return command, None
+
+async def set_command_disabled_for_guild(guild, command, disabled):
+    commands_for_guild = guild_disabled_commands(guild)
+    changed = False
+    if disabled:
+        if command.name not in commands_for_guild:
+            commands_for_guild.add(command.name)
+            changed = True
+    else:
+        if command.name in commands_for_guild:
+            commands_for_guild.remove(command.name)
+            changed = True
+    if changed:
+        await asyncio.to_thread(save_disabled_commands, scoped_id(guild), commands_for_guild)
+    return changed
+
+class CommandAccessModal(Modal):
+    def __init__(self, author_id, mode):
+        super().__init__(title="Disable Command" if mode == "disable" else "Enable Command")
+        self.author_id = author_id
+        self.mode = mode
+        self.command_name = TextInput(
+            label="Command",
+            placeholder="Example: slap, lottery, poll",
+            max_length=40,
+        )
+        self.add_item(self.command_name)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if interaction.user.id != self.author_id:
+            return await interaction.response.send_message("Use your own command access panel.", ephemeral=True)
+        if not has_owner_power(interaction.user, interaction.guild):
+            return await interaction.response.send_message(denial_message("Admin power only."), ephemeral=True)
+        command, error = resolve_command_access_target(str(self.command_name.value), interaction.user, interaction.guild)
+        if error:
+            return await interaction.response.send_message(f"{economy_q_warning} {error}", ephemeral=True)
+        changed = await set_command_disabled_for_guild(interaction.guild, command, self.mode == "disable")
+        if changed:
+            verb = "Disabled" if self.mode == "disable" else "Enabled"
+            await interaction.response.send_message(f"{economy_q_accept} {verb} `{command.name}`.", ephemeral=True)
+        else:
+            state = "already disabled" if self.mode == "disable" else "not disabled"
+            await interaction.response.send_message(f"{economy_q_warning} `{command.name}` is {state}.", ephemeral=True)
+
+class CommandAccessView(View):
+    def __init__(self, author_id):
+        super().__init__(timeout=LONG_HELP_VIEW_TIMEOUT)
+        self.author_id = author_id
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id == self.author_id:
+            return True
+        await interaction.response.send_message("Use your own command access panel.", ephemeral=True)
+        return False
+
+    @discord.ui.button(label="Disable", emoji=economy_q_lock, style=discord.ButtonStyle.danger)
+    async def disable_button(self, interaction, button):
+        if not has_owner_power(interaction.user, interaction.guild):
+            return await interaction.response.send_message(denial_message("Admin power only."), ephemeral=True)
+        await interaction.response.send_modal(CommandAccessModal(self.author_id, "disable"))
+
+    @discord.ui.button(label="Enable", emoji=economy_q_accept, style=discord.ButtonStyle.success)
+    async def enable_button(self, interaction, button):
+        if not has_owner_power(interaction.user, interaction.guild):
+            return await interaction.response.send_message(denial_message("Admin power only."), ephemeral=True)
+        await interaction.response.send_modal(CommandAccessModal(self.author_id, "enable"))
+
+    @discord.ui.button(label="List", emoji=economy_q_archive, style=discord.ButtonStyle.secondary)
+    async def list_button(self, interaction, button):
+        lines = disabled_command_lines(interaction.guild, interaction.user)
+        if not lines:
+            return await interaction.response.send_message("No commands are disabled.", ephemeral=True)
+        await interaction.response.send_message(
+            embed=paginated_lines_embed("Disabled Commands", lines, 0, 15, "No commands are disabled."),
+            view=PaginatedLinesView(interaction.user.id, "Disabled Commands", lines, per_page=15, empty="No commands are disabled.") if len(lines) > 15 else None,
+            ephemeral=True,
+        )
+
+    @discord.ui.button(label="Refresh", emoji=economy_q_refresh, style=discord.ButtonStyle.secondary)
+    async def refresh_button(self, interaction, button):
+        await interaction.response.edit_message(embed=build_command_access_embed(interaction.guild, interaction.user), view=self)
+
 @bot.command()
 @is_admin_power()
-async def disable(ctx, cmd: str):
+async def disable(ctx, *, cmd: str = None):
     if not has_owner_power(ctx.author, ctx.guild):
         return
+    if ctx.guild is None:
+        return await ctx.send("Command access controls only work in servers.")
+    if not cmd:
+        return await ctx.send(
+            embed=build_command_access_embed(ctx.guild, ctx.author),
+            view=CommandAccessView(ctx.author.id),
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
 
-    command = get_command_case_insensitive(cmd)
-    if not command_is_visible_to(command, ctx.author, ctx.guild):
-        await ctx.send("Command not found.")
-        return
+    command, error = resolve_command_access_target(cmd, ctx.author, ctx.guild)
+    if error:
+        return await ctx.send(f"{economy_q_warning} {error}")
 
-    commands_for_guild = guild_disabled_commands(ctx.guild)
-    commands_for_guild.add(command.name)
-    await asyncio.to_thread(save_disabled_commands, scoped_id(ctx.guild), commands_for_guild)
-    await ctx.send(f"Disabled **{command.name}**")
+    changed = await set_command_disabled_for_guild(ctx.guild, command, True)
+    if changed:
+        await ctx.send(f"{economy_q_accept} Disabled `{command.name}`.")
+    else:
+        await ctx.send(f"{economy_q_warning} `{command.name}` is already disabled.")
     
 @bot.command()
 @is_admin_power()
-async def enable(ctx, cmd: str):
+async def enable(ctx, *, cmd: str = None):
     if not has_owner_power(ctx.author, ctx.guild):
         return
+    if ctx.guild is None:
+        return await ctx.send("Command access controls only work in servers.")
+    if not cmd:
+        return await ctx.send(
+            embed=build_command_access_embed(ctx.guild, ctx.author),
+            view=CommandAccessView(ctx.author.id),
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
 
-    command = get_command_case_insensitive(cmd)
-    if not command_is_visible_to(command, ctx.author, ctx.guild):
-        await ctx.send("Command not found.")
-        return
+    command, error = resolve_command_access_target(cmd, ctx.author, ctx.guild)
+    if error:
+        return await ctx.send(f"{economy_q_warning} {error}")
 
-    commands_for_guild = guild_disabled_commands(ctx.guild)
-    if command.name in commands_for_guild:
-        commands_for_guild.remove(command.name)
-        await asyncio.to_thread(save_disabled_commands, scoped_id(ctx.guild), commands_for_guild)
-        await ctx.send(f"Enabled **{command.name}**")
+    changed = await set_command_disabled_for_guild(ctx.guild, command, False)
+    if changed:
+        await ctx.send(f"{economy_q_accept} Enabled `{command.name}`.")
     else:
-        await ctx.send(f"**{command.name}** is not disabled.")
+        await ctx.send(f"{economy_q_warning} `{command.name}` is not disabled.")
 
 @bot.command()
 @is_admin_power()
 async def disableall(ctx):
     if not has_owner_power(ctx.author, ctx.guild):
         return
+    if ctx.guild is None:
+        return await ctx.send("Command access controls only work in servers.")
 
-    ok = await confirm_admin_action(ctx, "Disable All Commands", "This disables every command except `enableall` for this server.")
+    ok = await confirm_admin_action(
+        ctx,
+        "Disable All Commands",
+        "This disables manageable commands for this server. Help, settings, enable/disable, recovery, and diagnostic commands stay available.",
+    )
     if not ok:
         return
+    commands_for_guild = guild_disabled_commands(ctx.guild)
+    before = len(commands_for_guild)
     for command in bot.commands:
-        if command.name != "enableall" and command_is_visible_to(command, ctx.author, ctx.guild):
-            guild_disabled_commands(ctx.guild).add(command.name)
-    await asyncio.to_thread(save_disabled_commands, scoped_id(ctx.guild), guild_disabled_commands(ctx.guild))
-    await ctx.send("Disabled **all commands**")
+        if command_is_visible_to(command, ctx.author, ctx.guild) and not command_disable_protected(command):
+            commands_for_guild.add(command.name)
+    await asyncio.to_thread(save_disabled_commands, scoped_id(ctx.guild), commands_for_guild)
+    await ctx.send(f"{economy_q_accept} Disabled **{len(commands_for_guild) - before:,}** command(s). Recovery commands stayed available.")
 
 @bot.command()
 @is_admin_power()
 async def enableall(ctx):
     if not has_owner_power(ctx.author, ctx.guild):
         return
+    if ctx.guild is None:
+        return await ctx.send("Command access controls only work in servers.")
 
+    count = len(guild_disabled_commands(ctx.guild))
     guild_disabled_commands(ctx.guild).clear()
     await asyncio.to_thread(save_disabled_commands, scoped_id(ctx.guild), guild_disabled_commands(ctx.guild))
-    await ctx.send("Enabled **all commands**")
+    await ctx.send(f"{economy_q_accept} Enabled **{count:,}** command(s).")
 
 @bot.command()
 @is_admin_power()
 async def dclist(ctx):
-    commands_for_guild = {
-        name for name in guild_disabled_commands(ctx.guild)
-        if command_is_visible_to(get_command_case_insensitive(name), ctx.author, ctx.guild)
-    }
-    if not commands_for_guild:
-        await ctx.send("No commands are disabled.")
-    else:
-        formatted = "\n".join(f"**{name}**" for name in commands_for_guild)
-        await ctx.send(f"Disabled Commands:\n{formatted}")
+    if ctx.guild is None:
+        return await ctx.send("Command access controls only work in servers.")
+    lines = disabled_command_lines(ctx.guild, ctx.author)
+    await send_paginated_lines(ctx, "Disabled Commands", lines, per_page=15, empty="No commands are disabled.")
 
 SNIPE_TYPES = {
     "deleted": {
@@ -11522,6 +11720,8 @@ def fit_discord_content(content, limit=2000):
 
 def fit_embed_value(value, limit=1024):
     value = str(value or "")
+    if not value:
+        return "\u200b"
     if len(value) <= limit:
         return value
     suffix = "\n[shortened]"
@@ -11636,6 +11836,23 @@ if not getattr(discord.abc.Messageable.send, "_proque_safe_content", False):
 
     _safe_messageable_send._proque_safe_content = True
     discord.abc.Messageable.send = _safe_messageable_send
+
+if not getattr(discord.Message.reply, "_proque_safe_reply", False):
+    _original_message_reply = discord.Message.reply
+
+    async def _safe_message_reply(self, *args, **kwargs):
+        try:
+            return await _original_message_reply(self, *args, **kwargs)
+        except discord.HTTPException as exc:
+            if "Unknown message" not in str(exc):
+                raise
+            fallback_kwargs = dict(kwargs)
+            fallback_kwargs.pop("mention_author", None)
+            fallback_kwargs.pop("fail_if_not_exists", None)
+            return await self.channel.send(*args, **fallback_kwargs)
+
+    _safe_message_reply._proque_safe_reply = True
+    discord.Message.reply = _safe_message_reply
 
 if not getattr(discord.Message.edit, "_proque_safe_content", False):
     _original_message_edit = discord.Message.edit
@@ -12662,6 +12879,14 @@ async def setnick(ctx, members: commands.Greedy[discord.Member], *, nickname: st
         for member in members:
             await member.edit(nick=nickname)
             changed.append(f"<@{member.id}>")
+        if len(changed) > 20 or len(", ".join(changed)) > 1400:
+            return await send_paginated_lines(
+                ctx,
+                "Nicknames Changed",
+                [f"{mention} -> **{nickname}**" for mention in changed],
+                per_page=20,
+                empty="No nicknames changed.",
+            )
         await ctx.send(
             f"Changed **{len(changed)}** nickname(s) to **{nickname}**: {', '.join(changed)}.",
             allowed_mentions=discord.AllowedMentions.none()
@@ -13099,6 +13324,14 @@ async def addrole(ctx, *, args: str = None):
     for member in members:
         await member.add_roles(role, reason=f"addrole command by {ctx.author} ({ctx.author.id})")
         changed.append(f"<@{member.id}>")
+    if len(changed) > 20 or len(", ".join(changed)) > 1400:
+        return await send_paginated_lines(
+            ctx,
+            "Role Added",
+            [f"{mention} -> **{role.name}**" for mention in changed],
+            per_page=20,
+            empty="No roles changed.",
+        )
     await ctx.send(
         f"Added **{role.name}** to **{len(changed)}** user(s): {', '.join(changed)}.",
         allowed_mentions=discord.AllowedMentions.none()
@@ -13118,6 +13351,14 @@ async def removerole(ctx, *, args: str = None):
     for member in members:
         await member.remove_roles(role, reason=f"removerole command by {ctx.author} ({ctx.author.id})")
         changed.append(f"<@{member.id}>")
+    if len(changed) > 20 or len(", ".join(changed)) > 1400:
+        return await send_paginated_lines(
+            ctx,
+            "Role Removed",
+            [f"{mention} -> **{role.name}**" for mention in changed],
+            per_page=20,
+            empty="No roles changed.",
+        )
     await ctx.send(
         f"Removed **{role.name}** from **{len(changed)}** user(s): {', '.join(changed)}.",
         allowed_mentions=discord.AllowedMentions.none()
@@ -15915,6 +16156,14 @@ async def wake(ctx, members: commands.Greedy[discord.Member]):
     for member in members:
         sleeping_users.pop(member.id, None)
         await asyncio.to_thread(remove_sleeping_user, member.id)
+    if len(members) > 20 or len(", ".join(f"<@{member.id}>" for member in members)) > 1400:
+        return await send_paginated_lines(
+            ctx,
+            "Woke Users",
+            [f"{economy_q_bell} <@{member.id}>" for member in members],
+            per_page=20,
+            empty="No users woke up.",
+        )
     await ctx.send(
         f"{economy_q_bell} Woke **{len(members):,}** user(s): " + ", ".join(f"<@{member.id}>" for member in members),
         allowed_mentions=discord.AllowedMentions.none()
