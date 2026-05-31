@@ -8727,11 +8727,11 @@ def truth_or_dare_pick(mode, location=None):
     recent.append(prompt)
     return mode, prompt
 
-def truth_or_dare_embed(mode, prompt, target=None):
+def truth_or_dare_embed(mode, prompt, target):
     is_truth = mode == "truth"
     icon = economy_q_thinking if is_truth else economy_q_target
     title = "Truth" if is_truth else "Dare"
-    target_text = target.mention if target else "Whoever is playing"
+    target_text = target.mention if target else "Someone"
     embed = standard_embed(
         f"{title}",
         description=f"{icon} {target_text}\n\n**{prompt}**",
@@ -8859,7 +8859,7 @@ class TruthOrDareView(View):
 
     def target_for(self, interaction):
         if not self.target_id:
-            return None
+            return interaction.user
         return interaction.guild.get_member(self.target_id) if interaction.guild else None
 
     async def roll(self, interaction, mode):
@@ -8902,7 +8902,7 @@ async def truth_or_dare_command(ctx, *, raw: str = None):
         mode = {"t": "truth", "d": "dare", "r": "random"}.get(first, first)
     selected_mode, prompt = truth_or_dare_pick(mode, ctx)
     await ctx.send(
-        embed=truth_or_dare_embed(selected_mode, prompt, target),
+        embed=truth_or_dare_embed(selected_mode, prompt, target or ctx.author),
         view=TruthOrDareView(target.id if target else None),
         allowed_mentions=discord.AllowedMentions.none(),
     )
