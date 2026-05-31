@@ -13957,6 +13957,7 @@ class SpeakCleanupView(discord.ui.View):
         await interaction.response.edit_message(content=f"{economy_q_accept} Relay stopped. Messages kept.", view=self)
 
 SOCIAL_ACTION_GIF_ROOT = os.path.join(os.path.dirname(__file__), "assets", "action_gifs")
+SOCIAL_ACTION_APPROVED_ROOT = os.path.join(SOCIAL_ACTION_GIF_ROOT, "_approved")
 SOCIAL_ACTION_COOLDOWN_SECONDS = 4
 social_action_cooldowns = {}
 
@@ -14084,13 +14085,13 @@ SOCIAL_ACTIONS = {
 }
 
 def social_action_assets(action):
-    directory = os.path.join(SOCIAL_ACTION_GIF_ROOT, action)
-    if not os.path.isdir(directory):
+    approved_directory = os.path.join(SOCIAL_ACTION_APPROVED_ROOT, action)
+    if not os.path.isdir(approved_directory):
         return []
     return [
-        os.path.join(directory, name)
-        for name in sorted(os.listdir(directory))
-        if name.lower().endswith((".gif", ".png", ".webp", ".jpg", ".jpeg"))
+        os.path.join(approved_directory, name)
+        for name in sorted(os.listdir(approved_directory))
+        if name.lower().endswith((".gif", ".webp", ".mp4"))
     ]
 
 async def send_social_action(ctx, action, target=None):
