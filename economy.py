@@ -5022,6 +5022,9 @@ def has_economy_owner_power(user_id, guild=None):
         return True
     return guild is not None and (guild.owner_id == int(user_id) or has_guild_admin_power(user_id, guild))
 
+def can_bypass_gambling_limits(user_id, guild=None):
+    return user_id is not None and is_super_owner(user_id, guild)
+
 def economy_permission_rank(user_id, guild=None):
     user_id = int(user_id)
     if is_super_owner(user_id, guild):
@@ -5384,6 +5387,55 @@ def parse_amount(raw, user_id=None, guild=None, balance=None):
             return val
         cap = min(val, MAX_BET)
         return min(cap, personal_limit) if personal_limit else cap
+    except (TypeError, ValueError):
+        return None
+
+def parse_gambling_amount(raw, user_id=None, guild=None, balance=None):
+    raw_text = str(raw).strip().lower().replace(",", "").replace("_", "")
+    personal_limit = None
+    double_or_nothing_cap = 0
+    if user_id is not None:
+        try:
+            double_or_nothing_cap = int(_double_or_nothing_bet_caps.get(int(user_id), 0) or 0)
+        except Exception:
+            double_or_nothing_cap = 0
+    if user_id is not None and balance is None and not can_bypass_gambling_limits(user_id, guild) and db_ready:
+        try:
+            data = get_user(user_id)
+            stored_limit = data.get("personal_bet_limit")
+            if stored_limit is not None and int(stored_limit) > 0:
+                personal_limit = int(stored_limit)
+        except Exception:
+            personal_limit = None
+
+    def apply_gambling_cap(value):
+        value = max(0, int(value))
+        if can_bypass_gambling_limits(user_id, guild):
+            return value
+        if double_or_nothing_cap and 0 < value <= double_or_nothing_cap:
+            return value
+        capped = min(value, MAX_BET)
+        return min(capped, personal_limit) if personal_limit else capped
+
+    if raw_text == "all":
+        if balance is None:
+            return apply_gambling_cap(double_or_nothing_cap or MAX_BET)
+        balance = max(0, int(balance))
+        if double_or_nothing_cap:
+            return apply_gambling_cap(min(balance, double_or_nothing_cap))
+        return apply_gambling_cap(balance)
+
+    multipliers = {"k": 1_000, "m": 1_000_000, "b": 1_000_000_000, "bn": 1_000_000_000}
+    try:
+        suffix = ""
+        number = raw_text
+        for candidate in sorted(multipliers, key=len, reverse=True):
+            if raw_text.endswith(candidate):
+                suffix = candidate
+                number = raw_text[:-len(candidate)]
+                break
+        val = int(float(number) * multipliers.get(suffix, 1))
+        return apply_gambling_cap(val)
     except (TypeError, ValueError):
         return None
 
@@ -8300,7 +8352,7 @@ async def gamble(ctx, amount: str, choice: str = None):
         return
 
     raw_amount = amount
-    parsed = parse_amount(amount, ctx.author.id, ctx.guild, data['balance'])
+    parsed = parse_gambling_amount(amount, ctx.author.id, ctx.guild, data['balance'])
     if parsed is None:
         await ctx.send(f"{Q_DENIED} Use `.cf all`, `.cf <amount>`, or `.flip <amount>` (max {MAX_BET:,} {CURRENCY_EMOJI})")
         return
@@ -8311,7 +8363,7 @@ async def gamble(ctx, amount: str, choice: str = None):
         await send_nonpositive_amount_error(ctx, raw_amount)
         return
 
-    if amount > data['balance'] and not has_economy_owner_power(ctx.author.id, ctx.guild):
+    if amount > data['balance'] and not can_bypass_gambling_limits(ctx.author.id, ctx.guild):
         await ctx.send(f"{Q_DENIED} You only have {format_balance(data['balance'])}")
         return
 
@@ -8471,7 +8523,7 @@ async def roulette(ctx, amount: str, color: str = None):
         return
 
     raw_amount = amount
-    parsed = parse_amount(amount, ctx.author.id, ctx.guild, data['balance'])
+    parsed = parse_gambling_amount(amount, ctx.author.id, ctx.guild, data['balance'])
     if parsed is None:
         await ctx.send(f"{Q_DENIED} Use `.roulette all <red|black|green>` or `.roulette <amount> <red|black|green>`")
         return
@@ -8533,7 +8585,7 @@ async def roulette(ctx, amount: str, color: str = None):
         await send_nonpositive_amount_error(ctx, raw_amount)
         return
 
-    if amount > data['balance'] and not has_economy_owner_power(ctx.author.id, ctx.guild):
+    if amount > data['balance'] and not can_bypass_gambling_limits(ctx.author.id, ctx.guild):
         await ctx.send(f"{Q_DENIED} You only have {format_balance(data['balance'])}")
         return
 
@@ -8655,7 +8707,7 @@ async def slots(ctx, amount: str):
         return
 
     raw_amount = amount
-    parsed = parse_amount(amount, ctx.author.id, ctx.guild, data['balance'])
+    parsed = parse_gambling_amount(amount, ctx.author.id, ctx.guild, data['balance'])
     if parsed is None:
         await ctx.send(f"{Q_DENIED} Use `.slots all` or `.slots <amount>` (max {MAX_BET:,} {CURRENCY_EMOJI})")
         return
@@ -8666,7 +8718,7 @@ async def slots(ctx, amount: str):
         await send_nonpositive_amount_error(ctx, raw_amount)
         return
 
-    if amount > data['balance'] and not has_economy_owner_power(ctx.author.id, ctx.guild):
+    if amount > data['balance'] and not can_bypass_gambling_limits(ctx.author.id, ctx.guild):
         await ctx.send(f"{Q_DENIED} You only have {format_balance(data['balance'])}")
         return
 
@@ -8837,7 +8889,7 @@ async def blackjack(ctx, amount: str):
         return
 
     raw_amount = amount
-    parsed = parse_amount(amount, ctx.author.id, ctx.guild, data['balance'])
+    parsed = parse_gambling_amount(amount, ctx.author.id, ctx.guild, data['balance'])
     if parsed is None:
         await ctx.send(f"{Q_DENIED} Use `.blackjack all` or `.blackjack <amount>` (max {MAX_BET:,} {CURRENCY_EMOJI})")
         return
@@ -8848,7 +8900,7 @@ async def blackjack(ctx, amount: str):
         await send_nonpositive_amount_error(ctx, raw_amount)
         return
 
-    if amount > data['balance'] and not has_economy_owner_power(ctx.author.id, ctx.guild):
+    if amount > data['balance'] and not can_bypass_gambling_limits(ctx.author.id, ctx.guild):
         await ctx.send(f"{Q_DENIED} You only have {format_balance(data['balance'])}")
         return
 
@@ -10299,7 +10351,7 @@ async def scratch(ctx, amount: str):
         return
 
     raw_amount = amount
-    parsed = parse_amount(amount, ctx.author.id, ctx.guild, data['balance'])
+    parsed = parse_gambling_amount(amount, ctx.author.id, ctx.guild, data['balance'])
     if parsed is None:
         await ctx.send(f"{Q_DENIED} Use `.scratch all` or `.scratch <amount>` (max {MAX_BET:,} {CURRENCY_EMOJI})")
         return
@@ -10310,7 +10362,7 @@ async def scratch(ctx, amount: str):
         await send_nonpositive_amount_error(ctx, raw_amount)
         return
 
-    if amount > data['balance'] and not has_economy_owner_power(ctx.author.id, ctx.guild):
+    if amount > data['balance'] and not can_bypass_gambling_limits(ctx.author.id, ctx.guild):
         await ctx.send(f"{Q_DENIED} You only have {format_balance(data['balance'])}")
         return
 
@@ -10440,7 +10492,7 @@ async def tower(ctx, amount: str):
         return
 
     raw_amount = amount
-    parsed = parse_amount(amount, ctx.author.id, ctx.guild, data["balance"])
+    parsed = parse_gambling_amount(amount, ctx.author.id, ctx.guild, data["balance"])
     if parsed is None:
         await ctx.send(f"{Q_DENIED} Use `.tower all` or `.tower <amount>` (max {MAX_BET:,} {CURRENCY_EMOJI})")
         return
@@ -10448,7 +10500,7 @@ async def tower(ctx, amount: str):
     if amount <= 0:
         await send_nonpositive_amount_error(ctx, raw_amount)
         return
-    if amount > data["balance"] and not has_economy_owner_power(ctx.author.id, ctx.guild):
+    if amount > data["balance"] and not can_bypass_gambling_limits(ctx.author.id, ctx.guild):
         await ctx.send(f"{Q_DENIED} You only have {format_balance(data['balance'])}")
         return
 
@@ -10608,7 +10660,7 @@ async def vault(ctx, amount: str):
         return
 
     raw_amount = amount
-    parsed = parse_amount(amount, ctx.author.id, ctx.guild, data["balance"])
+    parsed = parse_gambling_amount(amount, ctx.author.id, ctx.guild, data["balance"])
     if parsed is None:
         await ctx.send(f"{Q_DENIED} Use `.vault all` or `.vault <amount>` (max {MAX_BET:,} {CURRENCY_EMOJI})")
         return
@@ -10616,7 +10668,7 @@ async def vault(ctx, amount: str):
     if amount <= 0:
         await send_nonpositive_amount_error(ctx, raw_amount)
         return
-    if amount > data["balance"] and not has_economy_owner_power(ctx.author.id, ctx.guild):
+    if amount > data["balance"] and not can_bypass_gambling_limits(ctx.author.id, ctx.guild):
         await ctx.send(f"{Q_DENIED} You only have {format_balance(data['balance'])}")
         return
 
@@ -10717,7 +10769,7 @@ async def memory_game(ctx, amount: str):
         return
 
     raw_amount = amount
-    parsed = parse_amount(amount, ctx.author.id, ctx.guild, data["balance"])
+    parsed = parse_gambling_amount(amount, ctx.author.id, ctx.guild, data["balance"])
     if parsed is None:
         await ctx.send(f"{Q_DENIED} Use `.memory all` or `.memory <amount>` (max {MAX_BET:,} {CURRENCY_EMOJI})")
         return
@@ -10725,7 +10777,7 @@ async def memory_game(ctx, amount: str):
     if amount <= 0:
         await send_nonpositive_amount_error(ctx, raw_amount)
         return
-    if amount > data["balance"] and not has_economy_owner_power(ctx.author.id, ctx.guild):
+    if amount > data["balance"] and not can_bypass_gambling_limits(ctx.author.id, ctx.guild):
         await ctx.send(f"{Q_DENIED} You only have {format_balance(data['balance'])}")
         return
 
@@ -10946,7 +10998,7 @@ async def card_ladder(ctx, amount: str):
         return
 
     raw_amount = amount
-    parsed = parse_amount(amount, ctx.author.id, ctx.guild, data["balance"])
+    parsed = parse_gambling_amount(amount, ctx.author.id, ctx.guild, data["balance"])
     if parsed is None:
         await ctx.send(f"{Q_DENIED} Use `.cardladder all` or `.cardladder <amount>` (max {MAX_BET:,} {CURRENCY_EMOJI})")
         return
@@ -10954,7 +11006,7 @@ async def card_ladder(ctx, amount: str):
     if amount <= 0:
         await send_nonpositive_amount_error(ctx, raw_amount)
         return
-    if amount > data["balance"] and not has_economy_owner_power(ctx.author.id, ctx.guild):
+    if amount > data["balance"] and not can_bypass_gambling_limits(ctx.author.id, ctx.guild):
         await ctx.send(f"{Q_DENIED} You only have {format_balance(data['balance'])}")
         return
 
@@ -11145,7 +11197,7 @@ async def lockpick(ctx, amount: str):
         return
 
     raw_amount = amount
-    parsed = parse_amount(amount, ctx.author.id, ctx.guild, data["balance"])
+    parsed = parse_gambling_amount(amount, ctx.author.id, ctx.guild, data["balance"])
     if parsed is None:
         await ctx.send(f"{Q_DENIED} Use `.lockpick all` or `.lockpick <amount>` (max {MAX_BET:,} {CURRENCY_EMOJI})")
         return
@@ -11153,7 +11205,7 @@ async def lockpick(ctx, amount: str):
     if amount <= 0:
         await send_nonpositive_amount_error(ctx, raw_amount)
         return
-    if amount > data["balance"] and not has_economy_owner_power(ctx.author.id, ctx.guild):
+    if amount > data["balance"] and not can_bypass_gambling_limits(ctx.author.id, ctx.guild):
         await ctx.send(f"{Q_DENIED} You only have {format_balance(data['balance'])}")
         return
 
@@ -11349,14 +11401,14 @@ async def prepare_gamble(ctx, amount_text, command_name):
     if cd > 0:
         await send_gambling_cooldown(ctx, cd)
         return None, None
-    parsed = parse_amount(amount_text, ctx.author.id, ctx.guild, data["balance"])
+    parsed = parse_gambling_amount(amount_text, ctx.author.id, ctx.guild, data["balance"])
     if parsed is None:
         await ctx.send(f"{Q_DENIED} Use `.{command_name} all` or `.{command_name} <amount>` (max {MAX_BET:,} {CURRENCY_EMOJI})")
         return None, None
     if parsed <= 0:
         await send_nonpositive_amount_error(ctx, amount_text)
         return None, None
-    if parsed > data["balance"] and not has_economy_owner_power(ctx.author.id, ctx.guild):
+    if parsed > data["balance"] and not can_bypass_gambling_limits(ctx.author.id, ctx.guild):
         await ctx.send(f"{Q_DENIED} You only have {format_balance(data['balance'])}")
         return None, None
     if not await check_daily_loss_limit(ctx, data, parsed):
@@ -14368,7 +14420,7 @@ async def minesweeper(ctx, amount: str):
         return
 
     raw_amount = amount
-    parsed = parse_amount(amount, ctx.author.id, ctx.guild, data['balance'])
+    parsed = parse_gambling_amount(amount, ctx.author.id, ctx.guild, data['balance'])
     if parsed is None:
         await ctx.send(f"{Q_DENIED} Use `.ms all` or `.ms <amount>`")
         return
@@ -14379,7 +14431,7 @@ async def minesweeper(ctx, amount: str):
         await send_nonpositive_amount_error(ctx, raw_amount)
         return
 
-    if amount > data['balance'] and not has_economy_owner_power(ctx.author.id, ctx.guild):
+    if amount > data['balance'] and not can_bypass_gambling_limits(ctx.author.id, ctx.guild):
         await ctx.send(f"{Q_DENIED} You only have {format_balance(data['balance'])}")
         return
 
@@ -14670,7 +14722,7 @@ async def wheel(ctx, amount: str):
         return
 
     raw_amount = amount
-    parsed = parse_amount(amount, ctx.author.id, ctx.guild, data['balance'])
+    parsed = parse_gambling_amount(amount, ctx.author.id, ctx.guild, data['balance'])
     if parsed is None:
         await ctx.send(f"{Q_DENIED} Use `.wheel all` or `.wheel <amount>` (max {MAX_BET:,} {CURRENCY_EMOJI})")
         return
@@ -14681,7 +14733,7 @@ async def wheel(ctx, amount: str):
         await send_nonpositive_amount_error(ctx, raw_amount)
         return
 
-    if amount > data['balance'] and not has_economy_owner_power(ctx.author.id, ctx.guild):
+    if amount > data['balance'] and not can_bypass_gambling_limits(ctx.author.id, ctx.guild):
         await ctx.send(f"{Q_DENIED} You only have {format_balance(data['balance'])}")
         return
 
