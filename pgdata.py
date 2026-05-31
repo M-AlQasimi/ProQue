@@ -140,6 +140,14 @@ def _create_tables(cur):
     """)
 
     cur.execute("""
+        CREATE TABLE IF NOT EXISTS birthday_cards (
+            user_id BIGINT PRIMARY KEY,
+            prompt TEXT NOT NULL,
+            updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+        )
+    """)
+
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS afk_users (
             user_id BIGINT PRIMARY KEY,
             reason TEXT,
@@ -2078,6 +2086,67 @@ def remove_birthday(user_id):
         conn.close()
     except Exception:
         pass
+
+def load_birthday_cards():
+    """Load custom birthday card prompts. Returns dict {user_id: prompt}."""
+    _ensure_ready()
+    if not pg_ready:
+        return {}
+    try:
+        conn = pg_conn()
+        if conn is None:
+            return {}
+        cur = conn.cursor()
+        cur.execute("SELECT user_id, prompt FROM birthday_cards")
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        return {str(uid): prompt for uid, prompt in rows}
+    except Exception:
+        return {}
+
+def save_birthday_card(user_id, prompt):
+    _ensure_ready()
+    if not pg_ready:
+        return False
+    try:
+        conn = pg_conn()
+        if conn is None:
+            return False
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO birthday_cards (user_id, prompt, updated_at)
+            VALUES (%s, %s, NOW())
+            ON CONFLICT (user_id) DO UPDATE SET
+                prompt = EXCLUDED.prompt,
+                updated_at = NOW()
+            """,
+            (int(user_id), str(prompt or "")[:800])
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+        return True
+    except Exception:
+        return False
+
+def remove_birthday_card(user_id):
+    _ensure_ready()
+    if not pg_ready:
+        return False
+    try:
+        conn = pg_conn()
+        if conn is None:
+            return False
+        cur = conn.cursor()
+        cur.execute("DELETE FROM birthday_cards WHERE user_id = %s", (int(user_id),))
+        conn.commit()
+        cur.close()
+        conn.close()
+        return True
+    except Exception:
+        return False
 
 # === AFK USERS ===
 

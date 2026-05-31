@@ -40,6 +40,27 @@ except Exception:
 from flask import Flask
 from io import BytesIO
 from threading import Thread
+
+def load_local_env_file(path=".env"):
+    """Tiny dotenv fallback for local runs; Railway should still use real env vars."""
+    if not os.path.exists(path):
+        return
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            for raw_line in handle:
+                line = raw_line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                key = key.strip()
+                value = value.strip().strip('"').strip("'")
+                if key and key not in os.environ:
+                    os.environ[key] = value
+    except Exception:
+        pass
+
+load_local_env_file()
+
 from economy import (
     add_user_balance as economy_add_user_balance,
     award_chat_xp as economy_award_chat_xp,
@@ -161,6 +182,7 @@ from pgdata import (
     load_active_game_sessions,
     load_autoban_ids,
     load_blacklisted_users,
+    load_birthday_cards,
     load_birthdays as pg_load_birthdays,
     load_censored_phrases,
     load_disabled_commands,
@@ -182,6 +204,7 @@ from pgdata import (
     remove_active_timer,
     remove_active_giveaway,
     remove_active_alarm,
+    remove_birthday_card,
     remove_birthday,
     remove_sleeping_user,
     delete_message_event,
@@ -194,6 +217,7 @@ from pgdata import (
     save_autoban_ids,
     save_ai_channel_memory,
     save_ai_user_memory,
+    save_birthday_card,
     save_blacklisted_users,
     save_birthday,
     save_censored_phrases,
@@ -225,6 +249,11 @@ LONG_SETUP_VIEW_TIMEOUT = 60 * 60
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 CLOUDFLARE_API_KEY = os.getenv("CLOUDFLARE_API_KEY", "")
 CLOUDFLARE_ACCOUNT_ID = os.getenv("CLOUDFLARE_ACCOUNT_ID", "")
+HF_TOKEN = os.getenv("HF_TOKEN", "")
+HF_IMAGE_MODEL = os.getenv("HF_IMAGE_MODEL", "black-forest-labs/FLUX.1-schnell")
+HF_IMAGE_ENDPOINT = f"https://router.huggingface.co/hf-inference/models/{HF_IMAGE_MODEL}"
+HF_IMAGE_TIMEOUT_SECONDS = int(os.getenv("PROQUE_IMAGE_TIMEOUT", "120"))
+HF_IMAGE_COOLDOWN_SECONDS = int(os.getenv("PROQUE_IMAGE_COOLDOWN", "45"))
 AI_MODEL_TIMEOUT_SECONDS = 10
 AI_SUMMARY_MAX_MESSAGES = 250
 AI_SUMMARY_DEFAULT_MESSAGES = 80
@@ -244,7 +273,10 @@ heavy_command_semaphore = asyncio.Semaphore(HEAVY_COMMAND_CONCURRENCY_LIMIT)
 bulk_command_semaphore = asyncio.Semaphore(BULK_COMMAND_CONCURRENCY_LIMIT)
 ai_command_semaphore = asyncio.Semaphore(AI_COMMAND_CONCURRENCY_LIMIT)
 AI_COMMAND_NAMES = {
-    "ask", "generate", "analyse", "analyze", "summarize", "summarise", "summary",
+    "ask", "generate", "imagine", "image", "aiimage", "genimg", "profilebanner", "banner",
+    "profileart", "makeemoji", "genemoji", "emojiart", "eventposter", "poster", "eventart",
+    "bdaycard", "birthdaycard", "shoppreview", "itempreview", "shopart", "gameart",
+    "gameimage", "reactionimage", "aireaction", "reactimage", "analyse", "analyze", "summarize", "summarise", "summary",
     "aisummary", "tldr", "recap", "aidetect", "aicheck", "detectai",
     "authenticity", "authcheck", "essaycheck",
 }
@@ -265,6 +297,7 @@ birthdays = {
     str(uid): {"date": date}
     for uid, date in (pg_load_birthdays() or {}).items()
 }
+birthday_card_prompts = load_birthday_cards() or {}
 
 # Loaded from PostgreSQL
 afk_users = pg_load_afk_users() or {}
@@ -301,6 +334,128 @@ async def get_http_session():
         session = aiohttp.ClientSession(timeout=timeout, connector=connector)
         bot.proque_http_session = session
     return session
+
+IMAGE_STYLE_PRESETS = {
+    "general": "clean ProQue themed digital illustration, polished, high quality, subtle queso coins, no text, no watermark",
+    "banner": "wide Discord profile banner, clean ProQue themed digital art, elegant composition, subtle queso coins, no text, no watermark",
+    "emoji": "single custom Discord emoji icon, centered subject, transparent-looking simple background, bold readable silhouette, no text, no watermark",
+    "event": "Discord event poster background, cinematic clean composition, ProQue themed accents, no text, no watermark",
+    "game": "polished Discord game card art, dynamic but clean, ProQue themed accents, no text, no watermark",
+    "birthday": "premium birthday card illustration, cake, balloons, soft confetti, ProQue themed queso coins, no text, no watermark",
+    "reaction": "fun expressive reaction image, clean animated-style character energy, ProQue themed accents, no text, no watermark",
+    "shop": "premium shop item preview, product render style, clean dark background, subtle queso coins, no text, no watermark",
+}
+image_generation_cooldowns = {}
+
+def image_generation_available():
+    return bool(HF_TOKEN or (CLOUDFLARE_API_KEY and CLOUDFLARE_ACCOUNT_ID))
+
+def clean_image_prompt(prompt, *, max_chars=700):
+    prompt = re.sub(r"\s+", " ", str(prompt or "")).strip()
+    return prompt[:max_chars]
+
+def image_prompt_for(kind, prompt):
+    base = IMAGE_STYLE_PRESETS.get(kind, IMAGE_STYLE_PRESETS["general"])
+    prompt = clean_image_prompt(prompt)
+    return f"{base}. User request: {prompt}"
+
+def image_cooldown_left(user_id):
+    if int(user_id) == super_owner_id:
+        return 0.0
+    ready_at = image_generation_cooldowns.get(int(user_id), 0.0)
+    return max(0.0, ready_at - time.monotonic())
+
+def touch_image_cooldown(user_id):
+    if int(user_id) != super_owner_id:
+        image_generation_cooldowns[int(user_id)] = time.monotonic() + HF_IMAGE_COOLDOWN_SECONDS
+
+def image_extension(content_type):
+    content_type = (content_type or "").split(";", 1)[0].strip().lower()
+    if content_type.endswith("png"):
+        return "png"
+    if content_type.endswith("webp"):
+        return "webp"
+    return "jpg"
+
+async def generate_cloudflare_image_bytes(prompt):
+    import base64
+
+    if not CLOUDFLARE_API_KEY or not CLOUDFLARE_ACCOUNT_ID:
+        raise RuntimeError("Image generation is not configured.")
+    url = f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/run/@cf/black-forest-labs/flux-1-schnell"
+    headers = {"Authorization": f"Bearer {CLOUDFLARE_API_KEY}"}
+    session = await get_http_session()
+    async with session.post(url, json={"prompt": prompt, "num_steps": 4}, headers=headers, timeout=HF_IMAGE_TIMEOUT_SECONDS) as resp:
+        body = await resp.read()
+        if resp.status != 200:
+            raise RuntimeError(ai_http_error_message(resp.status, body.decode("utf-8", errors="ignore")))
+        data = json.loads(body.decode("utf-8", errors="ignore"))
+        return base64.b64decode(data["result"]["image"]), "png", "Cloudflare"
+
+async def generate_hf_image_bytes(prompt, *, width=1024, height=576, steps=4):
+    if not HF_TOKEN:
+        return await generate_cloudflare_image_bytes(prompt)
+    payload = {
+        "inputs": prompt,
+        "parameters": {
+            "width": int(width),
+            "height": int(height),
+            "num_inference_steps": int(steps),
+        },
+        "options": {"wait_for_model": True},
+    }
+    headers = {
+        "Authorization": f"Bearer {HF_TOKEN}",
+        "Content-Type": "application/json",
+        "Accept": "image/*",
+    }
+    session = await get_http_session()
+    try:
+        response_cm = session.post(HF_IMAGE_ENDPOINT, json=payload, headers=headers, timeout=HF_IMAGE_TIMEOUT_SECONDS)
+        resp = await response_cm.__aenter__()
+    except (aiohttp.ClientConnectorCertificateError, aiohttp.ClientSSLError):
+        response_cm = session.post(HF_IMAGE_ENDPOINT, json=payload, headers=headers, timeout=HF_IMAGE_TIMEOUT_SECONDS, ssl=False)
+        resp = await response_cm.__aenter__()
+    try:
+        body = await resp.read()
+        content_type = resp.headers.get("Content-Type", "")
+        if resp.status != 200 or not content_type.startswith("image/"):
+            text = body.decode("utf-8", errors="ignore")
+            raise RuntimeError(ai_http_error_message(resp.status, text))
+        return body, image_extension(content_type), "Hugging Face"
+    finally:
+        await response_cm.__aexit__(None, None, None)
+
+async def run_image_generation(ctx, prompt, *, kind="general", title="Generated Image", width=1024, height=576):
+    prompt = clean_image_prompt(prompt)
+    if not prompt:
+        return await send_command_input_ui(ctx, ctx.command.name, note="Enter what you want generated.")
+    if not image_generation_available():
+        return await ctx.send("Image generation is not configured. Add `HF_TOKEN` to Railway.")
+    left = image_cooldown_left(ctx.author.id)
+    if left > 0:
+        return await ctx.send(f"{economy_q_timer_tick} Image generation cooldown: **{left:.0f}s**.")
+    touch_image_cooldown(ctx.author.id)
+    await safe_add_reaction(ctx.message, economy_q_timer_tick)
+    try:
+        styled_prompt = image_prompt_for(kind, prompt)
+        image_bytes, ext, provider = await generate_hf_image_bytes(styled_prompt, width=width, height=height)
+        file = discord.File(BytesIO(image_bytes), filename=f"proque-{kind}.{ext}")
+        embed = standard_embed(
+            title,
+            description=f"{economy_q_image} Prompt: {embed_value(prompt, limit=700)}",
+            color=0x2A8FDA,
+            icon=economy_q_image,
+        )
+        embed.set_footer(text=f"Generated with {provider}")
+        embed.set_image(url=f"attachment://proque-{kind}.{ext}")
+        await safe_remove_reaction(ctx.message, economy_q_timer_tick, bot.user)
+        await ctx.reply(embed=embed, file=file, mention_author=False, allowed_mentions=discord.AllowedMentions.none())
+        return image_bytes, ext
+    except Exception as e:
+        await safe_remove_reaction(ctx.message, economy_q_timer_tick, bot.user)
+        await ctx.send(clean_user_error(e, ai_exception_message(e)))
+        return None
 
 async def polished_view_error(self, interaction: discord.Interaction, error: Exception, item):
     text = clean_user_error(error, "That panel had a problem. Run the command again for a fresh one.")
@@ -2662,6 +2817,18 @@ async def birthday_check_loop():
                     channel = guild.get_channel(config["channel_id"]) or bot.get_channel(config["channel_id"])
                     if not channel:
                         continue
+                    birthday_file = None
+                    birthday_image_url = None
+                    custom_prompt = birthday_card_prompts.get(str(user_id))
+                    if image_generation_available():
+                        try:
+                            card_prompt = image_prompt_for("birthday", birthday_card_prompt_for(member, custom_prompt))
+                            image_bytes, ext, _ = await generate_hf_image_bytes(card_prompt, width=1024, height=576)
+                            birthday_filename = f"birthday-{member.id}.{ext}"
+                            birthday_file = discord.File(BytesIO(image_bytes), filename=birthday_filename)
+                            birthday_image_url = f"attachment://{birthday_filename}"
+                        except Exception as e:
+                            print(f"Birthday card generation failed for {member.id}: {type(e).__name__} - {e}")
                     embed = discord.Embed(
                         title=f"{economy_q_birthday_cake} Birthday Drop {economy_q_birthday_balloons}",
                         description=(
@@ -2671,12 +2838,17 @@ async def birthday_check_loop():
                         color=discord.Color.from_rgb(42, 143, 218),
                         timestamp=now,
                     )
+                    if birthday_image_url:
+                        embed.set_image(url=birthday_image_url)
                     embed.set_footer(text="Pro𝚀𝚞𝚎 birthday alert")
-                    await channel.send(
-                        content=member.mention,
-                        embed=embed,
-                        allowed_mentions=discord.AllowedMentions(everyone=False, users=[member], roles=False)
-                    )
+                    send_kwargs = {
+                        "content": member.mention,
+                        "embed": embed,
+                        "allowed_mentions": discord.AllowedMentions(everyone=False, users=[member], roles=False),
+                    }
+                    if birthday_file:
+                        send_kwargs["file"] = birthday_file
+                    await channel.send(**send_kwargs)
                     already_sent.add(sent_key)
 
         await asyncio.sleep(60)
@@ -4486,6 +4658,14 @@ COMMAND_EXAMPLE_OVERRIDES = {
     "fw": ".fw <message link>",
     "fsleep": ".fsleep @user 1h",
     "give": ".give @user 1000",
+    "generate": ".generate clean ProQue mascot holding queso coins",
+    "imagine": ".imagine cozy server banner with queso coins",
+    "profilebanner": ".profilebanner dark green luxury profile banner",
+    "makeemoji": ".makeemoji happy queso coin",
+    "eventposter": ".eventposter weekend game night",
+    "gameart": ".gameart dungeon boss fight",
+    "shoppreview": ".shoppreview fortune vial",
+    "reactionimage": ".reactionimage shocked but funny",
     "giveaway": ".giveaway 10m prize",
     "kick": ".kick @user reason",
     "lockpick": ".lockpick 1000",
@@ -4542,6 +4722,7 @@ COMMAND_EXAMPLE_OVERRIDES = {
     "send": ".send #channel message",
     "summarize": ".summarize @user 1h",
     "setbday": ".setbday 25/12",
+    "bdaycard": ".bdaycard midnight blue gold balloons",
     "setbdaychannel": ".setbdaychannel #birthdays",
     "setnick": ".setnick @user new nickname",
     "setprefix": ".setprefix !",
@@ -6470,8 +6651,11 @@ HELP_CATEGORIES = {
     ],
     "Tools": ["userinfo", "pfp", "calc", "colour", "define", "timer", "ctimer", "alarm", "poll", "epoll", "translate", "find"],
     "Snipes": ["snipe", "dsnipe", "esnipe", "rsnipe"],
-    "AI": ["ask", "summarize", "aidetect", "generate", "analyse", "aimemory", "aiknow", "usersettings"],
-    "Community": ["afk", "sleep", "wake", "away", "setbday", "removebday", "activity", "activitystats", "messages"],
+    "AI": [
+        "ask", "summarize", "aidetect", "generate", "profilebanner", "makeemoji",
+        "eventposter", "gameart", "shoppreview", "reactionimage", "analyse", "aimemory", "aiknow", "usersettings",
+    ],
+    "Community": ["afk", "sleep", "wake", "away", "setbday", "bdaycard", "removebday", "activity", "activitystats", "messages"],
     "Admin Setup": [
         "settings", "setlogs", "prefix", "setbdaychannel", "editactivity", "endactivity", "stopactivity",
         "messageevent", "todchannel", "quewochannel", "levelupchannel", "robsettings", "aichannel",
@@ -15762,6 +15946,67 @@ def save_user_birthday(user_id, date):
     birthdays[str(user_id)] = {"date": date}
     save_birthday(user_id, date)
 
+def save_user_birthday_card(user_id, prompt):
+    prompt = clean_image_prompt(prompt, max_chars=800)
+    if not prompt:
+        birthday_card_prompts.pop(str(user_id), None)
+        return remove_birthday_card(user_id)
+    birthday_card_prompts[str(user_id)] = prompt
+    return save_birthday_card(user_id, prompt)
+
+def birthday_card_prompt_for(member, custom_prompt=None):
+    name = getattr(member, "display_name", None) or getattr(member, "name", "friend")
+    custom = clean_image_prompt(custom_prompt or "", max_chars=700)
+    if custom:
+        return f"Birthday card for {name}. Match this style/request: {custom}"
+    return f"Birthday card for {name}, warm celebratory ProQue theme, cake, balloons, subtle queso coins, clean modern Discord card"
+
+class BirthdayCardPromptModal(Modal):
+    def __init__(self, author_id):
+        super().__init__(title="Custom Birthday Card")
+        self.author_id = author_id
+        self.prompt = TextInput(
+            label="Card style",
+            placeholder="Example: midnight blue, gold balloons, elegant cake, cute but clean",
+            style=discord.TextStyle.paragraph,
+            max_length=500,
+        )
+        self.add_item(self.prompt)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if interaction.user.id != self.author_id:
+            return await interaction.response.send_message("Use your own birthday card setup.", ephemeral=True)
+        ok = await asyncio.to_thread(save_user_birthday_card, interaction.user.id, str(self.prompt.value).strip())
+        if not ok:
+            return await interaction.response.send_message("I saved your birthday, but couldn't save the custom card right now.", ephemeral=True)
+        await interaction.response.send_message(f"{economy_q_accept} Custom birthday card saved.", ephemeral=True)
+
+class BirthdayCardChoiceView(View):
+    def __init__(self, author_id):
+        super().__init__(timeout=LONG_SETUP_VIEW_TIMEOUT)
+        self.author_id = author_id
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id == self.author_id:
+            return True
+        await interaction.response.send_message("Use your own birthday card setup.", ephemeral=True)
+        return False
+
+    @discord.ui.button(label="Custom Card", emoji=economy_q_birthday_cake, style=discord.ButtonStyle.primary)
+    async def custom_card(self, interaction, button):
+        await interaction.response.send_modal(BirthdayCardPromptModal(self.author_id))
+
+    @discord.ui.button(label="Use Default", emoji=economy_q_birthday_balloons, style=discord.ButtonStyle.secondary)
+    async def default_card(self, interaction, button):
+        await asyncio.to_thread(save_user_birthday_card, interaction.user.id, "")
+        await interaction.response.send_message(f"{economy_q_accept} Default birthday card selected.", ephemeral=True)
+
+def birthday_saved_message():
+    return (
+        f"{economy_q_accept} Birthday saved!\n"
+        f"{economy_q_birthday_cake} Want a custom birthday card? Optional. If you skip it, I’ll use the default card with your name."
+    )
+
 class BirthdaySetupModal(Modal):
     def __init__(self, author_id):
         super().__init__(title="Set Birthday")
@@ -15776,7 +16021,11 @@ class BirthdaySetupModal(Modal):
             await asyncio.to_thread(save_user_birthday, interaction.user.id, str(self.date.value).strip())
         except ValueError:
             return await interaction.response.send_message("Use `DD/MM`, example: `25/12`.", ephemeral=True)
-        await interaction.response.send_message(f"{economy_q_accept} Birthday saved!", ephemeral=True)
+        await interaction.response.send_message(
+            birthday_saved_message(),
+            view=BirthdayCardChoiceView(interaction.user.id),
+            ephemeral=True,
+        )
 
 class OpenBirthdaySetupButton(Button):
     def __init__(self):
@@ -15796,9 +16045,37 @@ async def setbday(ctx, date: str = None):
         )
     try:
         await asyncio.to_thread(save_user_birthday, ctx.author.id, date)
-        await ctx.send(f"{economy_q_accept} Birthday saved!")
+        await ctx.send(
+            birthday_saved_message(),
+            view=BirthdayCardChoiceView(ctx.author.id),
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
     except ValueError:
         await ctx.send("Invalid date format. Use DD/MM.")
+
+@bot.command(name="bdaycard", aliases=["birthdaycard"])
+async def bdaycard(ctx, *, prompt: str = None):
+    if not prompt:
+        current = birthday_card_prompts.get(str(ctx.author.id))
+        embed = standard_embed(
+            "Birthday Card",
+            description=(
+                f"{economy_q_birthday_cake} Current: **{'custom' if current else 'default'}**\n"
+                "Press Custom Card, Use Default, or type `.bdaycard <style>`."
+            ),
+            color=0x2A8FDA,
+            icon=economy_q_birthday,
+        )
+        if current:
+            embed.add_field(name="Saved Style", value=embed_value(current), inline=False)
+        return await ctx.send(embed=embed, view=BirthdayCardChoiceView(ctx.author.id), allowed_mentions=discord.AllowedMentions.none())
+    if prompt.casefold() in {"default", "off", "clear", "remove"}:
+        await asyncio.to_thread(save_user_birthday_card, ctx.author.id, "")
+        return await ctx.send(f"{economy_q_accept} Default birthday card selected.")
+    ok = await asyncio.to_thread(save_user_birthday_card, ctx.author.id, prompt)
+    if not ok:
+        return await ctx.send("I couldn't save that birthday card right now.")
+    await ctx.send(f"{economy_q_accept} Custom birthday card saved.")
 
 @bot.command()
 async def removebday(ctx):
@@ -16194,47 +16471,104 @@ async def aidetect_command(ctx, *, text: str = None):
         await safe_remove_reaction(ctx.message, economy_q_timer_tick, bot.user)
         await ctx.send(clean_user_error(e, ai_exception_message(e)))
 
-@bot.command(name="generate")
-async def generate_command(ctx, *, prompt: str):
-    """Generate an image from text"""
-    if not CLOUDFLARE_API_KEY or not CLOUDFLARE_ACCOUNT_ID:
-        return await ctx.send("API not configured. Set CLOUDFLARE_API_KEY and CLOUDFLARE_ACCOUNT_ID.")
-    
-    await safe_add_reaction(ctx.message, economy_q_timer_tick)
+class GeneratedEmojiView(View):
+    def __init__(self, author_id, image_bytes, default_name="proque_emoji"):
+        super().__init__(timeout=180)
+        self.author_id = author_id
+        self.image_bytes = image_bytes
+        self.default_name = re.sub(r"[^\w]+", "_", default_name or "proque_emoji")[:32] or "proque_emoji"
 
-    url = f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/run/@cf/black-forest-labs/flux-1-schnell"
+    async def interaction_check(self, interaction):
+        if interaction.user.id == self.author_id:
+            return True
+        await interaction.response.send_message("Generate your own emoji first.", ephemeral=True)
+        return False
 
-    headers = {
-        "Authorization": f"Bearer {CLOUDFLARE_API_KEY}"
-    }
+    @discord.ui.button(label="Add Emoji", emoji=economy_q_accept, style=discord.ButtonStyle.success)
+    async def add_emoji(self, interaction, button):
+        if not interaction.guild:
+            return await interaction.response.send_message("Emoji uploads need to be used in a server.", ephemeral=True)
+        if not interaction.user.guild_permissions.manage_emojis_and_stickers:
+            return await interaction.response.send_message("You need Manage Emojis and Stickers for that.", ephemeral=True)
+        bot_member = interaction.guild.me or interaction.guild.get_member(bot.user.id)
+        if bot_member and not bot_member.guild_permissions.manage_emojis_and_stickers:
+            return await interaction.response.send_message("I need Manage Emojis and Stickers first.", ephemeral=True)
+        await interaction.response.send_modal(NameModal("emoji", BytesIO(self.image_bytes), default_name=self.default_name))
 
-    payload = {
-        "prompt": prompt,
-        "num_steps": 4
-    }
-
+async def generated_image_reply(ctx, prompt, *, kind, title, width=1024, height=576, view_factory=None):
+    result = await run_image_generation(ctx, prompt, kind=kind, title=title, width=width, height=height)
+    if not result or not view_factory:
+        return
+    image_bytes, _ = result
     try:
-        session = await get_http_session()
-        async with session.post(url, json=payload, headers=headers) as resp:
-            if resp.status != 200:
-                body = await resp.text()
-                await safe_remove_reaction(ctx.message, economy_q_timer_tick, bot.user)
-                return await ctx.send(ai_http_error_message(resp.status, body))
+        await ctx.message.reply(
+            f"{economy_q_image} Extra options are available on the generated image above.",
+            view=view_factory(image_bytes),
+            mention_author=False,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+    except Exception:
+        pass
 
-            data = await resp.json()
-            image_data = data["result"]["image"]
+@bot.command(name="generate", aliases=["imagine", "image", "aiimage", "genimg"])
+async def generate_command(ctx, *, prompt: str):
+    """Generate an image from text."""
+    await run_image_generation(ctx, prompt, kind="general", title="Generated Image")
 
-            import base64
-            from io import BytesIO
-            image_bytes = base64.b64decode(image_data)
-            file = discord.File(BytesIO(image_bytes), filename="generated.png")
+@bot.command(name="profilebanner", aliases=["banner", "profileart"])
+async def profile_banner_command(ctx, *, prompt: str):
+    """Generate a profile/banner image."""
+    await run_image_generation(ctx, prompt, kind="banner", title="Profile Banner", width=1024, height=384)
 
-            await safe_remove_reaction(ctx.message, economy_q_timer_tick, bot.user)
-            await ctx.send(file=file)
+@bot.command(name="makeemoji", aliases=["genemoji", "emojiart"])
+async def makeemoji_command(ctx, *, prompt: str):
+    """Generate an emoji-style image. Admins can add it as a server emoji."""
+    default_name = re.sub(r"[^\w]+", "_", clean_image_prompt(prompt, max_chars=40).lower())[:28] or "proque_emoji"
+    await generated_image_reply(
+        ctx,
+        prompt,
+        kind="emoji",
+        title="Emoji Draft",
+        width=512,
+        height=512,
+        view_factory=lambda image_bytes: GeneratedEmojiView(ctx.author.id, image_bytes, default_name),
+    )
 
-    except Exception as e:
-        await safe_remove_reaction(ctx.message, economy_q_timer_tick, bot.user)
-        await ctx.send(ai_exception_message(e))
+@bot.command(name="eventposter", aliases=["poster", "eventart"])
+@is_admin_power()
+async def eventposter_command(ctx, *, prompt: str):
+    """Generate a clean event poster/background."""
+    await run_image_generation(ctx, prompt, kind="event", title="Event Poster")
+
+@bot.command(name="gameart", aliases=["gameimage"])
+async def gameart_command(ctx, *, prompt: str):
+    """Generate polished game artwork or scene art."""
+    await run_image_generation(ctx, prompt, kind="game", title="Game Art")
+
+@bot.command(name="reactionimage", aliases=["aireaction", "reactimage"])
+async def reactionimage_command(ctx, *, prompt: str):
+    """Generate a fun reaction image."""
+    await run_image_generation(ctx, prompt, kind="reaction", title="Reaction Image")
+
+@bot.command(name="shoppreview", aliases=["itempreview", "shopart"])
+async def shoppreview_command(ctx, *, item_or_prompt: str):
+    """Generate a shop item preview image."""
+    shop_items = getattr(economy_module, "SHOP_ITEMS", {})
+    lookup = item_or_prompt.casefold().strip()
+    matched_id = None
+    for item_id, item in shop_items.items():
+        names = {item_id.casefold(), str(item.get("name", "")).casefold()}
+        if lookup in names:
+            matched_id = item_id
+            break
+    if matched_id:
+        item = shop_items[matched_id]
+        item_name = str(item.get("name", matched_id))
+        item_desc = getattr(economy_module, "item_short_description", lambda x: "")(item)
+        prompt = f"{item_name}, {item_desc}, premium Discord shop item preview"
+    else:
+        prompt = item_or_prompt
+    await run_image_generation(ctx, prompt, kind="shop", title="Shop Item Preview")
 
 
 # === IMAGE ANALYSIS COMMAND ===
