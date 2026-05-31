@@ -8866,9 +8866,9 @@ class TruthOrDareView(View):
         if not await truth_or_dare_channel_allowed(interaction):
             return await send_truth_or_dare_channel_denial(interaction, interaction.guild)
         selected_mode, prompt = truth_or_dare_pick(mode, interaction)
-        await interaction.response.edit_message(
+        await interaction.response.send_message(
             embed=truth_or_dare_embed(selected_mode, prompt, self.target_for(interaction)),
-            view=self,
+            view=TruthOrDareView(self.target_id),
             allowed_mentions=discord.AllowedMentions.none(),
         )
 
