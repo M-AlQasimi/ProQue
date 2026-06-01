@@ -28,6 +28,8 @@ MAX_BET = 200_000
 DEFAULT_BANK_LIMIT = 3_000_000
 BANK_SPACE_UPGRADE_AMOUNT = 3_000_000
 BANK_SPACE_UPGRADE_COST = 500_000
+PASSIVE_TOGGLE_COOLDOWN = 24 * 60 * 60
+PASSIVE_REWARD_MULTIPLIER = 0.95
 COOLDOWN_SECS = 10
 LONG_HELP_VIEW_TIMEOUT = 24 * 60 * 60
 LONG_SETUP_VIEW_TIMEOUT = 60 * 60
@@ -568,7 +570,9 @@ def init_db():
                     personal_bet_limit BIGINT,
                     gambling_pause_until TIMESTAMP,
                     tutorial_mode BOOLEAN DEFAULT TRUE,
-                    tutorial_uses INTEGER DEFAULT 0
+                    tutorial_uses INTEGER DEFAULT 0,
+                    passive_mode BOOLEAN DEFAULT FALSE,
+                    passive_changed_at TIMESTAMP
                 )
             """)
             cur.execute("""
@@ -771,6 +775,8 @@ def init_db():
             cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS gambling_pause_until TIMESTAMP")
             cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS tutorial_mode BOOLEAN DEFAULT TRUE")
             cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS tutorial_uses INTEGER DEFAULT 0")
+            cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS passive_mode BOOLEAN DEFAULT FALSE")
+            cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS passive_changed_at TIMESTAMP")
             cur.execute("ALTER TABLE economy_guild_settings ADD COLUMN IF NOT EXISTS allowed_channel_id BIGINT")
             cur.execute("ALTER TABLE economy_guild_settings ADD COLUMN IF NOT EXISTS levelup_channel_id BIGINT")
             cur.execute("ALTER TABLE economy_events ADD COLUMN IF NOT EXISTS channel_id BIGINT")
@@ -1212,7 +1218,7 @@ def complete_career_work(user_id, path_key, tier, correct, perfect=False):
     try:
         cur.execute("INSERT INTO economy (user_id, balance) VALUES (%s, 0) ON CONFLICT (user_id) DO NOTHING", (user_id,))
         cur.execute("INSERT INTO economy_careers (user_id, path_key) VALUES (%s, %s) ON CONFLICT (user_id) DO NOTHING", (user_id, path_key))
-        cur.execute("SELECT balance, total_earned FROM economy WHERE user_id = %s FOR UPDATE", (user_id,))
+        cur.execute("SELECT balance, total_earned, passive_mode FROM economy WHERE user_id = %s FOR UPDATE", (user_id,))
         econ = cur.fetchone()
         cur.execute("SELECT * FROM economy_careers WHERE user_id = %s FOR UPDATE", (user_id,))
         career = cur.fetchone()
@@ -1234,6 +1240,9 @@ def complete_career_work(user_id, path_key, tier, correct, perfect=False):
             pay += promotion_bonus
             promotions.append({"tier": new_tier, "bonus": promotion_bonus, "title": career_title(path_key, new_tier)})
 
+        passive_penalty = passive_mode_enabled(econ)
+        if passive_penalty:
+            pay = max(1, int(pay * PASSIVE_REWARD_MULTIPLIER))
         new_streak = old_streak + 1 if correct else 0
         new_balance = int(econ["balance"] or 0) + pay
         new_total_earned = int(econ["total_earned"] or 0) + pay
@@ -1274,6 +1283,7 @@ def complete_career_work(user_id, path_key, tier, correct, perfect=False):
             "streak": new_streak,
             "balance": new_balance,
             "promotions": promotions,
+            "passive_penalty": passive_penalty,
         }
     except Exception:
         conn.rollback()
@@ -4022,6 +4032,44 @@ def claim_bank_interest(user_id):
     log_transaction(user_id, "bank_interest", interest, "daily bank interest")
     return {"ok": True, "amount": interest, "balance": int(updated["balance"] or 0), "bank": bank}
 
+def set_passive_mode(user_id, enabled):
+    user_id = int(user_id)
+    enabled = bool(enabled)
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("INSERT INTO economy (user_id, balance) VALUES (%s, 0) ON CONFLICT (user_id) DO NOTHING", (user_id,))
+        cur.execute("SELECT passive_mode, passive_changed_at FROM economy WHERE user_id = %s FOR UPDATE", (user_id,))
+        row = cur.fetchone() or {}
+        current = bool(row.get("passive_mode"))
+        changed_at = row.get("passive_changed_at")
+        now = datetime.now(timezone.utc)
+        if current == enabled:
+            conn.rollback()
+            return {"ok": True, "changed": False, "enabled": current, "cooldown_until": None}
+        if changed_at:
+            changed_at = changed_at.replace(tzinfo=timezone.utc) if changed_at.tzinfo is None else changed_at
+            cooldown_until = changed_at + timedelta(seconds=PASSIVE_TOGGLE_COOLDOWN)
+            if now < cooldown_until:
+                conn.rollback()
+                return {"ok": False, "reason": "cooldown", "enabled": current, "cooldown_until": cooldown_until}
+        cur.execute(
+            "UPDATE economy SET passive_mode = %s, passive_changed_at = %s WHERE user_id = %s",
+            (enabled, now.replace(tzinfo=None), user_id),
+        )
+        cur.execute(
+            "INSERT INTO economy_transactions (user_id, kind, amount, note) VALUES (%s, %s, %s, %s)",
+            (user_id, "passive_mode", 0, "Passive mode on" if enabled else "Passive mode off"),
+        )
+        conn.commit()
+        return {"ok": True, "changed": True, "enabled": enabled, "cooldown_until": now + timedelta(seconds=PASSIVE_TOGGLE_COOLDOWN)}
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cur.close()
+        conn.close()
+
 def rob_user_sync(guild_id, robber_id, target_id):
     if not robbing_enabled(guild_id):
         return {"ok": False, "message": f"{Q_DENIED} Robbing is disabled in this server."}
@@ -4040,6 +4088,10 @@ def rob_user_sync(guild_id, robber_id, target_id):
         rows = {int(first_row["user_id"]): first_row, int(second_row["user_id"]): second_row}
         robber = rows[int(robber_id)]
         target = rows[int(target_id)]
+        if passive_mode_enabled(robber):
+            return {"ok": False, "message": f"{Q_DENIED} You can't rob while passive mode is on. Use `.passive off` first."}
+        if passive_mode_enabled(target):
+            return {"ok": False, "message": f"{Q_TRUST} They are in passive mode, so their cash is protected from robbery."}
         target_cash = int(target["balance"] or 0)
         robber_cash = int(robber["balance"] or 0)
         if target_cash < 25_000:
@@ -4636,6 +4688,15 @@ def level_reward_multiplier(data):
 
 def claim_reward_multiplier(data):
     return 1 + item_bonus(data, "daily_spice", 0.02, 10)
+
+def passive_mode_enabled(data):
+    return bool((data or {}).get("passive_mode"))
+
+def passive_reward_multiplier(data):
+    return PASSIVE_REWARD_MULTIPLIER if passive_mode_enabled(data) else 1.0
+
+def passive_reward_note(data):
+    return f"\n{Q_TRUST} Passive mode: -5% reward." if passive_mode_enabled(data) else ""
 
 def next_claim_streak(user_id, data, field, last_field, period_seconds):
     streak = int(data.get(field) or 0)
@@ -5860,6 +5921,7 @@ async def bal(ctx, member: discord.Member = None):
     embed.add_field(name="Bank", value=format_balance(data.get('bank_balance', 0)), inline=True)
     embed.add_field(name="Total", value=format_balance(int(data['balance'] or 0) + int(data.get('bank_balance') or 0)), inline=True)
     embed.add_field(name="Bank Space", value=bank_space_text(data), inline=False)
+    embed.add_field(name="Passive", value="On" if passive_mode_enabled(data) else "Off", inline=True)
     if streak_lines:
         embed.add_field(name="Streaks", value=streak_lines.strip(), inline=False)
     embed.add_field(name="Daily Streak", value=plural_unit(data["daily_streak"], "day"), inline=True)
@@ -6208,7 +6270,10 @@ class CareerTaskButton(discord.ui.Button):
             color=color,
         )
         embed.add_field(name="Result", value=f"**{grade}**\nBest answer: **{view.task['answer']}**", inline=True)
-        embed.add_field(name="Reward", value=f"{format_balance(result['pay'])}\n+**{result['xp_gain']:,}** career XP", inline=True)
+        reward_text = f"{format_balance(result['pay'])}\n+**{result['xp_gain']:,}** career XP"
+        if result.get("passive_penalty"):
+            reward_text += f"\n{Q_TRUST} Passive -5%"
+        embed.add_field(name="Reward", value=reward_text, inline=True)
         embed.add_field(name="Balance", value=format_balance(result["balance"]), inline=True)
         if result["promotions"]:
             promo_lines = [f"{Q_PROMOTION} **Tier {p['tier']} - {p['title']}** bonus **{format_balance(p['bonus'])}**" for p in result["promotions"]]
@@ -6334,6 +6399,66 @@ async def robsettings(ctx, setting: str = None):
         return await ctx.send(f"{Q_ROB} Robbing is now **disabled**.")
     enabled = await asyncio.to_thread(robbing_enabled, ctx.guild.id)
     await ctx.send(f"{Q_ROB} Robbing is **{'enabled' if enabled else 'disabled'}**.\nUse `.robsettings on` or `.robsettings off`.")
+
+@commands.command(name="passive", aliases=["passivemode", "pacifist"])
+async def passive(ctx, setting: str = None):
+    if not await ensure_db_ready(ctx):
+        return
+    try:
+        data = await asyncio.to_thread(get_user, ctx.author.id)
+    except Exception:
+        return await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
+
+    key = str(setting or "status").casefold()
+    if key in {"on", "enable", "enabled", "true"}:
+        try:
+            result = await asyncio.to_thread(set_passive_mode, ctx.author.id, True)
+        except Exception:
+            return await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
+    elif key in {"off", "disable", "disabled", "false"}:
+        try:
+            result = await asyncio.to_thread(set_passive_mode, ctx.author.id, False)
+        except Exception:
+            return await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
+    else:
+        changed_at = data.get("passive_changed_at")
+        cooldown = ""
+        if changed_at:
+            changed_at = changed_at.replace(tzinfo=timezone.utc) if changed_at.tzinfo is None else changed_at
+            ready_at = changed_at + timedelta(seconds=PASSIVE_TOGGLE_COOLDOWN)
+            if datetime.now(timezone.utc) < ready_at:
+                cooldown = f"\nNext toggle: {discord_relative_time(ready_at)}"
+        status = "on" if passive_mode_enabled(data) else "off"
+        embed = discord.Embed(
+            title=f"{Q_TRUST} Passive Mode",
+            description=(
+                f"{user_mention(ctx.author.id)}\n"
+                f"Status: **{status}**{cooldown}"
+            ),
+            color=discord.Color.blurple() if passive_mode_enabled(data) else discord.Color.gold(),
+        )
+        embed.add_field(name="Protection", value="When on, users cannot rob your cash.", inline=False)
+        embed.add_field(name="Tradeoff", value="You cannot rob others, and claims/work pay **5% less**.", inline=False)
+        embed.add_field(name="Use", value="`.passive on`\n`.passive off`", inline=False)
+        return await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
+    if not result.get("ok"):
+        return await ctx.send(
+            f"{Q_TIMER_TICK} Passive mode can be changed again {discord_relative_time(result['cooldown_until'])}.",
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+    if not result.get("changed"):
+        status = "already on" if result.get("enabled") else "already off"
+        return await ctx.send(f"{Q_TRUST} Passive mode is **{status}**.", allowed_mentions=discord.AllowedMentions.none())
+
+    if result.get("enabled"):
+        text = (
+            f"{Q_TRUST} Passive mode is now **on**.\n"
+            "Your cash is protected from robbing, but you cannot rob and claims/work pay **5% less**."
+        )
+    else:
+        text = f"{Q_TRUST} Passive mode is now **off**. Robbing works normally again if this server allows it."
+    await ctx.send(text, allowed_mentions=discord.AllowedMentions.none())
 
 @commands.command(name="quewochannel", aliases=["qchannel", "econchannel", "economychannel", "gamblingchannel", "setquewochannel"])
 async def quewochannel(ctx, *, channel: str = None):
@@ -8322,6 +8447,7 @@ async def daily(ctx):
     streak_bonus = min(max(streak - 1, 0) * 10, 200)
     reward = base_reward + streak_bonus
     reward = int(reward * claim_reward_multiplier(data))
+    reward = int(reward * passive_reward_multiplier(data))
 
     try:
         def claim_daily_sync():
@@ -8342,7 +8468,7 @@ async def daily(ctx):
         return
 
     extra = f"\n{Q_QUEST} Main quest complete: **{format_balance(achievement_reward)}**!" if achievement_reward else ""
-    await reply_to_command(ctx, f"{QOIN_BAG} You claimed **{format_balance(reward)}**!\nStreak: **{plural_unit(streak, 'day')}** (+{streak_bonus} bonus){freeze_note}{extra}")
+    await reply_to_command(ctx, f"{QOIN_BAG} You claimed **{format_balance(reward)}**!\nStreak: **{plural_unit(streak, 'day')}** (+{streak_bonus} bonus){freeze_note}{passive_reward_note(data)}{extra}")
     await asyncio.to_thread(upsert_claim_reminder, ctx.author.id, "daily", now + timedelta(seconds=86400))
     await maybe_send_tutorial(ctx, updated, "start")
 
@@ -8374,6 +8500,7 @@ async def weekly(ctx):
     streak_bonus = min(max(streak - 1, 0) * 50, 500)
     reward = base_reward + streak_bonus
     reward = int(reward * claim_reward_multiplier(data))
+    reward = int(reward * passive_reward_multiplier(data))
 
     try:
         def claim_weekly_sync():
@@ -8394,7 +8521,7 @@ async def weekly(ctx):
         return
 
     extra = f"\n{Q_QUEST} Main quest complete: **{format_balance(achievement_reward)}**!" if achievement_reward else ""
-    await reply_to_command(ctx, f"{QOIN_BAG} You claimed **{format_balance(reward)}**!\nWeekly streak: **{plural_unit(streak, 'week')}** (+{streak_bonus} bonus){freeze_note}{extra}")
+    await reply_to_command(ctx, f"{QOIN_BAG} You claimed **{format_balance(reward)}**!\nWeekly streak: **{plural_unit(streak, 'week')}** (+{streak_bonus} bonus){freeze_note}{passive_reward_note(data)}{extra}")
     await asyncio.to_thread(upsert_claim_reminder, ctx.author.id, "weekly", now + timedelta(seconds=604800))
 
 @commands.command()
@@ -8425,6 +8552,7 @@ async def monthly(ctx):
     streak_bonus = min(max(streak - 1, 0) * 500, 5000)
     reward = base_reward + streak_bonus
     reward = int(reward * claim_reward_multiplier(data))
+    reward = int(reward * passive_reward_multiplier(data))
 
     try:
         def claim_monthly_sync():
@@ -8445,7 +8573,7 @@ async def monthly(ctx):
         return
 
     extra = f"\n{Q_QUEST} Main quest complete: **{format_balance(achievement_reward)}**!" if achievement_reward else ""
-    await reply_to_command(ctx, f"{QOIN_BAG} You claimed **{format_balance(reward)}**!\nMonthly streak: **{plural_unit(streak, 'month')}** (+{streak_bonus} bonus){freeze_note}{extra}")
+    await reply_to_command(ctx, f"{QOIN_BAG} You claimed **{format_balance(reward)}**!\nMonthly streak: **{plural_unit(streak, 'month')}** (+{streak_bonus} bonus){freeze_note}{passive_reward_note(data)}{extra}")
     await asyncio.to_thread(upsert_claim_reminder, ctx.author.id, "monthly", now + timedelta(seconds=2592000))
 
 # =====================
@@ -15088,9 +15216,12 @@ EXPLANATIONS = {
     "recgame": "Alias for `.recommendgame`. Suggests a game.",
     "whatgame": "Alias for `.recommendgame`. Suggests a game.",
     "suggestgame": "Alias for `.recommendgame`. Suggests a game.",
-    "rob": "Attempts to rob cash from another user if this server has robbing enabled. Banked money is protected.",
+    "rob": "Attempts to rob cash from another user if this server has robbing enabled. Banked money and passive users are protected.",
     "stealqs": "Alias for `.rob`. Attempts to rob cash.",
     "mug": "Alias for `.rob`. Attempts to rob cash.",
+    "passive": "Toggles passive mode. Passive protects your cash from robbing, blocks you from robbing, and makes claims/work pay 5% less.",
+    "passivemode": "Alias for `.passive`. Toggles passive protection.",
+    "pacifist": "Alias for `.passive`. Toggles passive protection.",
     "robsettings": "Admin command. Enables or disables robbing for this server.",
     "robbing": "Alias for `.robsettings`. Shows or changes robbing status.",
     "setrob": "Alias for `.robsettings`. Shows or changes robbing status.",
@@ -15494,7 +15625,8 @@ DETAILED_EXPLANATIONS = {
     "bank": f"Protected savings for 𝚀𝚞𝚎wo. Use `.bank` to view cash, bank, total, and bank space. Use `.bank deposit 100k` to protect cash, `.bank deposit all` to store as much as fits, `.bank withdraw 50k` to move money back to spendable cash, or `.bank interest` to claim small daily interest. Bank starts with {format_balance(DEFAULT_BANK_LIMIT)} space. Buy Bank Space in `.shop` for {format_balance(BANK_SPACE_UPGRADE_COST)} to add {format_balance(BANK_SPACE_UPGRADE_AMOUNT)} more. Robbing can only touch cash, never banked money.",
     "tutorial": "Tutorial mode is on for new users. After a few starter prompts it shows an End Tutorial button. Use `.tutorial off` to stop starter tips or `.tutorial on` to bring them back.",
     "recommendgame": "Looks at your cash and recent game stats, then suggests a game that makes sense for your bankroll and risk. It prioritizes safe/free games when you are low on cash and cashout-control games when you have more room.",
-    "rob": "Robbing is server-controlled with `.robsettings on/off`. If enabled, `.rob @user` can steal a small chunk of the target's cash balance, capped at 200k, but it can fail and pay the target a fine. Banked money cannot be robbed.",
+    "rob": "Robbing is server-controlled with `.robsettings on/off`. If enabled, `.rob @user` can steal a small chunk of the target's cash balance, capped at 200k, but it can fail and pay the target a fine. Banked money and passive-mode users cannot be robbed.",
+    "passive": "Passive mode is personal rob protection. Use `.passive on` to protect your cash from robbery, or `.passive off` to return to normal. While passive is on, you cannot rob other users and daily/weekly/monthly/work rewards pay 5% less. Passive can only be toggled once every 24 hours.",
     "quewochannel": "Server owner/admin setting for where 𝚀𝚞𝚎wo can be used. Use `.quewochannel here` to restrict economy and gambling commands to the current channel, `.quewochannel #channel` to choose another text channel, or `.quewochannel off` to allow all channels again. Admin management commands can still be used outside the chosen channel so the setting can be changed later.",
     "levelupchannel": "Server owner/admin setting for level-up announcements. Use `.levelupchannel here` to send all future level-up messages to the current channel, `.levelupchannel #channel` to choose another text channel, or `.levelupchannel off` to send level-ups in the channel where the user leveled. Level-up messages mention the user.",
     "profile": f"Shows level, current XP toward the next level, balance, net gambling result, and shop items. Chat XP can level you up and level rewards start at {format_balance(LEVEL_REWARD_BASE)}.",
@@ -15667,7 +15799,7 @@ DETAILED_EXPLANATIONS = {
 
 ECONHELP_COMMANDS = [
     ("Start", ["guide", "onboard", "tutorial", "recommendgame", "bal", "profile", "bank", "inventory", "career", "jobs", "work"]),
-    ("Money", ["daily", "weekly", "monthly", "streaks", "claimreminders", "cooldowns", "quests", "dailychallenge", "shop", "settheme", "give"]),
+    ("Money", ["daily", "weekly", "monthly", "streaks", "claimreminders", "cooldowns", "quests", "dailychallenge", "shop", "settheme", "give", "passive"]),
     ("Lottery", ["lottery", "tickets", "buytick", "lotterystats"]),
     ("Games", ["cf", "roulette", "slots", "blackjack", "scratch", "tower", "vault", "memory", "cardladder", "lockpick", "heist", "diceduel", "cases", "plinko", "luckynumber", "jackpotspin", "dungeon", "ms", "wheel", "rob"]),
     ("Progress", ["lb", "gamestats", "achievements", "setbadge", "gamehistory", "season", "seasonpass", "transactions", "limits", "riskprofile", "gamebalance"]),
@@ -15960,7 +16092,7 @@ async def setup(bot_ref, log_callback=None):
     print(f"𝚀𝚞𝚎wo db_ready = {db_ready}")
 
     economy_commands = [
-        bal, bank, tutorial, recommendgame, career, jobs, work, robsettings, quewochannel, levelupchannel, rob, profile, inventory, settheme, quests, dailychallenge, streaks, guide, onboard, shop, claimreminders, cooldowns, transactions, limits, lottery, editlottery, stoplottery, lotterystats, tickets, buytick,
+        bal, bank, tutorial, recommendgame, career, jobs, work, robsettings, passive, quewochannel, levelupchannel, rob, profile, inventory, settheme, quests, dailychallenge, streaks, guide, onboard, shop, claimreminders, cooldowns, transactions, limits, lottery, editlottery, stoplottery, lotterystats, tickets, buytick,
         daily, weekly, monthly, gamble, roulette, slots, blackjack,
         scratch, tower, vault, memory_game, card_ladder, lockpick, heist, dice_duel, cases, plinko, lucky_number, jackpot_spin, dungeon, minesweeper, wheel, give, move_quesos, move_tickets, lb, gamestats, achievements, setbadge, gamebalance, gameaudit, balanceaudit, balancedashboard, event, gamehistory, season, seasonpass, endseason, qstats, economyhealth, economyaudit, abuseaudit, riskprofile, add, remove, addtick, removetick, settick, lotterypot, setquesos, addxp, removexp, addlvl, removelvl, setlvl, econhelp, explain
     ]
