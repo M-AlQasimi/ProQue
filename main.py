@@ -40,6 +40,7 @@ except Exception:
 from flask import Flask
 from io import BytesIO
 from threading import Thread
+from proque_text import embed_value, fit_discord_content, fit_embed_value, joined_embed_value
 
 def load_local_env_file(path=".env"):
     """Tiny dotenv fallback for local runs; Railway should still use real env vars."""
@@ -500,6 +501,8 @@ truth_or_dare_channels = load_truth_or_dare_channels()
 disabled_commands = load_disabled_commands()
 bot_maintenance_mode = False
 bot_maintenance_reason = ""
+bot_panic_mode = False
+bot_panic_reason = ""
 maintenance_notice_times = {}
 guild_prefixes = load_guild_prefixes()
 guild_birthday_channels = load_guild_birthday_channels()
@@ -608,17 +611,6 @@ def set_embed_field(embed, index, name, value, inline=True):
         embed.set_field_at(index, name=name, value=value, inline=inline)
     else:
         embed.add_field(name=name, value=value, inline=inline)
-
-def embed_value(text, limit=1024):
-    text = str(text or "None.")
-    return text if len(text) <= limit else text[:limit - 1] + "…"
-
-def joined_embed_value(lines, empty="None.", limit=1024):
-    lines = [str(line) for line in lines if str(line)]
-    if not lines:
-        return empty
-    value = "\n".join(lines)
-    return embed_value(value, limit)
 
 def compact_ai_payload_text(text, limit):
     text = str(text or "")
@@ -1412,7 +1404,7 @@ def should_use_full_bot_context(text):
     return bool(BOT_KNOWLEDGE_RE.search(text))
 
 def command_ai_summary(command, prefix):
-    aliases = ", ".join(visible_aliases_for(command, 1))
+    aliases = [f"{prefix}{alias}" for alias in visible_aliases_for(command, 1)]
     signature = getattr(command, "signature", "") or ""
     usage = f"{prefix}{command.qualified_name}" + (f" {signature}" if signature else "")
     key = command.name.casefold()
@@ -1426,7 +1418,7 @@ def command_ai_summary(command, prefix):
         explanation = getattr(command, "help", None) or getattr(command, "brief", None) or "Runs this bot command."
     bits = [f"`{usage}`"]
     if aliases:
-        bits.append(f"aliases: {aliases}")
+        bits.append(f"alias `{aliases[0]}`")
     bits.append(compact_ai_text(explanation, 180))
     return " - ".join(bits)
 
@@ -4052,10 +4044,10 @@ async def start_message_event(channel, guild, author, end_time, title):
     )
     if not saved:
         try:
-            await message.edit(content=f"{economy_q_warning} Could not save this message event. Database unavailable.", embed=None)
+            await message.edit(content=f"{economy_q_warning} Could not save this message event. I had trouble reaching the database.", embed=None)
         except Exception:
             pass
-        return False, f"{economy_q_warning} Could not save this message event. Database unavailable."
+        return False, f"{economy_q_warning} Could not save this message event. I had trouble reaching the database."
     active_message_event_cache[guild.id] = dict(row)
     schedule_message_event_finish(guild.id, row)
     return True, f"{economy_q_event} Message event started: {message.jump_url}"
@@ -4662,6 +4654,9 @@ COMMAND_EXAMPLE_OVERRIDES = {
     "recover": ".recover",
     "off": ".off updating",
     "on": ".on",
+    "panic": ".panic checking suspicious money movement",
+    "unpanic": ".unpanic",
+    "rollbacktx": ".rollbacktx QTX-1234567890-1234",
     "dbaudit": ".dbaudit",
     "aiguard": ".aiguard",
     "styleaudit": ".styleaudit",
@@ -5146,9 +5141,10 @@ AI_CONFIRM_COMMANDS = {
 
 AI_SUPEROWNER_ONLY_COMMANDS = {
     "add", "remove", "move", "moveqs", "movequesos", "addtick", "removetick", "remtick", "deltick", "movetick", "moveticks", "ticketmove", "moveticket", "settick", "lotterypot", "lotteryprize", "prizepool", "setpot", "addpot", "removepot", "setquesos",
+    "rollbacktx", "rollbackreceipt", "undotx", "undoreceipt",
     "editlottery", "stoplottery", "qstats", "economystats", "qstatus", "economyhealth", "ecohealth", "moneyhealth", "supply", "balancedashboard", "ecodashboard", "moneydashboard", "sinkdashboard", "endseason", "rewardseason",
     "disable", "enable", "disableall", "enableall", "prefix", "preifx", "setprefix",
-    "off", "on", "maintenance", "botoff", "boton", "updatebot", "onlinebot", "finishupdate",
+    "off", "on", "panic", "unpanic", "maintenance", "botoff", "boton", "updatebot", "onlinebot", "finishupdate", "panicmode", "lockmoney", "economyfreeze", "calm", "clearpanic", "unlockmoney", "economyunfreeze",
     "settings", "setup", "setlogs", "slashsync", "auditcommands", "cmdaudit", "commandaudit", "styleaudit", "uiaudit", "messageaudit", "commandcleanup", "cleanupcommands", "cmdcleanup", "dbaudit", "databaseaudit", "backgroundjobs", "tasks", "bgjobs", "errors", "errorlog", "recover", "restorestate", "recovery", "aihistory", "aiactions", "actionhistory",
     "aisettings", "aiconfig", "aicontrols", "aiperms", "aipermissions", "aicapabilities", "aiauthority", "aiguard", "aicommandsafety", "aiignore", "ignoreai", "aiunignore", "unignoreai", "aistyle", "aipersonality",
     "block", "unblock", "shut", "unshut", "rshut", "unrshut", "lockdown", "reopen",
@@ -5457,11 +5453,24 @@ def maintenance_settings_from_rows(rows):
     enabled = settings.get("maintenance_mode", "off").casefold() == "on"
     return enabled, settings.get("maintenance_reason", "")
 
+def panic_settings_from_rows(rows):
+    settings = {str(row[2]): str(row[3]) for row in rows}
+    enabled = settings.get("panic_mode", "off").casefold() == "on"
+    return enabled, settings.get("panic_reason", "")
+
 async def load_maintenance_mode():
     global bot_maintenance_mode, bot_maintenance_reason
     rows = await asyncio.to_thread(get_ai_control_settings, "global", 0)
     bot_maintenance_mode, bot_maintenance_reason = maintenance_settings_from_rows(rows)
+    await load_panic_mode(rows)
     return bot_maintenance_mode
+
+async def load_panic_mode(rows=None):
+    global bot_panic_mode, bot_panic_reason
+    if rows is None:
+        rows = await asyncio.to_thread(get_ai_control_settings, "global", 0)
+    bot_panic_mode, bot_panic_reason = panic_settings_from_rows(rows)
+    return bot_panic_mode
 
 def maintenance_notice_allowed(channel_id, ttl=60):
     now = time.time()
@@ -5532,6 +5541,17 @@ async def set_maintenance_mode(enabled, *, reason="", updated_by=None):
     except Exception:
         pass
     return True, changed_nicks
+
+async def set_panic_mode(enabled, *, reason="", updated_by=None):
+    global bot_panic_mode, bot_panic_reason
+    stored = "on" if enabled else "off"
+    ok_mode = await asyncio.to_thread(set_ai_control_setting, "global", 0, "panic_mode", stored, updated_by or super_owner_id)
+    ok_reason = await asyncio.to_thread(set_ai_control_setting, "global", 0, "panic_reason", str(reason or "")[:300], updated_by or super_owner_id)
+    if not (ok_mode and ok_reason):
+        return False
+    bot_panic_mode = bool(enabled)
+    bot_panic_reason = str(reason or "")[:300]
+    return True
 
 def user_setting_value(settings, key):
     defaults = {"aifriendly": "on"}
@@ -6758,6 +6778,12 @@ async def on_command_error(ctx, error):
                 f"{economy_q_timer_tick} Pro𝚀𝚞𝚎 is updating right now. Try again soon.{reason}",
                 allowed_mentions=discord.AllowedMentions.none(),
             )
+        elif error.command_name == "panic":
+            reason = f"\nReason: {bot_panic_reason}" if bot_panic_reason else ""
+            await ctx.send(
+                f"{economy_q_warning} 𝚀𝚞𝚎wo money actions are locked for a quick safety check.{reason}",
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
         else:
             await ctx.send(f"{economy_q_warning} `{error.command_name}` is taking a nap here. An admin disabled it.")
 
@@ -6856,8 +6882,9 @@ SUPEROWNER_HELP_COMMANDS = [
     "add", "remove", "addtick", "removetick", "settick", "lotterypot", "setquesos",
     "move", "movetick",
     "addxp", "removexp", "addlvl", "removelvl", "setlvl",
+    "rollbacktx",
     "editlottery", "stoplottery", "qstats", "economyhealth", "balancedashboard", "endseason",
-    "off", "on",
+    "off", "on", "panic", "unpanic",
     "send", "reply", "speak", "wake", "clearwatchlist",
         "aisettings", "aiperms", "aiignore", "aiunignore", "aistyle",
     "aihistory", "auditcommands", "styleaudit", "commandcleanup", "permaudit", "receipts", "aiguard",
@@ -6866,12 +6893,25 @@ SUPEROWNER_HIDDEN_COMMANDS = {
     *SUPEROWNER_HELP_COMMANDS,
     "relay", "talkthrough",
     "maintenance", "botoff", "boton", "updatebot", "onlinebot", "finishupdate",
+    "panicmode", "lockmoney", "economyfreeze", "calm", "clearpanic", "unlockmoney", "economyunfreeze",
+    "rollbackreceipt", "undotx", "undoreceipt",
     "remtick", "deltick", "lotteryprize", "prizepool", "setpot", "addpot", "removepot",
     "moveqs", "movequesos", "moveticks", "ticketmove", "moveticket",
     "givexp", "remxp", "delxp", "addlevel", "removelvls", "remlevel", "removelevel", "dellvl", "dellevel", "setlevel",
     "economystats", "qstatus", "ecohealth", "moneyhealth", "supply", "rewardseason",
     "aiconfig", "aicontrols", "ignoreai", "unignoreai", "aipermissions", "aicapabilities", "aiauthority", "aipersonality",
     "aiactions", "actionhistory", "cmdaudit", "commandaudit", "uiaudit", "messageaudit", "cleanupcommands", "cmdcleanup", "ecodashboard", "moneydashboard", "sinkdashboard", "permsaudit", "permissionaudit", "sensitiveaudit", "receiptlist", "txreceipts", "aicommandsafety",
+}
+PANIC_BLOCKED_COMMANDS = {
+    "give", "pay", "add", "remove", "setquesos", "move", "moveqs", "movequesos",
+    "addtick", "removetick", "remtick", "deltick", "settick", "movetick", "moveticks", "ticketmove", "moveticket",
+    "buytick", "lotterypot", "lotteryprize", "prizepool", "setpot", "addpot", "removepot",
+    "rob", "cf", "flip", "roulette", "rl", "slots", "slot", "blackjack", "bj", "scratch", "scratchcard",
+    "tower", "towers", "qtower", "vault", "qvault", "memory", "mem", "qmemory", "cardladder", "ladder", "cards", "cladder",
+    "lockpick", "lp", "picklock", "heist", "robbery", "qh", "diceduel", "dice", "dd", "cases", "case", "qcase",
+    "plinko", "plink", "drop", "luckynumber", "ln", "lucky", "number", "jackpotspin", "jackpot", "jspin", "jps",
+    "dungeon", "dng", "qdungeon", "ms", "minesweeper", "minesweepeer", "wheel", "spin",
+    "shop", "buy", "daily", "weekly", "monthly", "work", "shift", "worktask", "clockin",
 }
 HELP_CATEGORY_ALIASES = {
     "quewo": "𝚀𝚞𝚎wo",
@@ -7115,7 +7155,7 @@ def command_short_description(command):
     help_text = (command.help or "").strip()
     if help_text:
         return help_text.splitlines()[0]
-    return "No short explanation is written for this command yet."
+    return "No extra help available yet."
 
 def command_usage_text(command, prefix):
     example = COMMAND_EXAMPLE_OVERRIDES.get(command.name)
@@ -7796,6 +7836,38 @@ async def on_command(ctx):
         allowed_mentions=discord.AllowedMentions.none(),
     )
 
+@bot.command(name="panic", aliases=["panicmode", "lockmoney", "economyfreeze"])
+async def panic_command(ctx, *, reason: str = None):
+    """𝚀𝚞𝚎-only emergency economy lock. Keeps the bot online while risky money commands are blocked."""
+    if not has_super_owner_power(ctx.author, ctx.guild):
+        return await ctx.send(denial_message("This switch is not available here."), allowed_mentions=discord.AllowedMentions.none())
+    if bot_panic_mode:
+        return await ctx.send(f"{economy_q_timer_tick} Panic mode is already on.")
+    ok = await set_panic_mode(True, reason=reason or "Safety check", updated_by=ctx.author.id)
+    if not ok:
+        return await ctx.send(f"{economy_q_warning} I couldn't save panic mode. Nothing changed.")
+    await ctx.send(
+        f"{economy_q_warning} Panic mode is **on**.\n"
+        "Risky 𝚀𝚞𝚎wo actions are locked: gambling, robbing, shop/buy, claims/work, money moves, ticket edits, and lottery pot edits.\n"
+        "Normal moderation, help, logs, diagnostics, reminders, lotteries, and recovery loops keep running. Use `.unpanic` when it is clear.",
+        allowed_mentions=discord.AllowedMentions.none(),
+    )
+
+@bot.command(name="unpanic", aliases=["calm", "clearpanic", "unlockmoney", "economyunfreeze"])
+async def unpanic_command(ctx):
+    """𝚀𝚞𝚎-only emergency economy unlock."""
+    if not has_super_owner_power(ctx.author, ctx.guild):
+        return await ctx.send(denial_message("This switch is not available here."), allowed_mentions=discord.AllowedMentions.none())
+    if not bot_panic_mode:
+        return await ctx.send(f"{economy_q_accept} Panic mode is already off.")
+    ok = await set_panic_mode(False, updated_by=ctx.author.id)
+    if not ok:
+        return await ctx.send(f"{economy_q_warning} I couldn't save the panic switch. Try `.unpanic` again.")
+    await ctx.send(
+        f"{economy_q_accept} Panic mode is **off**. 𝚀𝚞𝚎wo money actions are live again.",
+        allowed_mentions=discord.AllowedMentions.none(),
+    )
+
 @bot.command(name="aiperms", aliases=["aipermissions", "aicapabilities", "aiauthority"])
 async def aiperms_command(ctx):
     """Shows what the AI is allowed to do."""
@@ -8103,20 +8175,30 @@ async def commandcleanup_command(ctx):
         return await ctx.send(denial_message("This command cleanup audit is not available here."), allowed_mentions=discord.AllowedMentions.none())
     category_map = command_category_lookup()
     missing_category = []
+    missing_help = []
     missing_example = []
     generic_explain = []
     duplicate_aliases = []
+    alias_bloat = []
     alias_owner = {}
     visible_commands = [command for command in bot.commands if not command.hidden]
     for command in sorted(visible_commands, key=lambda item: item.qualified_name.casefold()):
         names = {command.name.casefold(), *(alias.casefold() for alias in command.aliases)}
         if not any(name in category_map for name in names):
             missing_category.append(f"`{command.name}`")
+        short_description = command_short_description(command)
+        if short_description in {"No extra help available yet.", "Runs this bot command."}:
+            missing_help.append(f"`{command.name}`")
         if command.signature and command.name not in COMMAND_EXAMPLE_OVERRIDES and not command_supports_input_ui(command):
             missing_example.append(f"`{command.name}`")
         text = economy_explanations.get(command.name, "")
         if "Runs this Quewo command" in text:
             generic_explain.append(f"`{command.name}`")
+        if len(command.aliases) > 3:
+            shown_aliases = ", ".join(f"`{alias}`" for alias in command.aliases[:4])
+            extra_aliases = len(command.aliases) - 4
+            suffix = f" +{extra_aliases} more" if extra_aliases > 0 else ""
+            alias_bloat.append(f"`{command.name}` has **{len(command.aliases)}** aliases: {shown_aliases}{suffix}")
         for alias in command.aliases:
             key = alias.casefold()
             if key in alias_owner and alias_owner[key] != command.name:
@@ -8141,19 +8223,24 @@ async def commandcleanup_command(ctx):
     embed.add_field(
         name="Counts",
         value=(
+            f"Visible commands: **{len(visible_commands):,}**\n"
             f"Missing category: **{len(missing_category)}**\n"
+            f"Missing help text: **{len(missing_help)}**\n"
             f"Missing UI/example: **{len(missing_example)}**\n"
             f"Generic explain: **{len(generic_explain)}**\n"
             f"Duplicate aliases: **{len(duplicate_aliases)}**\n"
+            f"Alias bloat: **{len(alias_bloat)}**\n"
             f"Near-duplicates: **{len(near_duplicates)}**"
         ),
         inline=False,
     )
     embed.add_field(name="Top Fixes", value=embed_value("\n".join([
         f"Categories: {', '.join(missing_category[:8]) or 'None'}",
+        f"Help text: {', '.join(missing_help[:8]) or 'None'}",
         f"Input help: {', '.join(missing_example[:8]) or 'None'}",
         f"Generic explain: {', '.join(generic_explain[:8]) or 'None'}",
         f"Duplicate aliases: {'; '.join(duplicate_aliases[:5]) or 'None'}",
+        f"Alias bloat: {'; '.join(alias_bloat[:5]) or 'None'}",
         f"Near-duplicates: {'; '.join(near_duplicates[:5]) or 'None'}",
     ]), 1000), inline=False)
     embed.set_footer(text="Compact view. Use .auditcommands for the deeper scan when you actually need the wall.")
@@ -11053,6 +11140,15 @@ async def on_voice_state_update(member, before, after):
 async def globally_block_disabled(ctx):
     if bot_maintenance_mode and not has_super_owner_power(ctx.author, ctx.guild):
         raise CommandDisabledError("maintenance")
+    if bot_panic_mode and ctx.command and not has_super_owner_power(ctx.author, ctx.guild):
+        names = {
+            ctx.command.name.casefold(),
+            ctx.command.qualified_name.casefold(),
+            str(getattr(ctx, "invoked_with", "") or "").casefold(),
+            *(alias.casefold() for alias in getattr(ctx.command, "aliases", []) or []),
+        }
+        if names & PANIC_BLOCKED_COMMANDS:
+            raise CommandDisabledError("panic")
     disabled = guild_disabled_commands(ctx.guild)
     if (
         ctx.command
@@ -11162,7 +11258,7 @@ async def prefix_command(ctx, new_prefix: str = None):
 DISABLE_PROTECTED_COMMANDS = {
     "disable", "enable", "disableall", "enableall", "dclist",
     "help", "settings", "prefix", "setlogs", "health", "errors",
-    "recover", "dbaudit", "perms", "aidoctor", "off", "on",
+    "recover", "dbaudit", "perms", "aidoctor", "off", "on", "panic", "unpanic",
 }
 
 def command_disable_protected(command):
@@ -12018,22 +12114,6 @@ def game_bet_line(game):
     if amount <= 0:
         return ""
     return f"\nBet: **{economy_format_balance(amount)}** each"
-
-def fit_discord_content(content, limit=2000):
-    content = str(content or "")
-    if len(content) <= limit:
-        return content
-    suffix = "\n\n[message shortened]"
-    return content[:limit - len(suffix)] + suffix
-
-def fit_embed_value(value, limit=1024):
-    value = str(value or "")
-    if not value:
-        return "\u200b"
-    if len(value) <= limit:
-        return value
-    suffix = "\n[shortened]"
-    return value[:limit - len(suffix)] + suffix
 
 def fit_discord_embed(embed):
     if embed is None:
@@ -14454,6 +14534,64 @@ async def send_speak_command_choice(message, ctx):
     )
     return True
 
+def render_speak_status_text(owner_id):
+    channel = speak_session_channel(owner_id)
+    if channel is None:
+        return f"{economy_q_warning} Speak mode is off."
+    session = speak_sessions.get(int(owner_id), {})
+    started = session.get("started_at")
+    started_text = f"\nStarted: {discord.utils.format_dt(started, 'R')}" if isinstance(started, datetime) else ""
+    return (
+        f"{economy_q_quote} Speak mode is live.\n"
+        f"Watching: **{channel.guild.name}** · {channel.mention}{started_text}\n"
+        "Reply to forwarded DM messages to reply there, or DM normally to send a new message there."
+    )
+
+async def stop_speak_session(owner_id):
+    session = speak_sessions.pop(int(owner_id), None)
+    if not session:
+        return None
+    return SpeakCleanupView(owner_id, session)
+
+class SpeakControlView(discord.ui.View):
+    def __init__(self, owner_id):
+        super().__init__(timeout=900)
+        self.owner_id = int(owner_id)
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id == self.owner_id:
+            return True
+        await interaction.response.send_message("This speak panel is not yours.", ephemeral=True)
+        return False
+
+    @discord.ui.button(label="Refresh", emoji=economy_q_refresh, style=discord.ButtonStyle.secondary)
+    async def refresh_button(self, interaction, button):
+        await interaction.response.edit_message(
+            content=render_speak_status_text(self.owner_id),
+            view=self,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+    @discord.ui.button(label="Stop", emoji=economy_q_denied, style=discord.ButtonStyle.danger)
+    async def stop_button(self, interaction, button):
+        cleanup_view = await stop_speak_session(self.owner_id)
+        if cleanup_view is None:
+            return await interaction.response.edit_message(
+                content=f"{economy_q_warning} Speak mode is already off.",
+                view=None,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        await interaction.response.edit_message(
+            content=(
+                f"{economy_q_accept} Speak mode stopped.\n"
+                "Delete the messages related to this relay session?\n"
+                "This only deletes the bot's DM feed/control messages. "
+                "It keeps messages sent through the relay in the relayed channel."
+            ),
+            view=cleanup_view,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
 class SpeakCleanupView(discord.ui.View):
     def __init__(self, owner_id, session):
         super().__init__(timeout=180)
@@ -14743,10 +14881,10 @@ async def speak(ctx, *, target: str = None):
     lowered = raw.casefold()
 
     if lowered in {"stop", "off", "end", "close"}:
-        session = speak_sessions.pop(ctx.author.id, None)
+        cleanup_view = await stop_speak_session(ctx.author.id)
         if ctx.guild:
             await safe_delete_message(ctx.message)
-        if not session:
+        if cleanup_view is None:
             return await ctx.send(f"{economy_q_warning} Speak mode is already off.", delete_after=6)
         cleanup_text = (
             f"{economy_q_accept} Speak mode stopped.\n"
@@ -14754,21 +14892,17 @@ async def speak(ctx, *, target: str = None):
             "This only deletes the bot's DM feed/control messages. "
             "It keeps messages sent through the relay in the relayed channel, and cannot delete your own DM replies."
         )
-        view = SpeakCleanupView(ctx.author.id, session)
         try:
             if ctx.guild is None:
-                return await ctx.send(cleanup_text, view=view, allowed_mentions=discord.AllowedMentions.none())
-            await ctx.author.send(cleanup_text, view=view, allowed_mentions=discord.AllowedMentions.none())
+                return await ctx.send(cleanup_text, view=cleanup_view, allowed_mentions=discord.AllowedMentions.none())
+            await ctx.author.send(cleanup_text, view=cleanup_view, allowed_mentions=discord.AllowedMentions.none())
             return await ctx.send(f"{economy_q_accept} Speak mode stopped. Cleanup prompt sent to your DMs.", delete_after=8)
         except Exception:
-            return await ctx.send(cleanup_text, view=view, allowed_mentions=discord.AllowedMentions.none())
+            return await ctx.send(cleanup_text, view=cleanup_view, allowed_mentions=discord.AllowedMentions.none())
 
     if lowered in {"status", "where"}:
-        channel = speak_session_channel(ctx.author.id)
-        if channel is None:
-            return await ctx.send(f"{economy_q_warning} Speak mode is off.")
-        guild_name = getattr(channel.guild, "name", "Unknown server")
-        return await ctx.send(f"{economy_q_quote} Speak mode is watching **{guild_name}** · {channel.mention}.")
+        view = SpeakControlView(ctx.author.id) if speak_session_channel(ctx.author.id) is not None else None
+        return await ctx.send(render_speak_status_text(ctx.author.id), view=view, allowed_mentions=discord.AllowedMentions.none())
 
     if lowered.startswith("channel "):
         raw = raw.split(None, 1)[1].strip()
@@ -14790,16 +14924,12 @@ async def speak(ctx, *, target: str = None):
     }
     if ctx.guild:
         await safe_delete_message(ctx.message)
-    live_text = (
-        f"{economy_q_quote} Speak mode is live.\n"
-        f"Watching: **{channel.guild.name}** · {channel.mention}\n"
-        "Reply to forwarded DM messages to reply there, or DM normally to send a new message there.\n"
-        "Stop with `.speak stop`."
-    )
+    live_text = render_speak_status_text(ctx.author.id) + "\nStop with `.speak stop` or the button below."
+    control_view = SpeakControlView(ctx.author.id)
     if ctx.guild is None:
-        return await ctx.send(live_text, allowed_mentions=discord.AllowedMentions.none())
+        return await ctx.send(live_text, view=control_view, allowed_mentions=discord.AllowedMentions.none())
     try:
-        await ctx.author.send(live_text, allowed_mentions=discord.AllowedMentions.none())
+        await ctx.author.send(live_text, view=control_view, allowed_mentions=discord.AllowedMentions.none())
     except Exception:
         pass
     await ctx.send(

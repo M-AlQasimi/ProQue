@@ -11,6 +11,7 @@ from collections import Counter, defaultdict
 from datetime import datetime, timezone, timedelta
 import discord
 from discord.ext import commands
+from proque_text import embed_value, fit_discord_content as shared_fit_discord_content
 try:
     from discord.ext.commands.view import StringView
 except Exception:
@@ -1940,6 +1941,195 @@ def get_receipts_for_user(user_id=None, guild_id=None, limit=10):
     conn.close()
     return rows
 
+def parse_receipt_details(details):
+    parsed = {}
+    for part in str(details or "").split(";"):
+        if "=" not in part:
+            continue
+        key, value = part.split("=", 1)
+        key = key.strip().casefold()
+        value = value.strip()
+        if key:
+            parsed[key] = value
+    return parsed
+
+def receipt_already_rolled_back(receipt_id):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT receipt_id
+        FROM bot_receipts
+        WHERE action = 'rollbacktx' AND details LIKE %s
+        LIMIT 1
+        """,
+        (f"%rollback_of={str(receipt_id)}%",),
+    )
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    return row["receipt_id"] if row else None
+
+def adjust_balances_for_rollback(user_ids, delta, actor_id, note):
+    unique_ids = sorted(set(int(user_id) for user_id in user_ids))
+    if not unique_ids:
+        return {}, {}
+    delta = int(delta)
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            INSERT INTO economy (user_id, balance)
+            SELECT user_id, 0 FROM unnest(%s::bigint[]) AS user_id
+            ON CONFLICT (user_id) DO NOTHING
+            """,
+            (unique_ids,),
+        )
+        cur.execute("SELECT user_id, balance FROM economy WHERE user_id = ANY(%s::bigint[]) FOR UPDATE", (unique_ids,))
+        before = {int(row["user_id"]): int(row["balance"]) for row in cur.fetchall()}
+        for user_id in unique_ids:
+            old_balance = before.get(user_id, 0)
+            new_balance = max(0, old_balance + delta)
+            cur.execute("UPDATE economy SET balance = %s WHERE user_id = %s", (new_balance, user_id))
+        cur.execute(
+            """
+            INSERT INTO economy_transactions (user_id, kind, amount, note)
+            SELECT user_id, 'rollbacktx', %s, %s FROM unnest(%s::bigint[]) AS user_id
+            """,
+            (delta, f"Rollback by {actor_id}: {note}", unique_ids),
+        )
+        cur.execute("SELECT user_id, balance FROM economy WHERE user_id = ANY(%s::bigint[])", (unique_ids,))
+        after = {int(row["user_id"]): int(row["balance"]) for row in cur.fetchall()}
+        conn.commit()
+        return before, after
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cur.close()
+        conn.close()
+
+def rollback_receipt(receipt_id, actor_id, guild_id=0, channel_id=None):
+    receipt = get_receipt(receipt_id)
+    if not receipt:
+        raise ValueError("not_found")
+    rollback_receipt_id = receipt_already_rolled_back(receipt["receipt_id"])
+    if rollback_receipt_id:
+        raise ValueError(f"already_rolled_back:{rollback_receipt_id}")
+
+    action = str(receipt["action"] or "").casefold()
+    amount = int(receipt["amount"] or 0)
+    target_ids = [int(user_id) for user_id in (receipt["target_ids"] or []) if user_id]
+    details = parse_receipt_details(receipt.get("details"))
+    if action == "rollbacktx":
+        raise ValueError("rollback_receipt")
+    if amount <= 0:
+        raise ValueError("no_amount")
+
+    result = {
+        "original": receipt,
+        "action": action,
+        "amount": amount,
+        "targets": target_ids,
+        "before": {},
+        "after": {},
+        "kind": "balance",
+    }
+
+    if action in {"add", "add_multi", "add_role", "add_everyone"}:
+        before, after = adjust_balances_for_rollback(target_ids, -amount, actor_id, f"reversing {receipt['receipt_id']} ({action})")
+        rollback_id = create_receipt(
+            guild_id or receipt["guild_id"],
+            channel_id or receipt["channel_id"],
+            actor_id,
+            target_ids,
+            "rollbacktx",
+            amount,
+            f"rollback_of={receipt['receipt_id']}; action={action}; direction=subtract",
+        )
+        result.update({"before": before, "after": after, "receipt_id": rollback_id})
+        return result
+
+    if action == "remove":
+        before, after = adjust_balances_for_rollback(target_ids, amount, actor_id, f"reversing {receipt['receipt_id']} ({action})")
+        rollback_id = create_receipt(
+            guild_id or receipt["guild_id"],
+            channel_id or receipt["channel_id"],
+            actor_id,
+            target_ids,
+            "rollbacktx",
+            amount,
+            f"rollback_of={receipt['receipt_id']}; action={action}; direction=add",
+        )
+        result.update({"before": before, "after": after, "receipt_id": rollback_id})
+        return result
+
+    if action == "move":
+        source_id = int(details.get("from") or 0)
+        target_id = int(details.get("to") or 0)
+        if not source_id or not target_id:
+            raise ValueError("unsupported")
+        transfer = transfer_user_balance(target_id, source_id, amount, tax=0, allow_overdraft=False)
+        log_transaction(target_id, "rollbacktx", -amount, f"Rollback {receipt['receipt_id']} to {source_id}")
+        log_transaction(source_id, "rollbacktx", amount, f"Rollback {receipt['receipt_id']} from {target_id}")
+        rollback_id = create_receipt(
+            guild_id or receipt["guild_id"],
+            channel_id or receipt["channel_id"],
+            actor_id,
+            [source_id, target_id],
+            "rollbacktx",
+            amount,
+            f"rollback_of={receipt['receipt_id']}; action={action}; direction=reverse_move",
+        )
+        result.update({
+            "targets": [source_id, target_id],
+            "before": {target_id: transfer["old_sender_balance"], source_id: transfer["old_receiver_balance"]},
+            "after": {target_id: transfer["new_sender_balance"], source_id: transfer["new_receiver_balance"]},
+            "receipt_id": rollback_id,
+        })
+        return result
+
+    if action == "addtick":
+        original_guild_id = int(receipt["guild_id"] or guild_id or 0)
+        before = get_lottery_ticket_counts(original_guild_id, target_ids)
+        count = bulk_adjust_lottery_tickets(original_guild_id, target_ids, amount, "remove", actor_id)
+        after = get_lottery_ticket_counts(original_guild_id, target_ids)
+        rollback_id = create_receipt(
+            original_guild_id,
+            channel_id or receipt["channel_id"],
+            actor_id,
+            target_ids,
+            "rollbacktx",
+            amount,
+            f"rollback_of={receipt['receipt_id']}; action={action}; direction=remove_tickets; count={count}",
+        )
+        result.update({"before": before, "after": after, "receipt_id": rollback_id, "kind": "tickets"})
+        return result
+
+    if action == "movetick":
+        original_guild_id = int(receipt["guild_id"] or guild_id or 0)
+        source_id = int(details.get("from") or 0)
+        target_id = int(details.get("to") or 0)
+        if not source_id or not target_id:
+            raise ValueError("unsupported")
+        before = get_lottery_ticket_counts(original_guild_id, [source_id, target_id])
+        move_lottery_tickets(original_guild_id, target_id, source_id, amount, actor_id)
+        after = get_lottery_ticket_counts(original_guild_id, [source_id, target_id])
+        rollback_id = create_receipt(
+            original_guild_id,
+            channel_id or receipt["channel_id"],
+            actor_id,
+            [source_id, target_id],
+            "rollbacktx",
+            amount,
+            f"rollback_of={receipt['receipt_id']}; action={action}; direction=reverse_ticket_move",
+        )
+        result.update({"targets": [source_id, target_id], "before": before, "after": after, "receipt_id": rollback_id, "kind": "tickets"})
+        return result
+
+    raise ValueError("unsupported")
+
 def current_season_key(now=None):
     now = now or datetime.now(timezone.utc)
     return now.strftime("%Y-%m")
@@ -3840,10 +4030,7 @@ def format_balance(amount):
     return f"{amount:,} {CURRENCY_EMOJI}"
 
 def fit_discord_content(content, limit=2000):
-    content = str(content or "")
-    if len(content) <= limit:
-        return content
-    return content[:limit - 20].rstrip() + "\n…"
+    return shared_fit_discord_content(content, limit=limit, suffix="\n…")
 
 def xp_needed_for_level(level):
     return 100 + max(level - 1, 0) * 75
@@ -5650,7 +5837,6 @@ async def reply_to_command(ctx, *args, **kwargs):
 async def send_error(ctx, text):
     if text == "I had trouble reaching the economy data. Try again in a bit.":
         await ensure_db_ready(ctx, force=True)
-        return
 
     try:
         await ctx.send(f"{Q_DENIED} {text}")
@@ -6200,7 +6386,7 @@ class CareerHomeView(discord.ui.View):
         try:
             row = await asyncio.to_thread(get_career, interaction.user.id)
         except Exception:
-            return await interaction.response.send_message(f"{Q_DENIED} Career data unavailable.", ephemeral=True)
+            return await interaction.response.send_message(f"{Q_DENIED} I had trouble reaching career data. Try again in a bit.", ephemeral=True)
         view = CareerPathView(interaction.user.id)
         await interaction.response.edit_message(embed=build_jobs_embed(row.get("path_key")), view=view)
 
@@ -6209,7 +6395,7 @@ class CareerHomeView(discord.ui.View):
         try:
             row = await asyncio.to_thread(get_career, interaction.user.id)
         except Exception:
-            return await interaction.response.send_message(f"{Q_DENIED} Career data unavailable.", ephemeral=True)
+            return await interaction.response.send_message(f"{Q_DENIED} I had trouble reaching career data. Try again in a bit.", ephemeral=True)
         await interaction.response.edit_message(embed=build_career_embed(interaction.user, row), view=self)
 
 class CareerPathView(discord.ui.View):
@@ -6229,7 +6415,7 @@ class CareerPathView(discord.ui.View):
         try:
             row = await asyncio.to_thread(get_career, interaction.user.id)
         except Exception:
-            return await interaction.response.send_message(f"{Q_DENIED} Career data unavailable.", ephemeral=True)
+            return await interaction.response.send_message(f"{Q_DENIED} I had trouble reaching career data. Try again in a bit.", ephemeral=True)
         await interaction.response.edit_message(embed=build_career_embed(interaction.user, row), view=CareerHomeView(interaction.user.id))
 
 class CareerTaskButton(discord.ui.Button):
@@ -6260,7 +6446,7 @@ class CareerTaskButton(discord.ui.Button):
                 perfect,
             )
         except Exception:
-            return await interaction.edit_original_response(content=f"{Q_DENIED} Career database unavailable.", embed=None, view=None)
+            return await interaction.edit_original_response(content=f"{Q_DENIED} I had trouble reaching career data. Try again in a bit.", embed=None, view=None)
 
         grade = "Perfect" if result["perfect"] else ("Clean" if result["correct"] else "Messy")
         color = discord.Color.green() if result["correct"] else discord.Color.orange()
@@ -6310,7 +6496,7 @@ async def start_career_work(target, from_interaction=False):
     try:
         row = await asyncio.to_thread(get_career, user.id)
     except Exception:
-        message = f"{Q_DENIED} Career data unavailable. Try again shortly."
+        message = f"{Q_DENIED} I had trouble reaching career data. Try again in a bit."
         if from_interaction:
             return await target.followup.send(message, ephemeral=True)
         return await target.send(message)
@@ -6353,7 +6539,7 @@ async def career(ctx, member: discord.Member = None):
     try:
         row = await asyncio.to_thread(get_career, user.id)
     except Exception:
-        return await send_error(ctx, "Career data unavailable. Try again shortly.")
+        return await send_error(ctx, "I had trouble reaching career data. Try again in a bit.")
     view = CareerHomeView(ctx.author.id) if user.id == ctx.author.id else None
     await ctx.reply(embed=build_career_embed(user, row), view=view, mention_author=False, allowed_mentions=discord.AllowedMentions.none())
 
@@ -6368,12 +6554,12 @@ async def jobs(ctx, path: str = None):
         try:
             row = await asyncio.to_thread(set_career_path, ctx.author.id, key)
         except Exception:
-            return await send_error(ctx, "Career data unavailable. Try again shortly.")
+            return await send_error(ctx, "I had trouble reaching career data. Try again in a bit.")
         return await ctx.reply(embed=build_career_embed(ctx.author, row), view=CareerHomeView(ctx.author.id), mention_author=False, allowed_mentions=discord.AllowedMentions.none())
     try:
         row = await asyncio.to_thread(get_career, ctx.author.id)
     except Exception:
-        return await send_error(ctx, "Career data unavailable. Try again shortly.")
+        return await send_error(ctx, "I had trouble reaching career data. Try again in a bit.")
     await ctx.reply(embed=build_jobs_embed(row.get("path_key")), view=CareerPathView(ctx.author.id), mention_author=False, allowed_mentions=discord.AllowedMentions.none())
 
 @commands.command(name="work", aliases=["shift", "worktask", "clockin"])
@@ -9700,6 +9886,76 @@ async def move_tickets(ctx, *, args: str = None):
         ("Destination Entries", f"{result['old_target']:,} → {result['new_target']:,}", False),
     ], color=discord.Color.gold())
 
+@commands.command(name="rollbacktx", aliases=["rollbackreceipt", "undotx", "undoreceipt"])
+async def rollbacktx(ctx, receipt_id: str = None):
+    """𝚀𝚞𝚎 owner only. Safely reverses supported sensitive receipts."""
+    if not await ensure_db_ready(ctx):
+        return
+    if not is_superowner_id(ctx.author.id):
+        await send_owner_only(ctx)
+        return
+    if not receipt_id:
+        await send_economy_command_input_ui(ctx, "rollbacktx", "Enter the receipt ID to reverse. Example: .rollbacktx QTX-1234567890-1234")
+        return
+
+    try:
+        result = await asyncio.to_thread(
+            rollback_receipt,
+            receipt_id.strip(),
+            ctx.author.id,
+            ctx.guild.id if ctx.guild else 0,
+            ctx.channel.id,
+        )
+    except ValueError as exc:
+        code = str(exc)
+        if code == "not_found":
+            return await ctx.send(f"{Q_DENIED} I couldn't find that receipt.")
+        if code.startswith("already_rolled_back:"):
+            return await ctx.send(f"{Q_DENIED} That receipt was already rolled back by `{code.split(':', 1)[1]}`.")
+        if code == "rollback_receipt":
+            return await ctx.send(f"{Q_DENIED} Rollback receipts cannot be rolled back again.")
+        if code == "no_amount":
+            return await ctx.send(f"{Q_DENIED} That receipt has no rollback amount.")
+        return await ctx.send(
+            f"{Q_DENIED} I can't safely roll that receipt back automatically.\n"
+            "Supported receipts: `add`, `add_multi`, `add_role`, `add_everyone`, `remove`, `move`, `addtick`, `movetick`.",
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+    except Exception:
+        return await send_error(ctx, "I had trouble rolling that receipt back. Nothing was changed.")
+
+    formatter = (lambda value: f"{int(value):,}") if result.get("kind") == "tickets" else format_balance
+    label = "Tickets" if result.get("kind") == "tickets" else "Balance"
+    summary = (
+        f"{Q_RECOVERY} Rolled back `{result['original']['receipt_id']}`.\n"
+        f"Original Action: `{result['action']}`\n"
+        f"Rollback Receipt: `{result['receipt_id']}`"
+    )
+    await send_bulk_before_after_result(
+        ctx,
+        None,
+        summary,
+        result.get("targets") or [],
+        result.get("before") or {},
+        result.get("after") or {},
+        formatter,
+        label,
+        receipt_id=result.get("receipt_id"),
+    )
+    if ctx.guild and result.get("kind") == "tickets":
+        try:
+            config = await asyncio.to_thread(get_lottery_config, ctx.guild.id)
+            schedule_lottery_refresh(ctx.guild, config)
+        except Exception:
+            pass
+    await send_economy_log(ctx, "𝚀𝚞𝚎wo Receipt Rollback", [
+        ("Original Receipt", result["original"]["receipt_id"], False),
+        ("Rollback Receipt", result["receipt_id"], False),
+        ("Action", result["action"], True),
+        ("Kind", result.get("kind", "balance"), True),
+        ("Targets", f"{len(result.get('targets') or []):,}", True),
+    ], color=discord.Color.orange())
+
 # =====================
 # LEADERBOARD
 # =====================
@@ -10799,7 +11055,7 @@ async def tower(ctx, amount: str):
                     new_balance = max(0, latest["balance"] - amount)
                     await asyncio.to_thread(update_user, user_id, balance=new_balance, gamble_streak=0, total_lost=latest["total_lost"] + amount)
                 except Exception:
-                    await interaction.edit_original_response(content=render(f"{Q_DENIED} Database unavailable."), view=None)
+                    await interaction.edit_original_response(content=render(f"{Q_DENIED} I had trouble reaching the economy data. Try again in a bit."), view=None)
                     return
                 view.clear_items()
                 await interaction.edit_original_response(
@@ -10831,7 +11087,7 @@ async def tower(ctx, amount: str):
             new_balance = latest["balance"] + winnings - amount
             await asyncio.to_thread(update_user, user_id, balance=new_balance, gamble_streak=new_streak, total_won=latest["total_won"] + winnings - amount)
         except Exception:
-            await interaction.edit_original_response(content=render(f"{Q_DENIED} Database unavailable."), view=None)
+            await interaction.edit_original_response(content=render(f"{Q_DENIED} I had trouble reaching the economy data. Try again in a bit."), view=None)
             return
         view.clear_items()
         await interaction.edit_original_response(
@@ -11146,7 +11402,7 @@ async def memory_game(ctx, amount: str):
                             return maybe_award_game_achievements(user_id, "memory", stats)
                         achievements = await asyncio.to_thread(settle_memory_win)
                     except Exception:
-                        await interaction.message.edit(content=render(f"{Q_DENIED} Database unavailable."), view=None)
+                        await interaction.message.edit(content=render(f"{Q_DENIED} I had trouble reaching the economy data. Try again in a bit."), view=None)
                         return
                     view.clear_items()
                     await interaction.message.edit(
@@ -11291,7 +11547,7 @@ async def card_ladder(ctx, amount: str):
             await asyncio.to_thread(update_user, user_id, balance=new_balance, gamble_streak=0, total_lost=latest["total_lost"] + amount)
             await asyncio.to_thread(record_game_result, user_id, "cardladder", False, -amount, 0)
         except Exception:
-            await interaction.message.edit(content=render(f"{Q_DENIED} Database unavailable."), view=None)
+            await interaction.message.edit(content=render(f"{Q_DENIED} I had trouble reaching the economy data. Try again in a bit."), view=None)
             return
         result_block = gamble_result_block(
             "cardladder",
@@ -11327,7 +11583,7 @@ async def card_ladder(ctx, amount: str):
             await asyncio.to_thread(update_user, user_id, balance=new_balance, gamble_streak=new_streak, total_won=latest["total_won"] + winnings - amount)
             await asyncio.to_thread(record_game_result, user_id, "cardladder", True, winnings - amount, winnings)
         except Exception:
-            await interaction.edit_original_response(content=render(f"{Q_DENIED} Database unavailable."), view=None)
+            await interaction.edit_original_response(content=render(f"{Q_DENIED} I had trouble reaching the economy data. Try again in a bit."), view=None)
             return
         result_block = gamble_result_block(
             "cardladder",
@@ -11492,7 +11748,7 @@ async def lockpick(ctx, amount: str):
             await asyncio.to_thread(update_user, user_id, balance=new_balance, gamble_streak=0, total_lost=latest["total_lost"] + amount)
             await asyncio.to_thread(record_game_result, user_id, "lockpick", False, -amount, 0)
         except Exception:
-            await interaction.message.edit(content=render(f"{Q_DENIED} Database unavailable."), view=None)
+            await interaction.message.edit(content=render(f"{Q_DENIED} I had trouble reaching the economy data. Try again in a bit."), view=None)
             return
         result_block = gamble_result_block(
             "lockpick",
@@ -11523,7 +11779,7 @@ async def lockpick(ctx, amount: str):
             await asyncio.to_thread(update_user, user_id, balance=new_balance, gamble_streak=new_streak, total_won=latest["total_won"] + winnings - amount)
             await asyncio.to_thread(record_game_result, user_id, "lockpick", True, winnings - amount, winnings)
         except Exception:
-            await interaction.message.edit(content=render(f"{Q_DENIED} Database unavailable."), view=None)
+            await interaction.message.edit(content=render(f"{Q_DENIED} I had trouble reaching the economy data. Try again in a bit."), view=None)
             return
         result_block = gamble_result_block(
             "lockpick",
@@ -15406,6 +15662,10 @@ EXPLANATIONS = {
     "moveticks": "Alias for `.movetick`. Moves current lottery tickets from one user to another.",
     "ticketmove": "Alias for `.movetick`. Moves current lottery tickets from one user to another.",
     "moveticket": "Alias for `.movetick`. Moves current lottery tickets from one user to another.",
+    "rollbacktx": f"{QUE_OWNER_DISPLAY} command. Reverses supported sensitive receipts and creates a rollback receipt.",
+    "rollbackreceipt": "Alias for `.rollbacktx`. Reverses supported sensitive receipts.",
+    "undotx": "Alias for `.rollbacktx`. Reverses supported sensitive receipts.",
+    "undoreceipt": "Alias for `.rollbacktx`. Reverses supported sensitive receipts.",
     "settick": f"{QUE_OWNER_DISPLAY} command. Sets lottery tickets. Target and tickets can be in either order.",
     "lotterypot": f"{QUE_OWNER_DISPLAY} command. Adds, removes, or sets the current lottery prize pool.",
     "lotteryprize": "Alias for `.lotterypot`. Edits the lottery prize pool.",
@@ -15652,6 +15912,7 @@ DETAILED_EXPLANATIONS = {
     "lotterystats": "Shows the current lottery prize pot, total ticket count, number of players, participant role, next draw time, panel link, and paginated ticket holders with odds.",
     "tickets": "Shows your current lottery entries, rank, odds, round total entries, and next draw.",
     "buytick": f"Legacy text command for buying tickets for the configured server lottery. The lottery panel buttons are preferred because they send private confirmations and update the panel automatically. Each ticket costs {format_balance(LOTTERY_TICKET_COST)}. The prize is the full current lottery pot. More tickets improve your chance, but odds use diminishing returns so huge stacks are softened. Ticket spending is capped at {int(LOTTERY_MAX_BALANCE_SPEND_RATIO * 100)}% of your lottery-adjusted balance for the current round, so earning or spending quesos changes how many more tickets you can buy.",
+    "rollbacktx": f"{QUE_OWNER_DISPLAY} command. Use `.rollbacktx <receipt>` to safely reverse supported sensitive receipts. It currently supports add/add_multi/add_role/add_everyone, remove, move, addtick, and movetick receipts. It refuses unsupported receipts instead of guessing, and creates a new rollback receipt that points to the original.",
     "weekly": f"Gives a reward once every 7 days. Base reward is 20,000-30,000 {CURRENCY_EMOJI}. Your weekly streak adds a bonus after week 1.",
     "monthly": f"Gives a reward once every 30 days. Base reward is 40,000-60,000 {CURRENCY_EMOJI}. Your monthly streak adds a bigger bonus after month 1.",
     "cf": "Pick heads or tails with `.cf <amount> h`, `.cf <amount> t`, `.flip <amount> heads`, or `.flip <amount> tails`. If you do not pick, the bot asks you. Winning pays ×2 before the universal gambling streak bonus, so betting 100 wins 200 total before bonuses. Losing removes the bet and resets the gambling streak.",
@@ -15811,11 +16072,13 @@ ECONHELP_ADMIN_COMMANDS = [
 ]
 ECONHELP_SUPEROWNER_COMMANDS = [
     "add", "remove", "move", "addtick", "removetick", "movetick", "settick", "lotterypot", "setquesos",
+    "rollbacktx",
     "addxp", "removexp", "addlvl", "removelvl", "setlvl",
     "editlottery", "stoplottery", "qstats", "economyhealth", "balancedashboard", "endseason",
 ]
 ECONHELP_SUPEROWNER_HIDDEN = {
     *ECONHELP_SUPEROWNER_COMMANDS,
+    "rollbackreceipt", "undotx", "undoreceipt",
     "remtick", "deltick", "lotteryprize", "prizepool", "setpot", "addpot", "removepot",
     "moveqs", "movequesos", "moveticks", "ticketmove", "moveticket",
     "givexp", "remxp", "delxp", "addlevel", "removelvls", "remlevel", "removelevel", "dellvl", "dellevel", "setlevel",
@@ -15844,12 +16107,21 @@ def apply_prefix_to_help_text(text, prefix):
 
 ECON_PREFERRED_ALIAS_OVERRIDES = {
     "bal": ["balance"],
+    "bank": [],
     "profile": ["level"],
     "inventory": ["inv"],
     "shop": [],
+    "jobs": ["careers"],
+    "career": ["job"],
+    "work": [],
     "recommendgame": ["whatgame"],
     "lottery": [],
+    "lotterypot": [],
     "tickets": ["mytickets"],
+    "quewochannel": ["qchannel"],
+    "levelupchannel": ["lvlchannel"],
+    "limits": ["limit"],
+    "passive": [],
     "cf": ["flip"],
     "roulette": ["rl"],
     "blackjack": ["bj"],
@@ -15872,12 +16144,12 @@ def command_help_line(command_name, prefix="."):
     command = bot.get_command(command_name) if bot else None
     usage_name = command.qualified_name if command else command_name
     aliases = econ_visible_aliases(command, 1) if command else []
-    alias_text = f" aliases: `{', '.join(aliases)}`" if aliases else ""
+    alias_text = f" · alias `{prefix}{aliases[0]}`" if aliases else ""
     text = EXPLANATIONS.get(command_name)
     if command and not text:
         text = EXPLANATIONS.get(command.name)
     if not text:
-        text = (command.help or "").strip().splitlines()[0] if command and command.help else "No short explanation is written for this command yet."
+        text = (command.help or "").strip().splitlines()[0] if command and command.help else "No summary yet."
     text = apply_prefix_to_help_text(text, prefix)
     risk = risk_text(command.name if command and command.name in GAME_RISK_LABELS else command_name)
     if risk:
@@ -16056,7 +16328,7 @@ async def explain(ctx, command_name: str = None):
     if command and not text:
         text = EXPLANATIONS.get(command.name)
     if command and not text:
-        text = (command.help or "").strip().splitlines()[0] if command.help else "No short explanation is written for this command yet."
+        text = (command.help or "").strip().splitlines()[0] if command.help else "No summary yet."
     if not text and key != "admin":
         await ctx.send("I don't have a short explanation for that command.", delete_after=30)
         return
@@ -16094,7 +16366,7 @@ async def setup(bot_ref, log_callback=None):
     economy_commands = [
         bal, bank, tutorial, recommendgame, career, jobs, work, robsettings, passive, quewochannel, levelupchannel, rob, profile, inventory, settheme, quests, dailychallenge, streaks, guide, onboard, shop, claimreminders, cooldowns, transactions, limits, lottery, editlottery, stoplottery, lotterystats, tickets, buytick,
         daily, weekly, monthly, gamble, roulette, slots, blackjack,
-        scratch, tower, vault, memory_game, card_ladder, lockpick, heist, dice_duel, cases, plinko, lucky_number, jackpot_spin, dungeon, minesweeper, wheel, give, move_quesos, move_tickets, lb, gamestats, achievements, setbadge, gamebalance, gameaudit, balanceaudit, balancedashboard, event, gamehistory, season, seasonpass, endseason, qstats, economyhealth, economyaudit, abuseaudit, riskprofile, add, remove, addtick, removetick, settick, lotterypot, setquesos, addxp, removexp, addlvl, removelvl, setlvl, econhelp, explain
+        scratch, tower, vault, memory_game, card_ladder, lockpick, heist, dice_duel, cases, plinko, lucky_number, jackpot_spin, dungeon, minesweeper, wheel, give, move_quesos, move_tickets, rollbacktx, lb, gamestats, achievements, setbadge, gamebalance, gameaudit, balanceaudit, balancedashboard, event, gamehistory, season, seasonpass, endseason, qstats, economyhealth, economyaudit, abuseaudit, riskprofile, add, remove, addtick, removetick, settick, lotterypot, setquesos, addxp, removexp, addlvl, removelvl, setlvl, econhelp, explain
     ]
     for command in economy_commands:
         if bot.get_command(command.name):
