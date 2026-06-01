@@ -25,6 +25,9 @@ economy_channel_cache = {}
 
 # --- Config ---
 MAX_BET = 200_000
+DEFAULT_BANK_LIMIT = 3_000_000
+BANK_SPACE_UPGRADE_AMOUNT = 3_000_000
+BANK_SPACE_UPGRADE_COST = 500_000
 COOLDOWN_SECS = 10
 LONG_HELP_VIEW_TIMEOUT = 24 * 60 * 60
 LONG_SETUP_VIEW_TIMEOUT = 60 * 60
@@ -131,8 +134,8 @@ Q_CARD_CLUB = "<:QCardClub:1500873108960182434>"
 Q_WHEEL_RED = "<:QWheelRed:1500878498913452133>"
 Q_WHEEL_BLUE = "<:QWheelBlue:1500878487249096905>"
 Q_WHEEL_GREEN = "<:QWheelGreen:1500878491753906306>"
-Q_WHEEL_ORANGE = "<:QWheelOrange:1500878493309866206>"
-Q_WHEEL_PURPLE = "<:QWheelPurple:1500878497118289930>"
+Q_WHEEL_ORANGE = "<:QWheelOrange:1511064431545810944>"
+Q_WHEEL_PURPLE = "<:QWheelPurple:1511064435790315601>"
 Q_WHEEL_GOLD = "<:QWheelGold:1500878489430261780>"
 Q_WHEEL_BLANK = "<:QWheelBlank:1500878485378564308>"
 Q_WHEEL_PINK = "<:QWheelPink:1500878495159685341>"
@@ -192,29 +195,18 @@ Q_ROB = "<:QRob:1507458102977364020>"
 Q_TUTORIAL = "<:QTutorial:1507458236968865993>"
 Q_RECOMMEND = "<:QRecommend:1507458216437747833>"
 Q_SEASON_PASS = "<:QSeasonPass:1507457946756321482>"
+Q_BANK_SPACE = "<:QBankSpace:1511065124532785253>"
 Q_BRIEFCASE = "<:QBriefcase:1509556589340790927>"
 Q_CAREER = "<:QCareer:1509556591630749736>"
 Q_PROMOTION = "<:QPromotion:1509556626045009950>"
 Q_WORK = "<:QWork:1509556652456673280>"
 
-CUSTOM_EMOJI_FALLBACKS = {
-    # This emoji currently renders as raw markdown in some servers.
-    "1500878493309866206": "ORANGE",
-}
-
-def safe_custom_emoji(markdown, fallback=None):
+def safe_custom_emoji(markdown):
     text = str(markdown or "")
     match = re.fullmatch(r"<a?:[A-Za-z0-9_]{2,32}:([0-9]{17,22})>", text)
     if not match:
         return text
-    emoji_id = int(match.group(1))
-    if bot is not None:
-        try:
-            if bot.get_emoji(emoji_id):
-                return text
-        except Exception:
-            pass
-    return fallback or CUSTOM_EMOJI_FALLBACKS.get(str(emoji_id), text)
+    return text
 INTERNAL_SUPEROWNER_TRANSACTION_KINDS = {"transfer_tax", "lottery_house_cut", "shop_payment"}
 SLOT_SYMBOL_PAYOUTS = [
     (Q_SLOT_STAR, 2),
@@ -364,6 +356,16 @@ SHOP_ITEMS = {
         "cost": 1_000_000,
         "max_qty": 5,
         "description": "Passive: -4% 𝚀𝚞𝚎wo gambling cooldown per clock. Max 5.",
+    },
+    "bank_space": {
+        "category": "Bank",
+        "rarity": "Common",
+        "name": "Bank Space",
+        "emoji": Q_BANK_SPACE,
+        "cost": BANK_SPACE_UPGRADE_COST,
+        "max_qty": 99,
+        "bank_space": BANK_SPACE_UPGRADE_AMOUNT,
+        "description": "Upgrade: +3,000,000 protected bank space per purchase.",
     },
     "fortune_vial": {
         "category": "Gambling",
@@ -533,6 +535,7 @@ def init_db():
                     user_id BIGINT PRIMARY KEY,
                     balance BIGINT DEFAULT 0,
                     bank_balance BIGINT DEFAULT 0,
+                    bank_limit BIGINT DEFAULT 3000000,
                     last_bank_interest TIMESTAMP,
                     daily_streak INTEGER DEFAULT 0,
                     weekly_streak INTEGER DEFAULT 0,
@@ -733,6 +736,8 @@ def init_db():
             """)
             cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS balance BIGINT DEFAULT 0")
             cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS bank_balance BIGINT DEFAULT 0")
+            cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS bank_limit BIGINT DEFAULT 3000000")
+            cur.execute("UPDATE economy SET bank_limit = %s WHERE bank_limit IS NULL OR bank_limit < %s", (DEFAULT_BANK_LIMIT, DEFAULT_BANK_LIMIT))
             cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS last_bank_interest TIMESTAMP")
             cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS daily_streak INTEGER DEFAULT 0")
             cur.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS weekly_streak INTEGER DEFAULT 0")
@@ -1319,6 +1324,52 @@ def apply_shop_purchase(user_id, item_id, total_cost, new_balance, inventory=Non
         conn.commit()
         _cooldown_multiplier_cache.pop(int(user_id), None)
         return new_balance
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cur.close()
+        conn.close()
+
+def apply_bank_space_purchase(user_id, total_cost, quantity, note=""):
+    quantity = int(quantity)
+    added_space = BANK_SPACE_UPGRADE_AMOUNT * quantity
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "INSERT INTO economy (user_id, balance, bank_limit) VALUES (%s, 0, %s) ON CONFLICT (user_id) DO NOTHING",
+            (user_id, DEFAULT_BANK_LIMIT),
+        )
+        cur.execute(
+            "INSERT INTO economy (user_id, balance) VALUES (%s, 0) ON CONFLICT (user_id) DO NOTHING",
+            (SUPER_OWNER_ID,),
+        )
+        cur.execute("SELECT balance, bank_limit FROM economy WHERE user_id = %s FOR UPDATE", (user_id,))
+        buyer = cur.fetchone()
+        if buyer is None or int(buyer["balance"]) < int(total_cost):
+            raise RuntimeError("Insufficient balance during bank space purchase")
+        old_limit = max(DEFAULT_BANK_LIMIT, int(buyer.get("bank_limit") or DEFAULT_BANK_LIMIT))
+        new_balance = int(buyer["balance"]) - int(total_cost)
+        new_limit = old_limit + added_space
+        cur.execute(
+            "UPDATE economy SET balance = %s, bank_limit = %s WHERE user_id = %s",
+            (new_balance, new_limit, user_id),
+        )
+        cur.execute(
+            "UPDATE economy SET balance = balance + %s WHERE user_id = %s",
+            (total_cost, SUPER_OWNER_ID),
+        )
+        cur.execute(
+            "INSERT INTO economy_transactions (user_id, kind, amount, note) VALUES (%s, %s, %s, %s)",
+            (user_id, "shop_purchase", -total_cost, note),
+        )
+        cur.execute(
+            "INSERT INTO economy_transactions (user_id, kind, amount, note) VALUES (%s, %s, %s, %s)",
+            (SUPER_OWNER_ID, "shop_payment", total_cost, f"Shop payment from {user_id}: {note}"),
+        )
+        conn.commit()
+        return new_balance, old_limit, new_limit
     except Exception:
         conn.rollback()
         raise
@@ -3444,7 +3495,7 @@ async def handle_lottery_purchase(interaction, tickets):
         schedule_lottery_refresh(interaction.guild, result["config"])
     except Exception as e:
         print(f"Lottery button purchase failed: {type(e).__name__} - {e}")
-        await interaction.followup.send(f"{Q_DENIED} Database unavailable. Try again shortly.", ephemeral=True)
+        await interaction.followup.send(f"{Q_DENIED} I had trouble reaching the economy data. Try again in a bit.", ephemeral=True)
 
 async def send_lottery_stats(interaction):
     if interaction.guild is None:
@@ -3479,7 +3530,7 @@ async def send_lottery_stats(interaction):
         await interaction.followup.send(own_text, embed=embed, ephemeral=True)
     except Exception as e:
         print(f"Lottery stats button failed: {type(e).__name__} - {e}")
-        await interaction.followup.send(f"{Q_DENIED} Database unavailable. Try again shortly.", ephemeral=True)
+        await interaction.followup.send(f"{Q_DENIED} I had trouble reaching the economy data. Try again in a bit.", ephemeral=True)
 
 class LotteryCustomAmountModal(discord.ui.Modal, title="Buy Lottery Tickets"):
     amount = discord.ui.TextInput(label="Tickets", placeholder="Example: 25", min_length=1, max_length=8)
@@ -3602,7 +3653,7 @@ async def apply_lottery_edit(guild, author, setting, value, send, channel_mentio
     try:
         await asyncio.to_thread(update_lottery_config, guild.id, **updates)
     except Exception:
-        await send(f"{Q_DENIED} Database unavailable. Try again shortly.")
+        await send(f"{Q_DENIED} I had trouble reaching the economy data. Try again in a bit.")
         return False
 
     updated = await asyncio.to_thread(get_lottery_config, guild.id)
@@ -3911,14 +3962,21 @@ def transfer_to_bank(user_id, amount, mode):
     conn = get_db_connection()
     cur = conn.cursor()
     try:
-        cur.execute("INSERT INTO economy (user_id, balance, bank_balance) VALUES (%s, 0, 0) ON CONFLICT (user_id) DO NOTHING", (int(user_id),))
-        cur.execute("SELECT balance, bank_balance FROM economy WHERE user_id = %s FOR UPDATE", (int(user_id),))
+        cur.execute(
+            "INSERT INTO economy (user_id, balance, bank_balance, bank_limit) VALUES (%s, 0, 0, %s) ON CONFLICT (user_id) DO NOTHING",
+            (int(user_id), DEFAULT_BANK_LIMIT),
+        )
+        cur.execute("SELECT balance, bank_balance, bank_limit FROM economy WHERE user_id = %s FOR UPDATE", (int(user_id),))
         row = cur.fetchone()
         balance = int(row["balance"] or 0)
         bank = int(row["bank_balance"] or 0)
+        bank_limit = max(DEFAULT_BANK_LIMIT, int(row.get("bank_limit") or DEFAULT_BANK_LIMIT))
         if mode == "deposit":
             if amount <= 0 or amount > balance:
                 raise ValueError("deposit")
+            available = max(0, bank_limit - bank)
+            if amount > available:
+                raise ValueError(f"bank_limit:{available}")
             new_balance = balance - amount
             new_bank = bank + amount
             kind = "bank_deposit"
@@ -3933,7 +3991,7 @@ def transfer_to_bank(user_id, amount, mode):
         cur.execute("UPDATE economy SET balance = %s, bank_balance = %s WHERE user_id = %s", (new_balance, new_bank, int(user_id)))
         cur.execute("INSERT INTO economy_transactions (user_id, kind, amount, note) VALUES (%s, %s, %s, %s)", (int(user_id), kind, amount if mode == "withdraw" else -amount, note))
         conn.commit()
-        return {"old_balance": balance, "old_bank": bank, "balance": new_balance, "bank": new_bank, "amount": amount}
+        return {"old_balance": balance, "old_bank": bank, "balance": new_balance, "bank": new_bank, "amount": amount, "bank_limit": bank_limit}
     except Exception:
         conn.rollback()
         raise
@@ -4612,7 +4670,7 @@ def tutorial_prompt_text(data, topic="start"):
     if topic == "games":
         base = f"{Q_TUTORIAL} Tutorial Mode: try `.games`, then pick a game with **Low** or **Medium** risk first. `.recommendgame` can pick one for you."
     elif topic == "shop":
-        base = f"{Q_TUTORIAL} Tutorial Mode: shop items are grouped by category and rarity. Start with XP Tonic or Daily Spice before risky boosts."
+        base = f"{Q_TUTORIAL} Tutorial Mode: shop items are grouped by category and rarity. Start with XP Tonic, Daily Spice, or Bank Space before risky boosts."
     else:
         base = f"{Q_TUTORIAL} Tutorial Mode: start with `.daily`, check `.games`, use `.shop`, and protect cash with `.bank deposit <amount>`."
     if uses >= 3:
@@ -4674,6 +4732,21 @@ def luck_boost_until(data):
     boost_until = boost_until.replace(tzinfo=timezone.utc) if boost_until.tzinfo is None else boost_until
     return boost_until if boost_until > datetime.now(timezone.utc) else None
 
+def bank_limit_for(data):
+    return max(DEFAULT_BANK_LIMIT, int((data or {}).get("bank_limit") or DEFAULT_BANK_LIMIT))
+
+def bank_space_text(data):
+    banked = int((data or {}).get("bank_balance") or 0)
+    limit = bank_limit_for(data)
+    remaining = max(0, limit - banked)
+    percent = (banked / max(1, limit)) * 100
+    status = f"{format_balance(banked)} / {format_balance(limit)} used"
+    if remaining <= 0:
+        return f"{status}\n{Q_BANK_SPACE} Bank is full. Buy **Bank Space** in `.shop` to deposit more."
+    if percent >= 85:
+        return f"{status}\n{Q_BANK_SPACE} Almost full. Buy **Bank Space** in `.shop` before depositing big amounts."
+    return f"{status}\nSpace left: **{format_balance(remaining)}**"
+
 def chance_with_luck(base_chance, data, cap=0.95):
     return min(cap, base_chance + active_luck_bonus(data))
 
@@ -4683,13 +4756,15 @@ def item_display_name(item):
 
 def item_short_description(item):
     text = str(item.get("description") or "").strip()
-    prefixes = ("Passive: ", "Temporary: ", "Cosmetic: ", "Consumable: ")
+    prefixes = ("Passive: ", "Temporary: ", "Cosmetic: ", "Consumable: ", "Upgrade: ")
     for prefix in prefixes:
         if text.startswith(prefix):
             return text[len(prefix):].strip()
     return text
 
 def item_type_label(item):
+    if item.get("bank_space"):
+        return "Upgrade"
     if "duration_hours" in item:
         return "Temporary"
     description = str(item.get("description") or "")
@@ -4722,6 +4797,10 @@ def item_owned_text(data, item_id, item):
     inventory = user_inventory(data)
     if "duration_hours" in item:
         return luck_boost_text(data) if item_id == "fortune_vial" and luck_boost_text(data) else "not active"
+    if item.get("bank_space"):
+        upgrades = max(0, (bank_limit_for(data) - DEFAULT_BANK_LIMIT) // BANK_SPACE_UPGRADE_AMOUNT)
+        max_qty = item.get("max_qty", 99)
+        return f"{upgrades}/{max_qty} upgrades"
     qty = inventory.count(item_id)
     max_qty = item.get("max_qty", 1)
     return f"{qty}/{max_qty}" if max_qty > 1 else ("owned" if qty else "not owned")
@@ -4742,6 +4821,9 @@ def passive_bonus_lines(data):
         qty = item_count(data, item_id)
         if qty:
             lines.append(f"{item_display_name(item)} x{qty} - {text}")
+    bank_limit = bank_limit_for(data)
+    if bank_limit > DEFAULT_BANK_LIMIT:
+        lines.append(f"{item_display_name(SHOP_ITEMS['bank_space'])} - bank limit {format_balance(bank_limit)}")
     cosmetics = [item_display_name(SHOP_ITEMS[item_id]) for item_id in ("gold_badge", "high_roller", "velvet_frame", "royal_crown") if has_item(data, item_id)]
     if cosmetics:
         lines.append(f"Cosmetics: {', '.join(cosmetics)}")
@@ -5505,7 +5587,7 @@ async def reply_to_command(ctx, *args, **kwargs):
     return await ctx.reply(*args, **kwargs)
 
 async def send_error(ctx, text):
-    if text == "Database unavailable. Try again shortly.":
+    if text == "I had trouble reaching the economy data. Try again in a bit.":
         await ensure_db_ready(ctx, force=True)
         return
 
@@ -5760,7 +5842,7 @@ async def bal(ctx, member: discord.Member = None):
     try:
         data = await asyncio.to_thread(get_user, user.id)
     except Exception:
-        await send_error(ctx, "Database unavailable. Try again shortly.")
+        await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
         return
 
     streak = int(data.get("gamble_streak", 0) or 0)
@@ -5777,6 +5859,7 @@ async def bal(ctx, member: discord.Member = None):
     embed.add_field(name="Cash", value=format_balance(data['balance']), inline=True)
     embed.add_field(name="Bank", value=format_balance(data.get('bank_balance', 0)), inline=True)
     embed.add_field(name="Total", value=format_balance(int(data['balance'] or 0) + int(data.get('bank_balance') or 0)), inline=True)
+    embed.add_field(name="Bank Space", value=bank_space_text(data), inline=False)
     if streak_lines:
         embed.add_field(name="Streaks", value=streak_lines.strip(), inline=False)
     embed.add_field(name="Daily Streak", value=plural_unit(data["daily_streak"], "day"), inline=True)
@@ -5797,7 +5880,7 @@ async def bank(ctx, action: str = None, *, raw_amount: str = None):
     try:
         data = await asyncio.to_thread(get_user, ctx.author.id)
     except Exception:
-        return await send_error(ctx, "Database unavailable. Try again shortly.")
+        return await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
     invoked = ctx.invoked_with.casefold()
     if invoked in {"deposit", "withdraw"} and action is not None and raw_amount is None:
         raw_amount = action
@@ -5818,6 +5901,7 @@ async def bank(ctx, action: str = None, *, raw_amount: str = None):
         embed.add_field(name="Cash", value=format_balance(int(data["balance"] or 0)), inline=True)
         embed.add_field(name="Bank", value=format_balance(int(data.get("bank_balance") or 0)), inline=True)
         embed.add_field(name="Total", value=format_balance(int(data["balance"] or 0) + int(data.get("bank_balance") or 0)), inline=True)
+        embed.add_field(name="Bank Space", value=bank_space_text(data), inline=False)
         embed.add_field(name="Daily Interest", value=(discord_relative_time(next_interest) if next_interest and datetime.now(timezone.utc) < next_interest else "Ready with `.bank interest`"), inline=False)
         embed.add_field(name="Use", value="`.bank deposit 100k`\n`.bank withdraw 50k`\n`.bank deposit all`\n`.bank interest`", inline=False)
         return await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
@@ -5825,7 +5909,7 @@ async def bank(ctx, action: str = None, *, raw_amount: str = None):
         try:
             result = await asyncio.to_thread(claim_bank_interest, ctx.author.id)
         except Exception:
-            return await send_error(ctx, "Database unavailable. Try again shortly.")
+            return await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
         if not result.get("ok"):
             return await ctx.send(result["message"], allowed_mentions=discord.AllowedMentions.none())
         await asyncio.to_thread(
@@ -5847,17 +5931,45 @@ async def bank(ctx, action: str = None, *, raw_amount: str = None):
     amount = parse_amount(raw_amount, ctx.author.id, ctx.guild, source_balance)
     if amount is None or amount <= 0:
         return await ctx.send(f"{Q_DENIED} Use an amount like `50k`, `1m`, or `all`.")
+    if mode == "deposit":
+        available_space = max(0, bank_limit_for(data) - int(data.get("bank_balance") or 0))
+        if available_space <= 0:
+            return await ctx.send(
+                f"{Q_DENIED} Your bank is full.\n"
+                f"{Q_BANK_SPACE} Buy **Bank Space** in `.shop` for **{format_balance(BANK_SPACE_UPGRADE_COST)}** "
+                f"to add **{format_balance(BANK_SPACE_UPGRADE_AMOUNT)}** more space.",
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        if str(raw_amount or "").strip().casefold() in {"all", "max"} and amount > available_space:
+            amount = available_space
     try:
         result = await asyncio.to_thread(transfer_to_bank, ctx.author.id, amount, mode)
-    except ValueError:
+    except ValueError as exc:
+        reason = str(exc)
+        if reason.startswith("bank_limit:"):
+            available = int(reason.split(":", 1)[1] or 0)
+            if available <= 0:
+                return await ctx.send(
+                    f"{Q_DENIED} Your bank is full.\n"
+                    f"{Q_BANK_SPACE} Buy **Bank Space** in `.shop` for **{format_balance(BANK_SPACE_UPGRADE_COST)}** "
+                    f"to add **{format_balance(BANK_SPACE_UPGRADE_AMOUNT)}** more space.",
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+            return await ctx.send(
+                f"{Q_DENIED} That would pass your bank limit. You can deposit up to **{format_balance(available)}** right now.\n"
+                f"{Q_BANK_SPACE} Buy **Bank Space** in `.shop` for **{format_balance(BANK_SPACE_UPGRADE_COST)}** "
+                f"to add **{format_balance(BANK_SPACE_UPGRADE_AMOUNT)}** more space.",
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
         return await ctx.send(f"{Q_DENIED} You do not have that much {'cash' if mode == 'deposit' else 'banked money'}.")
     except Exception:
-        return await send_error(ctx, "Database unavailable. Try again shortly.")
+        return await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
     verb = "Deposited" if mode == "deposit" else "Withdrew"
     await ctx.send(
         f"{Q_BANK} {verb} **{format_balance(result['amount'])}**.\n"
         f"Cash: **{format_balance(result['old_balance'])}** → **{format_balance(result['balance'])}**\n"
-        f"Bank: **{format_balance(result['old_bank'])}** → **{format_balance(result['bank'])}**",
+        f"Bank: **{format_balance(result['old_bank'])}** → **{format_balance(result['bank'])}**\n"
+        f"Bank Space: **{format_balance(result['bank'])}** / **{format_balance(result['bank_limit'])}**",
         allowed_mentions=discord.AllowedMentions.none(),
     )
 
@@ -5888,7 +6000,7 @@ async def recommendgame(ctx):
         data = await asyncio.to_thread(get_user, ctx.author.id)
         stats = await asyncio.to_thread(get_game_stats, ctx.author.id)
     except Exception:
-        return await send_error(ctx, "Database unavailable. Try again shortly.")
+        return await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
     balance = int(data["balance"] or 0)
     played = {row["game_key"]: int(row["played"] or 0) for row in stats}
     profit = {row["game_key"]: int(row["profit"] or 0) for row in stats}
@@ -6325,7 +6437,7 @@ async def rob(ctx, member: discord.Member = None):
     try:
         result = await asyncio.to_thread(rob_user_sync, ctx.guild.id, ctx.author.id, member.id)
     except Exception:
-        return await send_error(ctx, "Database unavailable. Try again shortly.")
+        return await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
     if not result.get("ok"):
         return await ctx.send(result["message"], allowed_mentions=discord.AllowedMentions.none())
     if result.get("success"):
@@ -6351,7 +6463,7 @@ async def profile(ctx, member: discord.Member = None):
     try:
         data = await asyncio.to_thread(get_user, user.id)
     except Exception:
-        await send_error(ctx, "Database unavailable. Try again shortly.")
+        await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
         return
 
     embed = build_profile_embed(user, data)
@@ -6380,7 +6492,7 @@ async def settheme(ctx, theme: str = None):
     try:
         data = await asyncio.to_thread(get_user, ctx.author.id)
     except Exception:
-        await send_error(ctx, "Database unavailable. Try again shortly.")
+        await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
         return
     if theme is None:
         lines = []
@@ -6409,7 +6521,7 @@ async def inventory(ctx, member: discord.Member = None):
     try:
         data = await asyncio.to_thread(get_user, user.id)
     except Exception:
-        await send_error(ctx, "Database unavailable. Try again shortly.")
+        await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
         return
 
     class InventoryView(discord.ui.View):
@@ -6445,7 +6557,7 @@ async def inventory(ctx, member: discord.Member = None):
                 updated = await asyncio.to_thread(get_user, user.id)
             except Exception:
                 if interaction:
-                    await interaction.followup.send(f"{Q_DENIED} Database unavailable. Try again shortly.", ephemeral=True)
+                    await interaction.followup.send(f"{Q_DENIED} I had trouble reaching the economy data. Try again in a bit.", ephemeral=True)
                 return
             embed = build_inventory_embed(user, updated, self.page)
             if interaction:
@@ -6465,7 +6577,7 @@ async def inventory(ctx, member: discord.Member = None):
 
         @discord.ui.button(label="Shop", emoji=Q_SHOP, style=discord.ButtonStyle.success)
         async def shop_hint_button(self, interaction, button):
-            await interaction.response.send_message("Use `.shop` to buy boosts, cosmetics, and active effects.", ephemeral=True)
+            await interaction.response.send_message("Use `.shop` to buy boosts, cosmetics, Bank Space, and active effects.", ephemeral=True)
 
         @discord.ui.button(label="Profile", emoji=Q_XP, style=discord.ButtonStyle.secondary)
         async def profile_hint_button(self, interaction, button):
@@ -6477,7 +6589,7 @@ async def inventory(ctx, member: discord.Member = None):
             try:
                 updated = await asyncio.to_thread(get_user, interaction.user.id)
             except Exception:
-                return await interaction.followup.send(f"{Q_DENIED} Database unavailable. Try again shortly.", ephemeral=True)
+                return await interaction.followup.send(f"{Q_DENIED} I had trouble reaching the economy data. Try again in a bit.", ephemeral=True)
             options = []
             for theme_id, info in PROFILE_THEMES.items():
                 item_id = info.get("item")
@@ -6507,7 +6619,7 @@ async def inventory(ctx, member: discord.Member = None):
             try:
                 updated = await asyncio.to_thread(get_user, interaction.user.id)
             except Exception:
-                return await interaction.followup.send(f"{Q_DENIED} Database unavailable. Try again shortly.", ephemeral=True)
+                return await interaction.followup.send(f"{Q_DENIED} I had trouble reaching the economy data. Try again in a bit.", ephemeral=True)
             earned = [badge for badge in achievement_ids(updated) if badge in GAME_ACHIEVEMENTS]
             if not earned:
                 return await interaction.followup.send(f"{Q_DENIED} You have no earned badges yet.", ephemeral=True)
@@ -6553,7 +6665,7 @@ async def quests(ctx):
     try:
         data = await asyncio.to_thread(get_user, ctx.author.id)
     except Exception:
-        await send_error(ctx, "Database unavailable. Try again shortly.")
+        await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
         return
 
     class QuestView(discord.ui.View):
@@ -6604,7 +6716,7 @@ async def quests(ctx):
                 _, total_reward, updated = await asyncio.to_thread(claim_completed_quests_sync, interaction.user.id)
             except Exception as e:
                 print(f"Quest claim UI error: {type(e).__name__} - {e}")
-                await interaction.followup.send(f"{Q_DENIED} Database unavailable. Try again shortly.", ephemeral=True)
+                await interaction.followup.send(f"{Q_DENIED} I had trouble reaching the economy data. Try again in a bit.", ephemeral=True)
                 return
 
             if total_reward <= 0:
@@ -6625,7 +6737,7 @@ async def quests(ctx):
                 updated = await asyncio.to_thread(get_user, interaction.user.id)
             except Exception as e:
                 print(f"Quest refresh UI error: {type(e).__name__} - {e}")
-                await interaction.followup.send(f"{Q_DENIED} Database unavailable. Try again shortly.", ephemeral=True)
+                await interaction.followup.send(f"{Q_DENIED} I had trouble reaching the economy data. Try again in a bit.", ephemeral=True)
                 return
             await interaction.edit_original_response(
                 content=None,
@@ -6690,11 +6802,7 @@ async def shop(ctx):
             price_text = format_balance(display_cost)
             if discount:
                 price_text += f" ~~{format_balance(item['cost'])}~~"
-            owned = inventory.count(item_id)
-            max_qty = item.get("max_qty", 1)
-            owned_text = "active" if "duration_hours" in item and item_id == "fortune_vial" and boost_text else (
-                f"{owned}/{max_qty}" if max_qty > 1 else ("owned" if owned else "not owned")
-            )
+            owned_text = item_owned_text(data, item_id, item)
             lines.append(
                 f"{marker}**{item_display_name(item)}** — **{price_text}**\n"
                 f"{item_short_description(item)}\n"
@@ -6703,11 +6811,7 @@ async def shop(ctx):
         add_split_embed_field(embed, "Catalog", lines or ["No items in this category."], inline=False)
 
         selected_cost = int(selected_item["cost"] * (1 - discount))
-        selected_owned = inventory.count(selected_item_id)
-        selected_max = selected_item.get("max_qty", 1)
-        selected_owned_text = "active" if "duration_hours" in selected_item and selected_item_id == "fortune_vial" and boost_text else (
-            f"{selected_owned}/{selected_max}" if selected_max > 1 else ("owned" if selected_owned else "not owned")
-        )
+        selected_owned_text = item_owned_text(data, selected_item_id, selected_item)
         embed.add_field(
             name=f"{Q_COMMAND_CHECK} Selected Item",
             value=(
@@ -6741,6 +6845,12 @@ async def shop(ctx):
             embed.add_field(name="Discount", value=f"-{int(purchase['discount'] * 100)}%", inline=True)
         if purchase.get("effect_until"):
             embed.add_field(name="Effect", value=f"Active until {discord_relative_time(purchase['effect_until'])}", inline=False)
+        if purchase.get("old_bank_limit") is not None:
+            embed.add_field(
+                name="Bank Space",
+                value=f"{format_balance(purchase['old_bank_limit'])} → {format_balance(purchase['new_bank_limit'])}",
+                inline=False,
+            )
         embed.set_footer(text="Shopping closed." if closed else "Continue shopping or press Done to keep this compact summary.")
         return embed
 
@@ -6760,6 +6870,14 @@ async def shop(ctx):
             max_qty = item.get("max_qty", 99)
             if quantity > max_qty:
                 return {"ok": False, "message": f"{Q_DENIED} You can buy at most **{max_qty}** **{item_name}** at once."}
+        elif item.get("bank_space"):
+            owned = max(0, (bank_limit_for(data) - DEFAULT_BANK_LIMIT) // BANK_SPACE_UPGRADE_AMOUNT)
+            max_qty = item.get("max_qty", 99)
+            remaining_allowed = max_qty - owned
+            if remaining_allowed <= 0:
+                return {"ok": False, "message": f"{Q_DENIED} You already own the max amount of **{item_name}**."}
+            if quantity > remaining_allowed:
+                return {"ok": False, "message": f"{Q_DENIED} You can only buy **{remaining_allowed}** more **{item_name}**."}
         else:
             owned = inventory.count(item_id)
             max_qty = item.get("max_qty", 1)
@@ -6796,6 +6914,18 @@ async def shop(ctx):
                 note=f"{quantity}x {item['name']}",
             )
             effect_text = f"\nEffect active until **{discord_relative_time(boost_until)}**."
+            old_bank_limit = None
+            new_bank_limit = None
+        elif item.get("bank_space"):
+            new_balance, old_bank_limit, new_bank_limit = apply_bank_space_purchase(
+                user_id,
+                total_cost,
+                quantity,
+                note=f"{quantity}x {item['name']}",
+            )
+            effect_text = (
+                f"\nBank Space: **{format_balance(old_bank_limit)}** → **{format_balance(new_bank_limit)}**."
+            )
         else:
             inventory.extend([item_id] * quantity)
             new_balance = apply_shop_purchase(
@@ -6806,6 +6936,8 @@ async def shop(ctx):
                 inventory=inventory,
                 note=f"{quantity}x {item['name']}",
             )
+            old_bank_limit = None
+            new_bank_limit = None
         discount_text = f"\n{Q_EVENT} Shop Discount: **-{int(discount * 100)}%**" if discount else ""
         return {
             "ok": True,
@@ -6820,6 +6952,8 @@ async def shop(ctx):
                 "new_balance": new_balance,
                 "discount": discount,
                 "effect_until": effect_until,
+                "old_bank_limit": old_bank_limit,
+                "new_bank_limit": new_bank_limit,
             },
         }
 
@@ -6848,7 +6982,7 @@ async def shop(ctx):
                     str(self.quantity.value).strip(),
                 )
             except Exception:
-                await interaction.followup.send(f"{Q_DENIED} Database unavailable. Try again shortly.", ephemeral=True)
+                await interaction.followup.send(f"{Q_DENIED} I had trouble reaching the economy data. Try again in a bit.", ephemeral=True)
                 return
 
             await interaction.followup.send(result["message"], ephemeral=True)
@@ -7171,7 +7305,7 @@ async def cooldowns(ctx):
             try:
                 updated = await asyncio.to_thread(get_user, interaction.user.id)
             except Exception:
-                return await interaction.followup.send(f"{Q_DENIED} Database unavailable. Try again shortly.", ephemeral=True)
+                return await interaction.followup.send(f"{Q_DENIED} I had trouble reaching the economy data. Try again in a bit.", ephemeral=True)
             await interaction.edit_original_response(embed=build_embed(updated, self.page), view=self, allowed_mentions=discord.AllowedMentions.none())
 
         @discord.ui.button(label="Guide", style=discord.ButtonStyle.secondary, row=1)
@@ -7184,7 +7318,7 @@ async def cooldowns(ctx):
     try:
         data = await asyncio.to_thread(get_user, ctx.author.id)
     except Exception:
-        await send_error(ctx, "Database unavailable. Try again shortly.")
+        await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
         return
 
     await ctx.send(embed=build_embed(data), view=CooldownsView(), allowed_mentions=discord.AllowedMentions.none())
@@ -7198,7 +7332,7 @@ async def transactions(ctx, member: discord.Member = None):
     try:
         rows = await asyncio.to_thread(get_recent_transactions, user.id, 12)
     except Exception:
-        await send_error(ctx, "Database unavailable. Try again shortly.")
+        await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
         return
     if user.id == SUPER_OWNER_ID and ctx.author.id != SUPER_OWNER_ID:
         rows = [
@@ -7418,7 +7552,7 @@ async def stoplottery(ctx):
     try:
         delete_lottery_config(ctx.guild.id)
     except Exception:
-        await send_error(ctx, "Database unavailable. Try again shortly.")
+        await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
         return
 
     await ctx.send(
@@ -7492,7 +7626,7 @@ async def lotterypot(ctx, action: str = None, amount: str = None):
             f"pot {old_pot}->{new_pot}",
         )
     except Exception:
-        await send_error(ctx, "Database unavailable. Try again shortly.")
+        await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
         return
 
     schedule_lottery_refresh(ctx.guild, updated)
@@ -7668,7 +7802,7 @@ async def tickets(ctx, *, target: str = None):
             asyncio.to_thread(lottery_ticket_rows, ctx.guild.id),
         )
     except Exception:
-        await send_error(ctx, "Database unavailable. Try again shortly.")
+        await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
         return
 
     entries = int((row or {}).get("tickets", 0) or 0)
@@ -7734,7 +7868,7 @@ async def buytick(ctx, amount: str = None):
         await assign_lottery_role(ctx.guild, ctx.author.id, result["config"].get("role_id"))
         schedule_lottery_refresh(ctx.guild, result["config"])
     except Exception:
-        await send_error(ctx, "Database unavailable. Try again shortly.")
+        await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
         return
 
     await reply_to_command(
@@ -8072,7 +8206,7 @@ class BalanceRankView(discord.ui.View):
         await interaction.response.defer()
         embed = await self.render()
         if embed is None:
-            return await interaction.followup.send("Database unavailable. Try again shortly.", ephemeral=True)
+            return await interaction.followup.send("I had trouble reaching the economy data. Try again in a bit.", ephemeral=True)
         await interaction.edit_original_response(embed=embed, view=self)
 
     @discord.ui.button(label="Local", style=discord.ButtonStyle.primary, row=0)
@@ -8129,7 +8263,7 @@ class BalanceRankView(discord.ui.View):
         try:
             data = await asyncio.to_thread(get_user, interaction.user.id)
         except Exception:
-            return await interaction.followup.send(f"{Q_DENIED} Database unavailable. Try again shortly.", ephemeral=True)
+            return await interaction.followup.send(f"{Q_DENIED} I had trouble reaching the economy data. Try again in a bit.", ephemeral=True)
         await interaction.followup.send(
             embed=build_profile_embed(interaction.user, data),
             ephemeral=True,
@@ -8152,7 +8286,7 @@ async def send_balance_rank(ctx, order, title, icon=QOIN_CHEST):
     view = BalanceRankView(ctx, order, title, icon)
     embed = await view.render()
     if embed is None:
-        await send_error(ctx, "Database unavailable. Try again shortly.")
+        await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
         return
 
     view.message = await ctx.send(embed=embed, view=view, allowed_mentions=discord.AllowedMentions.none())
@@ -8169,7 +8303,7 @@ async def daily(ctx):
     try:
         data = await asyncio.to_thread(get_user, user_id)
     except Exception:
-        await send_error(ctx, "Database unavailable. Try again shortly.")
+        await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
         return
 
     now = datetime.now(timezone.utc)
@@ -8204,7 +8338,7 @@ async def daily(ctx):
             return updated_user, achievement
         updated, achievement_reward = await asyncio.to_thread(claim_daily_sync)
     except Exception:
-        await send_error(ctx, "Database unavailable. Try again shortly.")
+        await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
         return
 
     extra = f"\n{Q_QUEST} Main quest complete: **{format_balance(achievement_reward)}**!" if achievement_reward else ""
@@ -8221,7 +8355,7 @@ async def weekly(ctx):
     try:
         data = await asyncio.to_thread(get_user, user_id)
     except Exception:
-        await send_error(ctx, "Database unavailable. Try again shortly.")
+        await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
         return
 
     now = datetime.now(timezone.utc)
@@ -8256,7 +8390,7 @@ async def weekly(ctx):
             return updated_user, achievement
         updated, achievement_reward = await asyncio.to_thread(claim_weekly_sync)
     except Exception:
-        await send_error(ctx, "Database unavailable. Try again shortly.")
+        await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
         return
 
     extra = f"\n{Q_QUEST} Main quest complete: **{format_balance(achievement_reward)}**!" if achievement_reward else ""
@@ -8272,7 +8406,7 @@ async def monthly(ctx):
     try:
         data = await asyncio.to_thread(get_user, user_id)
     except Exception:
-        await send_error(ctx, "Database unavailable. Try again shortly.")
+        await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
         return
 
     now = datetime.now(timezone.utc)
@@ -8307,7 +8441,7 @@ async def monthly(ctx):
             return updated_user, achievement
         updated, achievement_reward = await asyncio.to_thread(claim_monthly_sync)
     except Exception:
-        await send_error(ctx, "Database unavailable. Try again shortly.")
+        await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
         return
 
     extra = f"\n{Q_QUEST} Main quest complete: **{format_balance(achievement_reward)}**!" if achievement_reward else ""
@@ -8333,7 +8467,7 @@ async def gamble(ctx, amount: str, choice: str = None):
     try:
         data = await asyncio.to_thread(get_user, user_id)
     except Exception:
-        await send_error(ctx, "Database unavailable. Try again shortly.")
+        await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
         return
 
     raw_amount = amount
@@ -8484,7 +8618,7 @@ async def gamble(ctx, amount: str, choice: str = None):
                 )
             )
     except Exception:
-        await send_error(ctx, "Database unavailable. Try again shortly.")
+        await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
         return
 
 # =====================
@@ -8504,7 +8638,7 @@ async def roulette(ctx, amount: str, color: str = None):
     try:
         data = await asyncio.to_thread(get_user, user_id)
     except Exception:
-        await send_error(ctx, "Database unavailable. Try again shortly.")
+        await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
         return
 
     raw_amount = amount
@@ -8667,7 +8801,7 @@ async def roulette(ctx, amount: str, color: str = None):
                 )
             )
     except Exception:
-        await send_error(ctx, "Database unavailable. Try again shortly.")
+        await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
         return
 
 # =====================
@@ -8688,7 +8822,7 @@ async def slots(ctx, amount: str):
     try:
         data = await asyncio.to_thread(get_user, user_id)
     except Exception:
-        await send_error(ctx, "Database unavailable. Try again shortly.")
+        await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
         return
 
     raw_amount = amount
@@ -8816,7 +8950,7 @@ async def slots(ctx, amount: str):
                 )
             )
     except Exception:
-        await send_error(ctx, "Database unavailable. Try again shortly.")
+        await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
         return
 
 # =====================
@@ -8870,7 +9004,7 @@ async def blackjack(ctx, amount: str):
     try:
         data = await asyncio.to_thread(get_user, user_id)
     except Exception:
-        await send_error(ctx, "Database unavailable. Try again shortly.")
+        await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
         return
 
     raw_amount = amount
@@ -8979,7 +9113,7 @@ async def blackjack(ctx, amount: str):
                     )
                 )
         except Exception:
-            await send_error(ctx, "Database unavailable. Try again shortly.")
+            await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
 
     class BJView(discord.ui.View):
         def __init__(self):
@@ -9103,7 +9237,7 @@ async def give(ctx, *, args: str = None):
     try:
         data = await asyncio.to_thread(get_user, user_id)
     except Exception:
-        await send_error(ctx, "Database unavailable. Try again shortly.")
+        await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
         return
 
     if str(amount).lower() == "all" and multi_targets:
@@ -9182,7 +9316,7 @@ async def give(ctx, *, args: str = None):
             await ctx.send(f"{Q_DENIED} You only have {format_balance(latest['balance'])}")
             return
         except Exception:
-            await send_error(ctx, "Database unavailable. Try again shortly.")
+            await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
             return
 
         await send_bulk_before_after_result(
@@ -9254,7 +9388,7 @@ async def give(ctx, *, args: str = None):
         await ctx.send(f"{Q_DENIED} You only have {format_balance(data['balance'])}")
         return
     except Exception:
-        await send_error(ctx, "Database unavailable. Try again shortly.")
+        await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
         return
 
     await reply_to_command(
@@ -9302,7 +9436,7 @@ async def move_quesos(ctx, *, args: str = None):
     try:
         source_data = await asyncio.to_thread(get_user, source.id)
     except Exception:
-        await send_error(ctx, "Database unavailable. Try again shortly.")
+        await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
         return
     if str(amount_text).casefold() == "all":
         amount = max(0, int(source_data.get("balance") or 0))
@@ -9335,7 +9469,7 @@ async def move_quesos(ctx, *, args: str = None):
         await ctx.send(f"{Q_DENIED} {user_mention(source.id)} only has {format_balance(source_data.get('balance') or 0)}.")
         return
     except Exception:
-        await send_error(ctx, "Database unavailable. Try again shortly.")
+        await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
         return
 
     await ctx.send(
@@ -9417,7 +9551,7 @@ async def move_tickets(ctx, *, args: str = None):
             await ctx.send(f"{Q_DENIED} Could not move those tickets.")
         return
     except Exception:
-        await send_error(ctx, "Database unavailable. Try again shortly.")
+        await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
         return
 
     schedule_lottery_refresh(ctx.guild, updated_config)
@@ -9462,7 +9596,7 @@ async def qstats(ctx, member: discord.Member = None):
     try:
         stats = await asyncio.to_thread(get_economy_stats)
     except Exception:
-        await send_error(ctx, "Database unavailable. Try again shortly.")
+        await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
         return
 
     tx = stats["transaction_totals"]
@@ -9506,7 +9640,7 @@ async def balancedashboard(ctx, days: int = 14):
         rows = await asyncio.to_thread(get_game_audit_rows, days)
         games, transactions, losses, lottery_watch = await asyncio.to_thread(get_abuse_audit_rows)
     except Exception:
-        await send_error(ctx, "Database unavailable. Try again shortly.")
+        await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
         return
 
     tx = stats["transaction_totals"]
@@ -9632,7 +9766,7 @@ async def add(ctx, *, args: str = None):
                 return before, count, after, receipt
             before_balances, count, after_balances, receipt_id = await asyncio.to_thread(run_bulk_add)
         except Exception:
-            await send_or_edit_bulk_error(ctx, progress_msg, "Database unavailable. Try again shortly.")
+            await send_or_edit_bulk_error(ctx, progress_msg, "I had trouble reaching the economy data. Try again in a bit.")
             return
         await send_bulk_before_after_result(
             ctx,
@@ -9680,7 +9814,7 @@ async def add(ctx, *, args: str = None):
                 return before, count, after, receipt
             before_balances, count, after_balances, receipt_id = await asyncio.to_thread(run_bulk_add)
         except Exception:
-            await send_or_edit_bulk_error(ctx, progress_msg, "Database unavailable. Try again shortly.")
+            await send_or_edit_bulk_error(ctx, progress_msg, "I had trouble reaching the economy data. Try again in a bit.")
             return
         await send_bulk_before_after_result(
             ctx,
@@ -9723,7 +9857,7 @@ async def add(ctx, *, args: str = None):
                     return before, count, after, receipt
                 before_balances, count, after_balances, receipt_id = await asyncio.to_thread(run_bulk_add)
             except Exception:
-                await send_or_edit_bulk_error(ctx, progress_msg, "Database unavailable. Try again shortly.")
+                await send_or_edit_bulk_error(ctx, progress_msg, "I had trouble reaching the economy data. Try again in a bit.")
                 return
             await send_bulk_before_after_result(
                 ctx,
@@ -9761,7 +9895,7 @@ async def add(ctx, *, args: str = None):
             return old, new, receipt
         old_balance, new_balance, receipt_id = await asyncio.to_thread(run_single_add)
     except Exception:
-        await send_error(ctx, "Database unavailable. Try again shortly.")
+        await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
         return
 
     await reply_to_command(
@@ -9841,7 +9975,7 @@ async def remove(ctx, *, args: str = None):
                 await send_or_edit_bulk_error(ctx, progress_msg, "Use `.remove @user @user 10k` or `.remove @user @user all`.")
                 return
             except Exception:
-                await send_or_edit_bulk_error(ctx, progress_msg, "Database unavailable. Try again shortly.")
+                await send_or_edit_bulk_error(ctx, progress_msg, "I had trouble reaching the economy data. Try again in a bit.")
                 return
             if changed <= 0:
                 if progress_msg:
@@ -9903,7 +10037,7 @@ async def remove(ctx, *, args: str = None):
         await ctx.send(f"{Q_DENIED} Use `.remove @user all`, `.remove all @user`, or a number like `10k`.")
         return
     except Exception:
-        await send_error(ctx, "Database unavailable. Try again shortly.")
+        await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
         return
 
     await reply_to_command(
@@ -9973,7 +10107,7 @@ async def addtick(ctx, *, args: str = None):
         if count == 1 and targets["member"] is not None:
             await assign_lottery_role(ctx.guild, targets["member"].id, updated.get("role_id") if updated else None)
     except Exception:
-        await send_or_edit_bulk_error(ctx, progress_msg, "Database unavailable. Try again shortly.")
+        await send_or_edit_bulk_error(ctx, progress_msg, "I had trouble reaching the economy data. Try again in a bit.")
         return
     total_added = amount * count
     await send_bulk_before_after_result(
@@ -10048,7 +10182,7 @@ async def removetick(ctx, *, args: str = None):
         before_tickets, count, after_tickets, updated, total_removed, receipt_id = await asyncio.to_thread(run_ticket_remove)
         schedule_lottery_refresh(ctx.guild, updated)
     except Exception:
-        await send_or_edit_bulk_error(ctx, progress_msg, "Database unavailable. Try again shortly.")
+        await send_or_edit_bulk_error(ctx, progress_msg, "I had trouble reaching the economy data. Try again in a bit.")
         return
     await send_bulk_before_after_result(
         ctx,
@@ -10123,7 +10257,7 @@ async def settick(ctx, *, args: str = None):
         if count == 1 and amount > 0 and targets["member"] is not None:
             await assign_lottery_role(ctx.guild, targets["member"].id, updated.get("role_id") if updated else None)
     except Exception:
-        await send_or_edit_bulk_error(ctx, progress_msg, "Database unavailable. Try again shortly.")
+        await send_or_edit_bulk_error(ctx, progress_msg, "I had trouble reaching the economy data. Try again in a bit.")
         return
     await send_bulk_before_after_result(
         ctx,
@@ -10187,7 +10321,7 @@ async def setquesos(ctx, *, args: str = None):
             return before, count, after, receipt
         before_balances, count, after_balances, receipt_id = await asyncio.to_thread(run_bulk_set)
     except Exception:
-        await send_or_edit_bulk_error(ctx, progress_msg, "Database unavailable. Try again shortly.")
+        await send_or_edit_bulk_error(ctx, progress_msg, "I had trouble reaching the economy data. Try again in a bit.")
         return
     await send_bulk_before_after_result(
         ctx,
@@ -10252,7 +10386,7 @@ async def run_level_admin_command(ctx, mode, label, args, *, allow_zero=False):
             return before, count, after, receipt
         before_levels, count, after_levels, receipt_id = await asyncio.to_thread(run_bulk_level_update)
     except Exception:
-        await send_or_edit_bulk_error(ctx, progress_msg, "Database unavailable. Try again shortly.")
+        await send_or_edit_bulk_error(ctx, progress_msg, "I had trouble reaching the economy data. Try again in a bit.")
         return
     action_text = {
         "addxp": f"Added **{amount:,} XP**",
@@ -10332,7 +10466,7 @@ async def scratch(ctx, amount: str):
     try:
         data = await asyncio.to_thread(get_user, user_id)
     except Exception:
-        await send_error(ctx, "Database unavailable. Try again shortly.")
+        await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
         return
 
     raw_amount = amount
@@ -10450,7 +10584,7 @@ async def scratch(ctx, amount: str):
                 )
             )
     except Exception:
-        await send_error(ctx, "Database unavailable. Try again shortly.")
+        await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
 
 
 # =====================
@@ -10473,7 +10607,7 @@ async def tower(ctx, amount: str):
     try:
         data = await asyncio.to_thread(get_user, user_id)
     except Exception:
-        await send_error(ctx, "Database unavailable. Try again shortly.")
+        await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
         return
 
     raw_amount = amount
@@ -10641,7 +10775,7 @@ async def vault(ctx, amount: str):
     try:
         data = await asyncio.to_thread(get_user, user_id)
     except Exception:
-        await send_error(ctx, "Database unavailable. Try again shortly.")
+        await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
         return
 
     raw_amount = amount
@@ -10693,7 +10827,7 @@ async def vault(ctx, amount: str):
                 new_balance = latest["balance"] + winnings - amount
                 await asyncio.to_thread(update_user, user_id, balance=new_balance, gamble_streak=new_streak, total_won=latest["total_won"] + winnings - amount)
             except Exception:
-                await send_error(ctx, "Database unavailable. Try again shortly.")
+                await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
                 return
             await prompt.edit(
                 content=(
@@ -10715,7 +10849,7 @@ async def vault(ctx, amount: str):
         new_balance = max(0, latest["balance"] - amount)
         await asyncio.to_thread(update_user, user_id, balance=new_balance, gamble_streak=0, total_lost=latest["total_lost"] + amount)
     except Exception:
-        await send_error(ctx, "Database unavailable. Try again shortly.")
+        await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
         return
     await prompt.edit(
         content=(
@@ -10750,7 +10884,7 @@ async def memory_game(ctx, amount: str):
     try:
         data = await asyncio.to_thread(get_user, user_id)
     except Exception:
-        await send_error(ctx, "Database unavailable. Try again shortly.")
+        await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
         return
 
     raw_amount = amount
@@ -10979,7 +11113,7 @@ async def card_ladder(ctx, amount: str):
     try:
         data = await asyncio.to_thread(get_user, user_id)
     except Exception:
-        await send_error(ctx, "Database unavailable. Try again shortly.")
+        await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
         return
 
     raw_amount = amount
@@ -11178,7 +11312,7 @@ async def lockpick(ctx, amount: str):
     try:
         data = await asyncio.to_thread(get_user, user_id)
     except Exception:
-        await send_error(ctx, "Database unavailable. Try again shortly.")
+        await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
         return
 
     raw_amount = amount
@@ -11380,7 +11514,7 @@ async def prepare_gamble(ctx, amount_text, command_name):
     try:
         data = await asyncio.to_thread(get_user, ctx.author.id)
     except Exception:
-        await send_error(ctx, "Database unavailable. Try again shortly.")
+        await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
         return None, None
     cd = check_cooldown(ctx.author.id, command_name, data=data)
     if cd > 0:
@@ -12310,7 +12444,7 @@ async def dungeon(ctx):
     try:
         data = await asyncio.to_thread(get_user, ctx.author.id)
     except Exception:
-        await send_error(ctx, "Database unavailable. Try again shortly.")
+        await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
         return
 
     class DungeonChoiceButton(discord.ui.Button):
@@ -13047,7 +13181,7 @@ async def gamestats(ctx, member: discord.Member = None):
             asyncio.to_thread(get_user, user.id),
         )
     except Exception:
-        await send_error(ctx, "Database unavailable. Try again shortly.")
+        await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
         return
     achievements = achievement_ids(data)
     game_badges = [GAME_ACHIEVEMENTS[achievement_id]["name"] for achievement_id in achievements if achievement_id in GAME_ACHIEVEMENTS]
@@ -13129,7 +13263,7 @@ async def achievements(ctx, member: discord.Member = None):
             asyncio.to_thread(get_game_stats, user.id),
         )
     except Exception:
-        await send_error(ctx, "Database unavailable. Try again shortly.")
+        await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
         return
     owned = set(achievement_ids(data))
     per_game = {row["game_key"]: row for row in rows}
@@ -13232,7 +13366,7 @@ async def setbadge(ctx, *, badge_ids: str = None):
     try:
         data = await asyncio.to_thread(get_user, ctx.author.id)
     except Exception:
-        await send_error(ctx, "Database unavailable. Try again shortly.")
+        await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
         return
     owned = achievement_ids(data)
     if not badge_ids:
@@ -13277,7 +13411,7 @@ async def streaks(ctx, member: discord.Member = None):
     try:
         data = await asyncio.to_thread(get_user, user.id)
     except Exception:
-        await send_error(ctx, "Database unavailable. Try again shortly.")
+        await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
         return
     embed = discord.Embed(
         title=f"{Q_STREAK_FIRE} Streaks",
@@ -13328,7 +13462,7 @@ async def dailychallenge(ctx, action: str = None):
         challenge, progress, claimed = await asyncio.to_thread(get_daily_challenge_status, ctx.author.id)
         challenge_streak = await asyncio.to_thread(get_daily_challenge_streak, ctx.author.id)
     except Exception:
-        await send_error(ctx, "Database unavailable. Try again shortly.")
+        await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
         return
     target = int(challenge["target"])
     reset = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
@@ -13388,7 +13522,7 @@ async def gameaudit(ctx, days: int = 7):
     try:
         rows = await asyncio.to_thread(get_game_audit_rows, days)
     except Exception:
-        await send_error(ctx, "Database unavailable. Try again shortly.")
+        await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
         return
     embed = discord.Embed(
         title=f"{Q_GAME_AUDIT} Game Audit",
@@ -13433,7 +13567,7 @@ async def balanceaudit(ctx, days: int = 14):
     try:
         rows = await asyncio.to_thread(get_game_audit_rows, days)
     except Exception:
-        await send_error(ctx, "Database unavailable. Try again shortly.")
+        await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
         return
     embed = discord.Embed(
         title=f"{Q_BALANCE} Balance Audit",
@@ -13601,7 +13735,7 @@ async def event(ctx, action: str = None, event_key: str = None, duration: str = 
             try:
                 source_balance = int((await asyncio.to_thread(get_user, ctx.author.id)).get("balance") or 0)
             except Exception:
-                return await send_error(ctx, "Database unavailable. Try again shortly.")
+                return await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
         amount = parse_amount(event_key, ctx.author.id, ctx.guild, source_balance) if event_key else None
         if amount is None or amount <= 0:
             return await ctx.send(f"{Q_DENIED} Use `.event donate <amount>`.")
@@ -13673,7 +13807,7 @@ async def limits(ctx, target_or_action: str = None, value: str = None):
         )
         loss = await asyncio.to_thread(daily_loss_status, user.id, int(data["balance"]), 0)
     except Exception:
-        await send_error(ctx, "Database unavailable. Try again shortly.")
+        await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
         return
     remaining = max(0, int(loss["hard_limit"]) - int(loss["lost_today"]))
     cooldown_multiplier = cooldown_multiplier_for_user(user.id, data)
@@ -13748,7 +13882,7 @@ async def gamehistory(ctx, member: discord.Member = None):
     try:
         rows = await asyncio.to_thread(get_game_history, user.id, 12)
     except Exception:
-        await send_error(ctx, "Database unavailable. Try again shortly.")
+        await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
         return
     embed = discord.Embed(
         title=f"{Q_HISTORY} Game History",
@@ -13908,7 +14042,7 @@ class EconomyAuditScopeView(discord.ui.View):
         try:
             stats = await asyncio.to_thread(get_scoped_economy_audit, self.local_user_ids, self.ctx.guild.id if self.ctx.guild else None)
         except Exception:
-            return await interaction.followup.send("Database unavailable. Try again shortly.", ephemeral=True)
+            return await interaction.followup.send("I had trouble reaching the economy data. Try again in a bit.", ephemeral=True)
         await interaction.message.edit(embed=build_economy_audit_embed(stats, "Server"), view=self, allowed_mentions=discord.AllowedMentions.none())
 
     @discord.ui.button(label="Global", emoji=Q_DATABASE, style=discord.ButtonStyle.secondary)
@@ -13917,7 +14051,7 @@ class EconomyAuditScopeView(discord.ui.View):
         try:
             stats = await asyncio.to_thread(get_economy_audit)
         except Exception:
-            return await interaction.followup.send("Database unavailable. Try again shortly.", ephemeral=True)
+            return await interaction.followup.send("I had trouble reaching the economy data. Try again in a bit.", ephemeral=True)
         await interaction.message.edit(embed=build_economy_audit_embed(stats, "Global"), view=self, allowed_mentions=discord.AllowedMentions.none())
 
 @commands.command(name="economyaudit", aliases=["audit", "qaudit", "econaudit"])
@@ -13935,7 +14069,7 @@ async def economyaudit(ctx, member: discord.Member = None):
             loss = await asyncio.to_thread(daily_loss_status, member.id, int(data["balance"]), 0)
             tx_rows = await asyncio.to_thread(get_recent_transactions, member.id, 8)
         except Exception:
-            await send_error(ctx, "Database unavailable. Try again shortly.")
+            await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
             return
         net = int(data["total_won"] or 0) - int(data["total_lost"] or 0)
         embed = discord.Embed(
@@ -14012,7 +14146,7 @@ async def economyaudit(ctx, member: discord.Member = None):
             return
         stats = await asyncio.to_thread(get_scoped_economy_audit, local_ids, ctx.guild.id if ctx.guild else None)
     except Exception:
-        await send_error(ctx, "Database unavailable. Try again shortly.")
+        await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
         return
     embed = build_economy_audit_embed(stats, "Server")
     view = EconomyAuditScopeView(ctx, local_ids) if is_superowner_id(ctx.author.id) else None
@@ -14087,7 +14221,7 @@ async def guide(ctx):
     )
     embed.add_field(
         name="Spend",
-        value=f"`{prefix}shop` for boosts, `{prefix}inventory` for owned items, `{prefix}setbadge` for profile badges.",
+        value=f"`{prefix}shop` for boosts and Bank Space, `{prefix}inventory` for owned items, `{prefix}setbadge` for profile badges.",
         inline=False,
     )
     embed.add_field(
@@ -14129,7 +14263,7 @@ class OnboardingView(discord.ui.View):
 
     @discord.ui.button(label="Shop", emoji=Q_SHOP, style=discord.ButtonStyle.secondary)
     async def shop_button(self, interaction, button):
-        await interaction.response.send_message("Use `.shop` to buy boosts and cosmetics.", ephemeral=True)
+        await interaction.response.send_message("Use `.shop` to buy boosts, cosmetics, and Bank Space.", ephemeral=True)
 
     @discord.ui.button(label="Profile", emoji=Q_XP, style=discord.ButtonStyle.secondary)
     async def profile_button(self, interaction, button):
@@ -14148,7 +14282,7 @@ async def onboard(ctx):
     )
     embed.add_field(name="1. Earn", value="Claim daily rewards and chat to level up.", inline=False)
     embed.add_field(name="2. Play", value="Try free games first, then small bets.", inline=False)
-    embed.add_field(name="3. Build", value="Buy shop boosts, equip badges, and customize your profile.", inline=False)
+    embed.add_field(name="3. Build", value="Buy shop boosts, expand Bank Space, equip badges, and customize your profile.", inline=False)
     await ctx.reply(embed=embed, view=OnboardingView(ctx.author.id), mention_author=False, allowed_mentions=discord.AllowedMentions.none())
 
 @commands.command(name="season", aliases=["seasons", "seasonlb"])
@@ -14159,7 +14293,7 @@ async def season(ctx, season_key: str = None):
     try:
         rows = await asyncio.to_thread(get_season_leaderboard, season_key, 10)
     except Exception:
-        await send_error(ctx, "Database unavailable. Try again shortly.")
+        await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
         return
     current_key = current_season_key()
     embed = discord.Embed(
@@ -14193,7 +14327,7 @@ async def seasonpass(ctx):
         data = await asyncio.to_thread(get_user, ctx.author.id)
         rows = await asyncio.to_thread(get_game_stats, ctx.author.id)
     except Exception:
-        return await send_error(ctx, "Database unavailable. Try again shortly.")
+        return await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
     played = sum(int(row["played"] or 0) for row in rows)
     wins = sum(int(row["wins"] or 0) for row in rows)
     profit = sum(int(row["profit"] or 0) for row in rows)
@@ -14228,7 +14362,7 @@ async def endseason(ctx, season_key: str = None):
     try:
         rewarded = await asyncio.to_thread(reward_previous_season, season_key)
     except Exception:
-        await send_error(ctx, "Database unavailable. Try again shortly.")
+        await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
         return
     if not rewarded:
         return await ctx.send(f"{Q_DENIED} No unrewarded top players found for `{season_key}`.")
@@ -14296,7 +14430,7 @@ async def abuseaudit(ctx):
     try:
         games, transactions, losses, lottery_watch = await asyncio.to_thread(get_abuse_audit_rows)
     except Exception:
-        await send_error(ctx, "Database unavailable. Try again shortly.")
+        await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
         return
     embed = discord.Embed(
         title=f"{Q_AUDIT} Anti-Abuse Watch",
@@ -14330,7 +14464,7 @@ async def riskprofile(ctx, member: discord.Member = None):
         tx_rows = await asyncio.to_thread(get_recent_transactions, user.id, 8)
         lottery_spend = await asyncio.to_thread(get_lottery_user_spend, ctx.guild.id if ctx.guild else None, user.id)
     except Exception:
-        await send_error(ctx, "Database unavailable. Try again shortly.")
+        await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
         return
     played = sum(int(row["played"] or 0) for row in rows)
     wins = sum(int(row["wins"] or 0) for row in rows)
@@ -14407,7 +14541,7 @@ async def minesweeper(ctx, amount: str):
     try:
         data = await asyncio.to_thread(get_user, user_id)
     except Exception:
-        await send_error(ctx, "Database unavailable. Try again shortly.")
+        await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
         return
 
     raw_amount = amount
@@ -14563,7 +14697,7 @@ async def minesweeper(ctx, amount: str):
                 except Exception:
                     self.view.clear_items()
                     await interaction.edit_original_response(
-                        content=render_board() + f"\n{Q_DENIED} Database unavailable. Try again shortly.",
+                        content=render_board() + f"\n{Q_DENIED} I had trouble reaching the economy data. Try again in a bit.",
                         view=self.view
                     )
                     return
@@ -14602,7 +14736,7 @@ async def minesweeper(ctx, amount: str):
                 except Exception:
                     self.view.clear_items()
                     await interaction.edit_original_response(
-                        content=render_board() + f"\n{Q_DENIED} Database unavailable. Try again shortly.",
+                        content=render_board() + f"\n{Q_DENIED} I had trouble reaching the economy data. Try again in a bit.",
                         view=self.view
                     )
                     return
@@ -14709,7 +14843,7 @@ async def wheel(ctx, amount: str):
     try:
         data = await asyncio.to_thread(get_user, user_id)
     except Exception:
-        await send_error(ctx, "Database unavailable. Try again shortly.")
+        await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
         return
 
     raw_amount = amount
@@ -14832,7 +14966,7 @@ async def wheel(ctx, amount: str):
                     )
                 )
     except Exception:
-        await send_error(ctx, "Database unavailable. Try again shortly.")
+        await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
 
 
 class ReplayContext:
@@ -14942,7 +15076,7 @@ EXPLANATIONS = {
     "bal": "Shows balance, streaks, and total earned/won/lost. Use `.bal` or `.bal @user`.",
     "balance": "Alias for `.bal`. Shows balance, streaks, and total earned/won/lost.",
     "cash": "Alias for `.bal`. Shows balance, streaks, and total earned/won/lost.",
-    "bank": "Shows your protected bank, moves cash into/out of it, or claims small daily bank interest. Banked money cannot be robbed.",
+    "bank": "Shows your protected bank, bank-space limit, deposits/withdrawals, or small daily bank interest. Banked money cannot be robbed.",
     "safe": "Alias for `.bank`. Shows or manages protected money.",
     "vaultcash": "Alias for `.bank`. Shows or manages protected money.",
     "deposit": "Alias for `.bank deposit`. Moves cash into protected bank storage.",
@@ -14996,7 +15130,7 @@ EXPLANATIONS = {
     "challenge": "Alias for `.dailychallenge`. Shows today's 𝚀𝚞𝚎wo challenge.",
     "dc": "Alias for `.dailychallenge`. Shows today's 𝚀𝚞𝚎wo challenge.",
     "qchallenge": "Alias for `.dailychallenge`. Shows today's 𝚀𝚞𝚎wo challenge.",
-    "shop": "Opens the categorized 𝚀𝚞𝚎wo shop UI. Select an item, press Buy, then enter quantity. The shop refreshes after purchases and while the UI is open.",
+    "shop": "Opens the categorized 𝚀𝚞𝚎wo shop UI. Select an item, press Buy, then enter quantity. Includes boosts, cosmetics, and Bank Space upgrades.",
     "limits": "Shows daily gambling loss limits, remaining risk, lottery spend, max bet, cooldown, and personal safety settings.",
     "limit": "Alias for `.limits`. Shows safety limits.",
     "safety": "Alias for `.limits`. Shows safety limits.",
@@ -15219,8 +15353,12 @@ EXPLANATIONS = {
     "wake": f"{QUE_OWNER_DISPLAY} command. Removes sleep mode from members.",
     "afk": "Marks you AFK, saves mentions until you return, and teases you if you react while AFK.",
     "setbday": "Saves your birthday. Use `.setbday 25/12`, or run `.setbday` to open a setup UI. It also offers an optional custom birthday card.",
-    "bdaycard": "Sets, clears, or shows your optional custom birthday card style.",
-    "birthdaycard": "Alias for `.bdaycard`. Sets your optional birthday card style.",
+    "bdaycard": "Sets, clears, or previews your optional custom birthday card style.",
+    "birthdaycard": "Alias for `.bdaycard`. Sets, clears, or previews your birthday card style.",
+    "viewbdaycard": "Shows a generated preview of your current birthday card. Aliases: `.bdaypreview`, `.birthdaypreview`, `.cardpreview`.",
+    "bdaypreview": "Alias for `.viewbdaycard`. Shows your current birthday card preview.",
+    "birthdaypreview": "Alias for `.viewbdaycard`. Shows your current birthday card preview.",
+    "cardpreview": "Alias for `.viewbdaycard`. Shows your current birthday card preview.",
     "removebday": "Removes your birthday.",
     "setbdaychannel": "Sets the server's birthday announcement channel. Use `.setbdaychannel #channel` or `.setbdaychannel <channel id>`.",
     "bdaychannel": "Alias for `.setbdaychannel`. Sets the server's birthday announcement channel.",
@@ -15353,7 +15491,7 @@ DETAILED_EXPLANATIONS = {
     "editsnipe": "Alias for `.esnipe`. Shows recently edited messages with the same guide format.",
     "rsnipe": "Removed-reaction snipes. Use `.rsnipe`, `.rsnipe @user`, or `.rsnipe @user 2` to filter and jump to an older saved removed reaction.",
     "daily": f"Gives a reward once every 24 hours. Base reward is 10,000-15,000 {CURRENCY_EMOJI}. Your daily streak adds a small bonus after day 1.",
-    "bank": "Protected savings for 𝚀𝚞𝚎wo. Use `.bank` to view cash/bank/total, `.bank deposit 100k` to protect cash, `.bank deposit all` to store all cash, `.bank withdraw 50k` to move money back to spendable cash, or `.bank interest` to claim small daily interest. Robbing can only touch cash, never banked money.",
+    "bank": f"Protected savings for 𝚀𝚞𝚎wo. Use `.bank` to view cash, bank, total, and bank space. Use `.bank deposit 100k` to protect cash, `.bank deposit all` to store as much as fits, `.bank withdraw 50k` to move money back to spendable cash, or `.bank interest` to claim small daily interest. Bank starts with {format_balance(DEFAULT_BANK_LIMIT)} space. Buy Bank Space in `.shop` for {format_balance(BANK_SPACE_UPGRADE_COST)} to add {format_balance(BANK_SPACE_UPGRADE_AMOUNT)} more. Robbing can only touch cash, never banked money.",
     "tutorial": "Tutorial mode is on for new users. After a few starter prompts it shows an End Tutorial button. Use `.tutorial off` to stop starter tips or `.tutorial on` to bring them back.",
     "recommendgame": "Looks at your cash and recent game stats, then suggests a game that makes sense for your bankroll and risk. It prioritizes safe/free games when you are low on cash and cashout-control games when you have more room.",
     "rob": "Robbing is server-controlled with `.robsettings on/off`. If enabled, `.rob @user` can steal a small chunk of the target's cash balance, capped at 200k, but it can fail and pay the target a fine. Banked money cannot be robbed.",
@@ -15371,7 +15509,7 @@ DETAILED_EXPLANATIONS = {
     "items": "Alias for `.inventory`. Opens the paged 𝚀𝚞𝚎wo inventory UI.",
     "quests": "Main quests track long streak achievements: 30 daily claims, 8 weekly claims, and 5 monthly claims. Daily, weekly, and monthly random quests rotate by period and can be claimed from the `.quests` UI.",
     "dailychallenge": "One rotating daily challenge is active per day. Game wins update it automatically, and Flag Quiz point challenges count each correct flag. Use `.dailychallenge claim` when your progress reaches the target.",
-    "shop": "Opens an interactive categorized 𝚀𝚞𝚎wo shop. Select an item, press Buy, then enter the quantity. The bot checks your balance, item limit, and total price before purchasing.",
+    "shop": "Opens an interactive categorized 𝚀𝚞𝚎wo shop. Select an item, press Buy, then enter the quantity. The bot checks your balance, item limit, and total price before purchasing. The Bank category includes Bank Space upgrades so users can protect more cash.",
     "cooldowns": "Shows daily, weekly, monthly, and active gambling command cooldowns in one place.",
     "claimreminders": "Manages DM reminders for timed claims. Use `.claimreminders` for status, `.claimreminders on` to enable, `.claimreminders off` to disable, or `.claimreminders test` to send yourself a test DM. Reminder DMs also include a button to turn them off. The reminder loop checks due daily, weekly, monthly, and bank interest reminders about once a minute.",
     "transactions": "Shows recent money movement including shop purchases, quest rewards, level rewards, transfer tax, admin changes, and lottery activity.",
@@ -15488,8 +15626,9 @@ DETAILED_EXPLANATIONS = {
     "colorinfo": "Alias for `.colour`. Shows colour stats from a hex value.",
     "define": "Looks up English dictionary definitions. Use `.define example`, or run `.define` to enter the word through a UI.",
     "setbday": "Saves your birthday as day/month. Use `.setbday 25/12`, or run `.setbday` to enter it through a UI. After saving, Pro𝚀𝚞𝚎 asks if you want an optional custom birthday card; skipping it keeps the default birthday card.",
-    "bdaycard": "Sets your optional birthday card style. Use `.bdaycard` for buttons, `.bdaycard midnight blue gold balloons`, or `.bdaycard default` to clear it. Birthday announcements still use the server's configured birthday channel.",
-    "birthdaycard": "Alias for `.bdaycard`. Sets or clears your optional birthday card style.",
+    "bdaycard": "Sets, clears, or previews your optional birthday card style. Use `.bdaycard` for buttons, `.bdaycard view` to preview it, `.bdaycard midnight blue gold balloons` to save a style, or `.bdaycard default` to clear it. Birthday announcements still use the server's configured birthday channel.",
+    "birthdaycard": "Alias for `.bdaycard`. Sets, clears, or previews your optional birthday card style.",
+    "viewbdaycard": "Generates a preview of your current birthday card using your saved style, or the default Pro𝚀𝚞𝚎 birthday style if you have not saved one. Aliases: `.bdaypreview`, `.birthdaypreview`, `.cardpreview`.",
     "ask": "Asks Pro𝚀𝚞𝚎's AI a question. The AI answers from its model knowledge, bot context, reply context, and saved memory; live web search is not connected.",
     "generate": "Generates an AI image from a prompt using Hugging Face when `HF_TOKEN` is configured, with Cloudflare as fallback if available. Aliases: `.imagine`, `.image`, `.aiimage`, `.genimg`.",
     "profilebanner": "Generates a wide profile/banner image from your prompt. Aliases: `.banner`, `.profileart`.",
@@ -15517,8 +15656,8 @@ DETAILED_EXPLANATIONS = {
     "aiguard": "Shows AI command execution safety: safe/read-only command names, commands that need confirmation, commands only 𝚀𝚞𝚎 can authorize, blocked commands, pending AI actions, and recent AI action count.",
     "explain": "Shows detailed help for a command, including usage, aliases, short explanation, and longer details when available. Example: `.explain slots`.",
     "games": "Shows a central game menu with quick usage for Tic Tac Toe, Connect 4, chess, Tower, Vault, Memory, Minesweeper, and Picker. The select menu gives the start command for each game.",
-    "flagquiz": "Starts a photo-based flag quiz. Choose Solo or Public Channel, then choose 10, 20, 50, or all 197 flags. Each flag gives 2 tries, each guess has 30 seconds, small typos are accepted, and correct answers pay 20,000 quesos each. Wrong first guesses can request a hint.",
-    "flagstats": "Shows a user's Flag Quiz tracking: quizzes played, estimated correct flags from rewards earned, and total flag rewards.",
+    "flagquiz": "Starts a photo-based flag quiz. Choose Solo or Public Channel, then choose 10, 20, 50, or all 197 flags. Each flag gives 2 tries, has a 30-second timer, accepts small typos, and correct answers pay up to 20,000 quesos. Every 4 seconds removes 4,000 from that flag's reward, capped at 16,000 removed, so the minimum is 4,000. Wrong first guesses can request a hint.",
+    "flagstats": "Shows a user's Flag Quiz tracking: quizzes played, scoring quizzes, and total flag rewards.",
     "ttt": "Challenge a user to Tic Tac Toe. The opponent accepts the game first. If the challenger enables a bet and enters an amount, the opponent gets a second accept/decline prompt for that exact bet before the game starts.",
     "c4": "Challenge a user to Connect 4. The opponent accepts the game first. If the challenger enables a bet and enters an amount, the opponent gets a second accept/decline prompt for that exact bet before the game starts. The board shows column numbers below the grid.",
     "chess": "Challenge a user to chess. The opponent accepts first. If the challenger enables a bet and enters an amount, the opponent gets a second accept/decline prompt. The board uses dropdown UI controls: choose one of your pieces, choose a legal move, then confirm or cancel. Each player has a live 10-minute total clock, and the board flips to the current player's perspective. Movement legality, check, checkmate, stalemate, draw detection, and time-loss handling are enforced.",
@@ -15759,13 +15898,9 @@ async def explain(ctx, command_name: str = None):
     """Shows detailed help for one command."""
     prefix = getattr(ctx, "prefix", ".")
     if not command_name:
-        command_names = sorted({
-            command.name for command in bot.commands
-            if not getattr(command, "hidden", False)
-            and (is_superowner_id(ctx.author.id) or not is_econ_superowner_hidden(command))
-        })
-        names = ", ".join(command_names)
-        await ctx.send(f"Use `{prefix}explain <command>`. Commands: {names}, admin")
+        await ctx.send(
+            f"Use `{prefix}explain <command>` for one command, or `{prefix}econhelp` to browse 𝚀𝚞𝚎wo by category."
+        )
         return
 
     key = command_name.casefold().removeprefix(prefix.casefold()).lstrip(".")
@@ -15808,9 +15943,9 @@ async def explain(ctx, command_name: str = None):
         if command.signature:
             usage += f" {command.signature}"
         aliases = f"\nAliases: {', '.join(command.aliases)}" if command.aliases else ""
-        await ctx.send(f"**{usage}** — {text}{aliases}")
+        await ctx.send(fit_discord_content(f"**{usage}** — {text}{aliases}"))
     else:
-        await ctx.send(f"**{key}** — {text}")
+        await ctx.send(fit_discord_content(f"**{key}** — {text}"))
 
 
 # =====================

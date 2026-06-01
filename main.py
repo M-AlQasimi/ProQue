@@ -261,24 +261,27 @@ AI_MODEL_TIMEOUT_SECONDS = 10
 AI_SUMMARY_MAX_MESSAGES = 250
 AI_SUMMARY_DEFAULT_MESSAGES = 80
 AI_SUMMARY_MAX_CHARS = 4500
-AI_REQUEST_MAX_CHARS = 6500
-AI_SYSTEM_CONTEXT_MAX_CHARS = 2500
-AI_MESSAGE_CONTEXT_MAX_CHARS = 2200
+AI_REQUEST_MAX_CHARS = 5200
+AI_SYSTEM_CONTEXT_MAX_CHARS = 1900
+AI_MESSAGE_CONTEXT_MAX_CHARS = 1800
 AI_DETECT_MAX_CHARS = 9000
 COMMAND_CONCURRENCY_LIMIT = int(os.getenv("PROQUE_COMMAND_CONCURRENCY", "48"))
 HEAVY_COMMAND_CONCURRENCY_LIMIT = int(os.getenv("PROQUE_HEAVY_COMMAND_CONCURRENCY", "8"))
 BULK_COMMAND_CONCURRENCY_LIMIT = int(os.getenv("PROQUE_BULK_COMMAND_CONCURRENCY", "2"))
 AI_COMMAND_CONCURRENCY_LIMIT = int(os.getenv("PROQUE_AI_COMMAND_CONCURRENCY", "4"))
+IMAGE_COMMAND_CONCURRENCY_LIMIT = int(os.getenv("PROQUE_IMAGE_CONCURRENCY", "2"))
 DB_WORKER_LIMIT = int(os.getenv("PROQUE_DB_WORKERS", "24"))
 
 command_semaphore = asyncio.Semaphore(COMMAND_CONCURRENCY_LIMIT)
 heavy_command_semaphore = asyncio.Semaphore(HEAVY_COMMAND_CONCURRENCY_LIMIT)
 bulk_command_semaphore = asyncio.Semaphore(BULK_COMMAND_CONCURRENCY_LIMIT)
 ai_command_semaphore = asyncio.Semaphore(AI_COMMAND_CONCURRENCY_LIMIT)
+image_command_semaphore = asyncio.Semaphore(IMAGE_COMMAND_CONCURRENCY_LIMIT)
 AI_COMMAND_NAMES = {
     "ask", "generate", "imagine", "image", "aiimage", "genimg", "profilebanner", "banner",
     "profileart", "makeemoji", "genemoji", "emojiart", "eventposter", "poster", "eventart",
-    "bdaycard", "birthdaycard", "shoppreview", "itempreview", "shopart", "gameart",
+    "bdaycard", "birthdaycard", "viewbdaycard", "bdaypreview", "birthdaypreview", "cardpreview",
+    "shoppreview", "itempreview", "shopart", "gameart",
     "gameimage", "reactionimage", "aireaction", "reactimage", "analyse", "analyze", "summarize", "summarise", "summary",
     "aisummary", "tldr", "recap", "aidetect", "aicheck", "detectai",
     "authenticity", "authcheck", "essaycheck",
@@ -441,8 +444,15 @@ async def run_image_generation(ctx, prompt, *, kind="general", title="Generated 
     touch_image_cooldown(ctx.author.id)
     await safe_add_reaction(ctx.message, economy_q_timer_tick)
     try:
+        if image_command_semaphore.locked():
+            await ctx.reply(
+                f"{economy_q_timer_tick} Image queue is busy. I’m keeping this one in line.",
+                mention_author=False,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
         styled_prompt = image_prompt_for(kind, prompt)
-        image_bytes, ext, provider = await generate_hf_image_bytes(styled_prompt, width=width, height=height)
+        async with image_command_semaphore:
+            image_bytes, ext, provider = await generate_hf_image_bytes(styled_prompt, width=width, height=height)
         file = discord.File(BytesIO(image_bytes), filename=f"proque-{kind}.{ext}")
         embed = standard_embed(
             title,
@@ -488,6 +498,9 @@ shutdown_channels = load_shutdown_channels()
 reaction_shutdown_channels = load_reaction_shutdown_channels()
 truth_or_dare_channels = load_truth_or_dare_channels()
 disabled_commands = load_disabled_commands()
+bot_maintenance_mode = False
+bot_maintenance_reason = ""
+maintenance_notice_times = {}
 guild_prefixes = load_guild_prefixes()
 guild_birthday_channels = load_guild_birthday_channels()
 guild_activity_channels = load_guild_activity_channels()
@@ -1377,7 +1390,20 @@ def should_try_ai_command_planner(text):
         return True
     if re.search(r"(?:^|\s)[.!?][A-Za-z][\w-]*", text):
         return True
-    return bool(AI_COMMAND_ACTION_RE.search(text) and BOT_KNOWLEDGE_RE.search(text))
+    if looks_like_ai_summary_request(text):
+        return True
+    if re.search(
+        r"\b(?:ai\s*detect|detect\s+ai|ai[-\s]?written|written\s+by\s+ai|authenticity|essaycheck)\b",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        return True
+    lowered = text.casefold()
+    control_or_sensitive = any(phrase in lowered for phrase in (
+        "ignore ", "unignore ", "stop responding", "turn ai on", "turn ai off",
+        "enable ai", "disable ai", "reward ", "give top", "add tickets", "add money",
+    ))
+    return bool(control_or_sensitive and AI_COMMAND_ACTION_RE.search(text))
 
 def should_use_full_bot_context(text):
     text = str(text or "").strip()
@@ -1472,14 +1498,15 @@ def bot_capabilities_summary(guild, viewer=None):
         "For playful messages, joke back and stay in the vibe instead of turning everything into a formal explanation. "
         "You have global user memory for useful facts people explicitly share, saved bot profile data like birthdays/statuses, plus recent channel context. Use memory naturally when it helps and avoid being creepy about it. "
         "Use the live command/capability index below as your source of truth for bot features, commands, aliases, usage, permissions, games, 𝚀𝚞𝚎wo mechanics, and setup flows. "
-        "If the user asks about the bot, explain the relevant command clearly and suggest the exact command to run. "
+        "Do not turn normal conversation into command recommendations. Only give exact commands when the user asks how to use a feature, asks what command does something, or clearly wants bot help. "
+        "When you do mention commands, keep it to the smallest useful set and explain in plain language first. "
         "Slash commands are disabled; users should use prefix commands and the interactive setup buttons shown by those commands. "
         "Be permission-aware: if a command is admin/server-owner/𝚀𝚞𝚎-only, say that plainly before telling someone how to use it. "
         "For economy/game advice, compare risk, max bet, payout, cooldown, and fun factor when useful. "
         "For errors/logs, act like the bot doctor: use reply context and the doctor snapshot to identify the likely broken command or subsystem and suggest the next test/fix. "
         "If you are not certain about an exact mechanic, say what you know and suggest `.explain <command>` or the matching help page. "
         f"{owner_action_note}"
-        f"Useful help commands: `{prefix}help`, `{prefix}games`, `{prefix}econhelp`, `{prefix}explain <command>`, `{prefix}setup`, and `{prefix}messages`.\n\n"
+        f"Useful help commands only when asked: `{prefix}help`, `{prefix}games`, `{prefix}econhelp`, `{prefix}explain <command>`, `{prefix}setup`, and `{prefix}messages`.\n\n"
         f"Live bot command/capability index:\n{bot_command_knowledge_index(guild, viewer)}"
     )
 
@@ -2523,6 +2550,12 @@ async def keep_alive_task():
 
 @tasks.loop(minutes=5)
 async def presence_rotation_task():
+    if bot_maintenance_mode:
+        try:
+            await bot.change_presence(activity=discord.Game("updating"))
+        except Exception as e:
+            print(f"Presence rotation failed: {type(e).__name__} - {e}")
+        return
     statuses = [
         lambda: discord.Game(f"{DEFAULT_PREFIX}games"),
         lambda: discord.Game(f"{DEFAULT_PREFIX}daily"),
@@ -2758,6 +2791,13 @@ async def cleanup_stale_game_messages():
 async def on_ready():
     global birthday_task, activity_task, presence_task, runtime_state_restored, stale_game_messages_cleaned
     print(f'Pro𝚀𝚞𝚎 is online as {bot.user}')
+    try:
+        await load_maintenance_mode()
+        if bot_maintenance_mode:
+            asyncio.create_task(set_maintenance_nick(True))
+            print("Pro𝚀𝚞𝚎 maintenance mode restored from database.")
+    except Exception as e:
+        print(f"Maintenance mode restore skipped: {type(e).__name__} - {e}")
     if not keep_alive_task.is_running():
         keep_alive_task.start()
     if birthday_task is None or birthday_task.done():
@@ -4620,6 +4660,8 @@ COMMAND_EXAMPLE_OVERRIDES = {
     "backgroundjobs": ".backgroundjobs",
     "errors": ".errors",
     "recover": ".recover",
+    "off": ".off updating",
+    "on": ".on",
     "dbaudit": ".dbaudit",
     "aiguard": ".aiguard",
     "styleaudit": ".styleaudit",
@@ -4725,7 +4767,8 @@ COMMAND_EXAMPLE_OVERRIDES = {
     "send": ".send #channel message",
     "summarize": ".summarize @user 1h",
     "setbday": ".setbday 25/12",
-    "bdaycard": ".bdaycard midnight blue gold balloons",
+    "bdaycard": ".bdaycard view",
+    "viewbdaycard": ".viewbdaycard",
     "setbdaychannel": ".setbdaychannel #birthdays",
     "setnick": ".setnick @user new nickname",
     "setprefix": ".setprefix !",
@@ -5105,6 +5148,7 @@ AI_SUPEROWNER_ONLY_COMMANDS = {
     "add", "remove", "move", "moveqs", "movequesos", "addtick", "removetick", "remtick", "deltick", "movetick", "moveticks", "ticketmove", "moveticket", "settick", "lotterypot", "lotteryprize", "prizepool", "setpot", "addpot", "removepot", "setquesos",
     "editlottery", "stoplottery", "qstats", "economystats", "qstatus", "economyhealth", "ecohealth", "moneyhealth", "supply", "balancedashboard", "ecodashboard", "moneydashboard", "sinkdashboard", "endseason", "rewardseason",
     "disable", "enable", "disableall", "enableall", "prefix", "preifx", "setprefix",
+    "off", "on", "maintenance", "botoff", "boton", "updatebot", "onlinebot", "finishupdate",
     "settings", "setup", "setlogs", "slashsync", "auditcommands", "cmdaudit", "commandaudit", "styleaudit", "uiaudit", "messageaudit", "commandcleanup", "cleanupcommands", "cmdcleanup", "dbaudit", "databaseaudit", "backgroundjobs", "tasks", "bgjobs", "errors", "errorlog", "recover", "restorestate", "recovery", "aihistory", "aiactions", "actionhistory",
     "aisettings", "aiconfig", "aicontrols", "aiperms", "aipermissions", "aicapabilities", "aiauthority", "aiguard", "aicommandsafety", "aiignore", "ignoreai", "aiunignore", "unignoreai", "aistyle", "aipersonality",
     "block", "unblock", "shut", "unshut", "rshut", "unrshut", "lockdown", "reopen",
@@ -5407,6 +5451,87 @@ def record_ai_action(message, action, detail="", success=True):
 async def ai_settings_for(scope, scope_id):
     rows = await asyncio.to_thread(get_ai_control_settings, scope, scope_id)
     return {str(row[2]): str(row[3]) for row in rows}
+
+def maintenance_settings_from_rows(rows):
+    settings = {str(row[2]): str(row[3]) for row in rows}
+    enabled = settings.get("maintenance_mode", "off").casefold() == "on"
+    return enabled, settings.get("maintenance_reason", "")
+
+async def load_maintenance_mode():
+    global bot_maintenance_mode, bot_maintenance_reason
+    rows = await asyncio.to_thread(get_ai_control_settings, "global", 0)
+    bot_maintenance_mode, bot_maintenance_reason = maintenance_settings_from_rows(rows)
+    return bot_maintenance_mode
+
+def maintenance_notice_allowed(channel_id, ttl=60):
+    now = time.time()
+    last = maintenance_notice_times.get(int(channel_id), 0)
+    if now - last < ttl:
+        return False
+    maintenance_notice_times[int(channel_id)] = now
+    return True
+
+async def set_guild_bot_nick(guild, nick):
+    member = guild.me or guild.get_member(bot.user.id)
+    if member is None:
+        return False
+    try:
+        await member.edit(nick=nick, reason="ProQue maintenance mode")
+        return True
+    except (discord.Forbidden, discord.HTTPException):
+        return False
+
+async def set_maintenance_nick(enabled):
+    settings = await ai_settings_for("global", 0)
+    previous = {}
+    if enabled:
+        if settings.get("maintenance_previous_nicks"):
+            try:
+                previous = json.loads(settings.get("maintenance_previous_nicks") or "{}")
+            except Exception:
+                previous = {}
+        if not previous:
+            previous = {
+                str(guild.id): (guild.me.nick if guild.me else None)
+                for guild in bot.guilds
+            }
+            await asyncio.to_thread(
+                set_ai_control_setting,
+                "global",
+                0,
+                "maintenance_previous_nicks",
+                json.dumps(previous),
+                super_owner_id,
+            )
+        target_nick = "Pro𝚀𝚞𝚎 (updating)"
+        results = await asyncio.gather(*(set_guild_bot_nick(guild, target_nick) for guild in bot.guilds), return_exceptions=True)
+    else:
+        try:
+            previous = json.loads(settings.get("maintenance_previous_nicks") or "{}")
+        except Exception:
+            previous = {}
+        results = await asyncio.gather(
+            *(set_guild_bot_nick(guild, previous.get(str(guild.id))) for guild in bot.guilds),
+            return_exceptions=True,
+        )
+        await asyncio.to_thread(delete_ai_control_setting, "global", 0, "maintenance_previous_nicks")
+    return sum(1 for result in results if result is True)
+
+async def set_maintenance_mode(enabled, *, reason="", updated_by=None):
+    global bot_maintenance_mode, bot_maintenance_reason
+    stored = "on" if enabled else "off"
+    ok_mode = await asyncio.to_thread(set_ai_control_setting, "global", 0, "maintenance_mode", stored, updated_by or super_owner_id)
+    ok_reason = await asyncio.to_thread(set_ai_control_setting, "global", 0, "maintenance_reason", str(reason or "")[:300], updated_by or super_owner_id)
+    if not (ok_mode and ok_reason):
+        return False, 0
+    bot_maintenance_mode = bool(enabled)
+    bot_maintenance_reason = str(reason or "")[:300]
+    changed_nicks = await set_maintenance_nick(enabled)
+    try:
+        await bot.change_presence(activity=discord.Game("updating") if enabled else None)
+    except Exception:
+        pass
+    return True, changed_nicks
 
 def user_setting_value(settings, key):
     defaults = {"aifriendly": "on"}
@@ -6273,6 +6398,15 @@ async def on_message(message):
             asyncio.create_task(schedule_channel_sticky_panels(message))
         return
 
+    if bot_maintenance_mode and not has_super_owner_power(message.author, message.guild):
+        if looks_like_command_message(message) and maintenance_notice_allowed(message.channel.id):
+            reason = f"\nReason: {bot_maintenance_reason}" if bot_maintenance_reason else ""
+            await message.channel.send(
+                f"{economy_q_timer_tick} Pro𝚀𝚞𝚎 is updating right now. Try again soon.{reason}",
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        return
+
     if message.guild:
         track_message_activity(message)
         asyncio.create_task(schedule_channel_sticky_panels(message))
@@ -6447,7 +6581,8 @@ async def on_message(message):
                     "content": (
                         "You are Pro𝚀𝚞𝚎's AI. Chat naturally, casually, playfully, and briefly. "
                         "You can answer normal questions, but you do not have live web search connected. "
-                        "If a user asks for current/live info, say you may be outdated and ask for a source or suggest checking live info."
+                        "If a user asks for current/live info, say you may be outdated and ask for a source or suggest checking live info. "
+                        "Do not recommend bot commands during normal conversation unless the user clearly asks for bot help or how to do something with the bot."
                     ),
                 }]
             style_note = await ai_style_note()
@@ -6464,6 +6599,7 @@ async def on_message(message):
                     "Do not introduce yourself unless someone actually asks who you are. "
                     "If someone only says your name or a tiny prompt like `proque`, respond casually and briefly, like `yeah?` or `what's up?` "
                     "Do not say things like `You're referring to me` or `your friendly Discord bot`; that sounds robotic. "
+                    "Do not shove command suggestions into normal chat. If the user asks about the bot, answer the question first and mention only the one or two commands that actually help. "
                     "Relate to what people say, but stay genuinely useful for facts, commands, and troubleshooting. "
                     "Keep replies short unless the user needs detail. For serious, sad, safety, moderation, medical, legal, or money questions, drop the bit and be clear/kind. "
                     "Use recent chat context when it helps. Do not ping users. If you are missing info, ask one short follow-up question."
@@ -6616,7 +6752,14 @@ async def on_command_error(ctx, error):
 
     elif isinstance(error, CommandDisabledError):
         print(f"Command disabled: {error.command_name} for {ctx.author} ({ctx.author.id})")
-        await ctx.send(f"{economy_q_warning} `{error.command_name}` is taking a nap here. An admin disabled it.")
+        if error.command_name == "maintenance":
+            reason = f"\nReason: {bot_maintenance_reason}" if bot_maintenance_reason else ""
+            await ctx.send(
+                f"{economy_q_timer_tick} Pro𝚀𝚞𝚎 is updating right now. Try again soon.{reason}",
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        else:
+            await ctx.send(f"{economy_q_warning} `{error.command_name}` is taking a nap here. An admin disabled it.")
 
     elif isinstance(error, commands.CheckFailure):
         print(f"Command check failed: {ctx.command} for {ctx.author} ({ctx.author.id}) - {type(error).__name__}: {error}")
@@ -6630,6 +6773,9 @@ async def on_command_error(ctx, error):
     elif isinstance(error, commands.MissingPermissions):
         print(f"Command missing permissions: {ctx.command} for {ctx.author} ({ctx.author.id}) - {error}")
         await ctx.send(f"{economy_q_reject} Discord said no. You’re missing the needed permission for that one.")
+
+    elif isinstance(error, commands.CommandOnCooldown):
+        await ctx.send(f"{economy_q_timer_tick} Chill for **{error.retry_after:.1f}s** before using that again.")
 
     elif isinstance(error, commands.MissingRequiredArgument):
         print(f"Command missing argument: {ctx.command} for {ctx.author} ({ctx.author.id}) - {error}")
@@ -6652,6 +6798,8 @@ async def on_command_error(ctx, error):
         await send_command_usage_correction(ctx, error)
 
     else:
+        if isinstance(error, commands.CommandInvokeError) and getattr(error, "original", None):
+            error = error.original
         print(f"Unexpected error in {ctx.command}: {type(error).__name__} - {error}")
         await notify_superowner_error(ctx, error)
         if ctx.guild is None:
@@ -6688,7 +6836,7 @@ HELP_CATEGORIES = {
         "ask", "summarize", "aidetect", "generate", "profilebanner", "makeemoji",
         "eventposter", "gameart", "shoppreview", "reactionimage", "analyse", "aimemory", "aiknow", "usersettings",
     ],
-    "Community": ["afk", "sleep", "wake", "away", "setbday", "bdaycard", "removebday", "activity", "activitystats", "messages"],
+    "Community": ["afk", "sleep", "wake", "away", "setbday", "bdaycard", "viewbdaycard", "removebday", "activity", "activitystats", "messages"],
     "Admin Setup": [
         "settings", "setlogs", "prefix", "setbdaychannel", "editactivity", "endactivity", "stopactivity",
         "messageevent", "todchannel", "quewochannel", "levelupchannel", "robsettings", "aichannel",
@@ -6709,6 +6857,7 @@ SUPEROWNER_HELP_COMMANDS = [
     "move", "movetick",
     "addxp", "removexp", "addlvl", "removelvl", "setlvl",
     "editlottery", "stoplottery", "qstats", "economyhealth", "balancedashboard", "endseason",
+    "off", "on",
     "send", "reply", "speak", "wake", "clearwatchlist",
         "aisettings", "aiperms", "aiignore", "aiunignore", "aistyle",
     "aihistory", "auditcommands", "styleaudit", "commandcleanup", "permaudit", "receipts", "aiguard",
@@ -6716,6 +6865,7 @@ SUPEROWNER_HELP_COMMANDS = [
 SUPEROWNER_HIDDEN_COMMANDS = {
     *SUPEROWNER_HELP_COMMANDS,
     "relay", "talkthrough",
+    "maintenance", "botoff", "boton", "updatebot", "onlinebot", "finishupdate",
     "remtick", "deltick", "lotteryprize", "prizepool", "setpot", "addpot", "removepot",
     "moveqs", "movequesos", "moveticks", "ticketmove", "moveticket",
     "givexp", "remxp", "delxp", "addlevel", "removelvls", "remlevel", "removelevel", "dellvl", "dellevel", "setlevel",
@@ -6894,14 +7044,11 @@ def _render_help_embed_uncached(guild=None, category_name=None, page=0, per_page
         color=discord.Color.blurple(),
         icon=economy_q_book,
     )
-    ai_starts = [f"`{current_prefix}ask`", f"`{current_prefix}aimemory`", f"`{current_prefix}aiknow <command>`"]
-    if viewer and guild and has_owner_power(viewer, guild):
-        ai_starts.append(f"`{current_prefix}aidoctor`")
     embed.add_field(
         name="AI Chatbot",
         value=(
-            "Mention or reply to Pro𝚀𝚞𝚎 for chat, bot help, command planning, memory, and troubleshooting. "
-            f"Try {', '.join(ai_starts)}."
+            "Mention or reply to Pro𝚀𝚞𝚎 for normal chat, summaries, image help, bot help, and troubleshooting. "
+            "It stays conversational unless you clearly ask for a bot feature."
         ),
         inline=False,
     )
@@ -7610,6 +7757,45 @@ async def aisettings_command(ctx):
     embed.add_field(name="This Server", value=joined_embed_value([f"`{k}` = `{v}`" for k, v in guild_settings.items()], empty="None"), inline=False)
     await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
+@bot.command(name="off", aliases=["maintenance", "botoff", "updatebot"])
+async def off_command(ctx, *, reason: str = None):
+    """𝚀𝚞𝚎-only maintenance mode. Stops public commands/AI while background jobs keep running."""
+    if not has_super_owner_power(ctx.author, ctx.guild):
+        return await ctx.send(denial_message("This switch is not available here."), allowed_mentions=discord.AllowedMentions.none())
+    if bot_maintenance_mode:
+        return await ctx.send(f"{economy_q_timer_tick} Pro𝚀𝚞𝚎 is already in maintenance mode.")
+    status = await ctx.send(f"{economy_q_timer_tick} Turning maintenance mode on...")
+    ok, changed_nicks = await set_maintenance_mode(True, reason=reason or "Updating", updated_by=ctx.author.id)
+    if not ok:
+        return await status.edit(content=f"{economy_q_warning} I couldn't save maintenance mode. The bot is still on.")
+    await status.edit(
+        content=(
+            f"{economy_q_accept} Maintenance mode is **on**.\n"
+            f"Public commands and AI replies are paused. Background reminders, lotteries, events, logs, and recovery loops keep running.\n"
+            f"Nickname updated in **{changed_nicks}/{len(bot.guilds)}** server(s). Use `.on` when ready."
+        ),
+        allowed_mentions=discord.AllowedMentions.none(),
+    )
+
+@bot.command(name="on", aliases=["boton", "onlinebot", "finishupdate"])
+async def on_command(ctx):
+    """𝚀𝚞𝚎-only maintenance mode off switch."""
+    if not has_super_owner_power(ctx.author, ctx.guild):
+        return await ctx.send(denial_message("This switch is not available here."), allowed_mentions=discord.AllowedMentions.none())
+    if not bot_maintenance_mode:
+        return await ctx.send(f"{economy_q_accept} Pro𝚀𝚞𝚎 is already on.")
+    status = await ctx.send(f"{economy_q_timer_tick} Turning maintenance mode off...")
+    ok, changed_nicks = await set_maintenance_mode(False, updated_by=ctx.author.id)
+    if not ok:
+        return await status.edit(content=f"{economy_q_warning} I couldn't save the on switch. Try `.on` again.")
+    await status.edit(
+        content=(
+            f"{economy_q_accept} Maintenance mode is **off**.\n"
+            f"Public commands and AI replies are live again. Nickname restored in **{changed_nicks}/{len(bot.guilds)}** server(s)."
+        ),
+        allowed_mentions=discord.AllowedMentions.none(),
+    )
+
 @bot.command(name="aiperms", aliases=["aipermissions", "aicapabilities", "aiauthority"])
 async def aiperms_command(ctx):
     """Shows what the AI is allowed to do."""
@@ -8170,13 +8356,15 @@ async def perf_command(ctx):
     active_heavy = max(0, HEAVY_COMMAND_CONCURRENCY_LIMIT - getattr(heavy_command_semaphore, "_value", HEAVY_COMMAND_CONCURRENCY_LIMIT))
     active_bulk = max(0, BULK_COMMAND_CONCURRENCY_LIMIT - getattr(bulk_command_semaphore, "_value", BULK_COMMAND_CONCURRENCY_LIMIT))
     active_ai = max(0, AI_COMMAND_CONCURRENCY_LIMIT - getattr(ai_command_semaphore, "_value", AI_COMMAND_CONCURRENCY_LIMIT))
+    active_image = max(0, IMAGE_COMMAND_CONCURRENCY_LIMIT - getattr(image_command_semaphore, "_value", IMAGE_COMMAND_CONCURRENCY_LIMIT))
     embed.add_field(
         name="Live Capacity",
         value=(
             f"Global **{active_global}/{COMMAND_CONCURRENCY_LIMIT}** · "
             f"Heavy **{active_heavy}/{HEAVY_COMMAND_CONCURRENCY_LIMIT}** · "
             f"Bulk **{active_bulk}/{BULK_COMMAND_CONCURRENCY_LIMIT}** · "
-            f"AI **{active_ai}/{AI_COMMAND_CONCURRENCY_LIMIT}**"
+            f"AI **{active_ai}/{AI_COMMAND_CONCURRENCY_LIMIT}** · "
+            f"Images **{active_image}/{IMAGE_COMMAND_CONCURRENCY_LIMIT}**"
         ),
         inline=False,
     )
@@ -8195,6 +8383,7 @@ async def bulkqueue_command(ctx):
     active_heavy = max(0, HEAVY_COMMAND_CONCURRENCY_LIMIT - getattr(heavy_command_semaphore, "_value", HEAVY_COMMAND_CONCURRENCY_LIMIT))
     active_bulk = max(0, BULK_COMMAND_CONCURRENCY_LIMIT - getattr(bulk_command_semaphore, "_value", BULK_COMMAND_CONCURRENCY_LIMIT))
     active_ai = max(0, AI_COMMAND_CONCURRENCY_LIMIT - getattr(ai_command_semaphore, "_value", AI_COMMAND_CONCURRENCY_LIMIT))
+    active_image = max(0, IMAGE_COMMAND_CONCURRENCY_LIMIT - getattr(image_command_semaphore, "_value", IMAGE_COMMAND_CONCURRENCY_LIMIT))
     embed = standard_embed(
         "Command Queue",
         description="Live pressure from command groups that can slow the bot when many requests happen at once.",
@@ -8207,7 +8396,8 @@ async def bulkqueue_command(ctx):
             f"Global **{active_global}/{COMMAND_CONCURRENCY_LIMIT}**\n"
             f"Bulk **{active_bulk}/{BULK_COMMAND_CONCURRENCY_LIMIT}**\n"
             f"Heavy **{active_heavy}/{HEAVY_COMMAND_CONCURRENCY_LIMIT}**\n"
-            f"AI **{active_ai}/{AI_COMMAND_CONCURRENCY_LIMIT}**"
+            f"AI **{active_ai}/{AI_COMMAND_CONCURRENCY_LIMIT}**\n"
+            f"Images **{active_image}/{IMAGE_COMMAND_CONCURRENCY_LIMIT}**"
         ),
         inline=True,
     )
@@ -9400,6 +9590,11 @@ def parse_flag_countries():
 FLAG_COUNTRIES = parse_flag_countries()
 FLAG_QUIZ_ROUND_OPTIONS = {10: "10 Flags", 20: "20 Flags", 50: "50 Flags", len(FLAG_COUNTRIES): f"All ({len(FLAG_COUNTRIES)})"}
 FLAG_QUIZ_REWARD_PER_POINT = 20_000
+FLAG_QUIZ_TIMER_SECONDS = 30
+FLAG_QUIZ_DECAY_INTERVAL_SECONDS = 4
+FLAG_QUIZ_DECAY_AMOUNT = 4_000
+FLAG_QUIZ_MAX_DECAY = 16_000
+FLAG_QUIZ_MIN_REWARD = FLAG_QUIZ_REWARD_PER_POINT - FLAG_QUIZ_MAX_DECAY
 active_flag_quizzes = set()
 
 def parse_flag_round_count(value):
@@ -9467,12 +9662,31 @@ def flag_country_hint(country):
             parts.append(word[0] + "_" * (len(word) - 2) + word[-1])
     return "".join(parts)
 
-def build_flag_quiz_embed(country, index, total, score_text, mode, hint=None, status=None, seconds_left=30):
+def flag_quiz_reward_for_elapsed(elapsed_seconds):
+    elapsed_seconds = max(0, float(elapsed_seconds or 0))
+    decay_steps = min(
+        FLAG_QUIZ_MAX_DECAY // FLAG_QUIZ_DECAY_AMOUNT,
+        int(elapsed_seconds // FLAG_QUIZ_DECAY_INTERVAL_SECONDS),
+    )
+    return max(
+        FLAG_QUIZ_MIN_REWARD,
+        FLAG_QUIZ_REWARD_PER_POINT - (decay_steps * FLAG_QUIZ_DECAY_AMOUNT),
+    )
+
+def flag_quiz_reward_note():
+    return (
+        f"Correct flags pay up to **{economy_format_balance(FLAG_QUIZ_REWARD_PER_POINT)}**. "
+        f"Every **{FLAG_QUIZ_DECAY_INTERVAL_SECONDS}s** removes **{economy_format_balance(FLAG_QUIZ_DECAY_AMOUNT)}**, "
+        f"minimum **{economy_format_balance(FLAG_QUIZ_MIN_REWARD)}**."
+    )
+
+def build_flag_quiz_embed(country, index, total, score_text, mode, hint=None, status=None, seconds_left=FLAG_QUIZ_TIMER_SECONDS):
     embed = discord.Embed(
         title=f"Flag Quiz {index}/{total}",
         description=(
             f"Mode: **{mode.title()}** | {score_text}\n"
             f"Time: **{int(seconds_left)}s**\n"
+            f"{flag_quiz_reward_note()}\n"
             "Type the country name. Mini typos are accepted.\n"
             "Each user gets **2 tries** per flag."
         ),
@@ -9516,7 +9730,7 @@ class FlagQuizHintButton(Button):
 
 class FlagQuizHintView(View):
     def __init__(self, author_id, mode, country, index, total, score_text, status, eligible_user_ids, end_time):
-        super().__init__(timeout=30)
+        super().__init__(timeout=FLAG_QUIZ_TIMER_SECONDS)
         self.author_id = author_id
         self.mode = mode
         self.country = country
@@ -9601,13 +9815,14 @@ async def run_flag_quiz(ctx, rounds, mode="solo"):
         return await ctx.send(f"{economy_q_warning} You already have a flag quiz running in this channel.")
     active_flag_quizzes.add(quiz_key)
     scores = {}
+    rewards_by_user = {}
     answered = {}
     countries = random.sample(FLAG_COUNTRIES, min(rounds, len(FLAG_COUNTRIES)))
     try:
         await ctx.send(
             f"{economy_q_game_win} **FLAG QUIZ**\n"
-            f"Mode: **{mode.title()}** | Reward: **{economy_format_balance(FLAG_QUIZ_REWARD_PER_POINT)} per point**\n"
-            "Type the country name. Each guess has **30s**. Everyone gets **2 tries** per flag in public mode. Type `skip` or `stop` anytime.",
+            f"Mode: **{mode.title()}** | {flag_quiz_reward_note()}\n"
+            f"Type the country name. Each guess has **{FLAG_QUIZ_TIMER_SECONDS}s**. Everyone gets **2 tries** per flag in public mode. Type `skip` or `stop` anytime.",
             allowed_mentions=discord.AllowedMentions.none()
         )
         for index, country in enumerate(countries, 1):
@@ -9622,7 +9837,8 @@ async def run_flag_quiz(ctx, rounds, mode="solo"):
             skipped = False
             winner_id = None
             tries_by_user = {}
-            end_time = time.monotonic() + 30
+            round_start = time.monotonic()
+            end_time = round_start + FLAG_QUIZ_TIMER_SECONDS
             while time.monotonic() < end_time and winner_id is None and not skipped:
                 remaining = max(1, end_time - time.monotonic())
                 def check(message):
@@ -9676,11 +9892,15 @@ async def run_flag_quiz(ctx, rounds, mode="solo"):
                 tries_by_user[user_id] = tries_by_user.get(user_id, 0) + 1
                 answered[user_id] = answered.get(user_id, 0) + 1
                 if flag_answer_matches(guess, country):
+                    elapsed_seconds = time.monotonic() - round_start
+                    flag_reward = flag_quiz_reward_for_elapsed(elapsed_seconds)
                     scores[user_id] = scores.get(user_id, 0) + 1
+                    rewards_by_user[user_id] = rewards_by_user.get(user_id, 0) + flag_reward
                     winner_id = user_id
                     await prompt.edit(view=None)
                     await ctx.send(
                         f"{economy_q_accept} <@{user_id}> got it: **{country['name']}**\n"
+                        f"Speed reward: **{economy_format_balance(flag_reward)}**\n"
                         f"{flag_quiz_score_text(scores, ctx.author.id, mode)}",
                         allowed_mentions=discord.AllowedMentions.none()
                     )
@@ -9690,7 +9910,6 @@ async def run_flag_quiz(ctx, rounds, mode="solo"):
                     status += "**1 try left.** Want help? Press **Show Hint**."
                 else:
                     status += "**No tries left for this flag.**"
-                end_time = time.monotonic() + 30
                 hint_view = None
                 eligible_hint_users = {
                     existing_user_id
@@ -9731,13 +9950,13 @@ async def run_flag_quiz(ctx, rounds, mode="solo"):
         if not scores:
             reward_lines.append("No reward earned.")
         for user_id, points in sorted(scores.items(), key=lambda item: item[1], reverse=True):
-            reward = points * FLAG_QUIZ_REWARD_PER_POINT
+            reward = int(rewards_by_user.get(user_id, 0))
             try:
                 old_balance, new_balance = await asyncio.to_thread(economy_add_user_balance, user_id, reward, reward)
                 await asyncio.to_thread(economy_record_game_result, user_id, "flagquiz", points > 0, reward, reward)
                 if points > 0 and economy_todays_daily_challenge()["game"] == "flagquiz":
                     await asyncio.to_thread(economy_track_daily_challenge_progress, user_id, "flagquiz", True, points)
-                await asyncio.to_thread(economy_log_transaction, user_id, "flagquiz_reward", reward, f"{points} point(s) in {mode} flag quiz")
+                await asyncio.to_thread(economy_log_transaction, user_id, "flagquiz_reward", reward, f"{points} point(s) in {mode} flag quiz; speed-adjusted")
                 reward_lines.append(
                     f"<@{user_id}>: **{points}** point(s), **{economy_format_balance(reward)}** "
                     f"({economy_format_balance(old_balance)} -> {economy_format_balance(new_balance)})"
@@ -9780,7 +9999,7 @@ async def flagquiz(ctx, rounds: str = None):
         )
     prefix = prefix_for_guild(ctx.guild)
     await ctx.send(
-        f"{economy_q_game_win} **FLAG QUIZ**\nChoose solo or public mode, then choose quiz length.\nYou can also use `{prefix}flagquiz 10`, `{prefix}flagquiz 20`, `{prefix}flagquiz 50`, or `{prefix}flagquiz all`.\nEach guess has **30s**. You get **2 tries** per flag, and small typos are accepted.\nReward: **{economy_format_balance(FLAG_QUIZ_REWARD_PER_POINT)} per correct flag**.",
+        f"{economy_q_game_win} **FLAG QUIZ**\nChoose solo or public mode, then choose quiz length.\nYou can also use `{prefix}flagquiz 10`, `{prefix}flagquiz 20`, `{prefix}flagquiz 50`, or `{prefix}flagquiz all`.\nEach guess has **{FLAG_QUIZ_TIMER_SECONDS}s**. You get **2 tries** per flag, and small typos are accepted.\n{flag_quiz_reward_note()}",
         view=FlagQuizSetupView(ctx)
     )
 
@@ -9797,13 +10016,12 @@ async def flagstats(ctx, member: discord.Member = None):
         return
     played = int(row["played"] or 0)
     earned = int(row["profit"] or 0)
-    points = earned // FLAG_QUIZ_REWARD_PER_POINT if FLAG_QUIZ_REWARD_PER_POINT else 0
     embed = discord.Embed(
         title=f"{economy_q_game_win} Flag Quiz Stats",
         description=(
             f"{user.mention}\n"
             f"Quizzes: **{played:,}**\n"
-            f"Scoring runs: **{points:,}**\n"
+            f"Scoring quizzes: **{int(row['wins'] or 0):,}**\n"
             f"Rewards Earned: **{economy_format_balance(earned)}**"
         ),
         color=discord.Color.green(),
@@ -10833,6 +11051,8 @@ async def on_voice_state_update(member, before, after):
 
 @bot.check
 async def globally_block_disabled(ctx):
+    if bot_maintenance_mode and not has_super_owner_power(ctx.author, ctx.guild):
+        raise CommandDisabledError("maintenance")
     disabled = guild_disabled_commands(ctx.guild)
     if (
         ctx.command
@@ -10942,7 +11162,7 @@ async def prefix_command(ctx, new_prefix: str = None):
 DISABLE_PROTECTED_COMMANDS = {
     "disable", "enable", "disableall", "enableall", "dclist",
     "help", "settings", "prefix", "setlogs", "health", "errors",
-    "recover", "dbaudit", "perms", "aidoctor",
+    "recover", "dbaudit", "perms", "aidoctor", "off", "on",
 }
 
 def command_disable_protected(command):
@@ -11750,7 +11970,7 @@ async def ask_game_bet(ctx, opponent, game_name):
             asyncio.to_thread(economy_get_user, opponent.id),
         )
     except Exception:
-        await ctx.send("Database unavailable. Try again shortly.")
+        await ctx.send("I had trouble reaching the economy data. Try again in a bit.")
         return None
 
     amount = parse_uncapped_game_amount(amount_msg.content.strip(), author_data["balance"])
@@ -16260,6 +16480,70 @@ def birthday_card_prompt_for(member, custom_prompt=None):
         return f"Birthday card for {name}. Match this style/request: {custom}"
     return f"Birthday card for {name}, warm celebratory ProQue theme, cake, balloons, subtle queso coins, clean modern Discord card"
 
+BIRTHDAY_CARD_VIEW_WORDS = {"view", "preview", "show", "current", "card"}
+
+def birthday_card_summary(user_id):
+    current = birthday_card_prompts.get(str(user_id))
+    if current:
+        return "custom", current
+    return "default", None
+
+async def build_birthday_card_preview(member):
+    status, saved_style = birthday_card_summary(member.id)
+    card_prompt = image_prompt_for("birthday", birthday_card_prompt_for(member, saved_style))
+    async with image_command_semaphore:
+        image_bytes, ext, provider = await generate_hf_image_bytes(card_prompt, width=1024, height=576)
+    filename = f"birthday-card-{member.id}.{ext}"
+    file = discord.File(BytesIO(image_bytes), filename=filename)
+    description = f"{economy_q_birthday_cake} Current card: **{status}**"
+    if saved_style:
+        description += f"\nSaved style: {embed_value(saved_style, limit=450)}"
+    else:
+        description += "\nUsing the default Pro𝚀𝚞𝚎 birthday style."
+    embed = standard_embed(
+        "Birthday Card Preview",
+        description=description,
+        color=0x2A8FDA,
+        icon=economy_q_birthday,
+    )
+    embed.set_image(url=f"attachment://{filename}")
+    embed.set_footer(text=f"Pro𝚀𝚞𝚎 · Generated with {provider}")
+    return embed, file
+
+async def send_birthday_card_preview(ctx, member=None):
+    member = member or ctx.author
+    if not image_generation_available():
+        return await ctx.reply("Birthday card previews need image generation configured first.", mention_author=False)
+    left = image_cooldown_left(ctx.author.id)
+    if left > 0:
+        return await ctx.reply(f"{economy_q_timer_tick} Birthday card preview cooldown: **{left:.0f}s**.", mention_author=False)
+    touch_image_cooldown(ctx.author.id)
+    await safe_add_reaction(ctx.message, economy_q_timer_tick)
+    try:
+        embed, file = await build_birthday_card_preview(member)
+        await safe_remove_reaction(ctx.message, economy_q_timer_tick, bot.user)
+        await ctx.reply(embed=embed, file=file, mention_author=False, allowed_mentions=discord.AllowedMentions.none())
+    except Exception as e:
+        await safe_remove_reaction(ctx.message, economy_q_timer_tick, bot.user)
+        await ctx.reply(clean_user_error(e, ai_exception_message(e)), mention_author=False)
+
+async def send_birthday_card_preview_interaction(interaction):
+    member = interaction.user
+    if interaction.guild:
+        member = interaction.guild.get_member(interaction.user.id) or interaction.user
+    if not image_generation_available():
+        return await interaction.response.send_message("Birthday card previews need image generation configured first.", ephemeral=True)
+    left = image_cooldown_left(interaction.user.id)
+    if left > 0:
+        return await interaction.response.send_message(f"{economy_q_timer_tick} Birthday card preview cooldown: **{left:.0f}s**.", ephemeral=True)
+    touch_image_cooldown(interaction.user.id)
+    await interaction.response.defer(thinking=True, ephemeral=True)
+    try:
+        embed, file = await build_birthday_card_preview(member)
+        await interaction.followup.send(embed=embed, file=file, ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(clean_user_error(e, ai_exception_message(e)), ephemeral=True)
+
 class BirthdayCardPromptModal(Modal):
     def __init__(self, author_id):
         super().__init__(title="Custom Birthday Card")
@@ -16299,6 +16583,10 @@ class BirthdayCardChoiceView(View):
     async def default_card(self, interaction, button):
         await asyncio.to_thread(save_user_birthday_card, interaction.user.id, "")
         await interaction.response.send_message(f"{economy_q_accept} Default birthday card selected.", ephemeral=True)
+
+    @discord.ui.button(label="View Card", emoji=economy_q_image, style=discord.ButtonStyle.secondary)
+    async def view_card(self, interaction, button):
+        await send_birthday_card_preview_interaction(interaction)
 
 def birthday_saved_message():
     return (
@@ -16354,13 +16642,15 @@ async def setbday(ctx, date: str = None):
 
 @bot.command(name="bdaycard", aliases=["birthdaycard"])
 async def bdaycard(ctx, *, prompt: str = None):
+    if prompt and prompt.casefold().strip() in BIRTHDAY_CARD_VIEW_WORDS:
+        return await send_birthday_card_preview(ctx)
     if not prompt:
         current = birthday_card_prompts.get(str(ctx.author.id))
         embed = standard_embed(
             "Birthday Card",
             description=(
                 f"{economy_q_birthday_cake} Current: **{'custom' if current else 'default'}**\n"
-                "Press Custom Card, Use Default, or type `.bdaycard <style>`."
+                "Press Custom Card, Use Default, View Card, or type `.bdaycard <style>`."
             ),
             color=0x2A8FDA,
             icon=economy_q_birthday,
@@ -16375,6 +16665,10 @@ async def bdaycard(ctx, *, prompt: str = None):
     if not ok:
         return await ctx.send("I couldn't save that birthday card right now.")
     await ctx.send(f"{economy_q_accept} Custom birthday card saved.")
+
+@bot.command(name="viewbdaycard", aliases=["bdaypreview", "birthdaypreview", "cardpreview"])
+async def view_bdaycard(ctx, member: discord.Member = None):
+    await send_birthday_card_preview(ctx, member if has_super_owner_power(ctx.author, ctx.guild) else ctx.author)
 
 @bot.command()
 async def removebday(ctx):
@@ -16679,7 +16973,8 @@ async def ask_command(ctx, *, question: str):
             "content": (
                 "You are Pro𝚀𝚞𝚎's AI. Answer clearly, simply, briefly, and casually. "
                 "Be playful and warm when the user is joking or chatting; be direct when they need actual help. "
-                "You do not have live web search connected, so do not claim current live-world facts unless the user provided the source/context."
+                "You do not have live web search connected, so do not claim current live-world facts unless the user provided the source/context. "
+                "Do not recommend bot commands unless the user directly asks for bot help or asks how to use a bot feature."
             ),
         }
     ]
@@ -17034,7 +17329,8 @@ async def translate_text_api(source_lang, target_lang, text):
     }
     async with session.get("https://translate.googleapis.com/translate_a/single", params=params) as resp:
         if resp.status != 200:
-            raise RuntimeError(f"Error: {resp.status}")
+            body = await resp.text()
+            raise RuntimeError(ai_http_error_message(resp.status, body))
         data = await resp.json()
     result = "".join(part[0] for part in data[0] if part and part[0])
     detected_lang = data[2] if len(data) > 2 and data[2] else source_lang
