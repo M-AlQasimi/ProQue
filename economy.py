@@ -89,6 +89,10 @@ Q_BIRTHDAY = "<:QBirthday:1500516717976097004>"
 Q_BIRTHDAY_BALLOONS = "<:QBirthdayBalloons:1504932237584629781>"
 Q_BIRTHDAY_CAKE = "<:QBirthdayCake:1504932239094579441>"
 Q_BOOK = "<:QBook:1500516719771385926>"
+Q_QURAN = "<:QQuran:1511264131511222323>"
+Q_QURAN_QUEUE = "<:QQuranQueue:1511264138628698233>"
+Q_RECITER = "<:QReciter:1511264142105903257>"
+Q_SURAH = "<:QSurah:1511264154839678996>"
 Q_BROOM = "<:QBroom:1500516722170396772>"
 Q_CARDS = "<:QCards:1500516723860701395>"
 Q_CONFETTI = "<:QConfetti:1500516725618118736>"
@@ -15798,6 +15802,17 @@ EXPLANATIONS = {
     "image": "Alias for `.generate`. Generates an AI image from a prompt.",
     "aiimage": "Alias for `.generate`. Generates an AI image from a prompt.",
     "genimg": "Alias for `.generate`. Generates an AI image from a prompt.",
+    "quranplay": "Joins your voice channel and plays Quran recitation by surah and optional reciter.",
+    "quran": "Alias for `.quranplay`. Plays Quran recitation in voice.",
+    "qplay": "Alias for `.quranplay`. Plays Quran recitation in voice.",
+    "recite": "Alias for `.quranplay`. Plays Quran recitation in voice.",
+    "surah": "Shortcut for `.quranplay`. Use `.surah 36 mishary` or `.surah yaseen`.",
+    "quranqueue": "Shows the current Quran recitation and queued surahs.",
+    "quranskip": "Skips to the next Quran ayah or queued surah.",
+    "quranpause": "Pauses Quran voice playback.",
+    "quranresume": "Resumes paused Quran voice playback.",
+    "quranstop": "Stops Quran playback, clears the queue, and leaves voice.",
+    "reciters": "Shows available Quran reciters for `.quranplay`.",
     "profilebanner": "Generates a profile/banner image.",
     "banner": "Alias for `.profilebanner`. Generates a profile/banner image.",
     "profileart": "Alias for `.profilebanner`. Generates a profile/banner image.",
@@ -16023,7 +16038,8 @@ DETAILED_EXPLANATIONS = {
     "birthdaycard": "Alias for `.bdaycard`. Sets, clears, or previews your optional birthday card style.",
     "viewbdaycard": "Generates a preview of your current birthday card using your saved style, or the default Pro𝚀𝚞𝚎 birthday style if you have not saved one. Aliases: `.bdaypreview`, `.birthdaypreview`, `.cardpreview`.",
     "ask": "Asks Pro𝚀𝚞𝚎's AI a question. The AI answers from its model knowledge, bot context, reply context, and saved memory; live web search is not connected.",
-    "generate": "Generates an AI image from a prompt using Hugging Face when `HF_TOKEN` is configured, with Cloudflare as fallback if available. Aliases: `.imagine`, `.image`, `.aiimage`, `.genimg`.",
+    "generate": "Generates an AI image from a prompt using Cloudflare when configured, with Hugging Face as fallback. Aliases: `.imagine`, `.image`, `.aiimage`, `.genimg`.",
+    "quranplay": "Quran-only voice playback. Join a voice channel, then use `.quranplay <surah number/name> [reciter]`, like `.quranplay yaseen mishary` or `.quranplay 2 sudais`. It queues the surah as ayah-by-ayah MP3 recitation, supports `.quranpause`, `.quranresume`, `.quranskip`, `.quranstop`, `.quranqueue`, and `.reciters`, and does not use YouTube/music search.",
     "profilebanner": "Generates a wide profile/banner image from your prompt. Aliases: `.banner`, `.profileart`.",
     "makeemoji": "Generates an emoji-style image from your prompt. If you have Manage Emojis and Stickers and the bot does too, the Add Emoji button lets you upload it into the server.",
     "eventposter": "Admin-power image command. Generates a clean event poster/background from a prompt. Aliases: `.poster`, `.eventart`.",
@@ -16049,7 +16065,7 @@ DETAILED_EXPLANATIONS = {
     "aiguard": "Shows AI command execution safety: safe/read-only command names, commands that need confirmation, commands only 𝚀𝚞𝚎 can authorize, blocked commands, pending AI actions, and recent AI action count.",
     "explain": "Shows detailed help for a command, including usage, aliases, short explanation, and longer details when available. Example: `.explain slots`.",
     "games": "Shows a central game menu with quick usage for Tic Tac Toe, Connect 4, chess, Tower, Vault, Memory, Minesweeper, and Picker. The select menu gives the start command for each game.",
-    "flagquiz": "Starts a photo-based flag quiz. Choose Solo or Public Channel, then choose 10, 20, 50, or all 197 flags. Each flag gives 2 tries, has a 30-second timer, accepts small typos, and correct answers pay up to 20,000 quesos. Every 4 seconds removes 4,000 from that flag's reward, capped at 16,000 removed, so the minimum is 4,000. Wrong first guesses can request a hint.",
+    "flagquiz": "Starts a photo-based flag quiz. Choose Solo or Public Channel, then choose 10, 20, 50, or all 197 flags. Each flag gives 2 tries, has a 30-second timer, accepts small typos and common shortcuts like KSA/PNG, and correct answers pay up to 20,000 quesos. Every 4 seconds removes 4,000 from that flag's reward, capped at 16,000 removed, so the minimum is 4,000. Wrong first guesses can request a hint.",
     "flagstats": "Shows a user's Flag Quiz tracking: quizzes played, scoring quizzes, and total flag rewards.",
     "ttt": "Challenge a user to Tic Tac Toe. The opponent accepts the game first. If the challenger enables a bet and enters an amount, the opponent gets a second accept/decline prompt for that exact bet before the game starts.",
     "c4": "Challenge a user to Connect 4. The opponent accepts the game first. If the challenger enables a bet and enters an amount, the opponent gets a second accept/decline prompt for that exact bet before the game starts. The board shows column numbers below the grid.",

@@ -93,6 +93,10 @@ from economy import (
     Q_BIRTHDAY_CAKE as economy_q_birthday_cake,
     Q_BANK as economy_q_bank,
     Q_BOOK as economy_q_book,
+    Q_QURAN as economy_q_quran,
+    Q_QURAN_QUEUE as economy_q_quran_queue,
+    Q_RECITER as economy_q_reciter,
+    Q_SURAH as economy_q_surah,
     Q_BROOM as economy_q_broom,
     Q_CARDS as economy_q_cards,
     Q_COLOUR as economy_q_colour,
@@ -257,7 +261,7 @@ HF_TOKEN = os.getenv("HF_TOKEN", "")
 HF_IMAGE_MODEL = os.getenv("HF_IMAGE_MODEL", "black-forest-labs/FLUX.1-schnell")
 HF_IMAGE_ENDPOINT = f"https://router.huggingface.co/hf-inference/models/{HF_IMAGE_MODEL}"
 HF_IMAGE_TIMEOUT_SECONDS = int(os.getenv("PROQUE_IMAGE_TIMEOUT", "120"))
-HF_IMAGE_COOLDOWN_SECONDS = int(os.getenv("PROQUE_IMAGE_COOLDOWN", "45"))
+HF_IMAGE_COOLDOWN_SECONDS = int(os.getenv("PROQUE_IMAGE_COOLDOWN", "15"))
 AI_MODEL_TIMEOUT_SECONDS = 10
 AI_SUMMARY_MAX_MESSAGES = 250
 AI_SUMMARY_DEFAULT_MESSAGES = 80
@@ -355,7 +359,7 @@ IMAGE_STYLE_PRESETS = {
 image_generation_cooldowns = {}
 
 def image_generation_available():
-    return bool(HF_TOKEN or (CLOUDFLARE_API_KEY and CLOUDFLARE_ACCOUNT_ID))
+    return bool((CLOUDFLARE_API_KEY and CLOUDFLARE_ACCOUNT_ID) or HF_TOKEN)
 
 def clean_image_prompt(prompt, *, max_chars=700):
     prompt = re.sub(r"\s+", " ", str(prompt or "")).strip()
@@ -433,12 +437,17 @@ async def generate_hf_image_bytes(prompt, *, width=1024, height=576, steps=4):
     finally:
         await response_cm.__aexit__(None, None, None)
 
+async def generate_image_bytes(prompt, *, width=1024, height=576, steps=4):
+    if CLOUDFLARE_API_KEY and CLOUDFLARE_ACCOUNT_ID:
+        return await generate_cloudflare_image_bytes(prompt)
+    return await generate_hf_image_bytes(prompt, width=width, height=height, steps=steps)
+
 async def run_image_generation(ctx, prompt, *, kind="general", title="Generated Image", width=1024, height=576):
     prompt = clean_image_prompt(prompt)
     if not prompt:
         return await send_command_input_ui(ctx, ctx.command.name, note="Enter what you want generated.")
     if not image_generation_available():
-        return await ctx.send("Image generation is not configured. Add `HF_TOKEN` to Railway.")
+        return await ctx.send("Image generation is not configured. Add Cloudflare image keys or `HF_TOKEN` to Railway.")
     left = image_cooldown_left(ctx.author.id)
     if left > 0:
         return await ctx.send(f"{economy_q_timer_tick} Image generation cooldown: **{left:.0f}s**.")
@@ -453,7 +462,7 @@ async def run_image_generation(ctx, prompt, *, kind="general", title="Generated 
             )
         styled_prompt = image_prompt_for(kind, prompt)
         async with image_command_semaphore:
-            image_bytes, ext, provider = await generate_hf_image_bytes(styled_prompt, width=width, height=height)
+            image_bytes, ext, provider = await generate_image_bytes(styled_prompt, width=width, height=height)
         file = discord.File(BytesIO(image_bytes), filename=f"proque-{kind}.{ext}")
         embed = standard_embed(
             title,
@@ -2472,6 +2481,16 @@ async def safe_delete_message(message):
     except discord.HTTPException:
         pass
 
+async def safe_edit_message(message, *args, **kwargs):
+    try:
+        await message.edit(*args, **kwargs)
+        return True
+    except discord.NotFound:
+        return False
+    except discord.HTTPException as exc:
+        print(f"Safe message edit failed: {type(exc).__name__} - {exc}")
+        return False
+
 async def safe_remove_reaction(message, emoji, member):
     try:
         await message.remove_reaction(emoji, member)
@@ -2859,7 +2878,7 @@ async def birthday_check_loop():
                     if image_generation_available():
                         try:
                             card_prompt = image_prompt_for("birthday", birthday_card_prompt_for(member, custom_prompt))
-                            image_bytes, ext, _ = await generate_hf_image_bytes(card_prompt, width=1024, height=576)
+                            image_bytes, ext, _ = await generate_image_bytes(card_prompt, width=1024, height=576)
                             birthday_filename = f"birthday-{member.id}.{ext}"
                             birthday_file = discord.File(BytesIO(image_bytes), filename=birthday_filename)
                             birthday_image_url = f"attachment://{birthday_filename}"
@@ -4706,6 +4725,10 @@ COMMAND_EXAMPLE_OVERRIDES = {
     "gameart": ".gameart dungeon boss fight",
     "shoppreview": ".shoppreview fortune vial",
     "reactionimage": ".reactionimage shocked but funny",
+    "quranplay": ".quranplay yaseen mishary",
+    "surah": ".surah 36 mishary",
+    "quranqueue": ".quranqueue",
+    "reciters": ".reciters",
     "giveaway": ".giveaway 10m prize",
     "kick": ".kick @user reason",
     "lockpick": ".lockpick 1000",
@@ -6857,6 +6880,7 @@ HELP_CATEGORIES = {
         "truthordare", "flagquiz", "flagstats", "ttt", "c4", "chess", "chessmove", "resign", "q", "picker",
     ],
     "Tools": ["userinfo", "pfp", "calc", "colour", "define", "timer", "ctimer", "alarm", "poll", "epoll", "translate", "find"],
+    "Quran": ["quranplay", "surah", "quranqueue", "quranskip", "quranpause", "quranresume", "quranstop", "reciters"],
     "Snipes": ["snipe", "dsnipe", "esnipe", "rsnipe"],
     "AI": [
         "ask", "summarize", "aidetect", "generate", "profilebanner", "makeemoji",
@@ -9649,6 +9673,42 @@ ZM|Zambia|
 ZW|Zimbabwe|
 """.strip()
 
+FLAG_EXTRA_ALIASES = {
+    "AG": ["antigua"],
+    "BD": ["bangaldesh"],
+    "BN": ["brunei darussalam"],
+    "BO": ["bolivia"],
+    "CF": ["central africa"],
+    "CG": ["roc", "congo brazzaville", "brazzaville"],
+    "CD": ["zaire", "congo drc"],
+    "CI": ["cote divoire"],
+    "CV": ["capeverde"],
+    "CZ": ["czech"],
+    "DO": ["dr"],
+    "FM": ["fsm"],
+    "KG": ["kyrgystan"],
+    "KZ": ["kazakstan"],
+    "KP": ["dprk"],
+    "KR": ["rok", "korea republic"],
+    "LA": ["lao"],
+    "LC": ["stlucia"],
+    "LI": ["lichtenstein"],
+    "MH": ["rmi"],
+    "MK": ["fyrom"],
+    "PG": ["png"],
+    "PH": ["ph", "phillipines", "the philippines"],
+    "SA": ["ksa"],
+    "SB": ["solomons"],
+    "SC": ["seychelle"],
+    "ST": ["saotome"],
+    "SZ": ["swazi"],
+    "TL": ["timor"],
+    "TT": ["trinidad"],
+    "TZ": ["tanzania"],
+    "VA": ["holysee"],
+    "ZA": ["rsa"],
+}
+
 def normalize_flag_answer(value):
     value = value.casefold().strip()
     value = re.sub(r"^the\s+", "", value)
@@ -9667,6 +9727,8 @@ def parse_flag_countries():
             alias = alias.strip()
             if alias:
                 accepted.add(normalize_flag_answer(alias))
+        for alias in FLAG_EXTRA_ALIASES.get(code.upper(), []):
+            accepted.add(normalize_flag_answer(alias))
         countries.append({
             "code": code,
             "name": name,
@@ -9774,7 +9836,7 @@ def build_flag_quiz_embed(country, index, total, score_text, mode, hint=None, st
             f"Mode: **{mode.title()}** | {score_text}\n"
             f"Time: **{int(seconds_left)}s**\n"
             f"{flag_quiz_reward_note()}\n"
-            "Type the country name. Mini typos are accepted.\n"
+            "Type the country name. Mini typos and common shortcuts like `KSA`/`PNG` are accepted.\n"
             "Each user gets **2 tries** per flag."
         ),
         color=discord.Color.blurple()
@@ -9800,20 +9862,28 @@ class FlagQuizHintButton(Button):
         view.hint_requested = True
         for item in view.children:
             item.disabled = True
-        await interaction.response.edit_message(
-            embed=build_flag_quiz_embed(
-                view.country,
-                view.index,
-                view.total,
-                view.score_text,
-                view.mode,
-                hint=flag_country_hint(view.country),
-                status=view.status,
-                seconds_left=max(0, int(view.end_time - time.monotonic())),
-            ),
-            view=view,
-            allowed_mentions=discord.AllowedMentions.none(),
-        )
+        try:
+            await interaction.response.edit_message(
+                embed=build_flag_quiz_embed(
+                    view.country,
+                    view.index,
+                    view.total,
+                    view.score_text,
+                    view.mode,
+                    hint=flag_country_hint(view.country),
+                    status=view.status,
+                    seconds_left=max(0, int(view.end_time - time.monotonic())),
+                ),
+                view=view,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        except discord.NotFound:
+            if not interaction.response.is_done():
+                await interaction.response.send_message("That flag prompt is gone.", ephemeral=True)
+        except discord.HTTPException as exc:
+            print(f"Flag quiz hint edit failed: {type(exc).__name__} - {exc}")
+            if not interaction.response.is_done():
+                await interaction.response.send_message("I couldn't update that flag hint.", ephemeral=True)
 
 class FlagQuizHintView(View):
     def __init__(self, author_id, mode, country, index, total, score_text, status, eligible_user_ids, end_time):
@@ -9937,7 +10007,8 @@ async def run_flag_quiz(ctx, rounds, mode="solo"):
                 try:
                     guess_message = await bot.wait_for("message", timeout=remaining, check=check)
                 except asyncio.TimeoutError:
-                    await prompt.edit(
+                    if not await safe_edit_message(
+                        prompt,
                         embed=build_flag_quiz_embed(
                             country,
                             index,
@@ -9948,7 +10019,9 @@ async def run_flag_quiz(ctx, rounds, mode="solo"):
                             seconds_left=0,
                         ),
                         view=None,
-                    )
+                    ):
+                        await ctx.send(f"{economy_q_warning} Flag quiz prompt was removed, so the quiz stopped.")
+                        stopped = True
                     break
 
                 guess = guess_message.content.strip()
@@ -9961,7 +10034,8 @@ async def run_flag_quiz(ctx, rounds, mode="solo"):
                     if mode == "public" and guess_message.author.id != ctx.author.id:
                         continue
                     skipped = True
-                    await prompt.edit(
+                    if not await safe_edit_message(
+                        prompt,
                         embed=build_flag_quiz_embed(
                             country,
                             index,
@@ -9971,7 +10045,9 @@ async def run_flag_quiz(ctx, rounds, mode="solo"):
                             status=f"{economy_q_warning} Skipped. Answer: **{country['name']}**",
                         ),
                         view=None,
-                    )
+                    ):
+                        await ctx.send(f"{economy_q_warning} Flag quiz prompt was removed, so the quiz stopped.")
+                        stopped = True
                     break
                 user_id = guess_message.author.id
                 if tries_by_user.get(user_id, 0) >= 2:
@@ -9984,7 +10060,7 @@ async def run_flag_quiz(ctx, rounds, mode="solo"):
                     scores[user_id] = scores.get(user_id, 0) + 1
                     rewards_by_user[user_id] = rewards_by_user.get(user_id, 0) + flag_reward
                     winner_id = user_id
-                    await prompt.edit(view=None)
+                    await safe_edit_message(prompt, view=None)
                     await ctx.send(
                         f"{economy_q_accept} <@{user_id}> got it: **{country['name']}**\n"
                         f"Speed reward: **{economy_format_balance(flag_reward)}**\n"
@@ -10015,7 +10091,8 @@ async def run_flag_quiz(ctx, rounds, mode="solo"):
                         eligible_hint_users,
                         end_time,
                     )
-                await prompt.edit(
+                if not await safe_edit_message(
+                    prompt,
                     embed=build_flag_quiz_embed(
                         country,
                         index,
@@ -10027,7 +10104,10 @@ async def run_flag_quiz(ctx, rounds, mode="solo"):
                     ),
                     view=hint_view,
                     allowed_mentions=discord.AllowedMentions.none()
-                )
+                ):
+                    await ctx.send(f"{economy_q_warning} Flag quiz prompt was removed, so the quiz stopped.")
+                    stopped = True
+                    break
             if stopped:
                 break
             if winner_id:
@@ -10070,6 +10150,17 @@ async def run_flag_quiz(ctx, rounds, mode="solo"):
             "\n".join([*finish_header, *reward_lines]),
             allowed_mentions=discord.AllowedMentions.none()
         )
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        print(f"Flag quiz failed: {type(exc).__name__} - {exc}")
+        try:
+            await ctx.send(
+                f"{economy_q_warning} Flag quiz stopped because Discord or the host dropped something: {clean_user_error(exc)}",
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        except Exception:
+            pass
     finally:
         active_flag_quizzes.discard(quiz_key)
 
@@ -10086,7 +10177,7 @@ async def flagquiz(ctx, rounds: str = None):
         )
     prefix = prefix_for_guild(ctx.guild)
     await ctx.send(
-        f"{economy_q_game_win} **FLAG QUIZ**\nChoose solo or public mode, then choose quiz length.\nYou can also use `{prefix}flagquiz 10`, `{prefix}flagquiz 20`, `{prefix}flagquiz 50`, or `{prefix}flagquiz all`.\nEach guess has **{FLAG_QUIZ_TIMER_SECONDS}s**. You get **2 tries** per flag, and small typos are accepted.\n{flag_quiz_reward_note()}",
+        f"{economy_q_game_win} **FLAG QUIZ**\nChoose solo or public mode, then choose quiz length.\nYou can also use `{prefix}flagquiz 10`, `{prefix}flagquiz 20`, `{prefix}flagquiz 50`, or `{prefix}flagquiz all`.\nEach guess has **{FLAG_QUIZ_TIMER_SECONDS}s**. You get **2 tries** per flag, and small typos/common shortcuts like `KSA` and `PNG` are accepted.\n{flag_quiz_reward_note()}",
         view=FlagQuizSetupView(ctx)
     )
 
@@ -14938,6 +15029,358 @@ async def speak(ctx, *, target: str = None):
         allowed_mentions=discord.AllowedMentions.none(),
     )
 
+QURAN_RECITERS = {
+    "mishary": {
+        "name": "Mishary Alafasy",
+        "folder": "Alafasy_128kbps",
+        "aliases": {"mishary", "alafasy", "afasy", "misharyalafasy"},
+    },
+    "sudais": {
+        "name": "Abdul Rahman Al-Sudais",
+        "folder": "Abdurrahmaan_As-Sudais_64kbps",
+        "aliases": {"sudais", "alsudais", "abdurrahman", "abdulrahman"},
+    },
+    "shuraim": {
+        "name": "Saud Al-Shuraim",
+        "folder": "Saood_ash-Shuraym_64kbps",
+        "aliases": {"shuraim", "shuraym", "saud", "saood"},
+    },
+    "basit": {
+        "name": "Abdul Basit",
+        "folder": "Abdul_Basit_Murattal_64kbps",
+        "aliases": {"basit", "abdulbasit", "abdul_basit"},
+    },
+    "husary": {
+        "name": "Mahmoud Khalil Al-Husary",
+        "folder": "Husary_128kbps",
+        "aliases": {"husary", "hosary", "husari", "mahmoud"},
+    },
+    "minshawi": {
+        "name": "Mohamed Seddik Al-Minshawi",
+        "folder": "Minshawy_Murattal_128kbps",
+        "aliases": {"minshawi", "minshawy", "menshawi"},
+    },
+}
+QURAN_DEFAULT_RECITER = "mishary"
+QURAN_BASE_AUDIO_URL = "https://everyayah.com/data"
+QURAN_SURAHS = [
+    ("Al-Fatihah", 7), ("Al-Baqarah", 286), ("Ali Imran", 200), ("An-Nisa", 176),
+    ("Al-Ma'idah", 120), ("Al-An'am", 165), ("Al-A'raf", 206), ("Al-Anfal", 75),
+    ("At-Tawbah", 129), ("Yunus", 109), ("Hud", 123), ("Yusuf", 111), ("Ar-Ra'd", 43),
+    ("Ibrahim", 52), ("Al-Hijr", 99), ("An-Nahl", 128), ("Al-Isra", 111), ("Al-Kahf", 110),
+    ("Maryam", 98), ("Ta-Ha", 135), ("Al-Anbiya", 112), ("Al-Hajj", 78), ("Al-Mu'minun", 118),
+    ("An-Nur", 64), ("Al-Furqan", 77), ("Ash-Shu'ara", 227), ("An-Naml", 93), ("Al-Qasas", 88),
+    ("Al-Ankabut", 69), ("Ar-Rum", 60), ("Luqman", 34), ("As-Sajdah", 30), ("Al-Ahzab", 73),
+    ("Saba", 54), ("Fatir", 45), ("Ya-Sin", 83), ("As-Saffat", 182), ("Sad", 88), ("Az-Zumar", 75),
+    ("Ghafir", 85), ("Fussilat", 54), ("Ash-Shura", 53), ("Az-Zukhruf", 89), ("Ad-Dukhan", 59),
+    ("Al-Jathiyah", 37), ("Al-Ahqaf", 35), ("Muhammad", 38), ("Al-Fath", 29), ("Al-Hujurat", 18),
+    ("Qaf", 45), ("Adh-Dhariyat", 60), ("At-Tur", 49), ("An-Najm", 62), ("Al-Qamar", 55),
+    ("Ar-Rahman", 78), ("Al-Waqi'ah", 96), ("Al-Hadid", 29), ("Al-Mujadilah", 22),
+    ("Al-Hashr", 24), ("Al-Mumtahanah", 13), ("As-Saff", 14), ("Al-Jumu'ah", 11),
+    ("Al-Munafiqun", 11), ("At-Taghabun", 18), ("At-Talaq", 12), ("At-Tahrim", 12),
+    ("Al-Mulk", 30), ("Al-Qalam", 52), ("Al-Haqqah", 52), ("Al-Ma'arij", 44), ("Nuh", 28),
+    ("Al-Jinn", 28), ("Al-Muzzammil", 20), ("Al-Muddaththir", 56), ("Al-Qiyamah", 40),
+    ("Al-Insan", 31), ("Al-Mursalat", 50), ("An-Naba", 40), ("An-Nazi'at", 46), ("Abasa", 42),
+    ("At-Takwir", 29), ("Al-Infitar", 19), ("Al-Mutaffifin", 36), ("Al-Inshiqaq", 25),
+    ("Al-Buruj", 22), ("At-Tariq", 17), ("Al-A'la", 19), ("Al-Ghashiyah", 26), ("Al-Fajr", 30),
+    ("Al-Balad", 20), ("Ash-Shams", 15), ("Al-Layl", 21), ("Ad-Duha", 11), ("Ash-Sharh", 8),
+    ("At-Tin", 8), ("Al-Alaq", 19), ("Al-Qadr", 5), ("Al-Bayyinah", 8), ("Az-Zalzalah", 8),
+    ("Al-Adiyat", 11), ("Al-Qari'ah", 11), ("At-Takathur", 8), ("Al-Asr", 3), ("Al-Humazah", 9),
+    ("Al-Fil", 5), ("Quraysh", 4), ("Al-Ma'un", 7), ("Al-Kawthar", 3), ("Al-Kafirun", 6),
+    ("An-Nasr", 3), ("Al-Masad", 5), ("Al-Ikhlas", 4), ("Al-Falaq", 5), ("An-Nas", 6),
+]
+QURAN_SURAH_ALIASES = {
+    "fatiha": 1, "fatihah": 1, "baqara": 2, "baqarah": 2, "imran": 3, "nisa": 4,
+    "maidah": 5, "anam": 6, "araf": 7, "anfal": 8, "tawbah": 9, "taubah": 9,
+    "yaseen": 36, "yasin": 36, "yaasin": 36, "rahman": 55, "waqiah": 56, "mulk": 67,
+    "ikhlas": 112, "falaq": 113, "nas": 114, "kausar": 108, "kawthar": 108,
+}
+quran_players = {}
+
+def quran_normalize(text):
+    return re.sub(r"[^a-z0-9]+", "", str(text or "").casefold())
+
+def quran_surah_label(number):
+    name, ayahs = QURAN_SURAHS[int(number) - 1]
+    return f"{int(number):03d} - {name} ({ayahs} ayah{'s' if ayahs != 1 else ''})"
+
+def quran_ayah_url(reciter_key, surah_number, ayah_number):
+    folder = QURAN_RECITERS[reciter_key]["folder"]
+    return f"{QURAN_BASE_AUDIO_URL}/{folder}/{int(surah_number):03d}{int(ayah_number):03d}.mp3"
+
+def resolve_quran_reciter(raw):
+    key = quran_normalize(raw)
+    if not key:
+        return QURAN_DEFAULT_RECITER
+    for reciter_key, data in QURAN_RECITERS.items():
+        if key == reciter_key or key in {quran_normalize(alias) for alias in data["aliases"]}:
+            return reciter_key
+    return None
+
+def resolve_quran_surah(raw):
+    text = str(raw or "").strip()
+    if text.isdigit():
+        number = int(text)
+        if 1 <= number <= 114:
+            return number
+        return None
+    key = quran_normalize(text)
+    if key in QURAN_SURAH_ALIASES:
+        return QURAN_SURAH_ALIASES[key]
+    for index, (name, _) in enumerate(QURAN_SURAHS, 1):
+        if quran_normalize(name) == key:
+            return index
+    for index, (name, _) in enumerate(QURAN_SURAHS, 1):
+        if key and key in quran_normalize(name):
+            return index
+    return None
+
+def parse_quran_request(raw):
+    raw = str(raw or "").strip()
+    if not raw:
+        return None, None
+    parts = raw.split()
+    if parts[0].isdigit():
+        return resolve_quran_surah(parts[0]), resolve_quran_reciter(" ".join(parts[1:]))
+    normalized = quran_normalize(raw)
+    candidates = []
+    for alias, number in QURAN_SURAH_ALIASES.items():
+        if normalized.startswith(alias):
+            candidates.append((len(alias), number, raw[len(alias):].strip()))
+    for index, (name, _) in enumerate(QURAN_SURAHS, 1):
+        name_key = quran_normalize(name)
+        if normalized.startswith(name_key):
+            candidates.append((len(name_key), index, raw[len(name):].strip()))
+    if candidates:
+        _, surah_number, rest = max(candidates, key=lambda item: item[0])
+        return surah_number, resolve_quran_reciter(rest)
+    if len(parts) >= 2:
+        return resolve_quran_surah(parts[0]), resolve_quran_reciter(" ".join(parts[1:]))
+    return resolve_quran_surah(raw), QURAN_DEFAULT_RECITER
+
+class QuranQueueItem:
+    def __init__(self, surah_number, reciter_key, requester_id):
+        self.surah_number = int(surah_number)
+        self.reciter_key = reciter_key
+        self.requester_id = int(requester_id)
+        self.name, self.ayah_count = QURAN_SURAHS[self.surah_number - 1]
+        self.ayah = 1
+
+    @property
+    def label(self):
+        return f"Surah {self.name} ({self.surah_number}) · {QURAN_RECITERS[self.reciter_key]['name']}"
+
+class QuranGuildPlayer:
+    def __init__(self, guild_id, text_channel):
+        self.guild_id = int(guild_id)
+        self.text_channel = text_channel
+        self.voice_client = None
+        self.queue = deque()
+        self.current = None
+        self.stopped = False
+
+    async def set_voice(self, voice_client):
+        self.voice_client = voice_client
+
+    async def enqueue(self, item):
+        self.queue.append(item)
+        if not self.voice_client or not self.voice_client.is_playing():
+            await self.play_next()
+
+    async def play_next(self, error=None):
+        if error:
+            try:
+                await self.text_channel.send(f"{economy_q_warning} Quran playback skipped a file: {clean_user_error(error)}")
+            except Exception:
+                pass
+        if self.stopped:
+            return
+        if not self.voice_client or not self.voice_client.is_connected():
+            quran_players.pop(self.guild_id, None)
+            return
+        if self.current and self.current.ayah > self.current.ayah_count:
+            try:
+                await self.text_channel.send(f"{economy_q_quran} Finished **{self.current.name}**.")
+            except Exception:
+                pass
+            self.current = None
+        if self.current is None:
+            if not self.queue:
+                try:
+                    await self.text_channel.send(f"{economy_q_accept} Quran queue finished. Leaving voice.")
+                    await self.voice_client.disconnect(force=True)
+                except Exception:
+                    pass
+                quran_players.pop(self.guild_id, None)
+                return
+            self.current = self.queue.popleft()
+            try:
+                await self.text_channel.send(
+                    f"{economy_q_quran} Now reciting **{self.current.name}** with **{QURAN_RECITERS[self.current.reciter_key]['name']}**.\n"
+                    f"Requested by <@{self.current.requester_id}>.",
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+            except Exception:
+                pass
+        url = quran_ayah_url(self.current.reciter_key, self.current.surah_number, self.current.ayah)
+        self.current.ayah += 1
+        before_options = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
+        try:
+            source = discord.FFmpegPCMAudio(url, before_options=before_options, options="-vn")
+            self.voice_client.play(source, after=lambda exc: asyncio.run_coroutine_threadsafe(self.play_next(exc), bot.loop))
+        except Exception as exc:
+            self.stopped = True
+            quran_players.pop(self.guild_id, None)
+            try:
+                await self.text_channel.send(
+                    f"{economy_q_warning} Quran playback could not start. Check FFmpeg/PyNaCl on the host: {clean_user_error(exc)}",
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+                await self.voice_client.disconnect(force=True)
+            except Exception:
+                pass
+
+async def get_quran_player(ctx):
+    if ctx.guild is None:
+        await ctx.send(f"{economy_q_denied} Quran voice playback only works in a server.")
+        return None
+    voice_state = getattr(ctx.author, "voice", None)
+    voice_channel = getattr(voice_state, "channel", None)
+    if voice_channel is None:
+        await ctx.send(f"{economy_q_voice} Join a voice channel first, then run the command again.")
+        return None
+    me = ctx.guild.me or ctx.guild.get_member(bot.user.id)
+    perms = voice_channel.permissions_for(me)
+    if not perms.connect or not perms.speak:
+        await ctx.send(f"{economy_q_denied} I need Connect and Speak permissions in {voice_channel.mention}.")
+        return None
+    player = quran_players.get(ctx.guild.id)
+    try:
+        voice_client = ctx.voice_client
+        if voice_client and voice_client.channel != voice_channel:
+            await voice_client.move_to(voice_channel)
+        elif voice_client is None:
+            voice_client = await voice_channel.connect(timeout=15, reconnect=True)
+    except Exception as exc:
+        await ctx.send(f"{economy_q_warning} I couldn't join voice. Make sure FFmpeg/PyNaCl are installed: {clean_user_error(exc)}")
+        return None
+    if player is None:
+        player = QuranGuildPlayer(ctx.guild.id, ctx.channel)
+        quran_players[ctx.guild.id] = player
+    player.text_channel = ctx.channel
+    await player.set_voice(voice_client)
+    return player
+
+def quran_queue_embed(ctx, player):
+    embed = standard_embed("Quran Queue", color=discord.Color(0x2A8FDA), icon=economy_q_quran_queue)
+    if player and player.current:
+        item = player.current
+        embed.add_field(
+            name="Now",
+            value=f"**{item.name}** · ayah **{max(1, item.ayah - 1)}/{item.ayah_count}**\nReciter: **{QURAN_RECITERS[item.reciter_key]['name']}**",
+            inline=False,
+        )
+    else:
+        embed.add_field(name="Now", value="Nothing is playing.", inline=False)
+    lines = []
+    if player:
+        for index, item in enumerate(list(player.queue)[:10], 1):
+            lines.append(f"`{index}` **{item.name}** · {QURAN_RECITERS[item.reciter_key]['name']} · <@{item.requester_id}>")
+    embed.add_field(name="Up Next", value=joined_embed_value(lines, empty="Queue is empty."), inline=False)
+    embed.set_footer(text="Use .quranplay <surah> [reciter], .quranskip, .quranpause, .quranresume, or .quranstop.")
+    return embed
+
+@bot.command(name="quranplay", aliases=["quran", "qplay", "recite"])
+async def quranplay(ctx, *, query: str = None):
+    """Plays Quran recitation in your voice channel. Example: .quranplay yaseen mishary"""
+    if not query:
+        return await send_command_input_ui(ctx, "quranplay", note="Enter a surah number/name and optional reciter. Example: .quranplay yaseen mishary")
+    surah_number, reciter_key = parse_quran_request(query)
+    if not surah_number:
+        return await ctx.send(f"{economy_q_surah} I couldn't find that surah. Try `.quranplay 36 mishary` or `.quranplay yaseen`.")
+    if not reciter_key:
+        return await ctx.send(f"{economy_q_denied} I couldn't find that reciter. Use `.reciters` to see options.")
+    player = await get_quran_player(ctx)
+    if player is None:
+        return
+    item = QuranQueueItem(surah_number, reciter_key, ctx.author.id)
+    was_idle = not player.current and not player.queue and (not player.voice_client or not player.voice_client.is_playing())
+    await player.enqueue(item)
+    if not was_idle:
+        await ctx.reply(
+            f"{economy_q_quran_queue} Queued **{item.name}** with **{QURAN_RECITERS[reciter_key]['name']}**.",
+            mention_author=False,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+@bot.command(name="surah", aliases=["playsurah"])
+async def surah_command(ctx, *, query: str = None):
+    """Shortcut for .quranplay."""
+    await quranplay.callback(ctx, query=query)
+
+@bot.command(name="quranstop", aliases=["qstop", "stoprecite"])
+async def quranstop(ctx):
+    player = quran_players.pop(ctx.guild.id, None) if ctx.guild else None
+    voice_client = ctx.voice_client if ctx.guild else None
+    if not player and not voice_client:
+        return await ctx.send(f"{economy_q_warning} No Quran recitation is active here.")
+    if player:
+        player.stopped = True
+        player.queue.clear()
+        player.current = None
+    try:
+        if voice_client and voice_client.is_connected():
+            if voice_client.is_playing() or voice_client.is_paused():
+                voice_client.stop()
+            await voice_client.disconnect(force=True)
+    except Exception:
+        pass
+    await ctx.send(f"{economy_q_accept} Quran playback stopped.")
+
+@bot.command(name="quranpause", aliases=["qpause"])
+async def quranpause(ctx):
+    if not ctx.voice_client or not ctx.voice_client.is_playing():
+        return await ctx.send(f"{economy_q_warning} Nothing is playing.")
+    ctx.voice_client.pause()
+    await ctx.send(f"{economy_q_timer_tick} Quran playback paused.")
+
+@bot.command(name="quranresume", aliases=["qresume"])
+async def quranresume(ctx):
+    if not ctx.voice_client or not ctx.voice_client.is_paused():
+        return await ctx.send(f"{economy_q_warning} Playback is not paused.")
+    ctx.voice_client.resume()
+    await ctx.send(f"{economy_q_accept} Quran playback resumed.")
+
+@bot.command(name="quranskip", aliases=["qskip"])
+async def quranskip(ctx):
+    if not ctx.voice_client or not (ctx.voice_client.is_playing() or ctx.voice_client.is_paused()):
+        return await ctx.send(f"{economy_q_warning} Nothing is playing.")
+    player = quran_players.get(ctx.guild.id) if ctx.guild else None
+    if player:
+        player.current = None
+    ctx.voice_client.stop()
+    await ctx.send(f"{economy_q_refresh} Skipped to the next queued surah.")
+
+@bot.command(name="quranqueue", aliases=["qqueue", "qq"])
+async def quranqueue(ctx):
+    player = quran_players.get(ctx.guild.id) if ctx.guild else None
+    await ctx.send(embed=quran_queue_embed(ctx, player), allowed_mentions=discord.AllowedMentions.none())
+
+@bot.command(name="reciters", aliases=["qreciters"])
+async def reciters(ctx):
+    lines = [
+        f"`{key}` - **{data['name']}**"
+        for key, data in QURAN_RECITERS.items()
+    ]
+    embed = standard_embed(
+        "Quran Reciters",
+        description="Use one after the surah, like `.quranplay yaseen mishary`.",
+        color=discord.Color(0x2A8FDA),
+        icon=economy_q_reciter,
+    )
+    embed.add_field(name="Available", value=joined_embed_value(lines), inline=False)
+    await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
 @bot.command()
 async def poll(ctx, *, args: str = None):
     """Create a poll. Examples: .poll Is this good? yes no 10m OR .poll Question | A | B | 10m"""
@@ -16622,7 +17065,7 @@ async def build_birthday_card_preview(member):
     status, saved_style = birthday_card_summary(member.id)
     card_prompt = image_prompt_for("birthday", birthday_card_prompt_for(member, saved_style))
     async with image_command_semaphore:
-        image_bytes, ext, provider = await generate_hf_image_bytes(card_prompt, width=1024, height=576)
+        image_bytes, ext, provider = await generate_image_bytes(card_prompt, width=1024, height=576)
     filename = f"birthday-card-{member.id}.{ext}"
     file = discord.File(BytesIO(image_bytes), filename=filename)
     description = f"{economy_q_birthday_cake} Current card: **{status}**"
