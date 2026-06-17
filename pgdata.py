@@ -148,6 +148,16 @@ def _create_tables(cur):
     """)
 
     cur.execute("""
+        CREATE TABLE IF NOT EXISTS birthday_delivery_log (
+            guild_id BIGINT NOT NULL,
+            user_id BIGINT NOT NULL,
+            date_key TEXT NOT NULL,
+            sent_at TIMESTAMP NOT NULL DEFAULT NOW(),
+            PRIMARY KEY (guild_id, user_id, date_key)
+        )
+    """)
+
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS afk_users (
             user_id BIGINT PRIMARY KEY,
             reason TEXT,
@@ -2099,6 +2109,53 @@ def remove_birthday(user_id):
         conn.close()
     except Exception:
         pass
+
+def mark_birthday_sent_once(guild_id, user_id, date_key):
+    _ensure_ready()
+    if not pg_ready:
+        return False
+    try:
+        conn = pg_conn()
+        if conn is None:
+            return False
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO birthday_delivery_log (guild_id, user_id, date_key)
+            VALUES (%s, %s, %s)
+            ON CONFLICT DO NOTHING
+            RETURNING sent_at
+            """,
+            (int(guild_id), int(user_id), str(date_key)),
+        )
+        inserted = cur.fetchone() is not None
+        conn.commit()
+        cur.close()
+        conn.close()
+        return inserted
+    except Exception:
+        return False
+
+def clear_birthday_sent_marker(guild_id, user_id, date_key):
+    _ensure_ready()
+    if not pg_ready:
+        return False
+    try:
+        conn = pg_conn()
+        if conn is None:
+            return False
+        cur = conn.cursor()
+        cur.execute(
+            "DELETE FROM birthday_delivery_log WHERE guild_id = %s AND user_id = %s AND date_key = %s",
+            (int(guild_id), int(user_id), str(date_key)),
+        )
+        changed = cur.rowcount > 0
+        conn.commit()
+        cur.close()
+        conn.close()
+        return changed
+    except Exception:
+        return False
 
 def load_birthday_cards():
     """Load custom birthday card prompts. Returns dict {user_id: prompt}."""

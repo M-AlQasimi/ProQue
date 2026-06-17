@@ -165,6 +165,7 @@ from economy import (
 from pgdata import (
     add_guild_activity_counts,
     add_message_activity_events,
+    clear_birthday_sent_marker,
     clear_away_mentions,
     clear_guild_activity_counts,
     delete_guild_activity_channel,
@@ -206,6 +207,7 @@ from pgdata import (
     load_watchlist,
     pg_init,
     record_command_usage,
+    mark_birthday_sent_once,
     remove_afk_user,
     remove_active_poll,
     remove_active_timer,
@@ -250,6 +252,7 @@ from pgdata import (
 last_message_time = 0
 birthday_task = None
 activity_task = None
+recovery_watchdog_task = None
 presence_task = None
 app = Flask('')
 LONG_HELP_VIEW_TIMEOUT = 24 * 60 * 60
@@ -1536,6 +1539,7 @@ active_polls = load_active_polls()
 active_giveaways = load_active_giveaways()
 active_alarms = load_active_alarms()
 runtime_state_restored = False
+runtime_recovery_last_status = {}
 user_mentions = {}
 away_reaction_callouts = {}
 activity_buffer = Counter()
@@ -2798,9 +2802,41 @@ async def cleanup_stale_game_messages():
             except Exception as e:
                 print(f"Stale game cleanup skipped channel {channel.id}: {type(e).__name__} - {e}")
 
+async def run_recovery_pass(reason="watchdog"):
+    status = {
+        "reason": reason,
+        "ok": True,
+        "updated_at": datetime.now(timezone.utc),
+        "error": None,
+    }
+    try:
+        await restore_persistent_runtime_state()
+        await restore_message_events()
+        try:
+            await economy_module.restore_lottery_panels()
+            await economy_module.catch_up_due_lotteries(reason)
+            await economy_module.catch_up_due_economy_events(reason)
+        except Exception as exc:
+            status["ok"] = False
+            status["error"] = f"economy recovery skipped: {clean_user_error(exc)}"
+            print(f"Economy recovery pass skipped ({reason}): {type(exc).__name__} - {exc}")
+    except Exception as exc:
+        status["ok"] = False
+        status["error"] = clean_user_error(exc)
+        print(f"Recovery pass failed ({reason}): {type(exc).__name__} - {exc}")
+    runtime_recovery_last_status.update(status)
+    return status
+
+async def recovery_watchdog_loop():
+    await bot.wait_until_ready()
+    await asyncio.sleep(90)
+    while not bot.is_closed():
+        await run_recovery_pass("watchdog")
+        await asyncio.sleep(300)
+
 @bot.event
 async def on_ready():
-    global birthday_task, activity_task, presence_task, runtime_state_restored, stale_game_messages_cleaned
+    global birthday_task, activity_task, recovery_watchdog_task, presence_task, runtime_state_restored, stale_game_messages_cleaned
     print(f'Pro𝚀𝚞𝚎 is online as {bot.user}')
     try:
         await load_maintenance_mode()
@@ -2815,6 +2851,8 @@ async def on_ready():
         birthday_task = asyncio.create_task(birthday_check_loop())
     if activity_task is None or activity_task.done():
         activity_task = asyncio.create_task(activity_report_loop())
+    if recovery_watchdog_task is None or recovery_watchdog_task.done():
+        recovery_watchdog_task = asyncio.create_task(recovery_watchdog_loop())
     if not presence_rotation_task.is_running():
         presence_rotation_task.start()
     asyncio.create_task(refresh_all_invite_caches())
@@ -2832,8 +2870,7 @@ async def on_ready():
     except Exception as e:
         print(f"𝚀𝚞𝚎wo system not loaded: {e}")
     if not runtime_state_restored:
-        await restore_persistent_runtime_state()
-        await restore_message_events()
+        await run_recovery_pass("startup")
         await restore_active_game_sessions()
         runtime_state_restored = True
     if not stale_game_messages_cleaned:
@@ -2844,67 +2881,69 @@ async def on_ready():
 
 async def birthday_check_loop():
     await bot.wait_until_ready()
-    already_sent = set()
 
     while not bot.is_closed():
         now = datetime.now(timezone.utc)
         today_str = now.strftime("%d/%m")
+        date_key = now.strftime("%Y-%m-%d")
 
-        if now.hour == 0 and now.minute == 0:
-            for user_id, data in list(birthdays.items()):
-                if data["date"] != today_str:
+        for user_id, data in list(birthdays.items()):
+            if data["date"] != today_str:
+                continue
+            for guild in bot.guilds:
+                config = guild_birthday_channels.get(guild.id)
+                if not config:
                     continue
-                for guild in bot.guilds:
-                    member = guild.get_member(int(user_id))
-                    if member is None:
-                        try:
-                            member = await guild.fetch_member(int(user_id))
-                        except (discord.Forbidden, discord.NotFound, discord.HTTPException):
-                            member = None
-                    if member is None:
-                        continue
-                    sent_key = (guild.id, int(user_id), now.date())
-                    if sent_key in already_sent:
-                        continue
-                    config = guild_birthday_channels.get(guild.id)
-                    if not config:
-                        continue
-                    channel = guild.get_channel(config["channel_id"]) or bot.get_channel(config["channel_id"])
-                    if not channel:
-                        continue
-                    birthday_file = None
-                    birthday_image_url = None
-                    custom_prompt = birthday_card_prompts.get(str(user_id))
-                    if image_generation_available():
-                        try:
-                            card_prompt = image_prompt_for("birthday", birthday_card_prompt_for(member, custom_prompt))
-                            image_bytes, ext, _ = await generate_image_bytes(card_prompt, width=1024, height=576)
-                            birthday_filename = f"birthday-{member.id}.{ext}"
-                            birthday_file = discord.File(BytesIO(image_bytes), filename=birthday_filename)
-                            birthday_image_url = f"attachment://{birthday_filename}"
-                        except Exception as e:
-                            print(f"Birthday card generation failed for {member.id}: {type(e).__name__} - {e}")
-                    embed = discord.Embed(
-                        title=f"{economy_q_birthday_cake} Birthday Drop {economy_q_birthday_balloons}",
-                        description=(
-                            f"{economy_q_confetti} Happy birthday, {member.mention}!\n"
-                            f"{economy_q_gift} Hope your day is stacked with wins, cake, and clean vibes."
-                        ),
-                        color=discord.Color.from_rgb(42, 143, 218),
-                        timestamp=now,
-                    )
-                    if birthday_image_url:
-                        embed.set_image(url=birthday_image_url)
-                    embed.set_footer(text="Pro𝚀𝚞𝚎 birthday alert")
-                    send_kwargs = {
-                        "content": member.mention,
-                        "embed": embed,
-                        "allowed_mentions": discord.AllowedMentions(everyone=False, users=[member], roles=False),
-                    }
-                    if birthday_file:
-                        send_kwargs["file"] = birthday_file
+                member = guild.get_member(int(user_id))
+                if member is None:
+                    try:
+                        member = await guild.fetch_member(int(user_id))
+                    except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+                        member = None
+                if member is None:
+                    continue
+                channel = guild.get_channel(config["channel_id"]) or bot.get_channel(config["channel_id"])
+                if not channel:
+                    continue
+                should_send = await asyncio.to_thread(mark_birthday_sent_once, guild.id, int(user_id), date_key)
+                if not should_send:
+                    continue
+                birthday_file = None
+                birthday_image_url = None
+                custom_prompt = birthday_card_prompts.get(str(user_id))
+                if image_generation_available():
+                    try:
+                        card_prompt = image_prompt_for("birthday", birthday_card_prompt_for(member, custom_prompt))
+                        image_bytes, ext, _ = await generate_image_bytes(card_prompt, width=1024, height=576)
+                        birthday_filename = f"birthday-{member.id}.{ext}"
+                        birthday_file = discord.File(BytesIO(image_bytes), filename=birthday_filename)
+                        birthday_image_url = f"attachment://{birthday_filename}"
+                    except Exception as e:
+                        print(f"Birthday card generation failed for {member.id}: {type(e).__name__} - {e}")
+                embed = discord.Embed(
+                    title=f"{economy_q_birthday_cake} Birthday Drop {economy_q_birthday_balloons}",
+                    description=(
+                        f"{economy_q_confetti} Happy birthday, {member.mention}!\n"
+                        f"{economy_q_gift} Hope your day is stacked with wins, cake, and clean vibes."
+                    ),
+                    color=discord.Color.from_rgb(42, 143, 218),
+                    timestamp=now,
+                )
+                if birthday_image_url:
+                    embed.set_image(url=birthday_image_url)
+                embed.set_footer(text="Pro𝚀𝚞𝚎 birthday alert")
+                send_kwargs = {
+                    "content": member.mention,
+                    "embed": embed,
+                    "allowed_mentions": discord.AllowedMentions(everyone=False, users=[member], roles=False),
+                }
+                if birthday_file:
+                    send_kwargs["file"] = birthday_file
+                try:
                     await channel.send(**send_kwargs)
-                    already_sent.add(sent_key)
+                except Exception as e:
+                    print(f"Birthday announcement failed for guild {guild.id} user {member.id}: {type(e).__name__} - {e}")
+                    await asyncio.to_thread(clear_birthday_sent_marker, guild.id, member.id, date_key)
 
         await asyncio.sleep(60)
 
@@ -8549,18 +8588,11 @@ async def jobs_command(ctx, action: str = None):
 @bot.command(name="recover", aliases=["restorestate", "recovery"])
 @is_admin_power()
 async def recover_command(ctx):
-    """Manually reruns persistent state recovery for games, timers, polls, and lottery panels."""
+    """Manually reruns persistent state recovery for games, timers, polls, events, and lottery panels."""
     async def recover_job():
-        await restore_persistent_runtime_state()
+        await run_recovery_pass("manual recovery")
         restored, expired = await restore_active_game_sessions()
-        try:
-            await economy_module.restore_lottery_panels()
-            await economy_module.catch_up_due_lotteries("manual recovery")
-            await economy_module.catch_up_due_economy_events("manual recovery")
-            lottery_text = "lottery panels/events refreshed"
-        except Exception as exc:
-            lottery_text = f"lottery refresh skipped: {clean_user_error(exc)}"
-        return f"Recovered games: {restored} restored, {expired} expired; {lottery_text}."
+        return f"Recovered timers, polls, giveaways, alarms, message events, lotteries, economy events, and games: {restored} restored, {expired} expired."
 
     job_id = schedule_background_job("Manual recovery", ctx, recover_job)
     await ctx.send(
