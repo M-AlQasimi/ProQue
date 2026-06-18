@@ -6077,8 +6077,17 @@ async def ensure_db_ready(ctx, force=False):
     await db_init_task
     db_initializing = False
 
-    if not db_ready or force:
-        return bool(db_ready)
+    if not db_ready:
+        try:
+            await ctx.send(
+                f"{Q_WARNING} 𝚀𝚞𝚎wo data is waking up. Try again in a few seconds.",
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        except Exception:
+            pass
+        return False
+    if force:
+        return True
     return await ensure_economy_channel_allowed(ctx)
 
 # =====================
@@ -8319,7 +8328,10 @@ async def db_keepalive_loop():
     await bot.wait_until_ready()
     while not bot.is_closed():
         try:
-            await asyncio.to_thread(ping_db)
+            if db_ready:
+                await asyncio.to_thread(ping_db)
+            else:
+                await asyncio.to_thread(init_db)
         except Exception as e:
             print(f"Database keep-alive loop error: {type(e).__name__} - {e}")
         await asyncio.sleep(240)
