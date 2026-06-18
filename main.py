@@ -339,6 +339,23 @@ def get_prefix(bot, message):
 bot = MyBot(command_prefix=get_prefix, intents=intents, case_insensitive=True)
 bot.remove_command("help")
 print(f"Bot is starting with intents: {bot.intents}")
+economy_setup_recovery_lock = asyncio.Lock()
+ECONOMY_RECOVERY_COMMAND_HINTS = {
+    "bal", "balance", "wallet", "cash", "bank", "safe", "deposit", "withdraw",
+    "profile", "prof", "level", "lvl", "inventory", "inv", "items",
+    "shop", "buytick", "tickets", "mytickets", "entries", "daily", "weekly", "monthly",
+    "cf", "flip", "coinflip", "roulette", "roul", "slots", "slot", "blackjack", "bj",
+    "scratch", "tower", "towers", "vault", "memory", "mem", "cardladder", "lockpick", "lp",
+    "heist", "diceduel", "dice", "cases", "plinko", "luckynumber", "ln", "jackpotspin", "jps",
+    "dungeon", "ms", "minesweeper", "wheel", "give", "pay", "lb", "leaderboard", "rank",
+    "gamestats", "gstats", "achievements", "badges", "streaks", "quests", "guide",
+    "career", "jobs", "work", "passive", "rob", "robsettings",
+    "lottery", "editlottery", "stoplottery", "lotterystats", "lotterypot",
+    "econhelp", "economyhelp", "quewohelp", "ehelp", "explain",
+    "qstats", "economyaudit", "econaudit", "abuseaudit", "riskprofile",
+    "add", "remove", "move", "addtick", "removetick", "movetick", "settick",
+    "setquesos", "addxp", "removexp", "addlvl", "removelvl", "setlvl",
+}
 
 async def get_http_session():
     session = getattr(bot, "proque_http_session", None)
@@ -1714,6 +1731,40 @@ def looks_like_command_message(message):
     if content.startswith(prefix):
         return True
     return False
+
+def command_word_from_message(message):
+    content = str(getattr(message, "content", "") or "").strip()
+    if not content:
+        return ""
+    guild_id = message.guild.id if message.guild else 0
+    prefix = guild_prefixes.get(guild_id, DEFAULT_PREFIX)
+    if not content.startswith(prefix):
+        return ""
+    without_prefix = content[len(prefix):].lstrip()
+    if not without_prefix:
+        return ""
+    return without_prefix.split(maxsplit=1)[0].casefold()
+
+async def try_recover_economy_commands_for_message(message):
+    command_word = command_word_from_message(message)
+    if command_word not in ECONOMY_RECOVERY_COMMAND_HINTS:
+        return False
+    async with economy_setup_recovery_lock:
+        if get_command_case_insensitive(command_word):
+            return True
+        try:
+            await economy_setup(bot, send_log)
+        except Exception as exc:
+            print(f"𝚀𝚞𝚎wo self-heal setup failed for {command_word}: {type(exc).__name__} - {exc}")
+            try:
+                await message.channel.send(
+                    f"{economy_q_warning} 𝚀𝚞𝚎wo is reconnecting to its data. Try again in a few seconds.",
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+            except Exception:
+                pass
+            return False
+    return get_command_case_insensitive(command_word) is not None
 
 async def invoke_prefix_command_from_message(message, command_name, args=None):
     command = get_command_case_insensitive(command_name)
@@ -6524,6 +6575,8 @@ async def on_message(message):
 
         track_message_activity(message)
         ctx = await bot.get_context(message)
+        if not ctx.valid and await try_recover_economy_commands_for_message(message):
+            ctx = await bot.get_context(message)
         active_speak_dm = (
             message.guild is None
             and has_super_owner_power(message.author)

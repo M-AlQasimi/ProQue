@@ -16399,8 +16399,17 @@ async def setup(bot_ref, log_callback=None):
     for command in economy_commands:
         if bot.get_command(command.name):
             continue
-        command.add_check(quewo_command_cooldown_check)
-        bot.add_command(command)
+        conflicting_aliases = [alias for alias in getattr(command, "aliases", []) or [] if bot.get_command(alias)]
+        if conflicting_aliases:
+            command.aliases = [alias for alias in command.aliases if alias not in conflicting_aliases]
+            print(f"𝚀𝚞𝚎wo command {command.name} skipped conflicting alias(es): {', '.join(conflicting_aliases)}")
+        try:
+            if not getattr(command, "_quewo_cooldown_check_added", False):
+                command.add_check(quewo_command_cooldown_check)
+                command._quewo_cooldown_check_added = True
+            bot.add_command(command)
+        except Exception as e:
+            print(f"𝚀𝚞𝚎wo command registration skipped for {command.name}: {type(e).__name__} - {e}")
 
     try:
         bot.add_view(ClaimReminderControlView())
