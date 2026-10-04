@@ -279,6 +279,7 @@ BULK_COMMAND_CONCURRENCY_LIMIT = int(os.getenv("PROQUE_BULK_COMMAND_CONCURRENCY"
 AI_COMMAND_CONCURRENCY_LIMIT = int(os.getenv("PROQUE_AI_COMMAND_CONCURRENCY", "4"))
 IMAGE_COMMAND_CONCURRENCY_LIMIT = int(os.getenv("PROQUE_IMAGE_CONCURRENCY", "2"))
 DB_WORKER_LIMIT = int(os.getenv("PROQUE_DB_WORKERS", "24"))
+PROGRESS_REACTIONS_ENABLED = os.getenv("PROQUE_PROGRESS_REACTIONS", "").lower() in {"1", "true", "yes", "on"}
 
 command_semaphore = asyncio.Semaphore(COMMAND_CONCURRENCY_LIMIT)
 heavy_command_semaphore = asyncio.Semaphore(HEAVY_COMMAND_CONCURRENCY_LIMIT)
@@ -2533,6 +2534,8 @@ async def safe_send(destination, *args, **kwargs):
     return await destination.send(*args, **kwargs)
 
 async def safe_add_reaction(message, emoji):
+    if not PROGRESS_REACTIONS_ENABLED:
+        return
     try:
         await message.add_reaction(reaction_emoji(emoji))
     except discord.HTTPException:
@@ -2555,6 +2558,8 @@ async def safe_edit_message(message, *args, **kwargs):
         return False
 
 async def safe_remove_reaction(message, emoji, member):
+    if not PROGRESS_REACTIONS_ENABLED:
+        return
     try:
         await message.remove_reaction(emoji, member)
     except discord.HTTPException:
@@ -2564,7 +2569,7 @@ def run():
     app.run(host='0.0.0.0', port=8080)
 
 def keep_alive():
-    t = Thread(target=run)
+    t = Thread(target=run, daemon=True)
     t.start()
 
 def super_owner_in_guild(guild):
@@ -2919,7 +2924,7 @@ async def on_ready():
     try:
         await economy_setup(bot, send_log)
         economy_command_names = [
-            "bal", "bank", "tutorial", "recommendgame", "career", "jobs", "work", "robsettings", "quewochannel", "levelupchannel", "rob", "profile", "inventory", "settheme", "quests", "dailychallenge", "streaks", "guide", "onboard", "shop", "claimreminders", "cooldowns", "transactions", "limits", "lottery", "editlottery", "stoplottery", "lotterystats", "buytick",
+            "bal", "bank", "tutorial", "recommendgame", "career", "jobs", "work", "robsettings", "quewochannel", "levelupchannel", "rob", "profile", "inventory", "settheme", "quests", "dailychallenge", "streaks", "guide", "onboard", "shop", "cooldowns", "transactions", "limits", "lottery", "editlottery", "stoplottery", "lotterystats", "buytick",
             "daily", "weekly", "monthly", "cf", "roulette", "slots",
             "blackjack", "scratch", "tower", "vault", "memory", "cardladder", "lockpick", "heist", "diceduel", "cases", "plinko", "luckynumber", "jackpotspin", "dungeon", "ms", "wheel", "give", "lb", "gamestats", "achievements", "setbadge", "gamebalance", "gamehistory", "seasonpass",
             "qstats", "economyaudit", "abuseaudit", "season", "endseason", "add", "remove", "move", "addtick", "removetick", "movetick", "settick", "lotterypot", "setquesos", "econhelp", "explain"
@@ -5233,7 +5238,7 @@ async def handle_returning_status(message):
 AI_SAFE_COMMANDS = {
     "help", "commands", "cmds", "games", "howtoplay", "how", "rules",
     "bal", "balance", "cash", "bank", "safe", "vaultcash", "deposit", "withdraw", "tutorial", "tutorialmode", "tips", "recommendgame", "recgame", "whatgame", "suggestgame", "career", "job", "profession", "workprofile", "jobs", "careers", "careerpaths", "joblist", "apply", "work", "shift", "worktask", "clockin", "profile", "level", "lvl", "inventory", "inv",
-    "shop", "claimreminders", "claimreminder", "reminders", "dmreminders", "cooldowns", "cds", "quests", "transactions", "tx", "lb",
+    "shop", "cooldowns", "cds", "quests", "transactions", "tx", "lb",
     "leaderboard", "gamestats", "achievements", "gamebalance", "gamehistory",
     "season", "seasonpass", "monthlychallenges", "pass", "spass", "limits", "riskprofile", "risk", "userrisk", "riskcheck", "economyhealth", "ecohealth", "moneyhealth", "supply",
     "messages", "msgstats", "messagestats", "mstats",
@@ -5349,7 +5354,6 @@ def extract_ai_command_request(question, guild=None):
         (("games", "game list", "what can we play", "play list"), "games", ""),
         (("shop", "store", "what can i buy"), "shop", ""),
         (("inventory", "my items", "stuff i own", "what do i own"), "inventory", ""),
-        (("claim reminders", "dm reminders", "remind me to claim", "claim reminder", "turn claim reminders"), "claimreminders", ""),
         (("cooldowns", "cooldown", "what can i claim", "can i claim"), "cooldowns", ""),
         (("quests", "quest", "tasks", "missions"), "quests", ""),
         (("leaderboard", "lb", "ranking", "rankings", "richest"), "lb", ""),
@@ -6973,7 +6977,7 @@ HELP_CATEGORIES = {
     ],
     "Progress": [
         "lb", "gamestats", "achievements", "setbadge", "gamehistory", "season", "seasonpass",
-        "transactions", "limits", "riskprofile", "cooldowns", "streaks", "claimreminders",
+        "transactions", "limits", "riskprofile", "cooldowns", "streaks",
     ],
     "Social": [
         "hug", "pat", "slap", "bonk", "kiss", "bite", "poke", "wave", "cry", "kill",
@@ -7068,7 +7072,7 @@ HELP_CATEGORY_DESCRIPTIONS = {
     "Start Here": "Main menus and beginner guides.",
     "𝚀𝚞𝚎wo": "Money, careers, claims, shop, profile, lottery, and transfers.",
     "Games": "Gambling, skill games, solo games, and robbing.",
-    "Progress": "Leaderboards, achievements, seasons, history, limits, and reminders.",
+    "Progress": "Leaderboards, achievements, seasons, history, limits, and cooldowns.",
     "Social": "Party games, PvP games, flags, chess, and picker.",
     "Tools": "Timers, polls, calculator, definitions, translation, colors, and user lookup.",
     "Snipes": "Deleted messages, edited messages, and removed reactions in one clean place.",
@@ -7935,7 +7939,7 @@ async def off_command(ctx, *, reason: str = None):
     await status.edit(
         content=(
             f"{economy_q_accept} Maintenance mode is **on**.\n"
-            f"Public commands and AI replies are paused. Background reminders, lotteries, events, logs, and recovery loops keep running.\n"
+            f"Public commands and AI replies are paused. Background lotteries, events, logs, and recovery loops keep running.\n"
             f"Nickname updated in **{changed_nicks}/{len(bot.guilds)}** server(s). Use `.on` when ready."
         ),
         allowed_mentions=discord.AllowedMentions.none(),
@@ -7973,7 +7977,7 @@ async def panic_command(ctx, *, reason: str = None):
     await ctx.send(
         f"{economy_q_warning} Panic mode is **on**.\n"
         "Risky 𝚀𝚞𝚎wo actions are locked: gambling, robbing, shop/buy, claims/work, money moves, ticket edits, and lottery pot edits.\n"
-        "Normal moderation, help, logs, diagnostics, reminders, lotteries, and recovery loops keep running. Use `.unpanic` when it is clear.",
+        "Normal moderation, help, logs, diagnostics, lotteries, and recovery loops keep running. Use `.unpanic` when it is clear.",
         allowed_mentions=discord.AllowedMentions.none(),
     )
 
@@ -17575,13 +17579,7 @@ async def lists(ctx):
 
     await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
-def home():
-    return "Bot alive"
-
-def run_flask():
-    app.run(host="0.0.0.0", port=8080)
-
-Thread(target=run_flask).start()
+keep_alive()
 
 def run_bot_with_retry():
     token = os.getenv("DISCORD_TOKEN")
