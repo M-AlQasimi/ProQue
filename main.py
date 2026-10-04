@@ -1638,7 +1638,12 @@ async def cached_lottery_sticky_config(guild_id):
         cached = sticky_lottery_config_cache.get(guild_id)
         if cached and cached[0] > now:
             return cached[1]
-        config = await asyncio.to_thread(economy_get_lottery_config, guild_id)
+        try:
+            config = await asyncio.to_thread(economy_get_lottery_config, guild_id)
+        except Exception as exc:
+            print(f"Lottery sticky config unavailable for guild {guild_id}: {type(exc).__name__} - {exc}")
+            sticky_lottery_config_cache[guild_id] = (now + 120, None)
+            return None
         sticky_lottery_config_cache[guild_id] = (now + 45, config)
         return config
 
@@ -1668,14 +1673,17 @@ async def schedule_channel_sticky_panels(message):
             lambda: refresh_message_event_message(guild_id, force_repost=True),
         )
 
-    lottery_config = await cached_lottery_sticky_config(guild_id)
-    if lottery_config and int(lottery_config.get("channel_id") or 0) == channel_id and lottery_config.get("message_id"):
-        schedule_sticky_panel(
-            "lottery",
-            guild_id,
-            channel_id,
-            lambda: economy_module.refresh_lottery_message(message.guild, None, force_repost=True),
-        )
+    try:
+        lottery_config = await cached_lottery_sticky_config(guild_id)
+        if lottery_config and int(lottery_config.get("channel_id") or 0) == channel_id and lottery_config.get("message_id"):
+            schedule_sticky_panel(
+                "lottery",
+                guild_id,
+                channel_id,
+                lambda: economy_module.refresh_lottery_message(message.guild, None, force_repost=True),
+            )
+    except Exception as exc:
+        print(f"Lottery sticky scheduling skipped for guild {guild_id}: {type(exc).__name__} - {exc}")
 ACTIVITY_NEAR_DUPLICATE_RATIO = 0.88
 ACTIVITY_RECENT_MESSAGE_LIMIT = 8
 TRACKED_MESSAGE_ACTIVITY_ID_LIMIT = 10000
