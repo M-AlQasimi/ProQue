@@ -254,6 +254,7 @@ birthday_task = None
 activity_task = None
 recovery_watchdog_task = None
 presence_task = None
+startup_housekeeping_task = None
 app = Flask('')
 LONG_HELP_VIEW_TIMEOUT = 24 * 60 * 60
 LONG_SETUP_VIEW_TIMEOUT = 60 * 60
@@ -1356,6 +1357,14 @@ def clean_user_error(error, fallback="Something went wrong."):
         return compact_ai_text(cleaned, 220)
     return cleaned
 
+def is_harmless_discord_error(error):
+    """Expected Discord race conditions should not produce alarming error reports."""
+    original = getattr(error, "original", error)
+    if not isinstance(original, discord.HTTPException):
+        return False
+    text = str(original).casefold()
+    return getattr(original, "code", None) in {10008, 10003} or "unknown message" in text or "unknown channel" in text
+
 def ai_exception_message(exc):
     if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
         return "AI took too long to answer, so I stopped waiting. Try again in a bit."
@@ -1582,9 +1591,6 @@ help_render_cache = {}
 games_render_cache = {}
 ai_knowledge_cache = {}
 HELP_RENDER_CACHE_TTL = 300
-daily_cooldown = {}
-weekly_cooldown = {}
-monthly_cooldown = {}
 chat_xp_memory = {}
 activity_recent_messages = {}
 ACTIVITY_DUPLICATE_WINDOW_SECONDS = 10 * 60
@@ -2898,9 +2904,28 @@ async def recovery_watchdog_loop():
         await run_recovery_pass("watchdog")
         await asyncio.sleep(300)
 
+async def delayed_startup_housekeeping():
+    """Spread non-essential startup work so the gateway stays responsive."""
+    global runtime_state_restored, stale_game_messages_cleaned
+    await bot.wait_until_ready()
+    await asyncio.sleep(20)
+    if not runtime_state_restored:
+        await run_recovery_pass("startup")
+        await restore_active_game_sessions()
+        runtime_state_restored = True
+    await asyncio.sleep(20)
+    try:
+        await refresh_all_invite_caches()
+    except Exception as exc:
+        print(f"Startup invite cache refresh skipped: {type(exc).__name__} - {exc}")
+    await asyncio.sleep(20)
+    if not stale_game_messages_cleaned:
+        stale_game_messages_cleaned = True
+        await cleanup_stale_game_messages()
+
 @bot.event
 async def on_ready():
-    global birthday_task, activity_task, recovery_watchdog_task, presence_task, runtime_state_restored, stale_game_messages_cleaned
+    global birthday_task, activity_task, recovery_watchdog_task, presence_task, startup_housekeeping_task
     print(f'Pro𝚀𝚞𝚎 is online as {bot.user}')
     try:
         await load_maintenance_mode()
@@ -2919,7 +2944,6 @@ async def on_ready():
         recovery_watchdog_task = asyncio.create_task(recovery_watchdog_loop())
     if not presence_rotation_task.is_running():
         presence_rotation_task.start()
-    asyncio.create_task(refresh_all_invite_caches())
     # Load economy cog
     try:
         await economy_setup(bot, send_log)
@@ -2933,14 +2957,9 @@ async def on_ready():
         print(f"𝚀𝚞𝚎wo system loaded ({len(loaded_economy_commands)}/{len(economy_command_names)} commands)")
     except Exception as e:
         print(f"𝚀𝚞𝚎wo system not loaded: {e}")
-    if not runtime_state_restored:
-        await run_recovery_pass("startup")
-        await restore_active_game_sessions()
-        runtime_state_restored = True
-    if not stale_game_messages_cleaned:
-        stale_game_messages_cleaned = True
-        asyncio.create_task(cleanup_stale_game_messages())
-    await sync_slash_commands_once()
+    if startup_housekeeping_task is None or startup_housekeeping_task.done():
+        startup_housekeeping_task = asyncio.create_task(delayed_startup_housekeeping())
+    print("Slash command sync skipped at startup; use `.slashsync` only when needed.")
 
 
 async def birthday_check_loop():
@@ -6953,6 +6972,9 @@ async def on_command_error(ctx, error):
     else:
         if isinstance(error, commands.CommandInvokeError) and getattr(error, "original", None):
             error = error.original
+        if is_harmless_discord_error(error):
+            print(f"Benign Discord race in {ctx.command}: {clean_user_error(error)}")
+            return
         print(f"Unexpected error in {ctx.command}: {type(error).__name__} - {error}")
         await notify_superowner_error(ctx, error)
         if ctx.guild is None:

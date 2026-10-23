@@ -34,8 +34,6 @@ PASSIVE_REWARD_MULTIPLIER = 0.95
 COOLDOWN_SECS = 10
 LONG_HELP_VIEW_TIMEOUT = 24 * 60 * 60
 LONG_SETUP_VIEW_TIMEOUT = 60 * 60
-DAILY_LOSS_WARNING_RATIO = 0.70
-DAILY_LOSS_HARD_RATIO = 0.85
 STREAK_BASE_BONUS = 0.01
 STREAK_STEP_BONUS = 0.0025
 BLACKJACK_DEALER_STAND_ON_16_CHANCE = 0.25
@@ -487,8 +485,12 @@ economy_log_callback = None
 lottery_task = None
 db_keepalive_task = None
 economy_event_task = None
+economy_startup_restore_task = None
 lottery_view_registered = False
 lottery_status_messages = {}
+lottery_refresh_tasks = {}
+lottery_refresh_requests = {}
+LOTTERY_REFRESH_DEBOUNCE_SECONDS = 1.5
 
 # --- Cooldown tracking ---
 _cooldowns = {}  # {(user_id, command): timestamp}
@@ -2386,51 +2388,9 @@ def get_lottery_user_spend(guild_id, user_id):
     conn.close()
     return row
 
-def get_daily_loss_amount(user_id):
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT amount FROM economy_daily_losses WHERE user_id = %s AND loss_date = CURRENT_DATE",
-        (user_id,)
-    )
-    row = cur.fetchone()
-    cur.close()
-    conn.close()
-    return int((row or {}).get("amount", 0) or 0)
-
-def daily_loss_status(user_id, balance, proposed_loss=0):
-    lost_today = get_daily_loss_amount(user_id)
-    balance = max(0, int(balance or 0))
-    proposed_loss = max(0, int(proposed_loss or 0))
-    bankroll = max(1, balance + lost_today)
-    hard_limit = int(bankroll * DAILY_LOSS_HARD_RATIO)
-    warning_limit = int(bankroll * DAILY_LOSS_WARNING_RATIO)
-    after_loss = lost_today + proposed_loss
-    remaining = max(0, hard_limit - lost_today)
-    return {
-        "lost_today": lost_today,
-        "bankroll": bankroll,
-        "hard_limit": hard_limit,
-        "warning_limit": warning_limit,
-        "after_loss": after_loss,
-        "remaining": remaining,
-        "blocked": after_loss > hard_limit,
-        "warn": after_loss >= warning_limit,
-    }
-
 async def check_daily_loss_limit(ctx, data, amount):
-    status = await asyncio.to_thread(daily_loss_status, ctx.author.id, int(data["balance"]), int(amount))
-    if status["blocked"]:
-        await ctx.send(
-            f"{Q_WARNING} Daily safety limit reached. You can risk up to **{format_balance(status['remaining'])}** more today.\n"
-            f"Lost today: **{format_balance(status['lost_today'])}** / limit **{format_balance(status['hard_limit'])}**."
-        )
-        return False
-    if status["warn"]:
-        await ctx.send(
-            f"{Q_WARNING} Warning: this could put your daily gambling losses near the safety limit "
-            f"(**{format_balance(status['after_loss'])}** / **{format_balance(status['hard_limit'])}**)."
-        )
+    # Daily loss totals remain available for historical reporting, but they no
+    # longer limit, warn about, or block a player's gambling.
     return True
 
 def get_economy_stats():
@@ -3132,12 +3092,24 @@ def lottery_panel_url(guild, config):
 def schedule_lottery_refresh(guild, config=None):
     if not guild:
         return
+
+    guild_id = int(guild.id)
+    lottery_refresh_requests[guild_id] = (guild, config)
+    active_task = lottery_refresh_tasks.get(guild_id)
+    if active_task and not active_task.done():
+        return
+
     async def runner():
         try:
-            await refresh_lottery_message(guild, config)
+            await asyncio.sleep(LOTTERY_REFRESH_DEBOUNCE_SECONDS)
+            queued_guild, queued_config = lottery_refresh_requests.pop(guild_id, (guild, config))
+            await refresh_lottery_message(queued_guild, queued_config)
         except Exception as e:
             print(f"Lottery background refresh failed: {type(e).__name__} - {e}")
-    asyncio.create_task(runner())
+        finally:
+            lottery_refresh_tasks.pop(guild_id, None)
+
+    lottery_refresh_tasks[guild_id] = asyncio.create_task(runner())
 
 async def refresh_lottery_status_messages(guild, config=None, panel_message=None):
     if not guild:
@@ -8331,7 +8303,7 @@ async def daily(ctx):
 
         if elapsed < 86400:
             next_claim = last_daily + timedelta(seconds=86400)
-            await reply_to_command(ctx, f"{Q_TIMER} You can claim daily {discord_relative_time(next_claim)}")
+            await ctx.send(f"{Q_TIMER} You can claim daily {discord_relative_time(next_claim)}", allowed_mentions=discord.AllowedMentions.none())
             return
 
     streak, freeze_note = next_claim_streak(user_id, data, "daily_streak", "last_daily", 86400)
@@ -8360,7 +8332,7 @@ async def daily(ctx):
         return
 
     extra = f"\n{Q_QUEST} Main quest complete: **{format_balance(achievement_reward)}**!" if achievement_reward else ""
-    await reply_to_command(ctx, f"{QOIN_BAG} You claimed **{format_balance(reward)}**!\nStreak: **{plural_unit(streak, 'day')}** (+{streak_bonus} bonus){freeze_note}{passive_reward_note(data)}{extra}")
+    await ctx.send(f"{QOIN_BAG} You claimed **{format_balance(reward)}**!\nStreak: **{plural_unit(streak, 'day')}** (+{streak_bonus} bonus){freeze_note}{passive_reward_note(data)}{extra}", allowed_mentions=discord.AllowedMentions.none())
     await maybe_send_tutorial(ctx, updated, "start")
 
 @commands.command()
@@ -8383,7 +8355,7 @@ async def weekly(ctx):
 
         if elapsed < 604800:
             next_claim = last_weekly + timedelta(seconds=604800)
-            await reply_to_command(ctx, f"{Q_TIMER} You can claim weekly {discord_relative_time(next_claim)}")
+            await ctx.send(f"{Q_TIMER} You can claim weekly {discord_relative_time(next_claim)}", allowed_mentions=discord.AllowedMentions.none())
             return
 
     streak, freeze_note = next_claim_streak(user_id, data, "weekly_streak", "last_weekly", 604800)
@@ -8412,7 +8384,7 @@ async def weekly(ctx):
         return
 
     extra = f"\n{Q_QUEST} Main quest complete: **{format_balance(achievement_reward)}**!" if achievement_reward else ""
-    await reply_to_command(ctx, f"{QOIN_BAG} You claimed **{format_balance(reward)}**!\nWeekly streak: **{plural_unit(streak, 'week')}** (+{streak_bonus} bonus){freeze_note}{passive_reward_note(data)}{extra}")
+    await ctx.send(f"{QOIN_BAG} You claimed **{format_balance(reward)}**!\nWeekly streak: **{plural_unit(streak, 'week')}** (+{streak_bonus} bonus){freeze_note}{passive_reward_note(data)}{extra}", allowed_mentions=discord.AllowedMentions.none())
 
 @commands.command()
 async def monthly(ctx):
@@ -8434,7 +8406,7 @@ async def monthly(ctx):
 
         if elapsed < 2592000:
             next_claim = last_monthly + timedelta(seconds=2592000)
-            await reply_to_command(ctx, f"{Q_TIMER} You can claim monthly {discord_relative_time(next_claim)}")
+            await ctx.send(f"{Q_TIMER} You can claim monthly {discord_relative_time(next_claim)}", allowed_mentions=discord.AllowedMentions.none())
             return
 
     streak, freeze_note = next_claim_streak(user_id, data, "monthly_streak", "last_monthly", 2592000)
@@ -8463,7 +8435,7 @@ async def monthly(ctx):
         return
 
     extra = f"\n{Q_QUEST} Main quest complete: **{format_balance(achievement_reward)}**!" if achievement_reward else ""
-    await reply_to_command(ctx, f"{QOIN_BAG} You claimed **{format_balance(reward)}**!\nMonthly streak: **{plural_unit(streak, 'month')}** (+{streak_bonus} bonus){freeze_note}{passive_reward_note(data)}{extra}")
+    await ctx.send(f"{QOIN_BAG} You claimed **{format_balance(reward)}**!\nMonthly streak: **{plural_unit(streak, 'month')}** (+{streak_bonus} bonus){freeze_note}{passive_reward_note(data)}{extra}", allowed_mentions=discord.AllowedMentions.none())
 
 # =====================
 # COIN FLIP
@@ -13892,11 +13864,9 @@ async def limits(ctx, target_or_action: str = None, value: str = None):
             asyncio.to_thread(get_user, user.id),
             asyncio.to_thread(get_lottery_user_spend, ctx.guild.id if ctx.guild else None, user.id),
         )
-        loss = await asyncio.to_thread(daily_loss_status, user.id, int(data["balance"]), 0)
     except Exception:
         await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
         return
-    remaining = max(0, int(loss["hard_limit"]) - int(loss["lost_today"]))
     cooldown_multiplier = cooldown_multiplier_for_user(user.id, data)
     effective_cooldown = max(1, int(COOLDOWN_SECS * cooldown_multiplier))
     luck_until = data.get("luck_boost_until")
@@ -13907,19 +13877,9 @@ async def limits(ctx, target_or_action: str = None, value: str = None):
         if luck_until > datetime.now(timezone.utc):
             luck_text = f"Active until {discord_relative_time(luck_until)}"
     embed = discord.Embed(
-        title=f"{Q_LIMITS} Safety Limits",
+        title=f"{Q_LIMITS} Gambling Settings",
         description=user_mention(user.id),
         color=discord.Color.orange(),
-    )
-    embed.add_field(
-        name="Daily Gambling Loss",
-        value=(
-            f"Lost Today: **{format_balance(loss['lost_today'])}**\n"
-            f"Warning At: **{format_balance(loss['warning_limit'])}**\n"
-            f"Hard Limit: **{format_balance(loss['hard_limit'])}**\n"
-            f"Remaining Risk: **{format_balance(remaining)}**"
-        ),
-        inline=False,
     )
     if lottery_spend:
         round_spent = int(lottery_spend["spent"] or 0)
@@ -13957,7 +13917,6 @@ async def limits(ctx, target_or_action: str = None, value: str = None):
     )
     embed.add_field(name="Gambling Cooldown", value=f"{plural_unit(effective_cooldown, 'second')} effective\nBase: {plural_unit(COOLDOWN_SECS, 'second')}", inline=True)
     embed.add_field(name="Lottery Spend Cap", value=f"{int(LOTTERY_MAX_BALANCE_SPEND_RATIO * 100)}% of lottery-adjusted balance", inline=True)
-    embed.add_field(name="Daily Loss Rules", value=f"Warns at {int(DAILY_LOSS_WARNING_RATIO * 100)}%; blocks before {int(DAILY_LOSS_HARD_RATIO * 100)}%.", inline=False)
     embed.add_field(name="Luck Boost", value=luck_text, inline=True)
     await ctx.reply(embed=embed, mention_author=False, allowed_mentions=discord.AllowedMentions.none())
 
@@ -14036,7 +13995,7 @@ def build_economy_audit_embed(stats, scope_label="Global"):
     )
     supply = max(1, int(stats["total_balance"] or 0))
     flow_ratio = abs(int(stats["transaction_amount_24h"] or 0)) / supply
-    if flow_ratio > 0.35 or int(stats["lost_today"] or 0) > supply * 0.12:
+    if flow_ratio > 0.35:
         health = f"{Q_WARNING} Hot"
     elif tracked_flow / supply >= 0.08:
         health = f"{Q_SUCCESS} Stable"
@@ -14078,7 +14037,6 @@ def build_economy_audit_embed(stats, scope_label="Global"):
     )
     flow_lines = [
         f"Tracked tax/sinks: **{format_balance(tracked_flow)}**",
-        f"Lost today: **{format_balance(stats['lost_today'])}**",
         f"Total earned: **{format_balance(stats['total_earned'])}**",
     ]
     if stats.get("richest_user_id"):
@@ -14097,8 +14055,6 @@ def build_economy_audit_embed(stats, scope_label="Global"):
     add_split_embed_field(embed, "Game Signals", game_lines or ["No game stats yet."], inline=False)
 
     warnings = []
-    if int(stats["lost_today"] or 0) > supply * 0.08:
-        warnings.append(f"{Q_WARNING} Daily gambling losses are high versus current supply.")
     if abs(int(stats["transaction_amount_24h"] or 0)) > supply * 0.15:
         warnings.append(f"{Q_WARNING} 24h transaction flow is high versus current supply.")
     for row in (stats.get("games") or []):
@@ -14153,7 +14109,6 @@ async def economyaudit(ctx, member: discord.Member = None):
             data = await asyncio.to_thread(get_user, member.id)
             rows = await asyncio.to_thread(get_game_stats, member.id)
             history_rows = await asyncio.to_thread(get_game_history, member.id, 5)
-            loss = await asyncio.to_thread(daily_loss_status, member.id, int(data["balance"]), 0)
             tx_rows = await asyncio.to_thread(get_recent_transactions, member.id, 8)
         except Exception:
             await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
@@ -14181,11 +14136,6 @@ async def economyaudit(ctx, member: discord.Member = None):
                 f"Won/Lost: **{format_balance(data['total_won'])}** / **{format_balance(data['total_lost'])}**\n"
                 f"Net: **{format_balance(net)}**"
             ),
-            inline=True,
-        )
-        embed.add_field(
-            name="Today",
-            value=f"Lost: **{format_balance(loss['lost_today'])}**\nRemaining: **{format_balance(loss['remaining'])}**",
             inline=True,
         )
         game_lines = []
@@ -14486,16 +14436,6 @@ def get_abuse_audit_rows():
     transactions = cur.fetchall()
     cur.execute(
         """
-        SELECT user_id, amount
-        FROM economy_daily_losses
-        WHERE loss_date = CURRENT_DATE AND amount >= 1000000
-        ORDER BY amount DESC
-        LIMIT 10
-        """
-    )
-    losses = cur.fetchall()
-    cur.execute(
-        """
         SELECT user_id, guild_id, tickets, spent
         FROM lottery_tickets
         WHERE tickets >= 20 OR spent >= 2000000
@@ -14506,7 +14446,7 @@ def get_abuse_audit_rows():
     lottery_watch = cur.fetchall()
     cur.close()
     conn.close()
-    return games, transactions, losses, lottery_watch
+    return games, transactions, lottery_watch
 
 @commands.command(name="abuseaudit", aliases=["antiexploit", "riskwatch"])
 async def abuseaudit(ctx):
@@ -14515,7 +14455,7 @@ async def abuseaudit(ctx):
     if not has_economy_owner_power(ctx.author.id, ctx.guild):
         return await ctx.send(f"{Q_DENIED} Server owner or admin only.")
     try:
-        games, transactions, losses, lottery_watch = await asyncio.to_thread(get_abuse_audit_rows)
+        games, transactions, lottery_watch = await asyncio.to_thread(get_abuse_audit_rows)
     except Exception:
         await send_error(ctx, "I had trouble reaching the economy data. Try again in a bit.")
         return
@@ -14527,11 +14467,9 @@ async def abuseaudit(ctx):
     )
     game_lines = [f"{user_mention(r['user_id'])} - **{int(r['plays']):,}** plays, profit **{format_balance(int(r['profit'] or 0))}**" for r in games]
     tx_lines = [f"{user_mention(r['user_id'])} - **{int(r['tx_count']):,}** tx, volume **{format_balance(int(r['volume'] or 0))}**" for r in transactions]
-    loss_lines = [f"{user_mention(r['user_id'])} - lost today **{format_balance(int(r['amount'] or 0))}**" for r in losses]
     lottery_lines = [f"{user_mention(r['user_id'])} - **{int(r['tickets']):,}** tickets, spent **{format_balance(int(r['spent'] or 0))}** in `{r['guild_id']}`" for r in lottery_watch]
     add_split_embed_field(embed, "Fast Game Profit / Volume", game_lines or ["No high-risk game signals."], inline=False)
     add_split_embed_field(embed, "Transaction Volume", tx_lines or ["No high-risk transaction signals."], inline=False)
-    add_split_embed_field(embed, "Daily Loss Watch", loss_lines or ["No major daily loss signals."], inline=False)
     add_split_embed_field(embed, "Lottery Spend Watch", lottery_lines or ["No major lottery spend signals."], inline=False)
     embed.add_field(
         name="What To Check",
@@ -14556,10 +14494,8 @@ async def riskprofile(ctx, member: discord.Member = None):
     played = sum(int(row["played"] or 0) for row in rows)
     wins = sum(int(row["wins"] or 0) for row in rows)
     profit = sum(int(row["profit"] or 0) for row in rows)
-    losses = await asyncio.to_thread(daily_loss_status, user.id, int(data.get("balance") or 0), 0)
     win_rate = (wins / played * 100) if played else 0
-    loss_ratio = float(losses.get("ratio", 0) or 0)
-    if loss_ratio >= DAILY_LOSS_WARNING_RATIO or profit < -1_000_000:
+    if profit < -1_000_000:
         risk_word = "High"
         color = discord.Color.red()
     elif played >= 25 or abs(profit) >= 500_000:
@@ -14577,7 +14513,6 @@ async def riskprofile(ctx, member: discord.Member = None):
     )
     embed.add_field(name="Risk", value=f"**{risk_word}**", inline=True)
     embed.add_field(name="Balance", value=format_balance(int(data.get("balance") or 0)), inline=True)
-    embed.add_field(name="Daily Loss", value=f"{format_balance(int(losses.get('used') or 0))} / {format_balance(int(losses.get('limit') or 0))}", inline=True)
     embed.add_field(name="Games", value=f"Played: **{played:,}**\nWins: **{wins:,}** ({win_rate:.1f}%)\nProfit: **{format_balance(profit)}**", inline=False)
     if lottery_spend:
         embed.add_field(
@@ -14588,8 +14523,6 @@ async def riskprofile(ctx, member: discord.Member = None):
     recent_volume = sum(abs(int(row["amount"] or 0)) for row in tx_rows)
     embed.add_field(name="Recent Transaction Volume", value=format_balance(recent_volume), inline=True)
     notes = []
-    if loss_ratio >= DAILY_LOSS_WARNING_RATIO:
-        notes.append("Daily loss warning threshold reached.")
     if profit < -1_000_000:
         notes.append("Large recent tracked game losses.")
     if played == 0:
@@ -15309,7 +15242,7 @@ EXPLANATIONS = {
     "ecodashboard": "Alias for `.balancedashboard`. Shows the global economy balance dashboard.",
     "moneydashboard": "Alias for `.balancedashboard`. Shows the global economy balance dashboard.",
     "sinkdashboard": "Alias for `.balancedashboard`. Shows tracked economy sinks and flow.",
-    "riskprofile": "Shows a user's 𝚀𝚞𝚎wo risk profile: daily loss usage, game volume, profit, lottery spend, and recent transaction volume.",
+    "riskprofile": "Shows a user's 𝚀𝚞𝚎wo risk profile: game volume, profit, lottery spend, and recent transaction volume.",
     "risk": "Alias for `.riskprofile`. Shows a user's risk profile.",
     "userrisk": "Alias for `.riskprofile`. Shows a user's risk profile.",
     "riskcheck": "Alias for `.riskprofile`. Shows a user's risk profile.",
@@ -15335,7 +15268,7 @@ EXPLANATIONS = {
     "audit": "Alias for `.economyaudit`. Shows economy audit signals.",
     "qaudit": "Alias for `.economyaudit`. Shows economy audit signals.",
     "econaudit": "Alias for `.economyaudit`. Shows economy audit signals.",
-    "abuseaudit": "Admin-power anti-abuse watch for fast game profit, transaction volume, and daily loss signals.",
+    "abuseaudit": "Admin-power anti-abuse watch for fast game profit, transaction volume, and lottery spend signals.",
     "antiexploit": "Alias for `.abuseaudit`. Shows anti-abuse signals.",
     "riskwatch": "Alias for `.abuseaudit`. Shows anti-abuse signals.",
     "season": "Shows the current monthly 𝚀𝚞𝚎wo season leaderboard and rewards.",
@@ -15616,7 +15549,7 @@ DETAILED_EXPLANATIONS = {
     "shop": "Opens an interactive categorized 𝚀𝚞𝚎wo shop. Select an item, press Buy, then enter the quantity. The bot checks your balance, item limit, and total price before purchasing. The Bank category includes Bank Space upgrades so users can protect more cash.",
     "cooldowns": "Shows daily, weekly, monthly, and active gambling command cooldowns in one place.",
     "transactions": "Shows recent money movement including shop purchases, quest rewards, level rewards, transfer tax, admin changes, and lottery activity.",
-    "limits": f"Shows your daily gambling loss safety limit. The bot warns near {int(DAILY_LOSS_WARNING_RATIO * 100)}% and blocks bets before daily losses exceed {int(DAILY_LOSS_HARD_RATIO * 100)}% of your current daily gambling bankroll. It also shows lottery round spending, your personal gambling cap, and any active gambling pause. Use `.limits set 50k`, `.limits pause 2h`, `.limits resume`, or `.limits clear`.",
+    "limits": "Shows the current bet cap, gambling cooldown, lottery round spending, your personal gambling cap, and any active gambling pause. Use `.limits set 50k`, `.limits pause 2h`, `.limits resume`, or `.limits clear`.",
     "lottery": f"Server lottery. First run asks the server owner or an admin for a channel and draw period, locks the channel, and posts a persistent ticket panel with buy buttons. Existing active lottery data is preserved when the panel is refreshed. The prize is the full current pot. Tickets cost {format_balance(LOTTERY_TICKET_COST)} and {int(LOTTERY_HOUSE_CUT * 100)}% is burned as a money sink. Users can spend up to {int(LOTTERY_MAX_BALANCE_SPEND_RATIO * 100)}% of their lottery-adjusted balance per round. Winner selection uses diminishing returns so big ticket stacks still help without completely crushing smaller entries.",
     "editlottery": f"{QUE_OWNER_DISPLAY} command. Run `.editlottery` to open the edit UI, or use `.editlottery price 250000`, `.editlottery duration 12h`, `.editlottery cut 5`, or `.editlottery channel #lottery`. Duration resets the next draw timer. Channel posts a fresh lottery panel. Updates ping the lottery participant role.",
     "stoplottery": f"{QUE_OWNER_DISPLAY} command. Use `.stoplottery` to remove the lottery setup for this server, clear the current pot/tickets, and delete the participant role if the bot can. It leaves channels and panel messages alone.",
@@ -15657,7 +15590,7 @@ DETAILED_EXPLANATIONS = {
     "achievements": "Shows hard game badge progress and rewards. Badges are intentionally long-term, like 100 wins in a game or 1,000 total games played. Earned badge rewards are paid automatically when the tracked game result completes.",
     "setbadge": "Use `.setbadge` with no arguments to list earned badge IDs. Use `.setbadge <badge_id> [badge_id] [badge_id]` to show up to 3 earned badges on `.profile`, or `.setbadge clear` to remove them.",
     "gamebalance": "Lists every 𝚀𝚞𝚎wo game with its current risk label. Use this as the quick balance audit before changing odds, multipliers, or max-risk behavior.",
-    "riskprofile": "Shows user-specific safety signals rather than game-wide risk. It combines balance, current daily loss usage, tracked game play/win/profit totals, current lottery spend in this server, recent transaction volume, and plain warning notes.",
+    "riskprofile": "Shows user-specific safety signals rather than game-wide risk. It combines balance, tracked game play/win/profit totals, current lottery spend in this server, recent transaction volume, and plain warning notes.",
     "gameaudit": "Admin-power balancing dashboard. It reads recent tracked game history, then shows plays, win rate, house profit, and signals for games that look too generous or too harsh. Use `.gameaudit` for 7 days or `.gameaudit 30` for up to 30 days.",
     "balanceaudit": "Admin-power economy balancing dashboard. It reads recent tracked game history, compares play count, win rate, house net, and risk labels, then gives tune/watch notes for games that may need odds, payout, or risk-label updates. Use `.balanceaudit` for 14 days or `.balanceaudit 30` for up to 30 days.",
     "balancedashboard": f"{QUE_OWNER_DISPLAY}-only global economy dashboard. It combines money supply, tracked tax/payment flow, lottery size, recent game balance, and anti-abuse watch signals into one compact view. Use `.balancedashboard` or `.balancedashboard 30`.",
@@ -15690,7 +15623,7 @@ DETAILED_EXPLANATIONS = {
     "leaderboard": "Alias for `.lb`. Shows local/global paginated rankings with selectable ranking types and your rank.",
     "qstats": "Admin-power command for checking the global 𝚀𝚞𝚎wo economy. It shows total money supply, total earned, gambling won/lost/net, active lotteries, lottery pots, ticket count, tracked taxes/payments, richest user, and tracked messages. If you pass a member, it redirects to that user's economy audit.",
     "economyhealth": "Alias for `.qstats`. Use it when you want the global money-supply health view instead of a specific user's audit.",
-    "economyaudit": "Admin-power economy audit page. Without a member, it shows a compact server-scoped audit: supply, 24h flow, lottery, tax/sink notes, game signals, and warnings. With a member, it shows that user's compact balance, level, net gambling, daily loss usage, game signals, recent games, recent transactions, and warnings.",
+    "economyaudit": "Admin-power economy audit page. Without a member, it shows a compact server-scoped audit: supply, 24h flow, lottery, tax/sink notes, game signals, and warnings. With a member, it shows that user's compact balance, level, net gambling, game signals, recent games, recent transactions, and warnings.",
     "add": f"{QUE_OWNER_DISPLAY}-only command. Adds new quesos to a user. `.add @user <amount>` and `.add <amount> @user` both work. {QUE_OWNER_DISPLAY} can use @everyone or a role. It does not support `all`. Sensitive changes generate a receipt ID.",
     "remove": f"{QUE_OWNER_DISPLAY}-only command. Removes quesos from a user. `.remove @user <amount>` and `.remove <amount> @user` both work. Use `all` to remove their full balance. Sensitive changes generate a receipt ID.",
     "move": f"{QUE_OWNER_DISPLAY}-only command. Moves existing quesos from one user to another without tax and without creating new money. Use `.move @from @to 100k` or `.move @from @to all`. It shows both before/after balances and generates a receipt ID.",
@@ -16067,8 +16000,18 @@ async def explain(ctx, command_name: str = None):
 # =====================
 # SETUP
 # =====================
+async def deferred_economy_startup_restore():
+    """Delay UI restoration and catch-up work until the gateway settles."""
+    await asyncio.sleep(15)
+    try:
+        await restore_lottery_panels()
+        await catch_up_due_lotteries("startup")
+        await catch_up_due_economy_events("startup")
+    except Exception as exc:
+        print(f"Deferred economy startup recovery skipped: {type(exc).__name__} - {exc}")
+
 async def setup(bot_ref, log_callback=None):
-    global bot, economy_log_callback, lottery_task, db_keepalive_task, economy_event_task
+    global bot, economy_log_callback, lottery_task, db_keepalive_task, economy_event_task, economy_startup_restore_task
     bot = bot_ref
     economy_log_callback = log_callback
     print("Initializing 𝚀𝚞𝚎wo system...")
@@ -16095,13 +16038,11 @@ async def setup(bot_ref, log_callback=None):
         except Exception as e:
             print(f"𝚀𝚞𝚎wo command registration skipped for {command.name}: {type(e).__name__} - {e}")
 
-    await restore_lottery_panels()
-    await catch_up_due_lotteries("startup")
-    await catch_up_due_economy_events("startup")
-
     if lottery_task is None or lottery_task.done():
         lottery_task = asyncio.create_task(lottery_draw_loop())
     if db_keepalive_task is None or db_keepalive_task.done():
         db_keepalive_task = asyncio.create_task(db_keepalive_loop())
     if economy_event_task is None or economy_event_task.done():
         economy_event_task = asyncio.create_task(economy_event_loop())
+    if economy_startup_restore_task is None or economy_startup_restore_task.done():
+        economy_startup_restore_task = asyncio.create_task(deferred_economy_startup_restore())
