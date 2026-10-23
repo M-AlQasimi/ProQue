@@ -9652,7 +9652,7 @@ ID|Indonesia|
 IR|Iran|
 IQ|Iraq|
 IE|Ireland|
-IL|Israel|
+IL|Shit|
 IT|Italy|
 JM|Jamaica|
 JP|Japan|
